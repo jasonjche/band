@@ -30,6 +30,7 @@ struct RootTabView: View {
     let homeScreenQuickActionsEnabled: Bool
 
     @EnvironmentObject private var repo: Repository
+    @EnvironmentObject private var model: AppModel
     /// Cross-screen navigation requests (e.g. Live → "Manage devices"). Devices isn't a tab — it lives
     /// behind the More list — so a request presents it as a sheet, matching the quick-action screens.
     @EnvironmentObject private var router: NavRouter
@@ -46,6 +47,9 @@ struct RootTabView: View {
     /// Selected tab — bound so tab switches can crossfade (README §Motion: ~240ms opacity swap
     /// between tab roots, calm easing). Defaults to Today.
     @State private var selectedTab: Int = 0
+    /// TabView re-sets the current tag when a row inside More is tapped. That would call
+    /// `reselectTab` and clear the path we just appended. Ignore the next duplicate set.
+    @State private var suppressTabReselect = false
     /// One `NavigationPath` per tab, indexed by tab tag. Re-tapping the already-active tab pops
     /// that tab's stack to its root (#135) by clearing its path — an animated pop that leaves the
     /// root view alive, so an at-root re-tap keeps scroll position and never re-runs `.task`
@@ -68,10 +72,26 @@ struct RootTabView: View {
     /// V8 liquid redesign is the default Today; the Settings toggle lets a user fall back to the classic
     /// Today if they prefer it (keyed identically to the SettingsView toggle). Default ON.
     @AppStorage("noop.liquidTodayEnabled") private var liquidTodayEnabled = true
+    /// Fork presentation. Default ON so this install opens the Health-style Summary.
+    /// Turn it off to get the upstream Liquid or classic Today back, unchanged.
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
 
-    /// The Today tab root, honouring the liquid/classic preference.
+    /// The Today tab root. Native wins when enabled; otherwise the upstream liquid/classic choice.
     @ViewBuilder private var todayTabRoot: some View {
-        if liquidTodayEnabled { LiquidTodayView() } else { TodayView() }
+        if nativeTodayEnabled {
+            NativeHomeView()
+        } else if liquidTodayEnabled {
+            LiquidTodayView()
+        } else {
+            TodayView()
+        }
+    }
+
+    /// Health and Sleep follow the same flag. Off restores the upstream screens.
+    private func nativeOr<Upstream: View, Native: View>(_ upstream: Upstream, native: Native) -> some View {
+        Group {
+            if nativeTodayEnabled { native } else { upstream }
+        }
     }
 
     /// Native tab selection binding. SwiftUI sends taps on the already-selected item through the
@@ -82,6 +102,10 @@ struct RootTabView: View {
             get: { selectedTab },
             set: { tag in
                 if tag == selectedTab {
+                    if suppressTabReselect {
+                        suppressTabReselect = false
+                        return
+                    }
                     reselectTab(tag)
                 } else {
                     selectedTab = tag
@@ -126,26 +150,26 @@ struct RootTabView: View {
         // its dynamic interaction with scrolling content automatically; older supported releases use
         // the corresponding system material and safe-area behaviour from the same TabView.
         TabView(selection: nativeTabSelection) {
-            tab(todayTabRoot, "Today", "square.grid.2x2", path: $tabPaths[0], scrollSignal: scrollTop[0]).tag(0)
-            tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis", path: $tabPaths[1], scrollSignal: scrollTop[1]).tag(1)
-            tab(SleepView(), "Sleep", "bed.double", path: $tabPaths[2], scrollSignal: scrollTop[2]).tag(2)
-            // K3: Coach promoted to a top-level tab (was behind the More list). The sparkles icon
-            // matches the More-tab row and the macOS sidebar entry.
-            // Conditional on the master switch. The tags stay LITERAL rather than being renumbered when
-            // Coach is absent: `tabPaths` and `scrollTop` are indexed by tag, and More stays tag 4 in both
-            // shapes, so a wearer's More tab keeps its identity, its navigation path and its scroll
-            // position across a flip instead of inheriting Coach's.
-            if coachEnabled {
+            tab(todayTabRoot, "Home", "house", path: $tabPaths[0], scrollSignal: scrollTop[0]).tag(0)
+            // Native layout follows the WHOOP bar: Home and More. Sleep, Recovery, and Strain
+            // are pages opened from the rings, not tabs. Health is a score we do not have.
+            if !nativeTodayEnabled {
+                tab(TrendsView(), "Health", "heart", path: $tabPaths[1], scrollSignal: scrollTop[1]).tag(1)
+                tab(SleepView(), "Sleep", "bed.double", path: $tabPaths[2], scrollSignal: scrollTop[2]).tag(2)
+            }
+            // Tags stay literal. Coach is 3, More is 4, so a flip does not reuse another tab's path.
+            if coachEnabled && !nativeTodayEnabled {
                 tab(CoachView(), "Coach", "sparkles", path: $tabPaths[3], scrollSignal: scrollTop[3]).tag(3)
             }
             moreTab(path: $tabPaths[4], scrollSignal: scrollTop[4]).tag(4)
         }
-        .tint(StrandPalette.accent)
+        .tint(nativeTodayEnabled ? Color.primary : StrandPalette.accent)
         // Switching Coach off while STANDING on it leaves `selectedTab` pointing at a tag no tab claims
         // any more, which renders as an empty tab rather than as an error. Send that wearer to Today, and
         // only in that case, so a flip made from anywhere else does not move them.
         .onChangeCompat(of: coachEnabled) { enabled in
-            if !enabled && selectedTab == 3 { selectedTab = 0 }
+            if nativeTodayEnabled && selectedTab != 0 && selectedTab != 4 { selectedTab = 0 }
+            if (!enabled || nativeTodayEnabled) && selectedTab == 3 { selectedTab = 0 }
         }
         // #1841: the same "Hide bar when scrolling" preference Android drives its own bar with. Here the
         // system owns the behaviour — iOS 26's tab bar MINIMISES to a pill on scroll down rather than
@@ -174,7 +198,7 @@ struct RootTabView: View {
             // the subview hierarchy TOO, which on a pushed screen would take out scrolling, taps and the
             // interactive-pop itself: far worse than the bug being fixed.
             .simultaneousGesture(tabSwipeGesture,
-                                 including: tabPaths[selectedTab].isEmpty ? .all : .subviews)
+                                 including: (nativeTodayEnabled || !tabPaths[selectedTab].isEmpty) ? .subviews : .all)
         .task {
             await repo.refresh()
             // Backup & Sync: on-launch catch-up (see RootView). Detached + utility priority so a
@@ -443,6 +467,7 @@ struct RootTabView: View {
         // TabRoute values, registered here ONCE per stack (a double registration double-pushes, #38).
         NavigationStack(path: path) {
             view
+                .environment(\.nativeNavigationPath, path)
                 .background(StrandPalette.surfaceBase.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
                 .tabRouteDestinations()
@@ -459,41 +484,44 @@ struct RootTabView: View {
     // ScreenScaffold for the title1 "More" + subtitle, a `SectionHeader` overline per group, and the group's
     // rows in a single grouped NoopCard with hairline dividers — the same row idiom Settings/Health use.
     private func moreTab(path: Binding<NavigationPath>, scrollSignal: Int) -> some View {
-        NavigationStack(path: path) {
-            ScreenScaffold(title: "More", subtitle: "Everything else, one tap away",
+        func moreRow(_ title: LocalizedStringKey, _ icon: String, _ route: MoreDestination) -> MoreRow {
+            MoreRow(title, icon, route, path: path, suppressTabReselect: $suppressTabReselect)
+        }
+        return NavigationStack(path: path) {
+            Group {
+                if nativeTodayEnabled {
+                    nativeMoreList(path: path)
+                } else {
+            ScreenScaffold(title: "More",
+                           subtitle: "Everything else, one tap away",
                            onRefresh: { await repo.refresh() },
                            topBackground: liquidScaffoldSky()) {
                 moreSection("Insights") {
-                    MoreRow("What Moves You", "wand.and.sparkles", .insightsHub)
-                    MoreRow("Intelligence", "brain.head.profile", .intelligence)
-                    // K3: Coach promoted to a top-level tab — no longer listed under More.
-                    MoreRow("Insights", "lightbulb.fill", .insights)
-                    MoreRow("Explore", "square.grid.2x2.fill", .explore)
-                    MoreRow("Compare", "rectangle.split.2x1.fill", .compare)
+                    moreRow("What Moves You", "wand.and.sparkles", .insightsHub)
+                    moreRow("Intelligence", "brain.head.profile", .intelligence)
+                    moreRow("Insights", "lightbulb.fill", .insights)
+                    moreRow("Explore", "square.grid.2x2.fill", .explore)
+                    moreRow("Compare", "rectangle.split.2x1.fill", .compare)
                 }
                 moreSection("Body") {
-                    MoreRow("Live", "waveform.path.ecg", .live)
-                    MoreRow("Workouts", "figure.run", .workouts)
-                    MoreRow("Lift Log", "dumbbell.fill", .liftLog)
-                    MoreRow("Health", "heart.text.square.fill", .health)
-                    MoreRow("Lab Book", "books.vertical.fill", .labBook)
-                    MoreRow("Stress", "bolt.heart.fill", .stress)
-                    MoreRow("Breathe", "wind", .breathe)
-                    MoreRow("Intervals", "timer", .intervals)
-                    // Experimental beat-to-beat regularity visualization — self-gates on its own consent.
-                    MoreRow("Rhythm", "waveform.path", .rhythm)
+                    moreRow("Live", "waveform.path.ecg", .live)
+                    moreRow("Workouts", "figure.run", .workouts)
+                    moreRow("Lift Log", "dumbbell.fill", .liftLog)
+                    moreRow("Health", "heart.text.square.fill", .health)
+                    moreRow("Lab Book", "books.vertical.fill", .labBook)
+                    moreRow("Stress", "bolt.heart.fill", .stress)
+                    moreRow("Breathe", "wind", .breathe)
+                    moreRow("Intervals", "timer", .intervals)
+                    moreRow("Rhythm", "waveform.path", .rhythm)
                 }
                 moreSection("Data") {
-                    MoreRow("Your Data, Fused", "square.stack.3d.up.fill", .fusedRecord)
-                    MoreRow("Apple Health", "heart.fill", .appleHealth)
-                    MoreRow("Mi Band", "figure.walk.motion", .miBand)
-                    MoreRow("Data Sources", "externaldrive.fill", .dataSources)
-                    MoreRow("Backup & Sync", "externaldrive.fill.badge.icloud", .backupSync)
-                    // #155: HealthKit-free Apple Health path for sideloaded installs (Siri Shortcut
-                    // reads the opt-in Documents/noop_sync.txt drop file).
-                    MoreRow("Shortcuts Export", "square.and.arrow.up.fill", .shortcutsExport)
-                    // The plain 4.0 vs 5.0/MG capability grid — what NOOP reads live off each strap.
-                    MoreRow("NOOP Limitations", "list.bullet.rectangle", .noopLimitations)
+                    moreRow("Your Data, Fused", "square.stack.3d.up.fill", .fusedRecord)
+                    moreRow("Apple Health", "heart.fill", .appleHealth)
+                    moreRow("Mi Band", "figure.walk.motion", .miBand)
+                    moreRow("Data Sources", "externaldrive.fill", .dataSources)
+                    moreRow("Backup & Sync", "externaldrive.fill.badge.icloud", .backupSync)
+                    moreRow("Shortcuts Export", "square.and.arrow.up.fill", .shortcutsExport)
+                    moreRow("NOOP Limitations", "list.bullet.rectangle", .noopLimitations)
                 }
                 moreSection("App") {
                     // #805/#811: the v7.3.1 #766 alarm consolidation moved Smart Alarm under a single
@@ -506,16 +534,18 @@ struct RootTabView: View {
                     // and project.yml excludes Screens/NotificationSettingsView.swift from the iOS target),
                     // so it can't compile or apply on iPhone. iPhone's wrist-alert controls live on the
                     // Automations screen instead. Its absence from the iPhone More list is correct.
-                    MoreRow("Alarms", "alarm.fill", .alarms)
-                    MoreRow("Automations", "wand.and.stars", .automations)
+                    moreRow("Alarms", "alarm.fill", .alarms)
+                    moreRow("Automations", "wand.and.stars", .automations)
                     // The Test Centre (the diagnostics + bug-report hub) gets a first-class home here, not
                     // just buried in Settings, so the feedback loop is one tap from the More tab.
-                    MoreRow("Test Centre", "stethoscope", .testCentre)
-                    MoreRow("Siri & Shortcuts", "mic.fill", .siriShortcuts)
+                    moreRow("Test Centre", "stethoscope", .testCentre)
+                    moreRow("Siri & Shortcuts", "mic.fill", .siriShortcuts)
                     // #477 lives here rather than inside Settings: the strap-battery levers are the
                     // ones people reach for when a strap is running down, so they get their own row.
-                    MoreRow("Power saving", "battery.25", .powerSaving)
-                    MoreRow("Settings", "gearshape.fill", .settings)
+                    moreRow("Power saving", "battery.25", .powerSaving)
+                    moreRow("Settings", "gearshape.fill", .settings)
+                }
+            }
                 }
             }
             // The rows push MoreDestination VALUES so a re-tap of the More tab can pop them off the
@@ -525,16 +555,89 @@ struct RootTabView: View {
             // sky; an opaque surfaceBase nav-bar band sat over it and clipped the top on scroll. A hidden
             // bar background keeps the sky edge-to-edge. On the flat (no-sky) screens this is visually
             // identical at rest — the destination's own surfaceBase background shows through the bar.
+            .environment(\.moreNavigationPath, path)
             .navigationDestination(for: MoreDestination.self) { route in
-                route.destination
-                    .background(StrandPalette.surfaceBase.ignoresSafeArea())
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbarBackground(.hidden, for: .navigationBar)
+                if nativeTodayEnabled && route.usesAppleSettingsChrome {
+                    route.destination
+                        .navigationBarTitleDisplayMode(.inline)
+                } else {
+                    route.destination
+                        .background(StrandPalette.surfaceBase.ignoresSafeArea())
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbarBackground(.hidden, for: .navigationBar)
+                }
             }
         }
         // Scroll the More index to the top on an at-root re-tap (#198 follow-up); read by its ScreenScaffold.
         .environment(\.scrollToTopSignal, scrollSignal)
-        .tabItem { Label("More", systemImage: "ellipsis") }
+        .tabItem { Label("More", systemImage: nativeTodayEnabled ? "line.3.horizontal" : "ellipsis") }
+    }
+
+    /// Native More index: inset-grouped list with iOS Settings-style glyph rows. Pairing, WHOOP
+    /// import, and Alarms stay one tap away; marketing/novelty destinations stay on the classic list.
+    private func nativeMoreList(path: Binding<NavigationPath>) -> some View {
+        func row(_ title: LocalizedStringKey, _ icon: String, _ color: Color, _ route: MoreDestination) -> some View {
+            Button {
+                suppressTabReselect = true
+                path.wrappedValue.append(route)
+            } label: {
+                HStack(spacing: 12) {
+                    AppleSettingsGlyph(systemName: icon, background: color)
+                    Text(title)
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 8)
+                }
+            }
+        }
+        let personal = AppBrand.isPersonalBuild
+        let showMiBand = !personal || (model.deviceRegistry?.devices.contains {
+            $0.brand == ExperimentalBrand.miBand.displayBrand || $0.id == XiaomiImporter.deviceId
+        } == true)
+        return List {
+            Section {
+                row("Live", "waveform.path.ecg", .red, .live)
+                row("Workouts", "figure.run", .orange, .workouts)
+                row("Lift Log", "dumbbell.fill", .orange, .liftLog)
+                row("Health", "heart.text.square.fill", .pink, .health)
+                if !personal {
+                    row("Lab Book", "books.vertical.fill", .brown, .labBook)
+                }
+                row("Stress", "bolt.heart.fill", .orange, .stress)
+                if coachEnabled && !personal {
+                    row("Coach", "sparkles", .purple, .coach)
+                }
+            } header: {
+                Text("Body")
+            }
+
+            Section {
+                row("Apple Health", "heart.fill", .red, .appleHealth)
+                row("Data Sources", "square.and.arrow.down.fill", .blue, .dataSources)
+                row("Backup & Sync", "externaldrive.fill.badge.icloud", .cyan, .backupSync)
+                if showMiBand {
+                    row("Mi Band", "figure.walk.motion", .orange, .miBand)
+                }
+            } header: {
+                Text("Data")
+            }
+
+            Section {
+                row("Devices", "badge.plus.radiowaves.right", .blue, .devices)
+                row("Alarms", "alarm.fill", .orange, .alarms)
+                row("Automations", "wand.and.stars", .purple, .automations)
+                row("Test Centre", "stethoscope", .gray, .testCentre)
+                if !personal {
+                    row("Siri & Shortcuts", "mic.fill", .indigo, .siriShortcuts)
+                }
+                row("Power saving", "battery.25", .green, .powerSaving)
+                row("Settings", "gearshape.fill", .gray, .settings)
+            } header: {
+                Text("App")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("More")
+        .navigationBarTitleDisplayMode(.large)
     }
 
     /// One titled, COLLAPSIBLE group in the More index (S2): the app's overline (UPPERCASE) becomes a
@@ -600,7 +703,17 @@ private enum MoreDestination: Hashable {
     case insightsHub, intelligence, coach, insights, explore, compare
     case live, workouts, liftLog, health, labBook, stress, breathe, intervals, rhythm
     case fusedRecord, appleHealth, miBand, dataSources, backupSync, shortcutsExport, noopLimitations
-    case alarms, automations, testCentre, siriShortcuts, powerSaving, settings
+    case devices, alarms, automations, testCentre, siriShortcuts, powerSaving, settings
+
+    var usesAppleSettingsChrome: Bool {
+        switch self {
+        case .devices, .dataSources, .backupSync, .appleHealth, .alarms,
+             .automations, .testCentre, .powerSaving, .settings:
+            return true
+        default:
+            return false
+        }
+    }
 
     @ViewBuilder var destination: some View {
         switch self {
@@ -615,14 +728,20 @@ private enum MoreDestination: Hashable {
         case .liftLog:         LiftLogView()
         case .health:          HealthView()
         case .labBook:         LabBookView()
-        case .stress:          StressView()
+        case .stress:
+            if NativeRouteResolver.layoutEnabled() {
+                NativeStressPage()
+            } else {
+                StressView()
+            }
         case .breathe:         BreathingView()
         case .intervals:       IntervalTimerView()
         case .rhythm:          RhythmHost()
         case .fusedRecord:     FusedRecordHost()
-        case .appleHealth:     AppleHealthView()
+        case .appleHealth:     AppleHealthSettingsView()
         case .miBand:          XiaomiBandView()
         case .dataSources:     DataSourcesView()
+        case .devices:         DevicesView()
         case .noopLimitations: NoopLimitationsView()
         case .backupSync:      BackupSyncView()
         case .shortcutsExport: ShortcutExportSettingsView()
@@ -641,24 +760,43 @@ private enum MoreDestination: Hashable {
 /// the SF Symbol icon tinted `StrandPalette.accent`, the title in the body text colour, a `Spacer`, and a
 /// trailing `chevron.right` in `textTertiary`. ~44pt min height + the card's row insets keep the whole row a
 /// comfortable tap target.
+private struct MoreNavigationPathKey: EnvironmentKey {
+    static let defaultValue = Binding<NavigationPath>(
+        get: { NavigationPath() },
+        set: { _ in }
+    )
+}
+
+extension EnvironmentValues {
+    fileprivate var moreNavigationPath: Binding<NavigationPath> {
+        get { self[MoreNavigationPathKey.self] }
+        set { self[MoreNavigationPathKey.self] = newValue }
+    }
+}
+
 private struct MoreRow: View {
     let title: LocalizedStringKey
     let icon: String
     let route: MoreDestination
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+    var path: Binding<NavigationPath>
+    var suppressTabReselect: Binding<Bool>
 
-    init(_ title: LocalizedStringKey, _ icon: String, _ route: MoreDestination) {
+    init(_ title: LocalizedStringKey, _ icon: String, _ route: MoreDestination,
+         path: Binding<NavigationPath>, suppressTabReselect: Binding<Bool>) {
         self.title = title; self.icon = icon; self.route = route
+        self.path = path; self.suppressTabReselect = suppressTabReselect
     }
 
     var body: some View {
-        NavigationLink(value: route) {
+        Button {
+            suppressTabReselect.wrappedValue = true
+            path.wrappedValue.append(route)
+        } label: {
             HStack(spacing: 14) {
-                // Pin the icon to the accent explicitly. A plain inherited tint gets re-resolved by iOS to
-                // its default blue a beat after first render — so the icons flashed green→blue (#184). The
-                // explicit foregroundStyle on the image overrides that; the title keeps the primary colour.
                 Image(systemName: icon)
                     .font(.system(size: 17, weight: .regular))
-                    .foregroundStyle(StrandPalette.accent)
+                    .foregroundStyle(nativeTodayEnabled ? Color.secondary : StrandPalette.accent)
                     .frame(width: 26, alignment: .center)
                 Text(title)
                     .font(StrandFont.body)

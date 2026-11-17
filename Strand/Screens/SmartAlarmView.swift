@@ -42,18 +42,22 @@ struct SmartAlarmView: View {
     /// Calendar weekday numbers laid out Monday-first (Mon…Sun → 2,3,4,5,6,7,1), matching AutomationsView.
     private static let weekdayOrder = [2, 3, 4, 5, 6, 7, 1]
 
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+
     var body: some View {
-        // #766: retitled to "Alarms" because it now holds BOTH the strap's silent wake-alarm and the
-        // evening wind-down reminder, so naming it "Wind-Down" undersold it. One surface, clearly labelled.
-        ScreenScaffold(title: "Alarms",
-                       subtitle: "Your strap wake-alarm and the evening wind-down reminder, in one place.") {
-            VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
-                windowHero
-                strapAlarmCard
-                strapRejectedCard   // #34: only shows when the strap keeps refusing the alarm
-                honestyCard
-                windDownCard
+        Group {
+            #if os(iOS)
+            if nativeTodayEnabled {
+                Form {
+                    nativeAlarmSections
+                }
+                .appleSettingsChrome("Alarms")
+            } else {
+                alarmsScaffold
             }
+            #else
+            alarmsScaffold
+            #endif
         }
         .alert(String(localized: "Notifications are off"), isPresented: $showNotifDeniedAlert) {
             Button(String(localized: "Open Settings")) { Self.openNotificationSettings() }
@@ -62,6 +66,77 @@ struct SmartAlarmView: View {
             Text("Turn on notifications for NOOP in Settings to get your wind-down reminder.")
         }
     }
+
+    private var alarmsScaffold: some View {
+        ScreenScaffold(title: "Alarms",
+                       subtitle: "Your strap wake-alarm and the evening wind-down reminder, in one place.") {
+            VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
+                windowHero
+                strapAlarmCard
+                strapRejectedCard
+                honestyCard
+                windDownCard
+            }
+        }
+    }
+
+    #if os(iOS)
+    @ViewBuilder private var nativeAlarmSections: some View {
+        Section {
+            Toggle("Strap Wake-Alarm", isOn: $behavior.smartAlarmEnabled)
+            if behavior.smartAlarmEnabled {
+                DatePicker("Wake At", selection: alarmTimeBinding, displayedComponents: .hourAndMinute)
+                alarmWeekdayPicker
+                if model.whoop5Detected && !PuffinExperiment.isEnabled {
+                    Text("WHOOP 5/MG alarms need Protocol probes in Test Centre.")
+                        .foregroundStyle(.secondary)
+                }
+                if !model.whoop5Detected {
+                    Button("Check What the Strap Has Stored") { model.ble.getStrapAlarm() }
+                }
+            }
+        } header: {
+            Text("Morning")
+        } footer: {
+            Text("Buzzes the wrist from the strap. Keep a phone alarm for anything you cannot miss.")
+        }
+        .onChangeCompat(of: behavior.smartAlarmEnabled) { _ in model.applySmartAlarm() }
+        .onChangeCompat(of: behavior.smartAlarmMinutes) { _ in model.applySmartAlarm() }
+        .onChangeCompat(of: behavior.smartAlarmWeekdays) { _ in model.applySmartAlarm() }
+
+        strapRejectedCard
+
+        Section {
+            Toggle("Wind-Down Nudge", isOn: $windDownOn)
+                .onChangeCompat(of: windDownOn) { on in
+                    WindDownNudge.setEnabled(on) { outcome in
+                        if outcome == .denied {
+                            windDownOn = false
+                            showNotifDeniedAlert = true
+                        }
+                    }
+                }
+            if windDownOn {
+                DatePicker("Usual Wake", selection: wakeBinding, displayedComponents: .hourAndMinute)
+                Toggle("Per-Day Times", isOn: $perDayOn)
+                    .onChangeCompat(of: perDayOn) { on in
+                        if !on {
+                            for weekday in 1...7 { WindDownNudge.setWakeOverride(weekday: weekday, minutes: nil) }
+                            overrides = [:]
+                            model.applySmartAlarm()
+                        }
+                    }
+                if perDayOn {
+                    perDaySection
+                }
+            }
+        } header: {
+            Text("Evening")
+        } footer: {
+            Text("A reminder before your usual wake. It is not a loud alarm.")
+        }
+    }
+    #endif
 
     /// Deep-link to the OS notification settings so a user who denied can flip it back on — the system
     /// permission dialog only appears once, so Settings is the only recovery path.

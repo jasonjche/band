@@ -46,12 +46,15 @@ struct StrandiOSApp: App {
     @AppStorage(AccentColor.customHexKey) private var accentCustomHex = AccentColor.defaultCustomHex
     /// Effort's display scale is also embedded in the shared widget snapshot. Observe it here so a
     /// Settings change gets one accurate full rebuild instead of waiting for an unrelated repo refresh.
-    @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.hundred.rawValue
+    @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     /// kg vs lb for the Lift Log Live Activity's "8 x 30 kg" line — the app formats it, because the
     /// unit preference lives here and not in the widget extension.
     @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
 
     init() {
+        // Band: pin layout / effort / units / High Sleep Stress before any view reads @AppStorage.
+        // Stock NOOP (`NoopPersonalBuild` missing or NO) is a no-op.
+        PersonalDefaults.apply()
         // #1008: pin the pre-change Overnight-only default for existing installs before
         // anything reads it. Idempotent; a no-op on fresh installs and after the first launch.
         PuffinExperiment.migrateContinuousHrvOvernightDefault()
@@ -531,16 +534,18 @@ private struct iOSRootView: View {
             // now that the check is on by default: without it a brand-new install would reach the network
             // during first run, before the Terms gate the user has not accepted yet. While the default was
             // off, nothing made that visible.
-            if onboarded && acceptedTerms == Terms.currentVersion {
+            if onboarded && acceptedTerms == Terms.currentVersion && !AppBrand.isPersonalBuild {
                 UpdateWatch.runIfDue(currentVersion: UpdateWatch.installedVersion, sideloadHint: true)
             }
         }
         .onChange(of: acceptedTerms) { _, _ in showWhatsNewIfDue() }
     }
 
-    /// DEBUG: launched with --demo-seed, skip the first-run gates (onboarding / terms / What's New) so the
-    /// FULL shell with the tab bar renders populated for verification + screenshots. No-op in Release.
+    /// Skip first-run gates (onboarding / terms / What's New). DEBUG `--demo-seed` still does this
+    /// for screenshots. A personal iOS build (`NoopPersonalBuild`) does it in every configuration so
+    /// Band opens straight into the app; pairing stays on More → Devices.
     private var demoBypass: Bool {
+        if AppBrand.isPersonalBuild { return true }
         #if DEBUG
         return CommandLine.arguments.contains("--demo-seed")
         #else
@@ -574,6 +579,7 @@ enum DemoScreens {
         guard let i = args.firstIndex(of: "--demo-screen"), i + 1 < args.count else { return nil }
         switch args[i + 1].lowercased() {
         case "today":    return AnyView(TodayView())
+        case "nativetoday": return AnyView(NativeHomeView())
         // The DEFAULT iOS Today (`noop.liquidTodayEnabled` ships true), so it needs its own entry — plain
         // "today" renders the CLASSIC screen, which is exactly the screen whose behaviour Liquid was found
         // to have diverged from. Without this, the default Today was the one screen the harness could not

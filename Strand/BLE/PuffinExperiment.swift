@@ -216,6 +216,14 @@ enum PuffinExperiment {
     /// Read at the staging call site (Repository). Mirrors the Android `PuffinExperiment.KEY_EXPERIMENTAL_SLEEP_V2`.
     static let experimentalSleepV2Key = "noopExperimentalSleepV2"
 
+    /// Opt-in Native-shell "High Sleep Stress" row (default off). Runs `SleepStressShare` over
+    /// overnight 5-minute windows on the Stress Monitor's 0–3 scale. Display only: never stored,
+    /// never a recovery / rest / strain input.
+    static let experimentalSleepStressKey = "noopExperimentalSleepStress"
+    static var experimentalSleepStressEnabled: Bool {
+        UserDefaults.standard.bool(forKey: experimentalSleepStressKey)
+    }
+
     /// Default ON when the key is unset (mirrors the Android `getBoolean(KEY, true)`): a `bool(forKey:)` alone
     /// reads a missing key as false, so an absent preference must resolve to the promoted V2 default explicitly.
     static var experimentalSleepV2Enabled: Bool {

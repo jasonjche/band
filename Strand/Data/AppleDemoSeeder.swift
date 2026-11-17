@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import WhoopStore
+import WhoopProtocol
 
 // MARK: - DEBUG-only demo seed (Apple parity with Android's DemoSeeder)
 // Seeds a comprehensive, self-contained synthetic dataset so a DEBUG build can walk every screen —
@@ -36,9 +37,12 @@ enum AppleDemoSeeder {
         guard requested else { return }
         seedDemoDeviceIfNeeded(into: store)
         let existing = (try? await store.dailyMetrics(deviceId: whoop, from: "0000-00-00", to: "9999-99-99")) ?? []
-        guard existing.isEmpty else { return }
-        do { try await seed(into: store) }
-        catch { NSLog("AppleDemoSeeder: seed failed — \(error)") }
+        if existing.isEmpty {
+            do { try await seed(into: store) }
+            catch { NSLog("AppleDemoSeeder: seed failed — \(error)") }
+        } else {
+            await seedHrIfMissing(into: store)
+        }
     }
 
     /// DEBUG/demo-only: so the Devices screen renders with content under `--demo-seed`, pair a second
@@ -72,6 +76,7 @@ enum AppleDemoSeeder {
         var appleRows: [AppleDaily] = []
         var workouts: [WorkoutRow] = []
         var journal: [JournalEntry] = []
+        var hr: [HRSample] = []
 
         var weight = 79.5
         var fitness = 0.0  // slow upward drift: HRV rises, resting-HR falls, VO2max climbs
@@ -138,6 +143,10 @@ enum AppleDemoSeeder {
                 efficiency: round1(efficiency), restingHr: rhr, avgHrv: round1(hrv),
                 stagesJSON: segmentsJSON(onset: onset, deep: deep, rem: rem, light: light,
                                          awakeMin: Double(disturbances) * 1.6)))
+            overnightHr(&hr, from: onset, to: onset + inBedSec, rhr: rhr, rng: &rng)
+            if i >= DAYS - 14 {
+                daytimeHr(&hr, from: onset + inBedSec, hours: 16, rhr: rhr, rng: &rng)
+            }
 
             // --- long-format extras (body composition) under my-whoop ---
             weight += gauss(&rng, -0.02, 0.18)
@@ -179,6 +188,7 @@ enum AppleDemoSeeder {
                              gauss(&rng, 15.0, 6.0), gauss(&rng, 6.0, 3.0)].map { $0.clamped(0.0, 100.0) }
                     return "{\"zone1\":\(round1(z[0])),\"zone2\":\(round1(z[1])),\"zone3\":\(round1(z[2])),\"zone4\":\(round1(z[3])),\"zone5\":\(round1(z[4]))}"
                 }() : nil
+                workoutHr(&hr, from: start, to: start + Int(durSec), avg: avg, rng: &rng)
                 workouts.append(WorkoutRow(
                     startTs: start, endTs: start + Int(durSec), sport: sport, source: src,
                     durationS: round1(durSec),
@@ -228,7 +238,67 @@ enum AppleDemoSeeder {
         _ = try await store.upsertAppleDaily(appleRows, deviceId: apple)
         if !workouts.isEmpty { _ = try await store.upsertWorkouts(workouts, deviceId: whoop) }
         if !journal.isEmpty { _ = try await store.upsertJournal(journal, deviceId: whoop) }
-        NSLog("AppleDemoSeeder: seeded \(daily.count) days, \(workouts.count) workouts.")
+        try await insertHr(hr, into: store)
+        NSLog("AppleDemoSeeder: seeded \(daily.count) days, \(workouts.count) workouts, \(hr.count) HR samples.")
+    }
+
+    /// Existing demo DBs skipped full seed. Fill overnight HR once if the stream is empty.
+    private static func seedHrIfMissing(into store: WhoopStore) async {
+        let now = Int(Date().timeIntervalSince1970)
+        let existing = (try? await store.hrSamples(deviceId: whoop, from: now - 86400 * 3, to: now, limit: 1)) ?? []
+        guard existing.isEmpty else { return }
+        let sleeps = (try? await store.sleepSessions(deviceId: whoop, from: 0, to: now, limit: 40)) ?? []
+        var rng = SplitMix64(seed: 0xBEEF)
+        var hr: [HRSample] = []
+        for sleep in sleeps.suffix(21) {
+            overnightHr(&hr, from: sleep.startTs, to: sleep.endTs, rhr: sleep.restingHr ?? 56, rng: &rng)
+            daytimeHr(&hr, from: sleep.endTs, hours: 16, rhr: sleep.restingHr ?? 56, rng: &rng)
+        }
+        do { try await insertHr(hr, into: store) }
+        catch { NSLog("AppleDemoSeeder: HR fill failed — \(error)") }
+        NSLog("AppleDemoSeeder: filled \(hr.count) HR samples onto existing demo days.")
+    }
+
+    private static func overnightHr(_ hr: inout [HRSample], from: Int, to: Int, rhr: Int, rng: inout SplitMix64) {
+        let span = max(1, to - from)
+        var t = from
+        while t < to {
+            let p = Double(t - from) / Double(span)
+            let base = Double(rhr) + 8 - p * 10
+            let wobble = sin(Double(t) / 220.0) * 3.5 + gauss(&rng, 0, 1.2)
+            hr.append(HRSample(ts: t, bpm: Int((base + wobble).clamped(42, 92))))
+            t += 15
+        }
+    }
+
+    private static func daytimeHr(_ hr: inout [HRSample], from: Int, hours: Int, rhr: Int, rng: inout SplitMix64) {
+        let to = from + hours * 3600
+        var t = from
+        while t < to {
+            let hour = Calendar.current.component(.hour, from: Date(timeIntervalSince1970: TimeInterval(t)))
+            let lift = hour >= 9 && hour <= 18 ? 18.0 : 8.0
+            let bpm = Double(rhr) + lift + gauss(&rng, 0, 4)
+            hr.append(HRSample(ts: t, bpm: Int(bpm.clamped(50, 140))))
+            t += 25
+        }
+    }
+
+    private static func workoutHr(_ hr: inout [HRSample], from: Int, to: Int, avg: Int, rng: inout SplitMix64) {
+        var t = from
+        while t < to {
+            hr.append(HRSample(ts: t, bpm: Int((Double(avg) + gauss(&rng, 0, 8)).clamped(90, 185))))
+            t += 8
+        }
+    }
+
+    private static func insertHr(_ hr: [HRSample], into store: WhoopStore) async throws {
+        guard !hr.isEmpty else { return }
+        var i = 0
+        while i < hr.count {
+            let end = min(i + 4_000, hr.count)
+            try await store.insert(Streams(hr: Array(hr[i..<end])), deviceId: whoop)
+            i = end
+        }
     }
 
     // MARK: - helpers

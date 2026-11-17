@@ -455,11 +455,18 @@ struct NOOPChargeComplication: Widget {
         }
         .configurationDisplayName("NOOP Charge")
         .description("Your Charge (recovery) on the watch face, with Effort and Rest in the rectangular card.")
-        .supportedFamilies([
-            .accessoryCircular,
-            .accessoryCorner,
-            .accessoryInline,
-            .accessoryRectangular
-        ])
+        .supportedFamilies(WatchComplicationFamilies.all)
+    }
+}
+
+/// Corner faces exist only on watchOS. Xcode 27 compiles this embedded extension
+/// against the iOS simulator SDK, where `.accessoryCorner` is unavailable.
+private enum WatchComplicationFamilies {
+    static var all: [WidgetFamily] {
+        #if os(watchOS)
+        [.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular]
+        #else
+        [.accessoryCircular, .accessoryInline, .accessoryRectangular]
+        #endif
     }
 }

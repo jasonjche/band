@@ -5781,7 +5781,7 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         #if os(macOS)
         state.lastSyncError = "NOOP isn't allowed to use Bluetooth. Open System Settings → Privacy & Security → Bluetooth — if NOOP is already listed there, toggle it off and back on (a new NOOP build needs a fresh grant), then quit and reopen NOOP."
         #else
-        state.lastSyncError = "NOOP isn't allowed to use Bluetooth. Open iPhone Settings → NOOP → Bluetooth — if it's already on, toggle it off and back on, then quit and reopen NOOP."
+        state.lastSyncError = "\(AppBrand.name) isn't allowed to use Bluetooth. Open iPhone Settings → \(AppBrand.name) → Bluetooth — if it's already on, toggle it off and back on, then quit and reopen \(AppBrand.name)."
         #endif
         log("Bluetooth permission not granted (unauthorized) — cannot scan or connect")
         radioStateErrorShown = true

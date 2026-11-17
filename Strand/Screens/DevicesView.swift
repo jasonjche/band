@@ -21,6 +21,29 @@ struct DevicesView: View {
     // for `DevicesContent` and the Add-device wizard, so nothing downstream loses its live readout.
 
     var body: some View {
+        #if os(iOS)
+        if AppleSettingsLayout.isEnabled {
+            Group {
+                if let registry = model.deviceRegistry {
+                    DevicesContent(registry: registry)
+                } else {
+                    Form {
+                        Section {
+                            ProgressView("Getting your devices ready")
+                        }
+                    }
+                    .appleSettingsChrome("Devices")
+                }
+            }
+        } else {
+            devicesScaffold
+        }
+        #else
+        devicesScaffold
+        #endif
+    }
+
+    private var devicesScaffold: some View {
         ScreenScaffold(title: "Devices",
                        subtitle: "Pair and manage the bands NOOP reads from.",
                        // The day-of-sky liquid backdrop, matching Today / Health / Sleep / Trends: a fixed,
@@ -49,6 +72,7 @@ private struct DevicesContent: View {
     @ObservedObject var registry: DeviceRegistry
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var live: LiveState
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
 
     // Sheets / alerts
     @State private var showAddWizard = false
@@ -138,6 +162,22 @@ private struct DevicesContent: View {
     }
 
     var body: some View {
+        deviceRootWithSheets
+    }
+
+    @ViewBuilder private var deviceRoot: some View {
+        #if os(iOS)
+        if nativeTodayEnabled {
+            nativeDeviceList
+        } else {
+            legacyDeviceStack
+        }
+        #else
+        legacyDeviceStack
+        #endif
+    }
+
+    private var legacyDeviceStack: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
             // #802: the re-pair guide belongs HERE too, not only on Live. A strap that connects but never
             // finishes bonding leaves the user on this screen — it is where you go to fix a device — while
@@ -284,6 +324,10 @@ private struct DevicesContent: View {
 
             whoopFirstFooter
         }
+    }
+
+    private var deviceRootWithSheets: some View {
+        deviceRoot
         // Add a device — guided, branching wizard (asks the device TYPE first, then runs the right
         // scan/register path: WHOOP present-scan for WHOOP families, StandardHRSource for HR straps).
         .sheet(isPresented: $showAddWizard) {
@@ -422,6 +466,109 @@ private struct DevicesContent: View {
             Text("You removed your active strap. Choose which paired band provides your live data, or leave none active and pair one later.")
         }
     }
+
+    #if os(iOS)
+    private var nativeDeviceList: some View {
+        List {
+            if let guide = live.reconnectGuide {
+                Section {
+                    Text(guide)
+                } header: {
+                    Text("Can't Connect")
+                }
+            }
+
+            if activeDevices.isEmpty {
+                Section {
+                    Text("No strap paired.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ForEach(activeDevices) { device in
+                nativeDeviceSection(device)
+            }
+
+            Section {
+                Button("Pair") { showAddWizard = true }
+                Button("Re-scan") { model.scan() }
+            }
+
+            if !removedDevices.isEmpty {
+                Section {
+                    ForEach(removedDevices) { device in
+                        Button("Forget \(device.displayName)", role: .destructive) {
+                            forgetTarget = device
+                        }
+                    }
+                } header: {
+                    Text("Removed")
+                } footer: {
+                    Text("Recorded data is kept until you forget the device.")
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .appleSettingsChrome("Devices")
+        .task(id: activeDevices.count) { await loadStrapCompare() }
+    }
+
+    @ViewBuilder
+    private func nativeDeviceSection(_ device: PairedDevice) -> some View {
+        let isActive = device.status == .active
+        let battery = (isActive && live.connected)
+            ? LiveConsoleReadout.batteryPercent(
+                activeIsWhoop: SourceCoordinator.isWhoop(device),
+                whoopPct: live.batteryPct, ringPct: live.ouraBatteryPct)
+            : nil
+        let firmware = FirmwareAttribution.resolve(
+            live: isActive ? live.strapFirmware : nil,
+            perDevice: SourceCoordinator.isWhoop(device)
+                ? FirmwareAttribution.prefKey(peripheralId: device.peripheralId)
+                    .flatMap { UserDefaults.standard.string(forKey: $0) } : nil,
+            legacyGlobal: SourceCoordinator.isWhoop(device)
+                ? UserDefaults.standard.string(forKey: "noop.lastFirmware") : nil,
+            pairedCount: registry.devices.count)
+        let lastSync: String = {
+            if isActive, let ts = live.lastSyncedAt {
+                return relativeAgo(ts)
+            }
+            if device.lastSeenAt > 0 {
+                return relativeAgo(TimeInterval(device.lastSeenAt))
+            }
+            return String(localized: "Never")
+        }()
+        Section {
+            LabeledContent("Model", value: "\(device.brand) \(device.model)")
+            if let battery {
+                LabeledContent("Battery", value: live.charging == true
+                               ? "\(battery)% · Charging"
+                               : "\(battery)%")
+            }
+            if let firmware, !firmware.isEmpty {
+                LabeledContent("Firmware", value: firmware)
+            }
+            LabeledContent("Last Sync", value: lastSync)
+            if !isActive && !device.isImportSource {
+                Button("Make Active") { switchTarget = device }
+            }
+            Button("Rename") {
+                renameDraft = device.nickname ?? device.displayName
+                renameTarget = device
+            }
+            if isActive && live.connected && live.backfilling && SourceCoordinator.isWhoop(device) {
+                Button("Stop Sync") { model.ble.abortBackfill() }
+            }
+            Button("Forget", role: .destructive) { removeTarget = device }
+        } header: {
+            Text(device.displayName)
+        } footer: {
+            if isActive, let hint = live.pairingHint {
+                Text(hint)
+            }
+        }
+    }
+    #endif
 
     // MARK: Pieces
 

@@ -31,10 +31,62 @@ enum TabRoute: Hashable {
     case workouts
     case dataSources
     case stress
+    case journal
     case sleep
     case health
     case hydration
     case coupled
+}
+
+/// Which screen a first-hop route opens. Route identity stays on `TabRoute`; this is only the
+/// view choice. When the WHOOP layout is on, Sleep, Recovery, and Strain — including a contributor
+/// row that is itself one of those scores — open the score page. Other catalog keys stay on the
+/// existing detail screen, and turning the layout off restores the original destinations.
+enum NativeRoutePresentation: Equatable {
+    case score(NativeScoreKind)
+    case journal
+    case stressPage
+    case metricPage(String)
+    case metricDetail
+    case health
+    case unchanged
+}
+
+enum NativeRouteResolver {
+    static let layoutKey = "noop.nativeTodayEnabled"
+
+    /// An absent preference is the WHOOP layout. An explicit false restores the original screens.
+    static func layoutEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: layoutKey) as? Bool ?? true
+    }
+
+    static func presentation(for route: TabRoute, nativeLayout: Bool) -> NativeRoutePresentation {
+        guard nativeLayout else { return .unchanged }
+        switch route {
+        case .sleep:
+            return .score(.sleep)
+        case .journal:
+            return .journal
+        case .stress:
+            return .stressPage
+        case .metric(let key):
+            if let kind = scoreKind(forMetricKey: key) { return .score(kind) }
+            return .metricPage(key)
+        default:
+            return .unchanged
+        }
+    }
+
+    /// Recovery, Strain, and Sleep Performance. Sleep Performance is the Rest ring's catalog key,
+    /// and it is also the Recovery page's Sleep Performance row.
+    static func scoreKind(forMetricKey key: String) -> NativeScoreKind? {
+        switch key {
+        case HeroRingMetric.charge: return .recovery
+        case HeroRingMetric.effort: return .strain
+        case HeroRingMetric.rest: return .sleep
+        default: return nil
+        }
+    }
 }
 
 extension View {
@@ -43,18 +95,59 @@ extension View {
     /// Today detail pane and TrendsView's own macOS wrap).
     func tabRouteDestinations() -> some View {
         navigationDestination(for: TabRoute.self) { route in
-            switch route {
-            case .fullDayChart: FullDayChartView()
-            case .metric(let key):
-                // Every caller passes a catalog key, so the fallback is theoretical; Health is the
-                // catch-all vitals surface. (Pre-#198 Trends fell back to the Explorer instead —
-                // unified here rather than carrying two never-taken branches.)
-                if let m = MetricCatalog.all.first(where: { $0.key == key }) {
-                    MetricDetailView(metric: m)
-                } else {
-                    HealthView()
-                }
-            case .metricSourced(let key, let source):
+            TabRouteDestination(route: route)
+                .nativeStyleBridge()
+        }
+        .navigationDestination(for: NativeActivityRoute.self) { route in
+            NativeActivityView(startTs: route.startTs)
+                .nativeStyleBridge()
+        }
+    }
+}
+
+/// One registration for every tab stack. The layout flag is read here so a Settings change reaches
+/// the next push without each caller threading the preference through.
+private struct TabRouteDestination: View {
+    var route: TabRoute
+    @AppStorage(NativeRouteResolver.layoutKey) private var nativeLayout = true
+
+    var body: some View {
+        switch NativeRouteResolver.presentation(for: route, nativeLayout: nativeLayout) {
+        case .score(let kind):
+            NativeScorePage(kind: kind)
+        case .journal:
+            NativeJournalView()
+        case .stressPage:
+            NativeStressPage()
+        case .metricPage(let key):
+            NativeMetricPage(key: key)
+        case .metricDetail:
+            if case .metric(let key) = route, let metric = MetricCatalog.all.first(where: { $0.key == key }) {
+                MetricDetailView(metric: metric)
+            } else {
+                HealthView()
+            }
+        case .health:
+            HealthView()
+        case .unchanged:
+            original(route)
+        }
+    }
+
+    @ViewBuilder
+    private func original(_ route: TabRoute) -> some View {
+        switch route {
+        case .fullDayChart: FullDayChartView()
+        case .metric(let key):
+            // Every caller passes a catalog key, so the fallback is theoretical; Health is the
+            // catch-all vitals surface. (Pre-#198 Trends fell back to the Explorer instead —
+            // unified here rather than carrying two never-taken branches.)
+            if let m = MetricCatalog.all.first(where: { $0.key == key }) {
+                MetricDetailView(metric: m)
+            } else {
+                HealthView()
+            }
+        case .metricSourced(let key, let source):
                 // Exact (key, source) resolution, order-independent. Fall back to the bare-key entry,
                 // then Health, so a stale route can never dead-end.
                 if let m = MetricCatalog.metric(key: key, source: source)
@@ -67,11 +160,11 @@ extension View {
             case .workouts: WorkoutsView()
             case .dataSources: DataSourcesView()
             case .stress: StressView()
+            case .journal: NativeJournalView()
             case .sleep: SleepView()
             case .health: HealthView()
-            case .hydration: HydrationView()
-            case .coupled: CoupledView()
-            }
+        case .hydration: HydrationView()
+        case .coupled: CoupledView()
         }
     }
 }

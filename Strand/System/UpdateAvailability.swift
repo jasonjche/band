@@ -139,6 +139,9 @@ enum UpdateWatch {
     /// path: it reports "couldn't check", because there a human is waiting on an answer.
     @MainActor
     static func runIfDue(currentVersion: String, sideloadHint: Bool, now: Date = Date()) {
+        // Personal builds are not the public NOOP release channel; nags would tell the user to
+        // replace this app with upstream.
+        guard !AppBrand.isPersonalBuild else { return }
         let d = UserDefaults.standard
         // Runs before every guard below, including the toggle: a stale announcement must not outlive the
         // feature that posted it (see `shouldPruneAnnouncement`).

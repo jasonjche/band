@@ -200,6 +200,10 @@ final class AppModel: ObservableObject {
 
     /// Import source currently writing to the local store, if any.
     @Published private var activeImportSource: DataSourceImportKind?
+    /// Short status while an import is running ("Importing…"). Nil when idle.
+    /// The WHOOP importer has no determinate progress callback, so the UI uses
+    /// an indeterminate `ProgressView` plus this line.
+    @Published var importPhase: String?
     /// Last WHOOP export import result surfaced in the WHOOP card.
     @Published var whoopImportSummary: String?
     /// Last Apple Health import result surfaced in the Apple Health card.
@@ -2450,6 +2454,7 @@ final class AppModel: ObservableObject {
 
     func importWhoop(url: URL) {
         beginImport(.whoop)
+        importPhase = String(localized: "Importing…")
         Task {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -2461,16 +2466,15 @@ final class AppModel: ObservableObject {
                 let local = try await Self.materializeForImport(url)
                 defer { local.cleanup() }
                 emitImportFileMeta(kind: .whoopExport, url: local.url)
+                importPhase = String(localized: "Importing sleeps…")
                 let summary = try await WhoopImporter.importExport(url: local.url, into: store,
                                                                    deviceId: deviceId, trace: importTraceSink())
                 try? await store.checkpointWAL()   // reclaim the WAL a bulk import grew (#590)
                 await repo.refresh()
-                let span: String
-                if let a = summary.earliest, let b = summary.latest {
-                    let f = DateFormatter(); f.dateFormat = "MMM yyyy"
-                    span = " · \(f.string(from: a))-\(f.string(from: b))"
-                } else { span = "" }
-                finishImport(.whoop, summary: "Imported \(summary.recordCount) records\(span)")
+                let days = summary.countsByCategory["cycles"] ?? 0
+                let sleeps = summary.countsByCategory["sleeps"] ?? 0
+                let workouts = summary.countsByCategory["workouts"] ?? 0
+                finishImport(.whoop, summary: "Imported \(days) days, \(sleeps) sleeps, \(workouts) workouts")
             } catch {
                 finishImport(.whoop, summary: "Import failed: \(error)", failed: true)
             }
@@ -2672,6 +2676,7 @@ final class AppModel: ObservableObject {
     /// Marks a source as importing and clears only that source's old status text + failure flag.
     private func beginImport(_ source: DataSourceImportKind) {
         activeImportSource = source
+        importPhase = String(localized: "Importing…")
         switch source {
         case .whoop:
             whoopImportSummary = nil
@@ -2698,6 +2703,7 @@ final class AppModel: ObservableObject {
             xiaomiImportSummary = summary
             xiaomiImportFailed = failed
         }
+        importPhase = nil
         activeImportSource = nil
     }
 }

@@ -160,18 +160,19 @@ struct TestCentreView: View {
         captures: [], questionnaire: [], liveReadout: [],
         capture: .toggle, includesScreenshot: false, requires5MG: false)
 
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+
     var body: some View {
-        ScreenScaffold(title: "Test Centre",
-                       subtitle: "Turn on a test for the thing that's wrong, wear the strap, then tap Report. All on \(Platform.deviceNounPhrase).") {
-            VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
-                domainModesCard.staggeredAppear(index: 0)
-                diagnosticToolsCard.staggeredAppear(index: 1)
-                if is5MG { rawDataCollectorCard.staggeredAppear(index: 2) }
-                if is5MG { fiveMGProtocolDiagnosticsCard.staggeredAppear(index: 3) }
-                if ouraPaired { ouraCard.staggeredAppear(index: 2) }
-                exportCard.staggeredAppear(index: 2)
-                experimentalAlgorithmsCard.staggeredAppear(index: 3)
+        Group {
+            #if os(iOS)
+            if nativeTodayEnabled {
+                nativeForm
+            } else {
+                legacyScaffold
             }
+            #else
+            legacyScaffold
+            #endif
         }
         .id(refreshToken)
         .onAppear {
@@ -200,7 +201,268 @@ struct TestCentreView: View {
         } message: {
             Text(infoMessage)
         }
+        .alert("Write to the ring?", isPresented: $showUserInfoConfirm) {
+            Button("Cancel", role: .cancel) { }
+            Button("Write", role: .destructive) {
+                guard let v = userInfoValueBytes else { return }
+                if model.sourceCoordinator?.ouraSource?.writeUserInfo(field: userInfoField, value: v) != true {
+                    infoTitle = "Not written"
+                    infoMessage = "No connected Oura ring. Connect the ring, then try again."
+                    showInfo = true
+                }
+            }
+        } message: {
+            Text("Sends \(userInfoFramePreview) to the ring. This changes ring-side config. Restore with the firmware default (height 176, weight 75, sex 2) or write zeros.")
+        }
+        .alert("Write to the ring?", isPresented: Binding(
+            get: { pendingFeatureWrite != nil },
+            set: { if !$0 { pendingFeatureWrite = nil } }
+        ), presenting: pendingFeatureWrite) { pending in
+            Button("Cancel", role: .cancel) { }
+            Button("Write", role: .destructive) {
+                if model.sourceCoordinator?.ouraSource?.writeFeatureMode(feature: pending.feature, mode: pending.mode) != true {
+                    infoTitle = "Not written"
+                    infoMessage = "No connected Oura ring. Connect the ring, then try again."
+                    showInfo = true
+                }
+            }
+        } message: { pending in
+            Text("Sends \(pending.framePreview) to the ring. Unvalidated on NOOP's own hardware (OURA_PROTOCOL.md \u{00A7}7.5). Watch the strap log for the follow-up feature-status read.")
+        }
     }
+
+    private var legacyScaffold: some View {
+        ScreenScaffold(title: "Test Centre",
+                       subtitle: "Turn on a test for the thing that's wrong, wear the strap, then tap Report. All on \(Platform.deviceNounPhrase).") {
+            VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
+                domainModesCard.staggeredAppear(index: 0)
+                diagnosticToolsCard.staggeredAppear(index: 1)
+                if is5MG { rawDataCollectorCard.staggeredAppear(index: 2) }
+                if is5MG { fiveMGProtocolDiagnosticsCard.staggeredAppear(index: 3) }
+                if ouraPaired { ouraCard.staggeredAppear(index: 2) }
+                exportCard.staggeredAppear(index: 2)
+                experimentalAlgorithmsCard.staggeredAppear(index: 3)
+            }
+        }
+    }
+
+    #if os(iOS)
+    private var nativeForm: some View {
+        Form {
+            Section {
+                let modes = TestCentreLayout.visibleModes(is5MG: is5MG)
+                ForEach(modes, id: \.id) { mode in
+                    TestModeRow(mode: mode, report: report)
+                }
+            } header: {
+                Text("Tests")
+            } footer: {
+                Text("Turn on a test, wear the strap, then report.")
+            }
+
+            nativeDiagnosticSection
+            if is5MG { nativeRawCollectorSection }
+            if is5MG { nativeFiveMGSection }
+            if ouraPaired { nativeOuraSections }
+            nativeExportSection
+            nativeExperimentalAlgorithmsSection
+        }
+        .appleSettingsChrome("Test Centre")
+    }
+
+    @ViewBuilder private var nativeOuraSections: some View {
+        Section {
+            Toggle("Onset Keying", isOn: $ouraOnsetKeying)
+            Toggle("Notification Mask ff", isOn: $ouraNotifyMaskFull)
+        } header: {
+            Text("Oura")
+        } footer: {
+            Text("Experimental ring options. Off by default.")
+        }
+
+        Section {
+            Picker("Field", selection: $userInfoField) {
+                Text("Height").tag(OuraUserInfoField.height)
+                Text("Sex").tag(OuraUserInfoField.gender)
+                Text("Weight").tag(OuraUserInfoField.weight)
+                Text("DOB (raw)").tag(OuraUserInfoField.dateOfBirth)
+            }
+            .onChange(of: userInfoField) { _ in prefillUserInfoValue() }
+            if userInfoField == .dateOfBirth {
+                TextField("18 hex chars (9 bytes)", text: $userInfoRawHex)
+            } else {
+                TextField("Value", text: $userInfoValueText)
+            }
+            LabeledContent("Frame", value: userInfoFramePreview)
+            Button("Write to Ring") { showUserInfoConfirm = true }
+                .disabled(userInfoValueBytes == nil)
+            Button("Write Zeros", role: .destructive) {
+                _ = model.sourceCoordinator?.ouraSource?.writeUserInfo(
+                    field: userInfoField,
+                    value: [UInt8](repeating: 0, count: userInfoField.valueByteCount))
+            }
+        } header: {
+            Text("User Info Write")
+        } footer: {
+            Text("Writes one 0x20 field. Nothing fires automatically.")
+        }
+        .onAppear { if userInfoValueText.isEmpty { prefillUserInfoValue() } }
+
+        Section {
+            nativeOuraFeatureRow(label: "SpO2", feature: OuraCommands.featureSpO2)
+            nativeOuraFeatureRow(label: "Real Steps", feature: OuraCommands.featureRealSteps)
+            nativeOuraFeatureRow(label: "Exercise HR", feature: OuraCommands.featureExerciseHR)
+            nativeOuraFeatureRow(label: "CVA PPG Sampler", feature: OuraCommands.featureCvaPpg)
+        } header: {
+            Text("Feature Mode")
+        } footer: {
+            Text("Enable or disable SpO2, steps, exercise HR, or CVA PPG.")
+        }
+    }
+
+    private func nativeOuraFeatureRow(label: LocalizedStringKey, feature: UInt8) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(ouraFeatureStatusLabel(feature))
+                .foregroundStyle(.secondary)
+            Button("Enable") { pendingFeatureWrite = PendingFeatureWrite(feature: feature, mode: 0x01) }
+            Button("Disable") { pendingFeatureWrite = PendingFeatureWrite(feature: feature, mode: 0x00) }
+        }
+    }
+
+    private var nativeExperimentalAlgorithmsSection: some View {
+        Section {
+            Toggle("HR-from-PPG Sub-Lag Interpolation", isOn: $ppgHrSubLagInterpEnabled)
+            Toggle("HRV Readiness (Plews/Altini)", isOn: $hrvReadinessEnabled)
+            if hrvReadinessEnabled {
+                nativeHrvReadinessRows
+            }
+        } header: {
+            Text("Experimental Algorithms")
+        } footer: {
+            Text("Research variants. Off by default. Non-clinical.")
+        }
+    }
+
+    @ViewBuilder private var nativeHrvReadinessRows: some View {
+        let result = HRVReadiness.evaluate(avgHrv: model.repo.days.map { $0.avgHrv })
+        if let r = result {
+            LabeledContent("HRV Readiness", value: hrvTierLabel(r.tier).word)
+            LabeledContent("7-Night Baseline", value: "\(Int(r.baseline7Ms.rounded())) ms")
+            LabeledContent("Normal Band", value: "\(Int(r.normalLowMs.rounded()))–\(Int(r.normalHighMs.rounded())) ms")
+            if r.overreachingWatch {
+                LabeledContent("Watch", value: "Overreaching")
+            }
+        } else {
+            LabeledContent("HRV Readiness", value: "Calibrating (\(hrvValidNightCount)/\(HRVReadiness.minNights))")
+        }
+    }
+
+    private var nativeDiagnosticSection: some View {
+        Section {
+            Button("Copy Strap Log") { PlatformPasteboard.copy(live.exportableLogText()) }
+            Button("Save Strap Log…") {
+                Task {
+                    let extra = await DebugDataDiagnostics.dynamicLines(repo: model.repo)
+                    FileExport.exportText(live.exportableLogText(extraHeaderLines: extra),
+                                          suggestedName: FileExport.timestampedName("noop-strap-log", ext: "txt"))
+                }
+            }
+            Button("Recalibrate Charge Baseline", role: .destructive) {
+                showRecalibrateConfirm = true
+            }
+            Button("Backfill Skin-Temp Absolutes") { runSkinTempBackfill() }
+                .disabled(skinTempBackfillRunning)
+            if skinTempBackfillRunning { ProgressView() }
+            if let status = skinTempBackfillStatus {
+                LabeledContent("Skin Temp", value: status)
+            }
+            Button("Copy Environment Dump") {
+                PlatformPasteboard.copy(live.exportableLogText())
+            }
+            if let identity = polarIdentity {
+                Toggle("Polar Debug Logging", isOn: $polarDebugLogging)
+                Text(identity).foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Diagnostics")
+        }
+    }
+
+    private var nativeRawCollectorSection: some View {
+        Section {
+            NavigationLink("Raw Data Collector") { RawDataCollectorView() }
+            LabeledContent("Strap", value: live.connected ? "Connected" : "Not connected")
+        } header: {
+            Text("Raw Data")
+        } footer: {
+            Text("Bounded 100 Hz motion sessions. Normal sync is unchanged.")
+        }
+    }
+
+    private var nativeFiveMGSection: some View {
+        Section {
+            Toggle("Protocol Probes", isOn: $puffinExperiments)
+            Toggle("Broadcast Heart Rate from Strap", isOn: $broadcastHrEnabled)
+                .onChangeCompat(of: broadcastHrEnabled) { model.ble.setBroadcastHr($0) }
+            Toggle("Legacy R22 Experiment", isOn: $deepDataEnabled)
+            if deepDataEnabled {
+                Button("Send R22 Enable Sequence") { model.ble.enableWhoop5DeepData() }
+                    .disabled(!live.encryptedBond || !live.worn)
+            }
+            Button("Clear R22 Flags on Strap") { model.ble.disableWhoop5DeepData() }
+                .disabled(!live.encryptedBond || live.r22DisableReport == BLEManager.deviceConfigProbeWaiting)
+            if let result = live.r22DisableReport {
+                Text(result).foregroundStyle(.secondary)
+            }
+            Toggle("MG ECG Raw-Data Gate", isOn: $ecgRawDataEnabled)
+            if ecgRawDataEnabled {
+                Button("Gate On") { model.ble.setEcgRawDataGate(true) }
+                    .disabled(!live.encryptedBond || live.whoop5Variant != Whoop5Variant.mg.label)
+                Button("Gate Off") { model.ble.setEcgRawDataGate(false) }
+                    .disabled(!live.encryptedBond || live.whoop5Variant != Whoop5Variant.mg.label)
+                if let result = live.ecgRawDataGate {
+                    Text(result.summary).foregroundStyle(.secondary)
+                }
+            }
+            Toggle("Passive History Trace", isOn: $puffinCapture)
+        } header: {
+            Text("5/MG Protocol")
+        } footer: {
+            Text("Developer probes. None of these are required for normal recording.")
+        }
+    }
+
+    private var nativeExportSection: some View {
+        Section {
+            Button("Report a Bug with My Log") {
+                report.start(mode: TestCentreView.masterReportMode, live: live, repo: model.repo)
+            }
+            if let status = report.lastStatus {
+                LabeledContent("Report", value: status)
+            }
+            if let reportText = report.copyableReport {
+                Button("Copy report.txt") { PlatformPasteboard.copy(reportText) }
+            }
+            Toggle("Daily Auto-Export", isOn: $debugExportOn)
+                .onChangeCompat(of: debugExportOn) { on in ScheduledDebugExport.setEnabled(on) }
+            if debugExportOn {
+                DatePicker("Time of Day", selection: debugExportTimeBinding, displayedComponents: .hourAndMinute)
+                Picker("Keep Last", selection: $debugExportKeep) {
+                    ForEach(ScheduledDebugExport.keepOptions, id: \.self) { n in Text("\(n)").tag(n) }
+                }
+                .onChangeCompat(of: debugExportKeep) { n in ScheduledDebugExport.keepCount = n }
+                Button("Run Now") { runScheduledExportNow() }
+            }
+            Button("Clear Scheduled Exports", role: .destructive) {
+                showClearExportsConfirm = true
+            }
+        } header: {
+            Text("Export")
+        }
+    }
+    #endif
 
     // MARK: - Section 1: Domain test modes (rendered from the registry projection)
 
@@ -489,19 +751,6 @@ struct TestCentreView: View {
             .font(StrandFont.body).tint(StrandPalette.accent)
         }
         .onAppear { if userInfoValueText.isEmpty { prefillUserInfoValue() } }
-        .alert("Write to the ring?", isPresented: $showUserInfoConfirm) {
-            Button("Cancel", role: .cancel) { }
-            Button("Write", role: .destructive) {
-                guard let v = userInfoValueBytes else { return }
-                if model.sourceCoordinator?.ouraSource?.writeUserInfo(field: userInfoField, value: v) != true {
-                    infoTitle = "Not written"
-                    infoMessage = "No connected Oura ring. Connect the ring, then try again."
-                    showInfo = true
-                }
-            }
-        } message: {
-            Text("Sends \(userInfoFramePreview) to the ring. This changes ring-side config. Restore with the firmware default (height 176, weight 75, sex 2) or write zeros.")
-        }
     }
 
     /// The `SetFeatureMode` WRITE experiment (`2f 03 22 <id> <mode>`) — hardware-CONFIRMED 2026-09-11:
@@ -530,21 +779,6 @@ struct TestCentreView: View {
             ouraFeatureEnableRow(label: "Real steps", feature: OuraCommands.featureRealSteps)
             ouraFeatureEnableRow(label: "Exercise HR", feature: OuraCommands.featureExerciseHR)
             ouraFeatureEnableRow(label: "CVA PPG sampler", feature: OuraCommands.featureCvaPpg)
-        }
-        .alert("Write to the ring?", isPresented: Binding(
-            get: { pendingFeatureWrite != nil },
-            set: { if !$0 { pendingFeatureWrite = nil } }
-        ), presenting: pendingFeatureWrite) { pending in
-            Button("Cancel", role: .cancel) { }
-            Button("Write", role: .destructive) {
-                if model.sourceCoordinator?.ouraSource?.writeFeatureMode(feature: pending.feature, mode: pending.mode) != true {
-                    infoTitle = "Not written"
-                    infoMessage = "No connected Oura ring. Connect the ring, then try again."
-                    showInfo = true
-                }
-            }
-        } message: { pending in
-            Text("Sends \(pending.framePreview) to the ring. Unvalidated on NOOP's own hardware (OURA_PROTOCOL.md \u{00A7}7.5). Watch the strap log for the follow-up feature-status read.")
         }
     }
 

@@ -26,16 +26,19 @@ struct BackupSyncView: View {
     @State private var pendingRestore: FolderBackup.Snapshot?
     @State private var confirmRestore = false
 
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+
     var body: some View {
-        ScreenScaffold(
-            title: "Backup & Sync",
-            subtitle: "Save a full backup to a folder you choose - point it at Google Drive, iCloud or Dropbox for off-device sync."
-        ) {
-            VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
-                folderCard
-                autoCard
-                restoreCard
+        Group {
+            #if os(iOS)
+            if nativeTodayEnabled {
+                nativeForm
+            } else {
+                legacyScaffold
             }
+            #else
+            legacyScaffold
+            #endif
         }
         // Result of a backup or a restore.
         .alert(alertTitle, isPresented: $showAlert) {
@@ -60,6 +63,73 @@ struct BackupSyncView: View {
                 : "Replace all current data with the backup \(snap.name)? This cannot be undone.")
         }
     }
+
+    private var legacyScaffold: some View {
+        ScreenScaffold(
+            title: "Backup & Sync",
+            subtitle: "Save a full backup to a folder you choose - point it at Google Drive, iCloud or Dropbox for off-device sync."
+        ) {
+            VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
+                folderCard
+                autoCard
+                restoreCard
+            }
+        }
+    }
+
+    #if os(iOS)
+    private var nativeForm: some View {
+        Form {
+            Section {
+                LabeledContent("Folder", value: folderLabel ?? "None")
+                Button(folderLabel == nil ? "Choose Folder" : "Change Folder") { chooseFolder() }
+                    .disabled(busy)
+                if !FolderBackup.useInternalFolder {
+                    Button("Use App Folder") { useNoopFolder() }
+                        .disabled(busy)
+                }
+            } header: {
+                Text("Folder")
+            } footer: {
+                Text("Backups are unencrypted ZIP files. Only point this at a folder you trust.")
+            }
+
+            Section {
+                Toggle("Daily Auto-Backup", isOn: $auto)
+                    .disabled(folderLabel == nil)
+                    .onChangeCompat(of: auto) { on in FolderBackup.autoEnabled = on }
+                Picker("Keep Last", selection: $keep) {
+                    ForEach(FolderBackup.keepOptions, id: \.self) { n in
+                        Text("\(n)").tag(n)
+                    }
+                }
+                .onChangeCompat(of: keep) { n in FolderBackup.keepCount = n }
+                LabeledContent("Last Backup", value: lastMs > 0 ? relativeTime(lastMs) : "Never")
+                if busy {
+                    ProgressView("Working…")
+                }
+                Button("Back Up Now") { backupNow() }
+                    .disabled(folderLabel == nil || busy)
+            } header: {
+                Text("Schedule")
+            } footer: {
+                if auto, folderLabel != nil, lastMs > 0,
+                   BackupSync.isBackupStale(lastBackupMs: lastMs,
+                                            nowMs: Int(Date().timeIntervalSince1970 * 1000.0)) {
+                    Text("Auto-backup hasn't run in a few days. Check the folder is still available.")
+                }
+            }
+
+            Section {
+                Button("Restore from a Backup…", role: .destructive) { openRestorePicker() }
+                    .disabled(folderLabel == nil || busy)
+            } footer: {
+                Text("Restoring replaces all current data. This cannot be undone.")
+            }
+        }
+        .appleSettingsChrome("Backup & Sync")
+    }
+    #endif
 
     // MARK: - Cards
 

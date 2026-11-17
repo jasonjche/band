@@ -1,0 +1,169 @@
+{
+  "description": "WHOOP screens NOOP copies, and the ones we skip. Shots refer to docs/whoop-ia.md.",
+  "copy": [
+    {
+      "id": "home_top",
+      "title": "Home — rings and My Day",
+      "whoop_shots": ["9417"],
+      "must_match": "Date stepper, Sleep / Recovery / Strain rings, My Day sleep and activity rows.",
+      "whoop_reuse": ["00_home"],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"shot": "p0"}],
+      "noop_steps": [{"open": true}, {"shot": "p0"}]
+    },
+    {
+      "id": "home_mid",
+      "title": "Home — journal and dashboard",
+      "whoop_shots": ["9418"],
+      "must_match": "Journal week checks, dashboard rows with current, prior, and delta.",
+      "whoop_reuse": ["00_home"],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"swipe": "up"}, {"shot": "p1"}],
+      "noop_steps": [{"open": true}, {"swipe": "up"}, {"shot": "p1"}]
+    },
+    {
+      "id": "home_bottom",
+      "title": "Home — Stress and Strain & Recovery",
+      "whoop_shots": ["9419", "9420"],
+      "must_match": "Stress Monitor 0–3 intraday. One dual-axis Strain 0–21 / Recovery 0–100 week chart.",
+      "whoop_reuse": ["00_home"],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"swipe": "up"}, {"swipe": "up"}, {"shot": "p2"}],
+      "noop_steps": [{"open": true}, {"swipe": "up"}, {"swipe": "up"}, {"shot": "p2"}]
+    },
+    {
+      "id": "sleep_score",
+      "title": "Sleep — ring and contributors",
+      "whoop_shots": ["9428"],
+      "must_match": "Sleep Performance ring, Hours vs Needed, Consistency, Efficiency, High Sleep Stress.",
+      "whoop_reuse": ["10_sleep"],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"tap": ["SLEEP", "Sleep"]}, {"shot": "p0"}],
+      "noop_steps": [{"open": true}, {"tap_contains": ["SLEEP"]}, {"shot": "p0"}]
+    },
+    {
+      "id": "sleep_last_night",
+      "title": "Sleep — last night",
+      "whoop_shots": ["9429"],
+      "must_match": "Hours of sleep, overnight HR if samples exist, Light/Deep/REM vs typical, restorative.",
+      "whoop_reuse": ["10_sleep", "11_sleep"],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"tap": ["SLEEP", "Sleep"]}, {"swipe": "up"}, {"shot": "p1"}],
+      "noop_steps": [{"open": true}, {"tap_contains": ["SLEEP"]}, {"swipe": "up"}, {"shot": "p1"}]
+    },
+    {
+      "id": "sleep_week",
+      "title": "Sleep — weekly trends",
+      "whoop_shots": ["9430", "9431", "9432", "9433", "9434", "9435", "9436", "9437"],
+      "must_match": "Weekly bars for series we store: performance, hours, efficiency. Dash or omit the rest.",
+      "whoop_reuse": ["11_sleep", "12_sleep"],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"tap": ["SLEEP", "Sleep"]}, {"swipe": "up"}, {"swipe": "up"}, {"shot": "p2"}],
+      "noop_steps": [{"open": true}, {"tap_contains": ["SLEEP"]}, {"swipe": "up"}, {"swipe": "up"}, {"shot": "p2"}]
+    },
+    {
+      "id": "recovery_score",
+      "title": "Recovery — ring and contributors",
+      "whoop_shots": ["9438"],
+      "must_match": "Recovery ring, HRV, resting HR, respiratory rate, sleep performance, vs last 30 days.",
+      "whoop_reuse": ["20_recovery"],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"tap": ["RECOVERY", "Recovery"]}, {"shot": "p0"}],
+      "noop_steps": [{"open": true}, {"tap_contains": ["RECOVERY"]}, {"shot": "p0"}]
+    },
+    {
+      "id": "recovery_week",
+      "title": "Recovery — weekly trends",
+      "whoop_shots": ["9439", "9440", "9441"],
+      "must_match": "Recovery as 0–100 bars colored by band, then HRV / RHR / respiratory as lines.",
+      "whoop_reuse": ["21_recovery"],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"tap": ["RECOVERY", "Recovery"]}, {"swipe": "up"}, {"shot": "p1"}],
+      "noop_steps": [{"open": true}, {"tap_contains": ["RECOVERY"]}, {"swipe": "up"}, {"shot": "p1"}]
+    },
+    {
+      "id": "strain_score",
+      "title": "Strain — ring and contributors",
+      "whoop_shots": ["9442"],
+      "must_match": "Strain 0–21 ring, zones 1–3, zones 4–5, strength time, steps. Dash zones/strength if missing.",
+      "whoop_reuse": ["30_strain"],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"tap": ["STRAIN", "Strain"]}, {"shot": "p0"}],
+      "noop_steps": [{"open": true}, {"tap_contains": ["STRAIN"]}, {"shot": "p0"}]
+    },
+    {
+      "id": "strain_week",
+      "title": "Strain — activities and weekly",
+      "whoop_shots": ["9443", "9444", "9445"],
+      "must_match": "Today's activities, then weekly bars for strain, steps, calories when stored.",
+      "whoop_reuse": ["31_strain"],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"tap": ["STRAIN", "Strain"]}, {"swipe": "up"}, {"shot": "p1"}],
+      "noop_steps": [{"open": true}, {"tap_contains": ["STRAIN"]}, {"swipe": "up"}, {"shot": "p1"}]
+    },
+    {
+      "id": "activity",
+      "title": "Activity detail",
+      "whoop_shots": ["9446", "9447", "9448", "9449", "9450", "9451", "9452", "9453", "9454"],
+      "must_match": "Strain, time, zones, key stats. Map only when a route exists.",
+      "whoop_reuse": [],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"tap": ["ADD ACTIVITY"], "optional": true}, {"shot": "p0"}],
+      "noop_steps": [{"open": true}, {"tap_contains": ["SLEEP", "activity", "Activity"], "optional": true}, {"shot": "p0"}]
+    },
+    {
+      "id": "journal",
+      "title": "Journal",
+      "whoop_shots": ["9458", "9459"],
+      "must_match": "Home journal opens this. Week days, yes/no behaviors, notes.",
+      "whoop_reuse": [],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"tap": ["MY JOURNAL", "Journal"], "optional": true}, {"shot": "p0"}],
+      "noop_steps": [{"open": true}, {"tap_contains": ["My Journal", "JOURNAL"]}, {"shot": "p0"}]
+    },
+    {
+      "id": "stress",
+      "title": "Stress Monitor",
+      "whoop_shots": ["9464"],
+      "must_match": "Gauge 0–3, LOW/MED/HIGH, day chart with night and workouts.",
+      "whoop_reuse": [],
+      "whoop_steps": [{"launch": true}, {"home": true}, {"tap": ["STRESS MONITOR", "Stress Monitor"]}, {"shot": "p0"}],
+      "noop_steps": [{"open": true}, {"swipe": "up"}, {"tap_contains": ["Stress", "STRESS"]}, {"shot": "p0"}]
+    },
+    {
+      "id": "settings",
+      "title": "Settings / More",
+      "whoop_shots": ["9427", "9455"],
+      "must_match": "Grouped real controls (units, strap, notifications). No membership commerce.",
+      "whoop_reuse": ["80_more"],
+      "whoop_steps": [{"launch": true}, {"tap": ["More"]}, {"shot": "p0"}],
+      "noop_steps": [{"open": true}, {"tap_contains": ["More"]}, {"shot": "p0"}]
+    }
+  ],
+  "skip": [
+    {
+      "id": "healthspan",
+      "title": "Health / WHOOP Age",
+      "whoop_shots": ["9421", "9422", "9423", "9424", "9425", "9426"],
+      "reason": "WHOOP Age / Healthspan. Do not invent an age. Skip Galleri."
+    },
+    {
+      "id": "humans",
+      "title": "Humans",
+      "whoop_shots": [],
+      "reason": "Community / social graph. Out of scope."
+    },
+    {
+      "id": "coach",
+      "title": "Coach",
+      "whoop_shots": [],
+      "reason": "Chat coach. Out of scope for Native Home."
+    },
+    {
+      "id": "membership",
+      "title": "Membership and shop",
+      "whoop_shots": [],
+      "reason": "Commerce. Not a screen we build."
+    },
+    {
+      "id": "behavior_insights",
+      "title": "Behavior Insights",
+      "whoop_shots": ["9456", "9457"],
+      "reason": "Skip until journal correlations exist."
+    },
+    {
+      "id": "customize",
+      "title": "Customize Dashboard",
+      "whoop_shots": ["9460", "9461", "9462", "9463"],
+      "reason": "Optional. Default Home pins already follow 9418."
+    }
+  ]
+}

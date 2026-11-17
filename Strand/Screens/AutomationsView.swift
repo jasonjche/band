@@ -47,28 +47,45 @@ struct AutomationsView: View {
     @AppStorage(HapticPrefs.liveSession) private var liveSessionHaptic = true
     @AppStorage(HapticPrefs.workout) private var workoutHaptic = true
 
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+
     var body: some View {
+        Group {
+            #if os(iOS)
+            if nativeTodayEnabled {
+                Form {
+                    automationsContent
+                }
+                .appleSettingsChrome("Automations")
+            } else {
+                automationsScaffold
+            }
+            #else
+            automationsScaffold
+            #endif
+        }
+    }
+
+    @ViewBuilder private var automationsContent: some View {
+        #if os(iOS)
+        wristAlertsCard
+        #endif
+        doubleTapCard
+        hapticsCard
+        wearCard
+        coachingCard
+        inactivityCard
+        illnessCard
+        healthInsightsCard
+        batteryCard
+        strainTargetCard
+    }
+
+    private var automationsScaffold: some View {
         ScreenScaffold(title: "Automations",
                        subtitle: "Make the strap do things: tap to act, walk away to lock, train by feel.",
-                       // PERF: the cards are direct children of the scaffold column, so the LazyVStack
-                       // path (byte-identical layout) genuinely builds the off-screen cards on demand
-                       // instead of constructing all eight/nine + their toggle subtrees up-front.
                        lazy: true) {
-            #if os(iOS)
-            wristAlertsCard
-            #endif
-            doubleTapCard
-            hapticsCard
-            wearCard
-            coachingCard
-            // #766: the strap's silent wake-alarm card used to sit here, which let users conflate it with
-            // the wind-down reminder. It's moved to the dedicated Alarms screen (SmartAlarmView) so every
-            // wake/wind-down control lives in one place. Automations is just inputs-to-actions now.
-            inactivityCard
-            illnessCard
-            healthInsightsCard
-            batteryCard
-            strainTargetCard
+            automationsContent
         }
     }
 
@@ -531,7 +548,17 @@ private struct Section2<Content: View>: View {
     /// faint one — so an active automation reads at a glance. Presentation-only.
     var active: Bool = false
     @ViewBuilder var content: () -> Content
+    @Environment(\.appleSettingsStyle) private var appleSettingsStyle
     var body: some View {
+        if appleSettingsStyle {
+            Section {
+                content()
+            } header: {
+                Text(title)
+            } footer: {
+                if let blurb { Text(blurb) }
+            }
+        } else {
         StrandCard(padding: 20, tint: StrandPalette.accent) {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -557,12 +584,17 @@ private struct Section2<Content: View>: View {
                 content()
             }
         }
+        }
     }
 }
 
 private struct ToggleRow: View {
     let label: String; let help: String; @Binding var isOn: Bool
+    @Environment(\.appleSettingsStyle) private var appleSettingsStyle
     var body: some View {
+        if appleSettingsStyle {
+            Toggle(label, isOn: $isOn)
+        } else {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label).font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
@@ -574,5 +606,6 @@ private struct ToggleRow: View {
                 .accessibilityLabel(label)
         }
         .frame(minHeight: 42).padding(.vertical, 4)
+        }
     }
 }
