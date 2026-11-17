@@ -220,7 +220,7 @@ struct NativeGallerySnapshot {
             Section(name: "bar-chart", title: "Weekly Bar Chart", view: AnyView(barChart)),
             Section(name: "line-chart", title: "Weekly Line Chart", view: AnyView(lineChart)),
             Section(name: "dual-chart", title: "Strain & Recovery", view: AnyView(dualChart)),
-            Section(name: "no-data", title: "No Data", view: AnyView(noData)),
+            Section(name: "no-data", title: "No data", view: AnyView(noData)),
             Section(name: "inset-row", title: "Inset Row", view: AnyView(insetRow)),
             Section(name: "last-night", title: "Last Night", view: AnyView(lastNight)),
             Section(name: "sleep-week", title: "Sleep Week", view: AnyView(sleepWeek)),
@@ -363,7 +363,7 @@ struct NativeGallerySnapshot {
 
     private static var noData: some View {
         NativeChrome.panel {
-            NativeHeroValue(value: "No Data", date: "Nov 16, 2026")
+            NativeHeroValue(value: "No data", date: "Nov 16, 2026")
         }
     }
 

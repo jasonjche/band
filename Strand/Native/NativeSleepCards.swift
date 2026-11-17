@@ -64,6 +64,7 @@ struct NativeSleepHoursVsNeededCard: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Hours vs. Needed")
         .accessibilityAddTraits(onOpen == nil ? [] : .isButton)
+        .accessibilityAction { onOpen?() }
     }
 }
 
@@ -263,9 +264,12 @@ struct NativeSleepConsistencyChart: View {
 
         if #available(iOS 17.0, macOS 14.0, *), let selectedKey {
             chart.chartXSelection(value: selectedKey)
+                .nativeChartButton(action: onOpen)
                 .onTapGesture { onOpen?() }
         } else {
-            chart.onTapGesture { onOpen?() }
+            chart
+                .nativeChartButton(action: onOpen)
+                .onTapGesture { onOpen?() }
         }
     }
 }
@@ -312,6 +316,7 @@ struct NativeSleepEfficiencyCard: View {
         .contentShape(Rectangle())
         .onTapGesture { onOpen?() }
         .accessibilityAddTraits(onOpen == nil ? [] : .isButton)
+        .accessibilityAction { onOpen?() }
     }
 }
 
@@ -478,6 +483,7 @@ struct NativeSleepStressPlot: View {
                 marks
             }
         }
+        .nativeChartButton(action: onOpen)
         .onTapGesture { onOpen?() }
     }
 }
@@ -557,7 +563,7 @@ struct NativeSleepDualLineCard: View {
         }
         .font(.footnote.weight(.semibold))
         .contentShape(Rectangle())
-        .onTapGesture { onOpen?() }
+        .nativeOpenButton(action: onOpen)
     }
 
     @ViewBuilder private var hero: some View {
@@ -655,6 +661,7 @@ struct NativeSleepDualLineCard: View {
         }
         .accessibilityLabel("Hours slept and hours needed")
         .modifier(NativeSleepDaySelect(selected: $selectedKey))
+        .nativeChartButton(action: onOpen)
         .onTapGesture { onOpen?() }
     }
 }
@@ -804,6 +811,7 @@ struct NativeSleepTimeInBedWeekCard: View {
         }
         .accessibilityLabel("Time in bed, last 7 days")
         .modifier(NativeSleepDaySelect(selected: $selectedKey))
+        .nativeChartButton(action: onOpen)
         .onTapGesture { onOpen?() }
     }
 }
@@ -852,6 +860,7 @@ struct NativeSleepRestorativeWeekCard: View {
         .onTapGesture { onOpen?() }
         .accessibilityLabel("Restorative Sleep")
         .accessibilityAddTraits(onOpen == nil ? [] : .isButton)
+        .accessibilityAction { onOpen?() }
     }
 }
 
@@ -925,7 +934,7 @@ struct NativeSleepRestorativeChart: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         } else {
-            NativeHeroValue(caption: "Average", value: "No Data")
+            NativeHeroValue(caption: "Average", value: "No data")
         }
     }
 

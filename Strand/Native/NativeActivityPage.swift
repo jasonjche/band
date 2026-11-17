@@ -632,14 +632,18 @@ struct NativeActivityBody: View {
                 }
                 .padding(.bottom, 4)
                 ForEach(model.zones) { zone in
-                    NativeActivityZoneRow(
-                        zone: zone,
-                        totalMinutes: totalZoneMinutes,
-                        isSelected: selectedZone == zone.number,
-                        dimmed: selectedZone != nil && selectedZone != zone.number
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture { selectZone(NativeActivityPageLogic.toggleZone(selectedZone, tapped: zone.number)) }
+                    Button {
+                        selectZone(NativeActivityPageLogic.toggleZone(selectedZone, tapped: zone.number))
+                    } label: {
+                        NativeActivityZoneRow(
+                            zone: zone,
+                            totalMinutes: totalZoneMinutes,
+                            isSelected: selectedZone == zone.number,
+                            dimmed: selectedZone != nil && selectedZone != zone.number
+                        )
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -914,6 +918,7 @@ private struct NativeActivityHRPlot: View {
     var selectedZone: Int?
     var scrub: NativeScopeScrub
     var onClearZone: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var timeBinding: Binding<Date?> {
         Binding(
@@ -1012,12 +1017,13 @@ private struct NativeActivityHRPlot: View {
         .chartOverlay { proxy in
             NativeActivityHRMarker(proxy: proxy, points: points, zoneSet: zoneSet, scrub: scrub)
         }
+        .nativeChartButton(action: selectedZone == nil ? nil : onClearZone)
         .onTapGesture { if selectedZone != nil { onClearZone() } }
         .accessibilityLabel("Heart rate")
         .accessibilityValue(selectedZone.map { "Showing zone \($0)" } ?? "Full workout")
         .accessibilityHint(selectedZone == nil ? "" : "Clears the zone highlight")
         .accessibilityAddTraits(selectedZone == nil ? AccessibilityTraits() : .isSelected)
-        .animation(.easeInOut(duration: 0.18), value: selectedZone)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: selectedZone)
     }
 }
 

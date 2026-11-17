@@ -241,7 +241,7 @@ enum NativeDay {
             days: days, sleeps: sleeps, workouts: workouts, importedSleep: importedSleep
         )
         let todayScore = scores.byDay[todayKey]
-        // A day shows only its own night. A day the strap was not worn reads "No Data";
+        // A day shows only its own night. A day the strap was not worn reads "No data";
         // it never borrows an older night's sleep, HRV or recovery.
         let recoveryKey: String? = todayKey
         let hrvDay = today
@@ -715,7 +715,7 @@ enum NativeHealthRange {
 
         /// Home tile headline. Green path is only "Within Range"; any out-of-range metric is red.
         var tileHeadline: String {
-            guard measured > 0 else { return "No Data" }
+            guard measured > 0 else { return "No data" }
             if judged == 0 { return "Building baseline" }
             if outside == 0 { return "Within Range" }
             if outside == 1 { return "1 metric outside range" }

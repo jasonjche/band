@@ -196,7 +196,7 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 48), 0, accuracy: 0.01)
     }
 
-    func testWorkoutBucketsAreOmittedFromTheSeries() {
+    func testWorkoutBucketsKeepTheLineRunning() {
         let t0 = 1_700_000_000
         let buckets = [
             HRBucket(ts: t0, bpm: 72, minBpm: 72, maxBpm: 72),
@@ -210,10 +210,11 @@ final class NativeHomeLayoutTests: XCTestCase {
             baselines: .fallback,
             workouts: [(start: start, end: end)]
         )
-        XCTAssertEqual(hours.count, 2)
-        XCTAssertEqual(hours[0].time.timeIntervalSince1970, TimeInterval(t0), accuracy: 0.01)
-        XCTAssertEqual(hours[1].time.timeIntervalSince1970, TimeInterval(t0 + 600), accuracy: 0.01)
-        XCTAssertFalse(hours.contains { $0.value >= 2 })
+        // WHOOP draws stress through a workout (high is expected) and labels the span.
+        XCTAssertEqual(hours.count, 3)
+        XCTAssertEqual(hours[1].time.timeIntervalSince1970, TimeInterval(t0 + 300), accuracy: 0.01)
+        XCTAssertEqual(hours[1].value, NativeHomeCharts.stressValue(bpm: 150), accuracy: 0.01)
+        XCTAssertEqual(hours[2].time.timeIntervalSince1970, TimeInterval(t0 + 600), accuracy: 0.01)
         XCTAssertEqual(
             NativeHomeCharts.stressLevel(hours: hours, days: [], todayKey: "2023-11-14") ?? -1,
             NativeHomeCharts.stressValue(bpm: 72),
@@ -322,11 +323,12 @@ final class NativeHomeLayoutTests: XCTestCase {
         }
         let hours = NativeHomeCharts.stressSeries(buckets: buckets)
         XCTAssertEqual(hours.count, 11)
-        XCTAssertEqual(hours[5].value, 0.6, accuracy: 0.05)
+        // 15-minute centred mean; the 11-minute run averages the 3.0 spike over 11 minutes.
+        XCTAssertEqual(hours[5].value, 3.0 / 11, accuracy: 0.05)
         XCTAssertLessThan(hours[5].value, 1)
     }
 
-    func testStressTimelineMergesWalkingExclusionsWithoutDrawingThemAsHours() {
+    func testStressTimelineMergesWalkingExclusionsAndKeepsTheLineThroughThem() {
         let t0 = 1_700_000_000
         let buckets = (0..<3).map {
             HRBucket(ts: t0 + $0 * 60, bpm: 80, minBpm: 80, maxBpm: 80)
@@ -340,8 +342,9 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertEqual(walks.count, 1)
         XCTAssertEqual(walks[0].startTs, t0)
         XCTAssertEqual(walks[0].endTs, t0 + 13 * 60)
-        XCTAssertEqual(timeline.hours.count, 1)
-        XCTAssertEqual(timeline.hours[0].time.timeIntervalSince1970, TimeInterval(t0 + 120), accuracy: 0.01)
+        // WHOOP-style: the span is labelled, and the line still runs through it.
+        XCTAssertEqual(timeline.hours.count, 3)
+        XCTAssertEqual(timeline.hours[0].time.timeIntervalSince1970, TimeInterval(t0), accuracy: 0.01)
     }
 
     func testStressMonitorMergesActivitiesAndDownsamplesDraw() {
@@ -469,7 +472,7 @@ final class NativeHomeLayoutTests: XCTestCase {
 
     func testDateStepperChevronsFitBesideStrapOnIPhone15() {
         let strapBudget: CGFloat = 96
-        XCTAssertEqual(HomeDateStepperLayout.chevronSize, 32, accuracy: 0.5)
+        XCTAssertEqual(HomeDateStepperLayout.chevronSize, 44, accuracy: 0.5)
         XCTAssertEqual(HomeDateStepperLayout.hitHeight, 44, accuracy: 0.5)
         XCTAssertLessThanOrEqual(
             HomeDateStepperLayout.streakWidth

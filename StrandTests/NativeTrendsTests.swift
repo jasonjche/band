@@ -105,12 +105,12 @@ final class NativeTrendsTests: XCTestCase {
         XCTAssertTrue(NativeMetricScope.pickerCases(for: "hrv").map(\.label).contains("6M"))
     }
 
-    func testMoreListLeadsWithTrends() {
-        XCTAssertEqual(NativeMoreItem.allCases.first, .trends)
-        XCTAssertEqual(NativeMoreItem.trends.title, "Trends")
-        XCTAssertEqual(NativeMoreItem.trends.subtitle, "All metrics over weeks and months")
-        XCTAssertEqual(NativeMoreItem.trends.icon, "chart.xyaxis.line")
-        XCTAssertEqual(NativeMoreItem.allCases.filter { $0 == .trends }.count, 1)
+    func testHealthTabIncludesTrends() {
+        XCTAssertFalse(NativeMoreItem.titles.contains("Trends"))
+        XCTAssertEqual(NativeHealthItem.trends.title, "Trends")
+        XCTAssertEqual(NativeHealthItem.trends.subtitle, "All metrics over weeks and months")
+        XCTAssertEqual(NativeHealthItem.trends.icon, "chart.xyaxis.line")
+        XCTAssertEqual(NativeHealthItem.allCases.filter { $0 == .trends }.count, 1)
     }
 
     func testHRVNightsWindowCapsAtTheSixtyDayBaseline() {

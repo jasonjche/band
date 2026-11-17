@@ -46,8 +46,8 @@ struct RootTabView: View {
     /// when a hub row deep-links to it via NavRouter. nil = closed.
     @State private var routedPillar: NavRouter.Destination?
     /// Selected tab — bound so tab switches can crossfade (README §Motion: ~240ms opacity swap
-    /// between tab roots, calm easing). Defaults to Today.
-    @State private var selectedTab: Int = 0
+    /// between tab roots, calm easing). Defaults to Today. Tags: Home 0, Health 1, More 4.
+    @State private var selectedTab: Int = NativeRootTab.home.rawValue
     /// TabView re-sets the current tag when a row inside More is tapped. That would call
     /// `reselectTab` and clear the path we just appended. Ignore the next duplicate set.
     @State private var suppressTabReselect = false
@@ -55,13 +55,16 @@ struct RootTabView: View {
     /// that tab's stack to its root (#135) by clearing its path — an animated pop that leaves the
     /// root view alive, so an at-root re-tap keeps scroll position and never re-runs `.task`
     /// (#198; the #197 resetID/`.id()` rebuild reset both). Requires the tab roots' first-hop
-    /// links to push `TabRoute`/`MoreDestination` VALUES — closure-destination links bypass the path.
-    @State private var tabPaths: [NavigationPath] = Array(repeating: NavigationPath(), count: 5)
+    /// links to push `TabRoute`/`NativeMoreItem`/`NativeHealthItem` VALUES — closure-destination
+    /// links bypass the path.
+    @State private var tabPaths: [NavigationPath] = Array(repeating: NavigationPath(), count: NativeRootTab.pathSlotCount)
     /// One scroll-to-top token per tab. Bumped when the user re-taps the active tab while it's ALREADY
     /// at its root — the other half of the iOS convention #197/#198 left unserved (an at-root re-tap was
     /// a no-op). Threaded into each tab's root via `\.scrollToTopSignal`; ScreenScaffold / LiquidTodayView
     /// scroll to their top anchor when their tab's token changes.
-    @State private var scrollTop: [Int] = Array(repeating: 0, count: 5)
+    @State private var scrollTop: [Int] = Array(repeating: 0, count: NativeRootTab.pathSlotCount)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(NativeStyle.storageKey) private var nativeStyleRaw = NativeStyle.apple.rawValue
     /// Which More-tab groups are expanded (S2). Insights + Body stay open at rest; Data + App collapse to
     /// just their header until tapped. Persisted (#860 item 2): the user's open/closed choice must SURVIVE
     /// leaving and re-entering the More tab (and relaunch), not reset to the seed every visit. Backed by an
@@ -87,6 +90,15 @@ struct RootTabView: View {
         Group {
             if nativeTodayEnabled { native } else { upstream }
         }
+    }
+
+    /// Apple style uses the chrome accent. WHOOP is dark-only and wants the light tab glyph, which
+    /// is `Color.primary` under that scheme. Never use `.primary` for the Apple style.
+    private var tabTint: Color {
+        if nativeTodayEnabled && NativeStyle.resolve(nativeStyleRaw) == .whoop {
+            return Color.primary
+        }
+        return StrandPalette.accent
     }
 
     /// Native tab selection binding. SwiftUI sends taps on the already-selected item through the
@@ -130,12 +142,16 @@ struct RootTabView: View {
         DragGesture(minimumDistance: 24)
             .onEnded { v in
                 // Today (tab 0) uses horizontal swipe to change DAYS, so tab-swipe is off there.
-                guard selectedTab != 0 else { return }
+                guard selectedTab != NativeRootTab.home.rawValue else { return }
                 let dx = v.translation.width, dy = v.translation.height
                 guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
-                let next = min(4, max(0, selectedTab + (dx < 0 ? 1 : -1)))
+                let next = NativeRootTab.next(from: selectedTab, direction: dx < 0 ? 1 : -1)
                 if next != selectedTab {
-                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = next }
+                    if reduceMotion {
+                        selectedTab = next
+                    } else {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = next }
+                    }
                 }
             }
     }
@@ -145,24 +161,39 @@ struct RootTabView: View {
         // its dynamic interaction with scrolling content automatically; older supported releases use
         // the corresponding system material and safe-area behaviour from the same TabView.
         TabView(selection: nativeTabSelection) {
-            tab(todayTabRoot, "Home", "house", path: $tabPaths[0], scrollSignal: scrollTop[0]).tag(0)
-            moreTab(path: $tabPaths[4], scrollSignal: scrollTop[4]).tag(4)
+            tab(todayTabRoot, "Home", "house",
+                path: $tabPaths[NativeRootTab.home.rawValue],
+                scrollSignal: scrollTop[NativeRootTab.home.rawValue])
+                .tag(NativeRootTab.home.rawValue)
+            healthTab(path: $tabPaths[NativeRootTab.health.rawValue],
+                      scrollSignal: scrollTop[NativeRootTab.health.rawValue])
+                .tag(NativeRootTab.health.rawValue)
+            moreTab(path: $tabPaths[NativeRootTab.more.rawValue],
+                    scrollSignal: scrollTop[NativeRootTab.more.rawValue])
+                .tag(NativeRootTab.more.rawValue)
         }
-        .tint(nativeTodayEnabled ? Color.primary : StrandPalette.accent)
+        .tint(tabTint)
         // Switching Coach off while STANDING on it leaves `selectedTab` pointing at a tag no tab claims
         // any more, which renders as an empty tab rather than as an error. Send that wearer to Today, and
         // only in that case, so a flip made from anywhere else does not move them.
         .onChangeCompat(of: coachEnabled) { enabled in
-            if nativeTodayEnabled && selectedTab != 0 && selectedTab != 4 { selectedTab = 0 }
-            if (!enabled || nativeTodayEnabled) && selectedTab == 3 { selectedTab = 0 }
+            if nativeTodayEnabled
+                && selectedTab != NativeRootTab.home.rawValue
+                && selectedTab != NativeRootTab.health.rawValue
+                && selectedTab != NativeRootTab.more.rawValue {
+                selectedTab = NativeRootTab.home.rawValue
+            }
+            if (!enabled || nativeTodayEnabled) && selectedTab == NativeRootTab.coachTag {
+                selectedTab = NativeRootTab.home.rawValue
+            }
         }
         // #1841: the same "Hide bar when scrolling" preference Android drives its own bar with. Here the
         // system owns the behaviour — iOS 26's tab bar MINIMISES to a pill on scroll down rather than
         // sliding away entirely, so this is the platform's read of the same intent, not a copy of ours.
         .noopTabBarAutoHide(bottomBarAutoHide)
             // Tab crossfade — README §Motion: ~240ms opacity swap between tab roots, global calm
-            // easing cubic-bezier(0.22,1,0.36,1).
-            .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: selectedTab)
+            // easing cubic-bezier(0.22,1,0.36,1). Nil when Reduce Motion is on.
+            .animation(reduceMotion ? nil : .timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: selectedTab)
             // Swipe left/right anywhere to move between tabs (2026-07-02), but ONLY while the current
             // tab is at its root. Attaching this ancestor drag gesture unconditionally defeated the
             // edge-restriction of a pushed NavigationStack screen's native interactive-pop gesture —
@@ -232,7 +263,7 @@ struct RootTabView: View {
             case .liveSession:
                 // Live Sessions is presented from Today's own Start entry (a cover, not a routed sheet),
                 // so a deep-link lands on the Today tab where that entry lives.
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 0 }
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = NativeRootTab.home.rawValue }
                 router.requestedDestination = nil
             case .journal:
                 // The #627 Today journal widget opens the journal through the quick-action Journal sheet
@@ -332,9 +363,8 @@ struct RootTabView: View {
             // transparent nav bar keeps it edge-to-edge instead of an opaque band clipping the top on scroll.
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { routedPillar = nil }
-                        .foregroundStyle(StrandPalette.accent)
                 }
             }
         }
@@ -358,8 +388,8 @@ struct RootTabView: View {
                     withAnimation(Self.sheetEase) { quickAction = picked }
                 }
             }
-            .presentationDetents([.height(344)])
-            .presentationDragIndicator(.hidden)
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
         case .live:
             quickScreen(LiveView())
         case .workout:
@@ -385,9 +415,8 @@ struct RootTabView: View {
                 // Hiding the bar background lets the sky stay continuous under the floating Done button.
                 .toolbarBackground(.hidden, for: .navigationBar)
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { quickAction = nil }
-                            .foregroundStyle(StrandPalette.accent)
                     }
                 }
         }
@@ -404,9 +433,8 @@ struct RootTabView: View {
                 // nav bar keeps it edge-to-edge instead of an opaque band clipping the top on scroll.
                 .toolbarBackground(.hidden, for: .navigationBar)
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { showDevices = false }
-                            .foregroundStyle(StrandPalette.accent)
                     }
                 }
         }
@@ -438,66 +466,55 @@ struct RootTabView: View {
         .tabItem { Label(title, systemImage: icon) }
     }
 
-    // The "More" tab is the app's catch-all index. It was a plain SwiftUI `List` with system large-title
-    // + system title-case section headers, so it didn't match any other page (which all use ScreenScaffold
-    // + SectionHeader's UPPERCASE overline + the 28pt section rhythm). Rebuilt on the shared page chrome:
-    // ScreenScaffold for the title1 "More" + subtitle, a `SectionHeader` overline per group, and the group's
-    // rows in a single grouped NoopCard with hairline dividers — the same row idiom Settings/Health use.
-    private func moreTab(path: Binding<NavigationPath>, scrollSignal: Int) -> some View {
-        func moreRow(_ title: LocalizedStringKey, _ icon: String, _ route: MoreDestination) -> MoreRow {
-            MoreRow(title, icon, route, path: path, suppressTabReselect: $suppressTabReselect)
+    private func healthTab(path: Binding<NavigationPath>, scrollSignal: Int) -> some View {
+        NavigationStack(path: path) {
+            NativeHealthTab(suppressTabReselect: $suppressTabReselect)
+                .navigationDestination(for: NativeHealthItem.self) { item in
+                    item.destination
+                        .nativeStyleBridge()
+                        .background(StrandPalette.surfaceBase.ignoresSafeArea())
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbarBackground(.hidden, for: .navigationBar)
+                }
+                .tabRouteDestinations()
         }
-        return NavigationStack(path: path) {
-            nativeMoreList(path: path)
-            // The rows push MoreDestination VALUES so a re-tap of the More tab can pop them off the
+        .environment(\.nativeNavigationPath, path)
+        .environment(\.scrollToTopSignal, scrollSignal)
+        .tabItem { Label("Health", systemImage: "heart.text.square") }
+    }
+
+    // The "More" tab is the catch-all index: Journal, Strap, Profile, Settings, Notifications,
+    // Data & Backup, About. Healthspan, Health Monitor, Stress Monitor, Trends, and Reports live
+    // on the Health tab.
+    private func moreTab(path: Binding<NavigationPath>, scrollSignal: Int) -> some View {
+        NavigationStack(path: path) {
+            NativeMoreList(suppressTabReselect: $suppressTabReselect)
+            // The rows push NativeMoreItem VALUES so a re-tap of the More tab can pop them off the
             // bound path (#135/#198). Each destination keeps the per-screen wrapper the rows used to
             // apply inline (surfaceBase background, inline title bar, hidden bar background):
             // #1027 — a pushed sky-scaffold screen (Live, Workouts, Health, …) draws a full-bleed liquid
             // sky; an opaque surfaceBase nav-bar band sat over it and clipped the top on scroll. A hidden
             // bar background keeps the sky edge-to-edge. On the flat (no-sky) screens this is visually
             // identical at rest — the destination's own surfaceBase background shows through the bar.
-            .navigationDestination(for: MoreDestination.self) { route in
-                if nativeTodayEnabled && route.usesAppleSettingsChrome {
-                    route.destination
+            .navigationDestination(for: NativeMoreItem.self) { item in
+                if nativeTodayEnabled && item.usesAppleSettingsChrome {
+                    item.destination
                         .navigationBarTitleDisplayMode(.inline)
                 } else {
-                    route.destination
+                    item.destination
                         .background(StrandPalette.surfaceBase.ignoresSafeArea())
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbarBackground(.hidden, for: .navigationBar)
                 }
             }
+            .tabRouteDestinations()
         }
         // On the stack so pushed More pages get the real path, not the default.
         .environment(\.moreNavigationPath, path)
-        // Scroll the More index to the top on an at-root re-tap (#198 follow-up); read by its ScreenScaffold.
+        .environment(\.nativeNavigationPath, path)
+        // Scroll the More index to the top on an at-root re-tap (#198 follow-up).
         .environment(\.scrollToTopSignal, scrollSignal)
-        .tabItem { Label("More", systemImage: nativeTodayEnabled ? "line.3.horizontal" : "ellipsis") }
-    }
-
-    /// Native More index: Trends, Healthspan, Strap, Profile, Sleep Planner, Assessments, Data & Backup, About. Alarm lives on Home; notifications
-    /// are hidden on the personal shell (the strap alarm still requests permission when armed).
-    private func nativeMoreList(path: Binding<NavigationPath>) -> some View {
-        NativeMoreList { item in
-            suppressTabReselect = true
-            path.wrappedValue.append(moreDestination(item))
-        }
-    }
-
-    private func moreDestination(_ item: NativeMoreItem) -> MoreDestination {
-        switch item {
-        case .trends: return .trends
-        case .healthspan: return .healthspan
-        case .strap: return .devices
-        case .profile: return .profile
-        case .sleepPlanner: return .sleepPlanner
-        case .assessments: return .assessments
-        case .dataBackup: return .dataBackup
-        case .automations: return .automations
-        case .testCentre: return .testCentre
-        case .settings: return .settings
-        case .about: return .about
-        }
+        .tabItem { Label("More", systemImage: "ellipsis") }
     }
 
     /// One titled, COLLAPSIBLE group in the More index (S2): the app's overline (UPPERCASE) becomes a
@@ -560,32 +577,24 @@ struct RootTabView: View {
 /// per-screen chrome the old inline links applied lives at the single `navigationDestination(for:)`
 /// registration in `moreTab`.
 private enum MoreDestination: Hashable {
-    case devices, automations, testCentre, settings
-    case about, profile, dataBackup, healthspan, assessments, sleepPlanner, trends
+    case devices, settings
+    case about, profile, dataBackup, notifications
 
     var usesAppleSettingsChrome: Bool {
         switch self {
-        case .devices, .automations, .testCentre, .settings,
-             .about, .profile, .dataBackup, .sleepPlanner:
+        case .devices, .settings, .about, .profile, .dataBackup, .notifications:
             return true
-        default:
-            return false
         }
     }
 
     @ViewBuilder var destination: some View {
         switch self {
         case .devices:         DevicesView()
-        case .automations:     AutomationsView()
-        case .testCentre:      TestCentreView()
         case .settings:        SettingsView()
         case .about:           BandAboutView()
         case .profile:         NativeProfileView()
         case .dataBackup:      NativeDataBackupView()
-        case .assessments:     NativePerformanceAssessmentView()
-        case .sleepPlanner:    NativeSleepPlanner()
-        case .healthspan:      NativeHealthspanPage()
-        case .trends:          NativeTrendsPage()
+        case .notifications:   NativeNotificationsSettings()
         }
     }
 }
@@ -667,75 +676,31 @@ private enum QuickAction: Int, Identifiable {
     var id: Int { rawValue }
 }
 
-/// The bottom sheet of quick actions presented by the centre FAB. Spec bottom sheet: surfaceOverlay
-/// fill, gold hairline top edge, grab handle, three flat action rows that route to existing screens.
+/// Standard sheet of quick actions presented by the centre FAB.
 private struct QuickActionSheet: View {
     /// Called with the picked destination (the host swaps the menu for that screen).
     let onPick: (QuickAction) -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Grab handle (36×4) in the slate hairline tone.
-            Capsule()
-                .fill(StrandPalette.hairlineStrong)
-                .frame(width: 36, height: 4)
-                .padding(.top, 10)
-                .padding(.bottom, 14)
-
-            Text("QUICK ACTIONS")
-                .font(StrandFont.overline)
-                .tracking(1.6)
-                .foregroundStyle(StrandPalette.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 10)
-
-            VStack(spacing: 8) {
-                row("Live HR", icon: "waveform.path.ecg", tint: StrandPalette.metricRose) { onPick(.live) }
-                row("Start workout", icon: "figure.run", tint: StrandPalette.effortColor) { onPick(.workout) }
-                row("Log journal", icon: "square.and.pencil", tint: StrandPalette.accent) { onPick(.journal) }
-                row("Breathe", icon: "wind", tint: StrandPalette.restColor) { onPick(.breathe) }
-            }
-            .padding(.horizontal, 16)
-
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(
-            NoopChromeSurface()
-                .overlay(alignment: .top) {
-                    // Gold hairline top edge per the bottom-sheet spec.
-                    Rectangle()
-                        .fill(StrandPalette.gold.opacity(0.35))
-                        .frame(height: 1)
+        NavigationStack {
+            List {
+                Button { onPick(.live) } label: {
+                    Label("Live HR", systemImage: "waveform.path.ecg")
                 }
-                .ignoresSafeArea()
-        )
-    }
-
-    /// One flat action row: hued line-icon tile + title, inset surface, hairline border.
-    private func row(_ title: LocalizedStringKey, icon: String, tint: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 13) {
-                Image(systemName: icon)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 38, height: 38)
-                    .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(StrandPalette.surfaceInset))
-                Text(title)
-                    .font(StrandFont.headline)
-                    .foregroundStyle(StrandPalette.textPrimary)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(StrandPalette.textTertiary)
+                Button { onPick(.workout) } label: {
+                    Label("Start workout", systemImage: "figure.run")
+                }
+                Button { onPick(.journal) } label: {
+                    Label("Log journal", systemImage: "square.and.pencil")
+                }
+                Button { onPick(.breathe) } label: {
+                    Label("Breathe", systemImage: "wind")
+                }
             }
-            .padding(.vertical, 10)
-            .padding(.horizontal, 12)
-            .background(NoopPanelSurface(cornerRadius: 14))
-            .contentShape(Rectangle())
+            .listStyle(.insetGrouped)
+            .navigationTitle("Quick actions")
+            .navigationBarTitleDisplayMode(.inline)
         }
-        .buttonStyle(.plain)
     }
 }
 

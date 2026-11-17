@@ -15,7 +15,7 @@ enum NativeDayLogic {
     }
 
     /// Global Home empty: the store has no days, no sleeps, and no imported WHOOP sleep figures.
-    /// Home shows the single "No Data Yet" card only when this is true (and the first load finished).
+    /// Home shows the single "No data yet" card only when this is true (and the first load finished).
     static func isEmptyStore(days: [DailyMetric], sleeps: [CachedSleepSession],
                              importedSleep: [String: ImportedSleepFigures]) -> Bool {
         days.isEmpty && sleeps.isEmpty && importedSleep.isEmpty

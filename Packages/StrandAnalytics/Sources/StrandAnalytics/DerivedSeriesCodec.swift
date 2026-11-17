@@ -14,7 +14,7 @@ public enum DerivedSeriesCodec {
     public static let overnightHRKind = "overnightHR"
     public static let hourlyStepsKind = "hourlySteps"
 
-    public static let stressMinuteVersion = 1
+    public static let stressMinuteVersion = 2
     public static let overnightHRVersion = 1
     public static let hourlyStepsVersion = 1
 

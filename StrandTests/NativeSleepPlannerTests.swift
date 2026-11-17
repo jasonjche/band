@@ -4,10 +4,9 @@ import StrandAnalytics
 
 final class NativeSleepPlannerTests: XCTestCase {
 
-    func testMoreListIncludesSleepPlannerOnce() {
-        XCTAssertEqual(NativeMoreItem.allCases.filter { $0 == .sleepPlanner }.count, 1)
-        XCTAssertEqual(NativeMoreItem.sleepPlanner.title, "Sleep Planner")
-        XCTAssertEqual(NativeMoreItem.sleepPlanner.icon, "bed.double.fill")
+    func testSleepPlannerIsOffTheMoreList() {
+        XCTAssertFalse(NativeMoreItem.titles.contains("Sleep Planner"))
+        XCTAssertFalse(NativeHealthItem.titles.contains("Sleep Planner"))
     }
 
     func testWillArmMatchesAlarmsGate() {

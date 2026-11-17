@@ -202,7 +202,7 @@ private struct NativeHeartRateHero: View {
                 date: NativeScopeFormat.time(last.time)
             )
         } else {
-            NativeHeroValue(caption: "Heart Rate", value: "No Data")
+            NativeHeroValue(caption: "Heart Rate", value: "No data")
         }
     }
 }
@@ -223,7 +223,7 @@ private struct NativeHeartRatePlot: View {
     var body: some View {
         Group {
             if model.plot.count < 2 {
-                NativeEmptyState(text: "No Data", symbol: "heart")
+                NativeEmptyState(text: "No data", symbol: "heart")
             } else {
                 Chart {
                     if let sleepStart = model.sleepStart, let sleepEnd = model.sleepEnd {
@@ -304,6 +304,21 @@ private struct NativeHeartRatePlot: View {
         }
         .frame(maxWidth: .infinity)
         .accessibilityLabel("Heart rate")
+        .nativeChartDescriptor(
+            NativeChartDescriptor(
+                title: "Heart rate",
+                unit: "BPM",
+                xKind: .date,
+                points: model.plot.map {
+                    NativeChartDescriptor.Point(
+                        xLabel: NativeScopeFormat.time($0.time),
+                        xValue: $0.time.timeIntervalSince1970,
+                        y: $0.value
+                    )
+                },
+                yRange: model.yDomain
+            )
+        )
     }
 }
 

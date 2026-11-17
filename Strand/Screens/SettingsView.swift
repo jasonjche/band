@@ -414,9 +414,6 @@ struct SettingsView: View {
                     sleepStagingCard
                 }
             }
-            appleSettingsNav("Test Centre", "testtube.2", .gray) {
-                TestCentreView()
-            }
             appleSettingsNav("Experimental", "flask.fill", .orange) {
                 appleSettingsPage("Experimental") {
                     experimentalAdvancedPages
@@ -512,12 +509,11 @@ struct SettingsView: View {
             featuresCard
             SettingsDisclosureGroup(
                 title: "Advanced",
-                subtitle: "Recovery, HRV tuning, Test Centre, experimental probes, and backup.",
+                subtitle: "Recovery, HRV tuning, experimental probes, and backup.",
                 isExpanded: $advancedOpen
             ) {
                 recoveryCard
                 hrvCard
-                testCentreCard
                 experimentalCard
                 backupCard
             }
@@ -555,12 +551,11 @@ struct SettingsView: View {
                 // Backup & restore) stays one tap away. Modelled on the Test Centre "Advanced" group.
                 SettingsDisclosureGroup(
                     title: "Advanced",
-                    subtitle: "Recovery, HRV tuning, Test Centre, experimental probes, and backup. Tucked away to keep the everyday screen tidy.",
+                    subtitle: "Recovery, HRV tuning, experimental probes, and backup. Tucked away to keep the everyday screen tidy.",
                     isExpanded: $advancedOpen
                 ) {
                     recoveryCard
                     hrvCard   // #518: Continuous HRV capture + HRV window moved here out of the always-visible Strap card
-                    testCentreCard
                     experimentalCard
                     backupCard
                 }
@@ -2216,34 +2211,6 @@ struct SettingsView: View {
         backupAlertTitle = String(localized: "Charge baseline recalibrating")
         backupAlertMessage = String(localized: "Band will re-learn your baseline from tonight's data onward. Your history is kept, and it takes a few nights to settle.")
         showBackupAlert = true
-    }
-
-    // MARK: - Test Centre (the diagnostic home, #507/#509)
-
-    /// A nav row into the Test Centre, the single home for the diagnostic, log and test controls (spec
-    /// section 7). The strap log, recalibrate, scheduled export and experimental toggles also live there
-    /// on the same bindings, so this is a faster door to the full set without growing this screen.
-    private var testCentreCard: some View {
-        SettingsSection(
-            icon: "testtube.2",
-            title: "Test Centre",
-            blurb: "Turn on a test for the thing that's wrong, wear the strap, then tap Report. Your strap log, recalibrate, scheduled export and experimental probes all live here too."
-        ) {
-            NavigationLink(destination: TestCentreView()) {
-                HStack {
-                    Text("Open Test Centre")
-                        .font(StrandFont.body)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(StrandPalette.textTertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(LiquidPressStyle())
-            .accessibilityLabel("Open Test Centre")
-        }
     }
 
     // MARK: - Features (opt-in trackers)

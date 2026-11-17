@@ -331,7 +331,7 @@ enum HomeMonitorTile {
                 if let time { parts.append(time) }
                 return parts.joined(separator: ", ")
             }
-            return "No Data"
+            return "No data"
         }
     }
 
@@ -347,7 +347,7 @@ enum HomeMonitorTile {
 
     /// Home Health Monitor primary line. Green path is "Within Range"; any out-of-range count is "N Outside Range".
     static func healthPrimary(_ summary: NativeHealthRange.Summary) -> String {
-        guard summary.measured > 0 else { return "No Data" }
+        guard summary.measured > 0 else { return "No data" }
         if summary.judged == 0 { return "Building baseline" }
         if summary.outside == 0 { return "Within Range" }
         return "\(summary.outside) Outside Range"

@@ -1,110 +1,150 @@
 import SwiftUI
+import StrandDesign
 
 /// Personal-build More index. Order is the product contract the tests pin.
 enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
-    case trends
-    case healthspan
+    case journal
     case strap
-    case profile
-    case sleepPlanner
-    case assessments
     case dataBackup
-    case automations
-    case testCentre
+    case profile
     case settings
+    case notifications
     case about
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .trends: return "Trends"
-        case .healthspan: return "Healthspan"
+        case .journal: return "Journal"
         case .strap: return "Strap"
-        case .profile: return "Profile"
-        case .sleepPlanner: return "Sleep Planner"
-        case .assessments: return "Assessments"
         case .dataBackup: return "Data & Backup"
-        case .automations: return "Automations"
-        case .testCentre: return "Test Centre"
+        case .profile: return "Profile"
         case .settings: return "Settings"
+        case .notifications: return "Notifications"
         case .about: return "About"
         }
     }
 
     var icon: String {
         switch self {
-        case .trends: return "chart.xyaxis.line"
-        case .healthspan: return "sparkles"
+        case .journal: return "book.closed.fill"
         case .strap: return "badge.plus.radiowaves.right"
-        case .profile: return "person.fill"
-        case .sleepPlanner: return "bed.double.fill"
-        case .assessments: return "calendar"
         case .dataBackup: return "externaldrive.fill"
-        case .automations: return "wand.and.stars"
-        case .testCentre: return "stethoscope"
+        case .profile: return "person.fill"
         case .settings: return "gearshape.fill"
+        case .notifications: return "bell.fill"
         case .about: return "info.circle.fill"
         }
     }
 
     var color: Color {
         switch self {
-        case .trends: return NativeChrome.strain
-        case .healthspan: return NativeChrome.recovery
+        case .journal: return NativeChrome.sleep
         case .strap: return .blue
-        case .profile: return .blue
-        case .sleepPlanner: return NativeChrome.sleep
-        case .assessments: return .blue
         case .dataBackup: return Color(white: 0.45)
-        case .automations: return .purple
-        case .testCentre: return .gray
+        case .profile: return .blue
         case .settings: return Color(white: 0.45)
+        case .notifications: return .red
         case .about: return .gray
         }
     }
 
     static var titles: [String] { allCases.map(\.title) }
 
-    var subtitle: String? {
+    var subtitle: String? { nil }
+
+    var usesAppleSettingsChrome: Bool {
         switch self {
-        case .trends: return "All metrics over weeks and months"
-        default: return nil
+        case .journal: return false
+        case .strap, .dataBackup, .profile, .settings, .notifications, .about:
+            return true
+        }
+    }
+
+    @ViewBuilder var destination: some View {
+        switch self {
+        case .journal: NativeJournalView()
+        case .strap: DevicesView()
+        case .dataBackup: NativeDataBackupView()
+        case .profile: NativeProfileView()
+        case .settings: SettingsView()
+        case .notifications: NativeNotificationsSettings()
+        case .about: BandAboutView()
+        }
+    }
+}
+
+/// Settings-style sections on the More index. Flattened `items` match `NativeMoreItem.allCases`.
+enum NativeMoreSection: String, CaseIterable, Identifiable {
+    case activity = "Activity & Journal"
+    case strap = "Strap"
+    case data = "Data"
+    case app = "App"
+
+    var id: String { rawValue }
+    var title: String { rawValue }
+
+    var items: [NativeMoreItem] {
+        switch self {
+        case .activity: return [.journal]
+        case .strap: return [.strap]
+        case .data: return [.dataBackup]
+        case .app: return [.profile, .settings, .notifications, .about]
         }
     }
 }
 
 /// Inset grouped More list for the Native iPhone shell.
 struct NativeMoreList: View {
-    var onSelect: (NativeMoreItem) -> Void
+    @Binding var suppressTabReselect: Bool
+    @Environment(\.scrollToTopSignal) private var scrollToTopSignal
+
+    init(suppressTabReselect: Binding<Bool> = .constant(false)) {
+        _suppressTabReselect = suppressTabReselect
+    }
 
     var body: some View {
-        List {
-            ForEach(NativeMoreItem.allCases) { item in
-                Button {
-                    onSelect(item)
-                } label: {
-                    HStack(spacing: 12) {
-                        AppleSettingsGlyph(systemName: item.icon, background: item.color)
-                        Text(item.title)
-                            .foregroundStyle(.primary)
-                        Spacer(minLength: 8)
+        ScrollViewReader { proxy in
+            List {
+                ForEach(NativeMoreSection.allCases) { section in
+                    Section {
+                        ForEach(section.items) { item in
+                            moreLink(item)
+                        }
+                    } header: {
+                        Text(section.title)
                     }
+                    .id(section == .activity ? "more-top" : section.id)
                 }
-                .accessibilityHint(item.subtitle ?? "")
+            }
+            #if os(iOS)
+            .listStyle(.insetGrouped)
+            #endif
+            .navigationTitle("More")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.large)
+            #endif
+            .onChangeCompat(of: scrollToTopSignal) { _ in
+                proxy.scrollTo("more-top", anchor: .top)
             }
         }
-        #if os(iOS)
-        .listStyle(.insetGrouped)
-        #endif
-        .navigationTitle("More")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.large)
-        #endif
+    }
+
+    @ViewBuilder
+    private func moreLink(_ item: NativeMoreItem) -> some View {
+        let row = NavigationLink(value: item) {
+            NativeSettingsRow(title: item.title, icon: item.icon, color: item.color, subtitle: item.subtitle)
+        }
+        .simultaneousGesture(TapGesture().onEnded { suppressTabReselect = true })
+        if let hint = item.subtitle, !hint.isEmpty {
+            row.accessibilityHint(hint)
+        } else {
+            row
+        }
     }
 }
 
-/// Data & Backup hub: Apple Health, WHOOP import, and file backup as three grouped sections.
+/// Data & Backup hub: Apple Health, WHOOP import, and file backup as one grouped section.
 struct NativeDataBackupView: View {
     var body: some View {
         List {
@@ -114,11 +154,6 @@ struct NativeDataBackupView: View {
                 } label: {
                     NativeSettingsRow(title: "Apple Health", icon: "heart.fill", color: .red)
                 }
-            } header: {
-                Text("Apple Health")
-            }
-
-            Section {
                 NavigationLink {
                     DataSourcesView()
                 } label: {
@@ -128,11 +163,6 @@ struct NativeDataBackupView: View {
                         color: .blue
                     )
                 }
-            } header: {
-                Text("Import WHOOP Export")
-            }
-
-            Section {
                 NavigationLink {
                     BandBackupView()
                 } label: {
@@ -142,8 +172,8 @@ struct NativeDataBackupView: View {
                         color: Color(white: 0.45)
                     )
                 }
-            } header: {
-                Text("Backup")
+            } footer: {
+                Text("Import from Apple Health or a WHOOP export, or write a local backup.")
             }
         }
         #if os(iOS)
@@ -157,12 +187,20 @@ struct NativeSettingsRow: View {
     var title: String
     var icon: String
     var color: Color
+    var subtitle: String? = nil
 
     var body: some View {
         HStack(spacing: 12) {
             AppleSettingsGlyph(systemName: icon, background: color)
-            Text(title)
-                .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .foregroundStyle(.primary)
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer(minLength: 8)
         }
         .frame(minHeight: 44)

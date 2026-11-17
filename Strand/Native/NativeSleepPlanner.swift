@@ -3,6 +3,9 @@ import UserNotifications
 import StrandAnalytics
 import StrandDesign
 import WhoopStore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Pure planner facts. The view reads these; it does not re-derive need or the strap alarm.
 enum NativeSleepPlannerLogic {
@@ -217,6 +220,13 @@ struct NativeSleepPlanner: View {
         .appleSettingsChrome("Sleep Planner")
         .alert("Notifications are off", isPresented: $showNotifDeniedAlert) {
             Button("Not now", role: .cancel) {}
+            #if os(iOS)
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            #endif
         } message: {
             Text("Turn on notifications for Band in Settings to get a bedtime reminder.")
         }
@@ -249,7 +259,7 @@ struct NativeSleepPlanner: View {
 
     private var wakeSection: some View {
         Section {
-            DatePicker("I Want to Wake At", selection: wakeBinding, displayedComponents: .hourAndMinute)
+            DatePicker("Wake time", selection: wakeBinding, displayedComponents: .hourAndMinute)
                 .accessibilityLabel("Planner wake time")
         } footer: {
             Text("This time is the plan. It does not arm the strap.")
@@ -258,7 +268,7 @@ struct NativeSleepPlanner: View {
 
     private var goalSection: some View {
         Section {
-            Picker("Tomorrow I Want to", selection: $goalRaw) {
+            Picker("Tomorrow's goal", selection: $goalRaw) {
                 Text("Peak").tag(SleepPlanner.Goal.peak.rawValue)
                 Text("Perform").tag(SleepPlanner.Goal.perform.rawValue)
                 Text("Get By").tag(SleepPlanner.Goal.getBy.rawValue)
@@ -273,10 +283,10 @@ struct NativeSleepPlanner: View {
     @ViewBuilder private var inBedSection: some View {
         Section {
             if let inBedMinute {
-                LabeledContent("In Bed By", value: NativeTonightSleep.clock(inBedMinute))
+                LabeledContent("In bed by", value: NativeTonightSleep.clock(inBedMinute))
                     .font(StrandFont.rounded(17, weight: .semibold))
             } else {
-                LabeledContent("In Bed By", value: "No Data")
+                LabeledContent("In bed by", value: "No data")
             }
         } footer: {
             inBedFooter
@@ -285,9 +295,9 @@ struct NativeSleepPlanner: View {
 
     private var inBedFooter: Text {
         let typical = snapshot.typical
-        var line = "Wake minus need × goal ÷ typical efficiency, minus time to fall asleep."
+        var line = "Bedtime is your wake time minus tonight's sleep need, adjusted for how long you usually take to fall asleep."
         if typical.usingDefaultEfficiency || typical.usingDefaultLatency {
-            line += " Using typical efficiency and latency until 7 nights are in."
+            line += " Until you have 7 nights, Band uses typical values."
         } else {
             let eff = Int((typical.efficiency * 100).rounded())
             let lat = Int(typical.latencyMin.rounded())

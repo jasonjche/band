@@ -65,6 +65,7 @@ public struct GlowRing: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
                 .contentTransition(.numericText())
+                .dynamicTypeSize(...DynamicTypeSize.xxLarge)
                 .padding(.horizontal, lineWidth + 4)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.85), value: shown)
         }

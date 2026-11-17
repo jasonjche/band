@@ -6,9 +6,10 @@ import StrandDesign
 
 final class NativePerformanceAssessmentTests: XCTestCase {
 
-    func testMoreListIncludesAssessments() {
-        XCTAssertTrue(NativeMoreItem.titles.contains("Assessments"))
-        XCTAssertEqual(NativeMoreItem.assessments.icon, "calendar")
+    func testHealthTabIncludesReports() {
+        XCTAssertFalse(NativeMoreItem.titles.contains("Assessments"))
+        XCTAssertTrue(NativeHealthItem.titles.contains("Reports"))
+        XCTAssertEqual(NativeHealthItem.reports.icon, "calendar")
     }
 
     func testSleepHoursMatchSleepPageAsleepMinutes() {

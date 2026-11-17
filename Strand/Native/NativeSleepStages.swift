@@ -70,6 +70,29 @@ struct NativeSleepHypnogram: View {
             ? "\(NativeSleepEstimatedHypnogram.caption). Sleep stages from \(NativeSleepClock.clock(nightStart)) to \(NativeSleepClock.clock(nightEnd))"
             : "Sleep stages from \(NativeSleepClock.clock(nightStart)) to \(NativeSleepClock.clock(nightEnd))")
         .accessibilityAddTraits(onOpen == nil ? [] : .isButton)
+        .nativeChartDescriptor(hypnogramDescriptor)
+    }
+
+    private var hypnogramDescriptor: NativeChartDescriptor {
+        let lanes = NativeSleepStageKind.hypnogramLanes
+        return NativeChartDescriptor(
+            title: "Sleep stages",
+            unit: "Stage",
+            xKind: .date,
+            points: spans.map { span in
+                NativeChartDescriptor.Point(
+                    xLabel: NativeSleepClock.clock(Date(timeIntervalSince1970: TimeInterval(span.startTs))),
+                    xValue: Double(span.startTs),
+                    y: Double(lanes.firstIndex(of: span.kind) ?? 2)
+                )
+            },
+            yRange: 0...3,
+            yDescription: { value in
+                let index = Int(value.rounded())
+                guard lanes.indices.contains(index) else { return "Stage" }
+                return lanes[index].title
+            }
+        )
     }
 
     private var axis: some View {
@@ -168,6 +191,7 @@ private struct NativeSleepHypnogramPlot: View {
                     }
                     .onEnded { _ in scrub.time = nil }
             )
+            .nativeChartButton(action: onOpen)
             .onTapGesture { onOpen?() }
         }
     }

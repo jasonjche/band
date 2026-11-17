@@ -16,9 +16,124 @@ public enum StrandFont {
 
     // MARK: Family
 
-    private static func roundedSystem(_ size: CGFloat, weight: Font.Weight) -> Font {
-        .system(size: size, weight: weight, design: .rounded)
+    /// Maps a point size onto the Dynamic Type style whose scaling curve it should follow.
+    /// At the default (Large) size the scaled face matches `size` exactly.
+    public static func scalingTextStyle(for size: CGFloat) -> Font.TextStyle {
+        switch size {
+        case ...11: return .caption2
+        case ...13: return .caption
+        case ...15: return .subheadline
+        case ...17: return .body
+        case ...20: return .title3
+        case ...22: return .title2
+        case ...28: return .title2
+        case ...34: return .title
+        default: return .largeTitle
+        }
     }
+
+    /// System face at a custom size that still tracks Dynamic Type via `UIFontMetrics`.
+    /// macOS has no equivalent scaler, so the face stays at `size` there.
+    public static func scaledSystem(
+        size: CGFloat,
+        weight: Font.Weight,
+        design: Font.Design,
+        relativeTo textStyle: Font.TextStyle? = nil
+    ) -> Font {
+        let style = textStyle ?? scalingTextStyle(for: size)
+        #if canImport(UIKit)
+        let base = UIFont.systemFont(ofSize: size, weight: uiWeight(weight))
+        let descriptor: UIFontDescriptor
+        if design == .default {
+            descriptor = base.fontDescriptor
+        } else {
+            descriptor = base.fontDescriptor.withDesign(uiDesign(design)) ?? base.fontDescriptor
+        }
+        let font = UIFont(descriptor: descriptor, size: size)
+        return Font(UIFontMetrics(forTextStyle: uiTextStyle(style)).scaledFont(for: font))
+        #elseif canImport(AppKit)
+        let base = NSFont.systemFont(ofSize: size, weight: nsWeight(weight))
+        guard design != .default,
+              let descriptor = base.fontDescriptor.withDesign(nsDesign(design)),
+              let designed = NSFont(descriptor: descriptor, size: size) else {
+            return Font(base)
+        }
+        return Font(designed)
+        #else
+        return .system(size: size, weight: weight, design: design)
+        #endif
+    }
+
+    private static func roundedSystem(_ size: CGFloat, weight: Font.Weight) -> Font {
+        scaledSystem(size: size, weight: weight, design: .rounded)
+    }
+
+    #if canImport(UIKit)
+    private static func uiWeight(_ weight: Font.Weight) -> UIFont.Weight {
+        switch weight {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .regular: return .regular
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        default: return .regular
+        }
+    }
+
+    private static func uiDesign(_ design: Font.Design) -> UIFontDescriptor.SystemDesign {
+        switch design {
+        case .serif: return .serif
+        case .rounded: return .rounded
+        case .monospaced: return .monospaced
+        default: return .default
+        }
+    }
+
+    private static func uiTextStyle(_ style: Font.TextStyle) -> UIFont.TextStyle {
+        switch style {
+        case .largeTitle: return .largeTitle
+        case .title: return .title1
+        case .title2: return .title2
+        case .title3: return .title3
+        case .headline: return .headline
+        case .body: return .body
+        case .callout: return .callout
+        case .subheadline: return .subheadline
+        case .footnote: return .footnote
+        case .caption: return .caption1
+        case .caption2: return .caption2
+        default: return .body
+        }
+    }
+    #elseif canImport(AppKit)
+    private static func nsWeight(_ weight: Font.Weight) -> NSFont.Weight {
+        switch weight {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .regular: return .regular
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        default: return .regular
+        }
+    }
+
+    private static func nsDesign(_ design: Font.Design) -> NSFontDescriptor.SystemDesign {
+        switch design {
+        case .serif: return .serif
+        case .rounded: return .rounded
+        case .monospaced: return .monospaced
+        default: return .default
+        }
+    }
+    #endif
 
     // MARK: Scale (§9.2)
 

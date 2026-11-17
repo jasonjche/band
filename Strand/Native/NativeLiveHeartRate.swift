@@ -78,12 +78,12 @@ struct NativeLiveHeartRate: View {
                 NativeValueText(value: "\(bpm)", unit: "BPM", size: 48)
                     .foregroundStyle(NativePaint.heart(style))
             } else {
-                NativeValueText(value: "No Data", size: 34)
+                NativeValueText(value: "No data", size: 34)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(bpm.map { "Heart rate \($0) BPM" } ?? "No Data")
+        .accessibilityLabel(bpm.map { "Heart rate \($0) BPM" } ?? "No data")
     }
 
     @ViewBuilder private var zoneLine: some View {
@@ -128,7 +128,7 @@ struct NativeLiveHeartRate: View {
                 .chartYScale(domain: yDomain)
                 .accessibilityLabel("Heart rate, last 60 seconds")
             } else {
-                NativeEmptyState(text: "No Data", symbol: "heart")
+                NativeEmptyState(text: "No data", symbol: "heart")
             }
         }
         .frame(height: 120)

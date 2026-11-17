@@ -313,8 +313,8 @@ struct NativeContributorRow: View {
             Text(style == .whoop ? title.uppercased() : title)
                 .font(style == .whoop ? NativeTokens.whoopCaps(13) : .body)
                 .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
             Spacer(minLength: 6)
             VStack(alignment: .trailing, spacing: 1) {
                 HStack(spacing: 4) {
@@ -384,11 +384,11 @@ struct NativeActivityRow: View {
                     .fill(tint)
             )
 
-            Text(title.uppercased())
+            Text(style == .whoop ? title.uppercased() : title)
                 .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
                 .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
 
             Spacer(minLength: 6)
 
@@ -559,6 +559,7 @@ struct NativeRing: View {
                         whoopInnerCaption
                     }
                 }
+                .dynamicTypeSize(...DynamicTypeSize.xxLarge)
                 .padding(line + 8)
             }
             .padding(line / 2)
@@ -994,7 +995,7 @@ struct NativeChartBlock: View {
         } else if let average = NativeScoreMath.mean(known.map(\.value)), let range = rangeDate {
             NativeHeroValue(caption: caption ?? "Average", value: format(average), unit: unit, date: range)
         } else if let range = rangeDate {
-            NativeHeroValue(caption: caption, value: "No Data", date: range)
+            NativeHeroValue(caption: caption, value: "No data", date: range)
         }
     }
 
@@ -1010,7 +1011,7 @@ struct NativeChartBlock: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         } else if let range = rangeDate {
-            NativeHeroValue(caption: caption, value: "No Data", date: range)
+            NativeHeroValue(caption: caption, value: "No data", date: range)
         }
     }
 
@@ -1021,7 +1022,7 @@ struct NativeChartBlock: View {
 
     @ViewBuilder private var plot: some View {
         if known.isEmpty && stacks.allSatisfy({ !$0.points.contains { $0.value.isFinite } }) {
-            NativeEmptyState(text: "No Data")
+            NativeEmptyState(text: "No data")
         } else if !stacks.isEmpty {
             NativeStackedWeekBars(
                 stacks: stacks,
@@ -1086,7 +1087,7 @@ struct NativeLabeledLine: View {
 
     var body: some View {
         if known.isEmpty {
-            NativeEmptyState(text: "No Data")
+            NativeEmptyState(text: "No data")
         } else {
             Chart {
                 ForEach(points) { point in
@@ -1391,7 +1392,7 @@ struct NativeScoreWeekBars: View {
 
     var body: some View {
         if known.isEmpty {
-            NativeEmptyState(text: "No Data")
+            NativeEmptyState(text: "No data")
         } else {
             Chart {
                 ForEach(points) { point in
@@ -1474,7 +1475,7 @@ struct NativeRangeChart: View {
 
     var body: some View {
         if known.isEmpty {
-            NativeEmptyState(text: "No Data")
+            NativeEmptyState(text: "No data")
         } else {
             Chart {
                 ForEach(points) { point in
@@ -1572,7 +1573,7 @@ struct NativeStackedWeekBars: View {
 
     var body: some View {
         if slices.isEmpty {
-            NativeEmptyState(text: "No Data")
+            NativeEmptyState(text: "No data")
         } else {
             Chart {
                 ForEach(keys, id: \.self) { key in
@@ -1755,7 +1756,7 @@ struct NativeOvernightLine: View {
     var body: some View {
         Group {
             if points.isEmpty {
-                NativeEmptyState(text: "No Data")
+                NativeEmptyState(text: "No data")
             } else {
                 Chart {
                     ForEach(plotPoints) { point in
@@ -2456,7 +2457,7 @@ struct NativeStrainRecoveryColumns: View {
                     )
                 }
                 if strain == nil && recovery == nil {
-                    NativeValueText(value: "No Data", size: 28)
+                    NativeValueText(value: "No data", size: 28)
                 }
                 Spacer(minLength: 0)
             }
@@ -2495,6 +2496,6 @@ struct NativeStrainRecoveryColumns: View {
         if let strain { parts.append("Strain \(String(format: "%.1f", strain))") }
         if let recovery { parts.append("Recovery \(Int(recovery.rounded())) percent") }
         if let caption { parts.append(caption) }
-        return parts.isEmpty ? "No Data" : parts.joined(separator: ", ")
+        return parts.isEmpty ? "No data" : parts.joined(separator: ", ")
     }
 }

@@ -1262,10 +1262,9 @@ private struct LiveLogCard: View {
     /// property a view reads. So what is cut is the COST of that re-evaluation, which is what the CPU limit
     /// measures: roughly fifteen built rows instead of five thousand, and none at all here.
     ///
-    /// Not free, to be exact about what remains: the header, the `Divider` and the `NavigationLink` are still
-    /// built per line, and `NavigationLink(destination:)` constructs `TestCentreView()` eagerly, which
-    /// evaluates its `@State` defaults (three `UserDefaults` reads). Microseconds against the five thousand
-    /// `Text` views this removes, but the place to look first if a background cost survives this.
+    /// Not free, to be exact about what remains: the header is still built per line. Microseconds
+    /// against the five thousand `Text` views this removes, but the place to look first if a
+    /// background cost survives this.
     ///
     /// Gated on `.background` rather than `!= .active` deliberately: `.inactive` is also when iOS takes the
     /// app-switcher snapshot, and blanking the log there would be visible for no benefit. The kill needs
@@ -1293,22 +1292,6 @@ private struct LiveLogCard: View {
             } else {
                 logScroller
             }
-
-            // Users look on Live first when something's wrong (#507/#509), so link straight into the
-            // Test Centre diagnostic home, one tap from the log.
-            Divider().overlay(StrandPalette.hairline)
-            NavigationLink(destination: TestCentreView()) {
-                HStack(spacing: 8) {
-                    Image(systemName: "testtube.2").foregroundStyle(StrandPalette.accent)
-                    Text("Open Test Centre to report a bug").font(StrandFont.mono)
-                        .foregroundStyle(StrandPalette.accent)
-                    Spacer()
-                    Image(systemName: "chevron.right").foregroundStyle(StrandPalette.textSecondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open Test Centre")
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

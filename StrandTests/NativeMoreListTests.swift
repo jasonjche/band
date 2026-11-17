@@ -4,16 +4,29 @@ import XCTest
 final class NativeMoreListTests: XCTestCase {
 
     func testPersonalMoreListOrder() {
-        XCTAssertEqual(NativeMoreItem.titles, ["Trends", "Healthspan", "Strap", "Profile", "Sleep Planner", "Assessments", "Data & Backup", "Automations", "Test Centre", "Settings", "About"])
-        XCTAssertEqual(NativeMoreItem.allCases.map(\.rawValue), ["trends", "healthspan", "strap", "profile", "sleepPlanner", "assessments", "dataBackup", "automations", "testCentre", "settings", "about"])
+        XCTAssertEqual(
+            NativeMoreItem.titles,
+            ["Journal", "Strap", "Data & Backup", "Profile", "Settings", "Notifications", "About"]
+        )
+        XCTAssertEqual(
+            NativeMoreItem.allCases.map(\.rawValue),
+            ["journal", "strap", "dataBackup", "profile", "settings", "notifications", "about"]
+        )
+        XCTAssertEqual(NativeMoreSection.allCases.flatMap(\.items), NativeMoreItem.allCases)
     }
 
-    func testPersonalMoreListHidesAlarmAndNotifications() {
+    func testPersonalMoreListHidesAlarmAndMovedHealthItems() {
         let titles = NativeMoreItem.titles
         XCTAssertFalse(titles.contains("Alarm"))
         XCTAssertFalse(titles.contains("Alarms"))
-        XCTAssertFalse(titles.contains("Notifications"))
+        XCTAssertFalse(titles.contains("Trends"))
+        XCTAssertFalse(titles.contains("Healthspan"))
+        XCTAssertFalse(titles.contains("Sleep Planner"))
+        XCTAssertFalse(titles.contains("Assessments"))
+        XCTAssertFalse(titles.contains("Automations"))
+        XCTAssertFalse(titles.contains("Test Centre"))
         XCTAssertFalse(NativeMoreItem.allCases.map(\.icon).contains("alarm.fill"))
-        XCTAssertFalse(NativeMoreItem.allCases.map(\.icon).contains("bell.badge.fill"))
+        XCTAssertTrue(titles.contains("Notifications"))
+        XCTAssertTrue(titles.contains("Journal"))
     }
 }

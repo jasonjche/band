@@ -154,6 +154,7 @@ struct NativeLiveHRCircle: View {
                     .monospacedDigit()
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
+                    .dynamicTypeSize(...DynamicTypeSize.xxLarge)
             }
             .padding(24)
         }
@@ -173,8 +174,8 @@ private struct NativeStartToggle: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
-                    .textCase(.uppercase)
-                    .tracking(0.4)
+                    .textCase(style == .whoop ? .uppercase : nil)
+                    .tracking(style == .whoop ? 0.4 : 0)
                 if let subtitle {
                     Text(subtitle)
                         .font(.caption)

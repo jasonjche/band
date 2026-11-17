@@ -18,7 +18,7 @@ struct NativePerformanceAssessmentView: View {
             if let model {
                 content(model)
             } else {
-                NativeChrome.screen { ProgressView() }
+                NativeChrome.screen { ProgressView("Loading") }
                     .navigationTitle("Assessments")
                     .modifier(NativeInlineTitle())
             }
@@ -352,7 +352,7 @@ enum NativePerformanceAssessmentCopy {
     }
 
     static func valueText(_ row: PerformanceAssessment.MetricDelta) -> String {
-        guard row.current.n > 0 else { return "No Data" }
+        guard row.current.n > 0 else { return "No data" }
         return format(row.current.mean, metric: row.metric)
     }
 

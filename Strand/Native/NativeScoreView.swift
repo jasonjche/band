@@ -83,7 +83,7 @@ struct NativeScorePage: View {
                 )
             } else {
                 NativeChrome.screen {
-                    ProgressView()
+                    ProgressView("Loading")
                         .frame(maxWidth: .infinity, minHeight: 200)
                 }
                     .navigationTitle(kind == .recovery ? "Recovery" : kind == .strain ? "Strain" : "Sleep")
@@ -358,7 +358,7 @@ struct NativeScoreView: View {
                 .frame(maxWidth: .infinity)
             } else {
                 NativeHeroValue(
-                    value: "No Data",
+                    value: "No data",
                     date: dayKey.map { NativeChartDay.mediumDate($0) }
                 )
             }
@@ -642,6 +642,7 @@ struct NativeScoreView: View {
                 yTicks: card.format == .strain ? NativeDayLogic.strainYTicks(maxY: card.maxY) : nil,
                 stacks: card.stacks
             )
+            .nativeChartButton(action: { openCard(card) })
             .onTapGesture { openCard(card) }
         }
     }
@@ -702,6 +703,19 @@ struct NativeScoreView: View {
     }
 
     @ViewBuilder private var sleepDetailCards: some View {
+        NavigationLink {
+            NativeSleepPlanner()
+        } label: {
+            NativeChrome.panel {
+                NativeCardHeader(
+                    title: "Sleep Planner",
+                    symbol: "bed.double.fill",
+                    tint: NativePaint.sleep(style),
+                    chevron: true
+                )
+            }
+        }
+        .buttonStyle(.plain)
         if let need = sleepDetail?.need ?? hoursNeededFromPage,
            need.percent != nil || need.hoursSleptMin != nil {
             NativeSleepHoursVsNeededCard(
@@ -987,17 +1001,19 @@ struct NativeLastNightCard: View {
         ForEach(lastNightStages) { stage in
             let kind = NativeSleepStageKind.parse(stage.name)
             let minutes = stage.minutes ?? 0
-            NativeSleepStageRow(
-                kind: kind,
-                minutes: minutes,
-                percent: NativeSleepHypnogramMath.share(minutes: minutes, inBed: scale) * 100,
-                typical: stage.typical,
-                scale: scale,
-                selected: selectedStage == kind,
-                dimmed: selectedStage != nil && selectedStage != kind,
-                tappable: true
-            )
-            .onTapGesture { selectStage(kind) }
+            Button { selectStage(kind) } label: {
+                NativeSleepStageRow(
+                    kind: kind,
+                    minutes: minutes,
+                    percent: NativeSleepHypnogramMath.share(minutes: minutes, inBed: scale) * 100,
+                    typical: stage.typical,
+                    scale: scale,
+                    selected: selectedStage == kind,
+                    dimmed: selectedStage != nil && selectedStage != kind,
+                    tappable: true
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -1123,6 +1139,7 @@ struct NativeOvernightHeartCard: View {
                 tint: NativePaint.heart(style),
                 selectedTime: $selectedTime
             )
+            .nativeChartButton(action: onOpen)
             .onTapGesture { onOpen?() }
         }
     }

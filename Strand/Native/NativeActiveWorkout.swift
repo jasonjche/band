@@ -497,7 +497,7 @@ struct NativeActiveWorkoutView: View {
                 refreshMetrics(now: context.date, force: false)
             }
         }
-        .confirmationDialog("End Activity?", isPresented: $confirmingEnd, titleVisibility: .visible) {
+        .confirmationDialog("End activity?", isPresented: $confirmingEnd, titleVisibility: .visible) {
             Button("Save") { finish(discard: false) }
             Button("Discard", role: .destructive) { finish(discard: true) }
             Button("Resume", role: .cancel) {}

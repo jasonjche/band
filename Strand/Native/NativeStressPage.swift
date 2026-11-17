@@ -204,7 +204,7 @@ struct NativeStressChartPage: View {
     @ViewBuilder private var dayBody: some View {
         NativeHeroValue(
             caption: NativeStressHero.caption(scrubbing: scrubTime != nil),
-            value: shownLevel.map { String(format: "%.1f", $0) } ?? "No Data",
+            value: shownLevel.map { String(format: "%.1f", $0) } ?? "No data",
             date: scrubTime.map { NativeScopeFormat.time($0) } ?? NativeScopeFormat.weekdayDate(dayStart, calendar: .current)
         )
         .frame(height: 76, alignment: .topLeading)
@@ -266,7 +266,7 @@ enum NativeStressResolver {
     }
 }
 
-/// Same 0–3 day chart Home and the Stress page draw. Empty series keeps the axes and says "No Data".
+/// Same 0–3 day chart Home and the Stress page draw. Empty series keeps the axes and says "No data".
 struct NativeStressDayChart: View {
     var level: Double?
     var hours: [NativeHourPoint]
@@ -305,7 +305,7 @@ struct NativeStressDayChart: View {
                     scrubTime: $scrubTime
                 )
                 if hours.isEmpty {
-                    Text("No Data")
+                    Text("No data")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
@@ -706,11 +706,12 @@ struct NativeStressGauge: View {
                         Text(String(format: "%.1f", value))
                             .font(NativePaint.number(28, style: style))
                             .monospacedDigit()
+                            .dynamicTypeSize(...DynamicTypeSize.xxLarge)
                         Text(NativeHomeCharts.stressBandWord(value))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(NativePaint.stressBand(value, style: style))
                     } else {
-                        Text("No Data")
+                        Text("No data")
                             .font(.headline.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
@@ -847,7 +848,7 @@ private struct NativeStressRangeHero: View {
         if let average = series.aggregate(of: window) {
             return String(format: "%.1f", average)
         }
-        return "No Data"
+        return "No data"
     }
 
     private var dateText: String? {
@@ -1224,6 +1225,21 @@ struct NativeStressDayPlot: View {
         .onAppear { if selectedTime == nil { selectedTime = previewSelected } }
         .modifier(NativeSelectionFeedback(trigger: selectedTime ?? .distantPast))
         .accessibilityLabel("Stress monitor \(String(format: "%.1f", score))")
+        .nativeChartDescriptor(
+            NativeChartDescriptor(
+                title: "Stress",
+                unit: "",
+                xKind: .date,
+                points: hours.map {
+                    NativeChartDescriptor.Point(
+                        xLabel: NativeScopeFormat.time($0.time),
+                        xValue: $0.time.timeIntervalSince1970,
+                        y: $0.value
+                    )
+                },
+                yRange: 0...3
+            )
+        )
     }
 }
 

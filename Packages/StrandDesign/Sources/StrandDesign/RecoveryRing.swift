@@ -150,6 +150,7 @@ public struct RecoveryRing: View {
             .font(StrandFont.rounded(size, weight: .bold))
             .tracking(size * 0.34)                 // ≈ .34em
             .foregroundStyle(StrandPalette.textTertiary)
+            .dynamicTypeSize(...DynamicTypeSize.xxLarge)
             .offset(y: -diameter * 0.205)
             .allowsHitTesting(false)
             .accessibilityHidden(true)

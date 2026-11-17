@@ -27,6 +27,7 @@ struct NativeJournalView: View {
     @State private var draftYes: [String: Bool] = [:]
     @State private var draftNumeric: [String: Double] = [:]
     @State private var draftTime: [String: Date] = [:]
+    @State private var confirmDiscard = false
 
     init(startsLogging: Bool = false) {
         self.startsLogging = startsLogging
@@ -74,7 +75,13 @@ struct NativeJournalView: View {
         .toolbar {
             if logging {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { logging = false }
+                    Button("Cancel") {
+                        if draftIsEdited {
+                            confirmDiscard = true
+                        } else {
+                            logging = false
+                        }
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await saveDraft() } }
@@ -101,6 +108,14 @@ struct NativeJournalView: View {
         .navigationDestination(for: NativeJournalImpactRoute.self) { _ in
             NativeJournalImpactView()
         }
+        .confirmationDialog("Discard this entry?", isPresented: $confirmDiscard, titleVisibility: .visible) {
+            Button("Discard", role: .destructive) { logging = false }
+            Button("Keep editing", role: .cancel) {}
+        }
+    }
+
+    private var draftIsEdited: Bool {
+        draftYes != seededYes || draftNumeric != seededNumeric || draftTime != seededTime
     }
 
     @ViewBuilder private var journalBody: some View {
@@ -243,6 +258,7 @@ struct NativeJournalLogForm: View {
     var onTime: (String, Date) -> Void = { _, _ in }
 
     @Environment(\.nativeStyle) private var style
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hapticTick = 0
 
     private var answeredCount: Int {
@@ -298,7 +314,7 @@ struct NativeJournalLogForm: View {
                 .buttonStyle(.plain)
             }
         }
-        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: allAnswered)
+        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: allAnswered)
         #if os(iOS)
         .sensoryFeedback(.impact(weight: .light), trigger: hapticTick)
         #endif
@@ -335,7 +351,7 @@ struct NativeJournalLogForm: View {
                 Spacer(minLength: 0)
             }
         }
-        .transition(.scale(scale: 0.96).combined(with: .opacity))
+        .transition(reduceMotion ? .opacity : .scale(scale: 0.96).combined(with: .opacity))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("All logged. Save to keep this day")
     }
@@ -355,7 +371,7 @@ struct NativeJournalLogForm: View {
                 Stepper(value: numericBinding(item), in: 0...99, step: 1) {
                     LabeledContent("Amount", value: numericLabel(item, follow: follow))
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
             if yes, follow.hasTime {
                 DatePicker(
@@ -366,10 +382,10 @@ struct NativeJournalLogForm: View {
                 #if os(macOS)
                 .datePickerStyle(.compact)
                 #endif
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
         }
-        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: answers[item.canonical])
+        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: answers[item.canonical])
         .accessibilityElement(children: .contain)
     }
 
@@ -405,7 +421,7 @@ struct NativeJournalLogForm: View {
 
     private func setAnswer(_ item: JournalCatalogItem, _ yes: Bool) {
         hapticTick += 1
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78)) {
             onToggle(item.canonical, yes)
         }
     }

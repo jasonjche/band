@@ -97,7 +97,7 @@ final class NativeHealthRangeTests: XCTestCase {
         let today = sampleMetric(day: "2026-11-16", hrv: 66, rhr: 51)
         XCTAssertEqual(NativeHealthMonitorMath.nightsWorn(days: [today], todayKey: today.day), 1)
         let empty = NativeHealthRange.summary(days: [sampleMetric(day: "2026-11-16")], todayKey: "2026-11-16")
-        XCTAssertEqual(empty.tileHeadline, "No Data")
+        XCTAssertEqual(empty.tileHeadline, "No data")
         XCTAssertFalse(empty.tileWithinRange)
     }
 

@@ -596,7 +596,7 @@ enum HomeDayNav {
 
 /// Compact stepper: two circular chevrons plus a tappable title. Fits beside strap status on 393 pt.
 enum HomeDateStepperLayout {
-    static let chevronSize: CGFloat = 32
+    static let chevronSize: CGFloat = 44
     static let titleMinWidth: CGFloat = 96
     static let spacing: CGFloat = 6
     static let strapGutter: CGFloat = 8
@@ -629,8 +629,9 @@ struct HomeDateStepper: View {
                 Text(title)
                     .font(.headline)
                     .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .multilineTextAlignment(.center)
                     .frame(minWidth: HomeDateStepperLayout.titleMinWidth, minHeight: HomeDateStepperLayout.hitHeight)
                     .contentShape(Rectangle())
             }
@@ -660,7 +661,7 @@ struct HomeDateStepper: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.body.weight(.semibold))
-                .frame(width: HomeDateStepperLayout.chevronSize, height: HomeDateStepperLayout.hitHeight)
+                .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(HomeStepperPressStyle())
@@ -742,8 +743,8 @@ struct HomeCalendarSheet: View {
                 Button { page(-1) } label: {
                     Image(systemName: "chevron.left")
                         .font(.body.weight(.semibold))
-                        .frame(width: NoopMetrics.compactControlSize, height: NoopMetrics.compactControlSize)
-                        .contentShape(Circle())
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!HomeCalendarMath.canPage(from: month, delta: -1, range: range, calendar: calendar))
@@ -755,8 +756,8 @@ struct HomeCalendarSheet: View {
                 Button { page(1) } label: {
                     Image(systemName: "chevron.right")
                         .font(.body.weight(.semibold))
-                        .frame(width: NoopMetrics.compactControlSize, height: NoopMetrics.compactControlSize)
-                        .contentShape(Circle())
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!HomeCalendarMath.canPage(from: month, delta: 1, range: range, calendar: calendar))
@@ -853,6 +854,16 @@ private struct HomeCalendarDayCell: View {
                 .font(.body.weight(isToday || isSelected ? .bold : .regular))
                 .foregroundStyle(numberInk(selected: isSelected))
                 .monospacedDigit()
+            if let recovery {
+                VStack {
+                    Spacer(minLength: 0)
+                    Circle()
+                        .fill(isSelected ? HomeCalendarInk.selectedText : HomeCalendarInk.recovery(recovery))
+                        .frame(width: 4, height: 4)
+                        .padding(.bottom, 3)
+                        .accessibilityHidden(true)
+                }
+            }
         }
         .frame(width: HomeCalendarSheetLayout.circle, height: HomeCalendarSheetLayout.circle)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -868,9 +879,19 @@ private struct HomeCalendarDayCell: View {
 
     private func accessibility(_ date: Date) -> String {
         var parts = [NativeChartDay.longLabel(Repository.localDayKey(date))]
-        if let recovery { parts.append("Recovery \(Int(recovery.rounded())) percent") }
+        if let recovery {
+            let percent = Int(recovery.rounded())
+            parts.append("recovery \(percent)%")
+            parts.append(recoveryColorName(recovery))
+        }
         if !enabled { parts.append("Unavailable") }
         return parts.joined(separator: ", ")
+    }
+
+    private func recoveryColorName(_ percent: Double) -> String {
+        if percent < 34 { return "red" }
+        if percent < 67 { return "yellow" }
+        return "green"
     }
 }
 
@@ -1065,7 +1086,7 @@ struct HomeStressMonitorTile: View {
                         .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
                         .foregroundStyle(NativePaint.stressBand(level, style: style))
                 } else {
-                    Text("No Data")
+                    Text("No data")
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
@@ -1105,7 +1126,7 @@ struct HomeHealthMonitorCard: View {
                 chevron: true
             )
             if rows.isEmpty {
-                NativeEmptyState(text: "No Data", symbol: "heart")
+                NativeEmptyState(text: "No data", symbol: "heart")
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, vital in
@@ -1248,7 +1269,7 @@ struct HomeStressHero: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(NativePaint.stressBand(level, style: style))
                 } else {
-                    NativeValueText(value: "No Data", size: 28)
+                    NativeValueText(value: "No data", size: 28)
                 }
             }
             Text(updated ?? " ")
@@ -1268,7 +1289,7 @@ struct HomeStressHero: View {
             if let updated { parts.append(updated) }
             return parts.joined(separator: ", ")
         }
-        return "No Data"
+        return "No data"
     }
 }
 
@@ -1332,7 +1353,7 @@ struct HomeActivitiesCard: View {
                     Button(action: onAdd) {
                         Image(systemName: "plus")
                             .font(.body.weight(.semibold))
-                            .frame(width: 32, height: 32)
+                            .frame(minWidth: 44, minHeight: 44)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -1403,11 +1424,11 @@ private struct HomeActivityRow: View, Equatable {
                     .fill(tint)
             )
 
-            Text(item.title.uppercased())
+            Text(style == .whoop ? item.title.uppercased() : item.title)
                 .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
                 .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
 
             Spacer(minLength: 6)
 
@@ -1516,6 +1537,8 @@ struct HomeJournalCard: View {
                     Button(hasEntry ? "Edit" : "Log", action: onLog)
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(NativeChrome.sleep)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                         .buttonStyle(.plain)
                 }
             }
@@ -1545,7 +1568,7 @@ struct HomeWeekCard: View {
         NativeChrome.panel {
             HomeDualSeriesHeader()
             if recovery.isEmpty && strain.isEmpty {
-                NativeEmptyState(text: "No Data")
+                NativeEmptyState(text: "No data")
                     .frame(height: 160)
             } else {
                 NativeStrainRecoveryChart(
@@ -1692,8 +1715,8 @@ struct HomeMetricCard: View, Equatable {
                     .frame(width: HomeActivityLayout.dashboardIconWidth, alignment: .center)
                 Text(style == .whoop ? item.title.uppercased() : item.title)
                     .font(style == .whoop ? NativeTokens.whoopCaps(13) : .body)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
                 Spacer(minLength: 6)
                 VStack(alignment: .trailing, spacing: 1) {
                     HStack(spacing: 4) {
@@ -1861,11 +1884,19 @@ enum NativeHomeCharts {
             ) {
             case .value(let value):
                 return (bucket.ts, value)
-            case .excluded, .gap:
+            case .excluded:
+                // WHOOP keeps the line running through activities (high stress while exercising is
+                // expected) and labels the span. Score the minute from HR alone so the line continues.
+                return (bucket.ts, BandStress.score(
+                    bpm: bucket.bpm, rmssd: rmssdByBucket[bucket.ts], isAsleep: asleep, baselines: baselines
+                ))
+            case .gap:
                 return nil
             }
         }
-        let hours = BandStress.smoothCentered(points: scored).map { point in
+        let hours = BandStress.smoothCentered(
+            points: scored, radius: NativeHomeCharts.stressDisplayRadius
+        ).map { point in
             NativeHourPoint(
                 time: Date(timeIntervalSince1970: TimeInterval(point.ts)),
                 value: point.value
@@ -1873,6 +1904,10 @@ enum NativeHomeCharts {
         }
         return (hours, exclusions)
     }
+
+    /// Minutes either side for the displayed stress line: a 15-minute centred mean, close to
+    /// WHOOP's smooth trace. The 5-minute default in `BandStress` stayed too jittery on the phone.
+    static let stressDisplayRadius = 7
 
     static func stressValue(bpm: Double,
                             baselines: BandStress.Baselines = .fallback,
@@ -2065,9 +2100,10 @@ struct NativeNoDataCard: View {
                     .font(.system(size: 48, weight: .regular))
                     .foregroundStyle(.secondary)
                     .symbolRenderingMode(.hierarchical)
-                Text("No Data Yet")
+                Text("No data yet")
                     .font(style == .whoop ? NativeTokens.whoopNumber(22, weight: .bold) : .title2.bold())
                     .multilineTextAlignment(.center)
+                    .accessibilityAddTraits(.isHeader)
                 Text("Pair your strap or import a WHOOP export to see Recovery, Sleep and Strain.")
                     .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline)
                     .foregroundStyle(style == .whoop ? NativeTokens.whoopLabel : Color.secondary)
@@ -2092,7 +2128,6 @@ struct NativeNoDataCard: View {
             .padding(.vertical, 16)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("No Data Yet")
     }
 }
 
@@ -2162,8 +2197,9 @@ struct HomeTonightSleepCard: View {
                 Button(model.alarmLabel ?? "Set Alarm", action: onAlarm)
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(NativePaint.sleep(style))
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 44)
                     .padding(.top, 4)
+                    .contentShape(Rectangle())
                     .buttonStyle(.plain)
                     .accessibilityLabel(model.alarmLabel ?? "Set Alarm")
             }

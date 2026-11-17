@@ -198,13 +198,14 @@ public enum NativeTokens {
     }
 
     /// Heavy WHOOP numerals. Default SF, not Rounded, not a WHOOP face.
+    /// Scales with Dynamic Type; at the default size the face matches `size`.
     public static func whoopNumber(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        .system(size: size, weight: weight, design: .default).monospacedDigit()
+        StrandFont.scaledSystem(size: size, weight: weight, design: .default).monospacedDigit()
     }
 
-    /// Small ALL-CAPS letter-spaced labels.
+    /// Small ALL-CAPS letter-spaced labels. Scales with Dynamic Type.
     public static func whoopCaps(_ size: CGFloat = 11) -> Font {
-        .system(size: size, weight: .semibold, design: .default)
+        StrandFont.scaledSystem(size: size, weight: .semibold, design: .default)
     }
 
     public static let whoopCapsTracking: CGFloat = 0.8

@@ -87,7 +87,9 @@ struct NativeScopeChart: View {
                 hourBars: hourBars,
                 previewTime: previewTime,
                 scrub: scrub,
-                scrollDate: $scrollDate
+                scrollDate: $scrollDate,
+                chartTitle: accessibilityName,
+                chartUnit: unit ?? ""
             )
             NativeTrendRows(
                 trend: series.trend(visible: window, higherIsBetter: higherIsBetter),
@@ -306,6 +308,8 @@ private struct NativeScopePlotHost: View {
     var previewTime: Date?
     var scrub: NativeScopeScrub
     @Binding var scrollDate: Date?
+    var chartTitle: String
+    var chartUnit: String
 
     var body: some View {
         Group {
@@ -332,6 +336,41 @@ private struct NativeScopePlotHost: View {
             }
         }
         .frame(height: plotHeight)
+        .nativeChartDescriptor(scopeDescriptor)
+    }
+
+    private var scopeDescriptor: NativeChartDescriptor {
+        if usesHours {
+            let values = hourPoints.map(\.value)
+            return NativeChartDescriptor(
+                title: chartTitle,
+                unit: chartUnit,
+                xKind: .date,
+                points: hourPoints.map {
+                    NativeChartDescriptor.Point(
+                        xLabel: NativeScopeFormat.time($0.time),
+                        xValue: $0.time.timeIntervalSince1970,
+                        y: $0.value
+                    )
+                },
+                yRange: NativeChartDescriptor.yRange(of: values)
+            )
+        }
+        let known = series.buckets.compactMap { bucket -> NativeChartDescriptor.Point? in
+            guard let value = bucket.value else { return nil }
+            return NativeChartDescriptor.Point(
+                xLabel: series.selectionDateText(for: bucket, calendar: calendar),
+                xValue: bucket.start.timeIntervalSince1970,
+                y: value
+            )
+        }
+        return NativeChartDescriptor(
+            title: chartTitle,
+            unit: chartUnit,
+            xKind: series.scope == .day ? .date : .category,
+            points: known,
+            yRange: NativeChartDescriptor.yRange(of: known.map(\.y))
+        )
     }
 
     private var timeBinding: Binding<Date?> {
@@ -947,7 +986,7 @@ struct NativeMetricChartPage: View {
                     value: "\(format(latest.value))\(unit.map { " \($0)" } ?? "")"
                 )
             } else {
-                NativeLatestCapsule(label: "Latest", value: "Unavailable")
+                NativeLatestCapsule(label: "Latest", value: "No reading yet")
             }
             if let sourceCaption {
                 Text(sourceCaption)

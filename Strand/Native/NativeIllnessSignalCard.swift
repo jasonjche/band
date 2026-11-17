@@ -108,6 +108,9 @@ struct NativeIllnessSignalCard: View {
         case .skin: z = result.zSkin
         }
         guard let z else { return "—" }
-        return String(format: "%+.1f σ", z)
+        let magnitude = abs(z)
+        if magnitude < BandIllnessSignal.zThreshold { return "Typical" }
+        if magnitude < BandIllnessSignal.zThreshold + 1 { return "A bit high" }
+        return "Well above typical"
     }
 }

@@ -247,7 +247,7 @@ final class NativeHomeLogicTests: XCTestCase {
     func testStressMonitorTileUsesSameBandAndClockAsTheChartCard() {
         let empty = HomeMonitorTile.stress(level: nil, at: nil)
         XCTAssertNil(empty.value)
-        XCTAssertEqual(empty.accessibility, "No Data")
+        XCTAssertEqual(empty.accessibility, "No data")
 
         let time = Date(timeIntervalSince1970: 1_763_409_000)
         let tile = HomeMonitorTile.stress(level: 1.5, at: time)
