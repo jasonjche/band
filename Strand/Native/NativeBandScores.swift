@@ -48,6 +48,36 @@ enum NativeBandScores {
     static func resolve(days: [DailyMetric], sleeps: [CachedSleepSession] = [],
                         workouts: [WorkoutRow] = [],
                         importedSleep: [String: ImportedSleepFigures] = [:]) -> Snapshot {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let hit = cache.first(where: {
+            $0.days == days && $0.sleeps == sleeps && $0.workouts == workouts
+                && $0.importedSleep == importedSleep
+        }) {
+            return hit.snapshot
+        }
+        let snapshot = compute(days: days, sleeps: sleeps, workouts: workouts, importedSleep: importedSleep)
+        cache.insert(CacheEntry(days: days, sleeps: sleeps, workouts: workouts,
+                                importedSleep: importedSleep, snapshot: snapshot), at: 0)
+        if cache.count > 4 { cache.removeLast() }
+        return snapshot
+    }
+
+    private struct CacheEntry {
+        var days: [DailyMetric]
+        var sleeps: [CachedSleepSession]
+        var workouts: [WorkoutRow]
+        var importedSleep: [String: ImportedSleepFigures]
+        var snapshot: Snapshot
+    }
+
+    /// Screens call `resolve` from view bodies, so the full-history pipeline runs once per data change.
+    private static var cache: [CacheEntry] = []
+    private static let cacheLock = NSLock()
+
+    private static func compute(days: [DailyMetric], sleeps: [CachedSleepSession],
+                                workouts: [WorkoutRow],
+                                importedSleep: [String: ImportedSleepFigures]) -> Snapshot {
         let inputs = dayInputs(days: days, sleeps: sleeps, workouts: workouts)
         let band: [BandScores.DayOutput]
         if let params = params(), !inputs.isEmpty {

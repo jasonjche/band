@@ -2,6 +2,7 @@
 import SwiftUI
 import StrandDesign
 import StrandAnalytics
+import WhoopStore
 
 /// Hard-coded Native chrome for snapshot iteration. Not shipped; Debug only.
 struct NativeComponentGallery: View {
@@ -36,114 +37,177 @@ struct NativeGallerySnapshot {
         zip(weekKeys, values).map { NativeDayPoint(key: $0.0, value: $0.1 ?? .nan) }
     }
 
-    static var sleepBars: [NativeDayPoint] { points([82, 90, 87, nil, 91, 85, 87]) }
-    static var recoveryBars: [NativeDayPoint] { points([40, 55, 49, nil, 62, 44, 37]) }
-    static var strainBars: [NativeDayPoint] { points([8.2, 10.1, 7.1, nil, 12.4, 9.0, 7.1]) }
-    static var hrvLine: [NativeDayPoint] { points([58, 62, 70, nil, 64, 60, 66]) }
+    /// 12:37 AM – 8:00 AM on the highlighted day. In bed 7:23; asleep (stages) 6:50.
+    static var sleepStart: Date {
+        localDate(year: 2026, month: 11, day: 15, hour: 0, minute: 37)
+    }
+    static var sleepEnd: Date {
+        localDate(year: 2026, month: 11, day: 15, hour: 8, minute: 0)
+    }
 
-    static var sleepScore: NativeScore {
-        NativeScore(
-            name: "Sleep",
-            value: "87%",
-            known: true,
-            fraction: 0.87,
-            tint: NativeTokens.sleep,
-            rows: [
-                NativeScore.Row(
-                    title: "Hours vs. Needed", value: "89%", prior: "93%",
-                    symbol: "clock", delta: .down, route: .metric("hours_vs_needed_pct")
-                ),
-                NativeScore.Row(
-                    title: "Sleep Consistency", value: "79%", prior: "82%",
-                    symbol: "calendar", delta: .down, route: .metric("sleep_consistency")
-                ),
-                NativeScore.Row(
-                    title: "Sleep Efficiency", value: "87%", prior: "90%",
-                    symbol: "bed.double", delta: .down, route: .metric("sleep_efficiency")
-                ),
-            ],
-            insight: "",
-            route: .sleep
+    private static func localDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = .current
+        return cal.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute))!
+    }
+
+    static func sampleDay(
+        day: String,
+        strain: Double? = 34,
+        recovery: Double = 45,
+        sleepMin: Double = 410,
+        light: Double? = 250,
+        deep: Double? = 70,
+        rem: Double? = 90,
+        efficiency: Double = 0.925,
+        hrv: Double = 66,
+        rhr: Int = 51,
+        resp: Double = 14.7,
+        steps: Int = 6545,
+        kcal: Double = 512,
+        spo2: Double = 98,
+        skin: Double = 34.5
+    ) -> DailyMetric {
+        DailyMetric(
+            day: day,
+            totalSleepMin: sleepMin, efficiency: efficiency,
+            deepMin: deep, remMin: rem, lightMin: light,
+            disturbances: 2, restingHr: rhr, avgHrv: hrv, recovery: recovery, strain: strain,
+            exerciseCount: 1, spo2Pct: spo2, skinTempDevC: 0.1, respRateBpm: resp,
+            steps: steps, activeKcalEst: kcal, skinTempC: skin
         )
     }
 
-    static var recoveryScore: NativeScore {
-        NativeScore(
-            name: "Recovery",
-            value: "37%",
-            known: true,
-            fraction: 0.37,
-            tint: NativeTokens.recoveryBand(37),
-            rows: [
-                NativeScore.Row(
-                    title: "Heart Rate Variability", value: "66 ms", prior: "60 ms",
-                    symbol: "waveform.path.ecg", delta: .up, route: .metric("hrv")
-                ),
-                NativeScore.Row(
-                    title: "Resting Heart Rate", value: "51 BPM", prior: "52 BPM",
-                    symbol: "heart", delta: .down, route: .metric("resting_hr")
-                ),
-                NativeScore.Row(
-                    title: "Respiratory Rate", value: "14.7 rpm", prior: "14.5 rpm",
-                    symbol: "lungs", delta: .flat, route: .metric("resp_rate")
-                ),
-                NativeScore.Row(
-                    title: "Sleep Performance", value: "87%", prior: "85%",
-                    symbol: "moon", delta: .up, route: .sleep
-                ),
-            ],
-            insight: "",
-            route: .metric("recovery")
-        )
+    static var snapshotDays: [DailyMetric] {
+        zip(weekKeys, [
+            (82, 40, 8.2, 4120, 400, 58, 52, 14.5),
+            (90, 55, 10.1, 8800, 430, 62, 51, 14.6),
+            (87, 49, 7.1, 5100, 410, 70, 50, 14.8),
+            (nil, nil, nil, nil, nil, nil, nil, nil),
+            (91, 62, 12.4, 10210, 440, 64, 51, 14.4),
+            (85, 44, 9.0, 7340, 390, 60, 52, 14.6),
+            (87, 37, 7.1, 6545, 410, 66, 51, 14.7),
+        ] as [(Double?, Double?, Double?, Int?, Double?, Double?, Int?, Double?)]).map { key, row in
+            if key == "2026-11-12" {
+                return DailyMetric(
+                    day: key,
+                    totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+                    disturbances: nil, restingHr: nil, avgHrv: nil, recovery: nil, strain: nil,
+                    exerciseCount: nil
+                )
+            }
+            let whoopStrain = row.2 ?? 7.1
+            return sampleDay(
+                day: key,
+                strain: whoopStrain / 0.21,
+                recovery: row.1 ?? 45,
+                sleepMin: row.4 ?? 410,
+                light: key == highlightKey ? 250 : (key == "2026-11-14" ? 220 : nil),
+                deep: key == highlightKey ? 70 : (key == "2026-11-14" ? 80 : nil),
+                rem: key == highlightKey ? 90 : (key == "2026-11-14" ? 100 : nil),
+                hrv: row.5 ?? 66,
+                rhr: row.6 ?? 51,
+                resp: row.7 ?? 14.7,
+                steps: row.3 ?? 6545,
+                kcal: key == highlightKey ? 512 : 480
+            )
+        }
     }
 
-    static var stages: [NativeStage] {
+    static var snapshotSleeps: [CachedSleepSession] {
         [
-            NativeStage(name: "Awake", minutes: 79, typical: 55, tint: NativeTokens.sleepAwake),
-            NativeStage(name: "Light", minutes: 250, typical: 220, tint: NativeTokens.sleepCore),
-            NativeStage(name: "Deep", minutes: 70, typical: 80, tint: NativeTokens.sleepDeep),
-            NativeStage(name: "REM", minutes: 90, typical: 100, tint: NativeTokens.sleepREM),
+            CachedSleepSession(
+                startTs: Int(sleepStart.timeIntervalSince1970),
+                endTs: Int(sleepEnd.timeIntervalSince1970),
+                efficiency: 92.5, restingHr: 51, avgHrv: 66, stagesJSON: nil
+            )
         ]
     }
 
+    static var snapshotWorkouts: [WorkoutRow] {
+        let runStart = localDate(year: 2026, month: 11, day: 15, hour: 8, minute: 27)
+        let runEnd = localDate(year: 2026, month: 11, day: 15, hour: 8, minute: 55)
+        let liftStart = localDate(year: 2026, month: 11, day: 13, hour: 18, minute: 0)
+        let liftEnd = localDate(year: 2026, month: 11, day: 13, hour: 18, minute: 40)
+        return [
+            WorkoutRow(
+                startTs: Int(runStart.timeIntervalSince1970),
+                endTs: Int(runEnd.timeIntervalSince1970),
+                sport: "Running", source: "my-whoop",
+                durationS: 28 * 60, energyKcal: 312, avgHr: 168, maxHr: 182,
+                strain: 26, distanceM: 5200,
+                zonesJSON: #"{"zone1":8,"zone2":22,"zone3":18,"zone4":40,"zone5":12}"#,
+                notes: nil, steps: 4200
+            ),
+            WorkoutRow(
+                startTs: Int(liftStart.timeIntervalSince1970),
+                endTs: Int(liftEnd.timeIntervalSince1970),
+                sport: "Strength", source: "my-whoop",
+                durationS: 40 * 60, energyKcal: 220, avgHr: 118, maxHr: 142,
+                strain: 18, distanceM: nil,
+                zonesJSON: #"{"zone1":40,"zone2":35,"zone3":20,"zone4":5,"zone5":0}"#,
+                notes: nil, steps: nil
+            ),
+        ]
+    }
+
+    static var snapshotImported: [String: ImportedSleepFigures] {
+        Dictionary(uniqueKeysWithValues: weekKeys.map { key in
+            (key, ImportedSleepFigures(performancePct: key == highlightKey ? 87 : 85,
+                                       consistencyPct: key == highlightKey ? 79 : 82,
+                                       needMin: 465, debtMin: 36))
+        })
+    }
+
+    static var snapshotModel: NativeDay.Model {
+        NativeDay.make(
+            days: snapshotDays,
+            sleeps: snapshotSleeps,
+            workouts: snapshotWorkouts,
+            todayKey: highlightKey,
+            connected: true,
+            effortScale: .whoop,
+            now: localDate(year: 2026, month: 11, day: 15, hour: 16, minute: 0),
+            importedSleep: snapshotImported
+        )
+    }
+
+    static var sleepBars: [NativeDayPoint] {
+        NativeWeek.points(kind: .sleep, days: snapshotDays, todayKey: highlightKey, importedSleep: snapshotImported)
+    }
+    static var recoveryBars: [NativeDayPoint] {
+        NativeWeek.points(kind: .recovery, days: snapshotDays, todayKey: highlightKey, importedSleep: snapshotImported)
+    }
+    static var strainBars: [NativeDayPoint] {
+        NativeWeek.points(kind: .strain, days: snapshotDays, todayKey: highlightKey)
+    }
+    static var hrvLine: [NativeDayPoint] {
+        NativeWeek.series(snapshotDays, todayKey: highlightKey) { $0.avgHrv }
+    }
+
+    static var sleepScore: NativeScore { snapshotModel.sleep }
+    static var recoveryScore: NativeScore { snapshotModel.recovery }
+    static var stages: [NativeStage] { snapshotModel.sleepStages }
+
     static var overnightHr: [NativeHourPoint] {
-        let start = Date(timeIntervalSince1970: 1_763_276_400)
-        return stride(from: 0, through: 480, by: 20).map { minute in
+        let start = sleepStart
+        return stride(from: 0, through: 430, by: 20).map { minute in
             let t = Double(minute)
-            let bpm = 54 + 8 * sin(t / 50) + (minute > 400 ? 10 : 0)
+            let bpm = 54 + 8 * sin(t / 50) + (minute > 360 ? 10 : 0)
             return NativeHourPoint(time: start.addingTimeInterval(t * 60), value: bpm)
         }
     }
 
-    static var sleepStart: Date { Date(timeIntervalSince1970: 1_763_276_400) }
-    static var sleepEnd: Date { Date(timeIntervalSince1970: 1_763_307_000) }
-
     static var sleepWeekCards: [NativeWeek.Card] {
-        [
-            NativeWeek.Card(
-                title: "Sleep Performance", points: sleepBars, maxY: 100, bars: true,
-                tint: NativeChrome.sleep, route: nil, format: .percent, band: true
-            ),
-            NativeWeek.Card(
-                title: "Hours of Sleep",
-                points: points([400, 430, 410, nil, 440, 390, 431]),
-                maxY: 480, bars: true, tint: NativeChrome.sleep,
-                route: .metric("hours_vs_needed_pct"), format: .duration, band: false
-            ),
-        ]
+        NativeWeek.cards(
+            kind: .sleep, days: snapshotDays, todayKey: highlightKey, importedSleep: snapshotImported
+        )
     }
 
     static var recoveryWeekCards: [NativeWeek.Card] {
-        [
-            NativeWeek.Card(
-                title: "Recovery", points: recoveryBars, maxY: 100, bars: true,
-                tint: NativeChrome.recovery, route: nil, format: .percent, band: true
-            ),
-            NativeWeek.Card(
-                title: "Heart Rate Variability", points: hrvLine, maxY: 80, bars: false,
-                tint: NativeChrome.heart, route: .metric("hrv"), format: .number, band: false
-            ),
-        ]
+        NativeWeek.cards(
+            kind: .recovery, days: snapshotDays, todayKey: highlightKey, importedSleep: snapshotImported
+        )
     }
 
     static var sections: [Section] {
@@ -170,31 +234,12 @@ struct NativeGallerySnapshot {
         ]
     }
 
-    static var strainScore: NativeScore {
-        NativeScore(
-            name: "Strain",
-            value: "7.1",
-            known: true,
-            fraction: 7.1 / 21,
-            tint: NativeTokens.strain,
-            rows: [
-                NativeScore.Row(
-                    title: "Steps", value: "6545", prior: "5120",
-                    symbol: "figure.walk", delta: .up, route: .metric("steps")
-                ),
-            ],
-            insight: "",
-            route: .metric("strain")
-        )
-    }
+    static var strainScore: NativeScore { snapshotModel.strain }
 
     static var strainWeekCards: [NativeWeek.Card] {
-        [
-            NativeWeek.Card(
-                title: "Strain", points: strainBars, maxY: 21, bars: true,
-                tint: NativeChrome.strain, route: nil, format: .strain, band: false
-            ),
-        ]
+        NativeWeek.cards(
+            kind: .strain, days: snapshotDays, todayKey: highlightKey, workouts: snapshotWorkouts
+        )
     }
 
     private static var strainPage: some View {
@@ -202,17 +247,7 @@ struct NativeGallerySnapshot {
             score: strainScore,
             weekCards: strainWeekCards,
             kind: .strain,
-            activities: [
-                NativeDay.Activity(
-                    startTs: 1,
-                    sport: "Running",
-                    strainText: "13.6",
-                    timeRange: "8:27 AM – 8:55 AM",
-                    startClock: "8:27 AM",
-                    endClock: "8:55 AM",
-                    symbol: "figure.run"
-                ),
-            ],
+            activities: snapshotModel.activities,
             dayKey: highlightKey,
             scrolls: false
         )
@@ -223,9 +258,9 @@ struct NativeGallerySnapshot {
             sport: "Running",
             symbol: "figure.run",
             timeRange: "8:27 AM – 8:55 AM",
-            strainText: "13.6",
+            strainText: NativeDayLogic.strainText(26, scale: .whoop),
             strainDelta: .up,
-            duration: "0:28:30",
+            duration: "0:28:00",
             zones: [
                 NativeActivity.Zone(zone: 1, minutes: 0.1, label: "Zone 1"),
                 NativeActivity.Zone(zone: 2, minutes: 1.7, label: "Zone 2"),
@@ -297,7 +332,7 @@ struct NativeGallerySnapshot {
                 points: sleepBars, bars: true, tint: NativeTokens.sleep,
                 format: { "\(Int($0.rounded()))" }, axisFormat: { "\(Int($0.rounded()))" },
                 unit: "%", maxY: 100,
-                color: NativeChrome.sleepBand, highlightKey: highlightKey, plotHeight: 200,
+                highlightKey: highlightKey, plotHeight: 200,
                 accessibilityName: "Sleep Performance"
             )
         }
@@ -346,11 +381,12 @@ struct NativeGallerySnapshot {
 
     private static var lastNight: some View {
         NativeLastNightCard(
-            asleepMinutes: 431,
+            asleepMinutes: snapshotModel.asleepMinutes,
+            sleepHours: snapshotModel.sleepHours,
             stages: stages,
             sleepStart: sleepStart,
             sleepEnd: sleepEnd,
-            overnightHr: overnightHr,
+            awakeTypical: snapshotModel.awakeTypical,
             needMinutes: 465,
             debtMinutes: 36
         )
@@ -365,14 +401,16 @@ struct NativeGallerySnapshot {
             score: sleepScore,
             weekCards: sleepWeekCards,
             kind: .sleep,
-            asleepMinutes: 431,
+            sleepHours: snapshotModel.sleepHours,
+            asleepMinutes: snapshotModel.asleepMinutes,
             stages: stages,
             sleepStart: sleepStart,
             sleepEnd: sleepEnd,
             overnightHr: overnightHr,
+            awakeTypical: snapshotModel.awakeTypical,
             dayKey: highlightKey,
-            needMinutes: 465,
-            debtMinutes: 36,
+            needMinutes: snapshotModel.sleepNeedMin,
+            debtMinutes: snapshotModel.sleepDebtMin,
             scrolls: false
         )
     }
@@ -428,8 +466,7 @@ private struct GalleryRecoveryContributors: View {
                         tint: row.title.contains("Sleep") ? NativePaint.sleep(style) : NativePaint.heart(style),
                         valueTint: row.title.contains("Sleep")
                             ? NativePaint.sleepBand(NativeScoreMath.percentValue(row.value) ?? 0, style: style)
-                            : .primary,
-                        showsBand: false
+                            : .primary
                     )
                 }
             }
@@ -449,15 +486,12 @@ private struct GallerySleepContributors: View {
                         symbol: row.symbol,
                         title: row.title,
                         value: row.value,
-                        prior: row.prior,
+                        prior: NativeScoreMath.hasValue(row.prior) ? row.prior : nil,
                         delta: row.delta,
                         tint: NativePaint.sleep(style),
-                        valueTint: NativePaint.sleepBand(NativeScoreMath.percentValue(row.value) ?? 0, style: style),
-                        showsBand: NativeScoreMath.attachedPercent(row.value).hasSuffix("%")
+                        valueTint: NativePaint.sleepBand(NativeScoreMath.percentValue(row.value) ?? 0, style: style)
                     )
                 }
-                NativeWhoopBandLegend()
-                    .padding(.top, 12)
             }
         }
     }
@@ -478,7 +512,8 @@ private struct GallerySleepWeek: View {
                         maxY: card.maxY,
                         color: card.band ? { NativePaint.sleepBand($0, style: style) } : nil,
                         highlightKey: NativeGallerySnapshot.highlightKey, plotHeight: 200,
-                        accessibilityName: card.title
+                        accessibilityName: card.title,
+                        clockHero: card.format == .duration
                     )
                 }
             }
@@ -525,7 +560,8 @@ private struct GalleryStrainWeek: View {
                 NativeChartBlock(
                     points: NativeGallerySnapshot.strainBars, bars: true, tint: NativePaint.strain(style),
                     format: { String(format: "%.1f", $0) }, maxY: 21,
-                    highlightKey: NativeGallerySnapshot.highlightKey, plotHeight: 200, accessibilityName: "Strain"
+                    highlightKey: NativeGallerySnapshot.highlightKey, plotHeight: 200, accessibilityName: "Strain",
+                    yTicks: NativeDayLogic.strainYTicks(maxY: 21)
                 )
             }
         }

@@ -98,11 +98,19 @@ enum AppleDemoSeeder {
             let nWorkouts = !trains ? 0 : (rng.nextDouble() < 0.22 ? 2 : 1)
 
             // --- sleep architecture ---
+            // asleep = light + deep + rem; in bed = session end − start. Keep the four numbers
+            // consistent so Home, Sleep hero, Duration, Time in bed, and stage rows agree.
             let totalSleep = gauss(&rng, 430.0, 35.0).clamped(300.0, 540.0)
             let efficiency = gauss(&rng, 89.0, 4.0).clamped(72.0, 98.0)
-            let deep = (totalSleep * gauss(&rng, 0.20, 0.03)).clamped(35.0, 130.0)
-            let rem = (totalSleep * gauss(&rng, 0.23, 0.03)).clamped(45.0, 150.0)
+            var deep = (totalSleep * gauss(&rng, 0.20, 0.03)).clamped(35.0, 130.0)
+            var rem = (totalSleep * gauss(&rng, 0.23, 0.03)).clamped(45.0, 150.0)
+            if deep + rem > totalSleep - 60 {
+                let scale = (totalSleep - 60) / (deep + rem)
+                deep *= scale
+                rem *= scale
+            }
             let light = (totalSleep - deep - rem).atLeast(60.0)
+            let asleep = light + deep + rem
             let disturbances = Int(gauss(&rng, 6.0, 3.0).clamped(0.0, 18.0))
 
             // --- autonomic markers ---
@@ -125,24 +133,29 @@ enum AppleDemoSeeder {
                  : gauss(&rng, 13.5, 2.4) + Double(nWorkouts - 1) * 2.5) * STRAIN_SCALE
             ).clamped(3.0 * STRAIN_SCALE, 100.0)
 
+            let steps = Int(gauss(&rng, 8500.0, 2600.0).clamped(1200.0, 19000.0))
+            let activeKcal = round1((Double(steps) * 0.045 + Double(nWorkouts) * 220).clamped(120.0, 1400.0))
             daily.append(DailyMetric(
-                day: day, totalSleepMin: round1(totalSleep), efficiency: round1(efficiency),
+                day: day, totalSleepMin: round1(asleep), efficiency: round1(efficiency),
                 deepMin: round1(deep), remMin: round1(rem), lightMin: round1(light),
                 disturbances: disturbances, restingHr: rhr, avgHrv: round1(hrv),
                 recovery: round1(recovery), strain: round1(strain), exerciseCount: nWorkouts,
-                spo2Pct: round1(spo2), skinTempDevC: round2(skinTempDev), respRateBpm: round1(resp)))
+                spo2Pct: round1(spo2), skinTempDevC: round2(skinTempDev), respRateBpm: round1(resp),
+                steps: steps, activeKcalEst: activeKcal, skinTempC: round1(34.4 + skinTempDev)))
 
             // --- sleep session: previous night ~23:10 → wake, with a REAL stage timeline so the
             //     hypnogram renders the computed segment path (not just the proportional bar). ---
             let onsetBase = cal.date(byAdding: .day, value: -1, to: date)!
             let onsetDay = cal.startOfDay(for: onsetBase)
             let onset = Int(onsetDay.timeIntervalSince1970) + 23 * 3600 + 10 * 60 + rng.nextInt(-1800, 1800)
-            let inBedSec = Int((totalSleep + totalSleep * (100 - efficiency) / 100) * 60)
+            let inBedMin = asleep / (efficiency / 100.0)
+            let inBedSec = Int(inBedMin * 60)
+            let awakeMin = max(0, inBedMin - asleep)
             sleeps.append(CachedSleepSession(
                 startTs: onset, endTs: onset + inBedSec,
                 efficiency: round1(efficiency), restingHr: rhr, avgHrv: round1(hrv),
                 stagesJSON: segmentsJSON(onset: onset, deep: deep, rem: rem, light: light,
-                                         awakeMin: Double(disturbances) * 1.6)))
+                                         awakeMin: awakeMin)))
             overnightHr(&hr, from: onset, to: onset + inBedSec, rhr: rhr, rng: &rng)
             if i >= DAYS - 14 {
                 daytimeHr(&hr, from: onset + inBedSec, hours: 16, rhr: rhr, rng: &rng)
@@ -155,20 +168,19 @@ enum AppleDemoSeeder {
                 value: round1((18.0 - fitness * 0.2 + gauss(&rng, 0.0, 0.4)).clamped(10.0, 24.0))))
             // Export-verbatim sleep figures (same metricSeries keys the importers write), so the demo
             // Sleep tiles exercise the prefer-imported path.
-            let demoNeedMin = (totalSleep + gauss(&rng, 25.0, 20.0)).clamped(420.0, 560.0)
+            let demoNeedMin = (asleep + gauss(&rng, 25.0, 20.0)).clamped(420.0, 560.0)
             series.append(MetricPoint(day: day, key: "sleep_performance",
-                value: round1(min(totalSleep / demoNeedMin * 100.0, 100.0))))
+                value: round1(min(asleep / demoNeedMin * 100.0, 100.0))))
             series.append(MetricPoint(day: day, key: "sleep_consistency",
                 value: round1(gauss(&rng, 80.0, 8.0).clamped(40.0, 100.0))))
             series.append(MetricPoint(day: day, key: "sleep_need_min", value: round1(demoNeedMin)))
             series.append(MetricPoint(day: day, key: "sleep_debt_min",
-                value: round1((demoNeedMin - totalSleep).atLeast(0.0))))
+                value: round1((demoNeedMin - asleep).atLeast(0.0))))
 
             // --- Apple Health daily aggregate ---
-            let steps = Int(gauss(&rng, 8500.0, 2600.0).clamped(1200.0, 19000.0))
             appleRows.append(AppleDaily(
                 day: day, steps: steps,
-                activeKcal: round1((Double(steps) * 0.045 + Double(nWorkouts) * 220).clamped(120.0, 1400.0)),
+                activeKcal: activeKcal,
                 basalKcal: round1(gauss(&rng, 1650.0, 40.0)),
                 vo2max: round1((46 + fitness * 0.3 + gauss(&rng, 0.0, 0.5)).clamped(38.0, 56.0)),
                 avgHr: Int(gauss(&rng, 72.0, 5.0)), maxHr: Int(gauss(&rng, 150.0, 12.0)),
@@ -194,7 +206,7 @@ enum AppleDemoSeeder {
                     durationS: round1(durSec),
                     energyKcal: round1((durSec / 60) * gauss(&rng, 9.0, 2.0)),
                     avgHr: avg, maxHr: avg + Int(gauss(&rng, 22.0, 6.0)),
-                    strain: round1((strain * gauss(&rng, 0.6, 0.1)).clamped(4.0 * STRAIN_SCALE, 100.0)),
+                    strain: round1(min(strain, (strain * gauss(&rng, 0.6, 0.1)).clamped(4.0 * STRAIN_SCALE, strain))),
                     distanceM: DISTANCE_SPORTS.contains(sport) ? round1(gauss(&rng, 6500.0, 2500.0).atLeast(500.0)) : nil,
                     zonesJSON: zonesJSON, notes: nil, steps: nil))
             }

@@ -136,6 +136,113 @@ final class NativeDayLogicTests: XCTestCase {
         XCTAssertEqual(empty.journalDays, Array(repeating: false, count: 7))
     }
 
+    func testSleepDurationOneFunnelAcrossHomeAndSleep() {
+        let today = "2026-11-15"
+        let start = localDate(year: 2026, month: 11, day: 15, hour: 0, minute: 37)
+        let end = localDate(year: 2026, month: 11, day: 15, hour: 8, minute: 0)
+        let session = CachedSleepSession(
+            startTs: Int(start.timeIntervalSince1970),
+            endTs: Int(end.timeIntervalSince1970),
+            efficiency: 92.5, restingHr: 51, avgHrv: 66, stagesJSON: nil
+        )
+        let day = DailyMetric(
+            day: today,
+            totalSleepMin: 431, efficiency: 0.925, deepMin: 70, remMin: 90, lightMin: 250,
+            disturbances: 2, restingHr: 51, avgHrv: 66, recovery: 37, strain: 34,
+            exerciseCount: 1, steps: 6545
+        )
+        let model = NativeDay.make(
+            days: [day], sleeps: [session], workouts: [],
+            todayKey: today, connected: true, effortScale: .whoop,
+            now: localDate(year: 2026, month: 11, day: 15, hour: 16, minute: 0)
+        )
+        let asleep = NativeDayLogic.asleepMinutes(
+            light: 250, deep: 70, rem: 90, totalSleepMin: 431
+        )
+        XCTAssertEqual(asleep ?? -1, 410, accuracy: 0.1)
+        XCTAssertEqual(model.asleepMinutes ?? -1, 410, accuracy: 0.1)
+        XCTAssertEqual(model.inBedMinutes ?? -1, 443, accuracy: 0.6)
+        XCTAssertEqual(model.sleepHours, NativeDayLogic.durationText(410))
+        XCTAssertEqual(model.sleepBlock, model.sleepHours)
+        let pill = HomeActivityItem.make(from: model).first { $0.kind == .sleep }
+        XCTAssertEqual(pill?.trailing, model.sleepHours)
+        let awake = model.sleepStages.first { $0.name == "Awake" }?.minutes ?? 0
+        let staged = model.sleepStages.filter { $0.name != "Awake" }.compactMap(\.minutes).reduce(0, +)
+        XCTAssertEqual(staged, 410, accuracy: 0.1)
+        XCTAssertEqual(awake + staged, model.inBedMinutes ?? 0, accuracy: 0.6)
+        let parts = NativeScoreMath.clockParts(model.asleepMinutes ?? 0)
+        XCTAssertEqual(parts.hours, 6)
+        XCTAssertEqual(parts.minutes, 50)
+    }
+
+    func testStepsOneFormatterOnHomeAndStrain() {
+        let day = DailyMetric(
+            day: "2026-11-16",
+            totalSleepMin: 410, efficiency: 0.92, deepMin: 70, remMin: 90, lightMin: 250,
+            disturbances: 1, restingHr: 51, avgHrv: 66, recovery: 49, strain: 34,
+            exerciseCount: 1, steps: 6545, activeKcalEst: 512
+        )
+        let model = NativeDay.make(
+            days: [day], sleeps: [], workouts: [],
+            todayKey: day.day, connected: true, effortScale: .whoop,
+            now: localDate(year: 2026, month: 11, day: 16, hour: 10, minute: 0)
+        )
+        let expected = NativeDayLogic.countText(6545)
+        XCTAssertEqual(model.dashboard.first { $0.title == "Steps" }?.value, expected)
+        XCTAssertEqual(model.strain.rows.first { $0.title == "Steps" }?.value, expected)
+        let home = HomeMetricItem.make(dashboard: model.dashboard, days: [day], todayKey: day.day)
+            .first { $0.title == "Steps" }
+        XCTAssertEqual(home?.value, expected)
+    }
+
+    func testDayStrainAtLeastMaxActivityAndBothUseStrainText() {
+        let day = sampleMetric(day: "2026-11-16", strain: 34, recovery: 49, sleepMin: 410)
+        let start = localDate(year: 2026, month: 11, day: 16, hour: 8, minute: 27)
+        let end = localDate(year: 2026, month: 11, day: 16, hour: 8, minute: 55)
+        let workout = WorkoutRow(
+            startTs: Int(start.timeIntervalSince1970),
+            endTs: Int(end.timeIntervalSince1970),
+            sport: "Running", source: "my-whoop",
+            durationS: 28 * 60, energyKcal: 312, avgHr: 168, maxHr: 182,
+            strain: 26, distanceM: 5200,
+            zonesJSON: #"{"zone1":8,"zone2":22,"zone3":18,"zone4":40,"zone5":12}"#,
+            notes: nil, steps: 4200
+        )
+        XCTAssertGreaterThanOrEqual(day.strain ?? 0, workout.strain ?? .infinity)
+        let model = NativeDay.make(
+            days: [day], sleeps: [], workouts: [workout],
+            todayKey: day.day, connected: true, effortScale: .whoop,
+            now: localDate(year: 2026, month: 11, day: 16, hour: 10, minute: 0)
+        )
+        XCTAssertEqual(model.strain.value, NativeDayLogic.strainText(day.strain, scale: .whoop))
+        XCTAssertEqual(model.activities.first?.strainText, NativeDayLogic.strainText(workout.strain, scale: .whoop))
+        XCTAssertEqual(NativeDayLogic.strainText(34, scale: .whoop), "7.1")
+        XCTAssertEqual(NativeDayLogic.strainText(26, scale: .whoop), "5.5")
+        XCTAssertEqual(NativeDayLogic.strainYTicks(.whoop), [0, 7, 14, 21])
+        XCTAssertEqual(NativeDayLogic.strainYTicks(.hundred), [0, 50, 100])
+        let z13 = NativeDay.zoneMinutes([workout], zones: 0..<3)
+        let z45 = NativeDay.zoneMinutes([workout], zones: 3..<5)
+        XCTAssertEqual(z13 ?? -1, 28 * 0.48, accuracy: 0.2)
+        XCTAssertEqual(z45 ?? -1, 28 * 0.52, accuracy: 0.2)
+        XCTAssertEqual(
+            model.strain.rows.first { $0.title == "Heart Rate Zones 1–3" }?.value,
+            NativeDayLogic.durationText(z13 ?? 0)
+        )
+    }
+
+    func testLineMarksBreakAtMissingDays() {
+        let points = [
+            NativeDayPoint(key: "2026-11-10", value: 58),
+            NativeDayPoint(key: "2026-11-11", value: 62),
+            NativeDayPoint(key: "2026-11-12", value: .nan),
+            NativeDayPoint(key: "2026-11-13", value: 64),
+        ]
+        let drawn = NativeChartDay.linePoints(points)
+        XCTAssertEqual(drawn.map(\.key), ["2026-11-10", "2026-11-11", "2026-11-13"])
+        XCTAssertEqual(drawn.map(\.segment), [0, 0, 1])
+        XCTAssertEqual(Set(drawn.map(\.segment)).count, 2)
+    }
+
     private func localDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = .current

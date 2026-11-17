@@ -14,7 +14,6 @@ enum NativeScoreKind { case recovery, strain, sleep }
 struct NativeScorePage: View {
     var kind: NativeScoreKind
     @EnvironmentObject private var repo: Repository
-    @EnvironmentObject private var live: LiveState
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @State private var workouts: [WorkoutRow] = []
@@ -31,13 +30,12 @@ struct NativeScorePage: View {
         let model = NativeDay.make(
             days: repo.days, sleeps: repo.sleeps, workouts: workouts,
             todayKey: dayKey,
-            connected: live.connected,
+            connected: false,
             effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
             importedSleep: repo.importedSleep,
             highSleepStress: kind == .sleep ? highSleepStress : nil
         )
         let score = kind == .recovery ? model.recovery : kind == .strain ? model.strain : model.sleep
-        let asleep = repo.days.last { $0.day == dayKey }?.totalSleepMin
         NativeScoreView(
             score: score,
             weekCards: NativeWeek.cards(
@@ -47,7 +45,7 @@ struct NativeScorePage: View {
             ),
             kind: kind,
             sleepHours: model.sleepHours,
-            asleepMinutes: asleep,
+            asleepMinutes: model.asleepMinutes,
             stages: model.sleepStages,
             activities: model.activities,
             sleepStart: model.sleepStart,
@@ -173,16 +171,11 @@ struct NativeScoreView: View {
                                 prior: NativeScoreMath.hasValue(row.prior) ? row.prior : nil,
                                 delta: row.delta,
                                 tint: contributorTint(row),
-                                valueTint: valueTint(row),
-                                showsBand: kind == .sleep
+                                valueTint: valueTint(row)
                             )
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                    }
-                    if kind == .sleep {
-                        NativeWhoopBandLegend()
-                            .padding(.top, 12)
                     }
                 }
             }
@@ -200,11 +193,13 @@ struct NativeScoreView: View {
                 stages: stages,
                 sleepStart: sleepStart,
                 sleepEnd: sleepEnd,
-                overnightHr: overnightHr,
                 awakeTypical: awakeTypical,
                 needMinutes: needMinutes,
                 debtMinutes: debtMinutes
             )
+        }
+        if kind == .sleep, !overnightHr.isEmpty {
+            NativeOvernightHeartCard(points: overnightHr)
         }
         if kind == .strain {
             activitiesCard
@@ -251,8 +246,10 @@ struct NativeScoreView: View {
         switch row.title {
         case "Heart Rate Variability", "Resting Heart Rate": return NativePaint.heart(style)
         case "Respiratory Rate": return NativePaint.respiratory(style)
-        case "Sleep Performance", "Sleep Efficiency", "Hours vs. Needed": return NativePaint.sleep(style)
-        case "Steps": return NativePaint.activity(style)
+        case "Sleep Performance", "Sleep Efficiency", "Hours vs. Needed", "Sleep Consistency": return NativePaint.sleep(style)
+        case "Steps", "Calories": return NativePaint.activity(style)
+        case "Heart Rate Zones 1–3", "Heart Rate Zones 4–5": return NativePaint.heart(style)
+        case "Strength Activity Time": return NativePaint.strain(style)
         default: return ringTint
         }
     }
@@ -277,7 +274,11 @@ struct NativeScoreView: View {
         case .percent: return "\(Int(value.rounded()))"
         case .strain: return String(format: "%.1f", value)
         case .duration: return NativeScoreMath.duration(value)
-        case .number: return "\(Int(value.rounded()))"
+        case .number:
+            if card.title == "Steps" || card.title == "Calories" {
+                return NativeDayLogic.countText(value)
+            }
+            return "\(Int(value.rounded()))"
         case .oneDecimal: return String(format: "%.1f", value)
         }
     }
@@ -318,6 +319,8 @@ struct NativeScoreView: View {
         case "Heart Rate Variability", "Resting Heart Rate": return NativePaint.heart(style)
         case "Respiratory Rate": return NativePaint.respiratory(style)
         case "Steps", "Calories": return NativePaint.activity(style)
+        case "Heart Rate Zones 1–3", "Heart Rate Zones 4–5": return NativePaint.heart(style)
+        case "Strength Activity Time": return NativePaint.strain(style)
         case "Strain": return NativePaint.strain(style)
         case "Recovery": return NativePaint.recovery(style)
         case "Sleep Performance", "Hours of Sleep", "Sleep Efficiency": return NativePaint.sleep(style)
@@ -336,6 +339,9 @@ struct NativeScoreView: View {
         case "Strain": return "bolt.fill"
         case "Steps": return "figure.walk"
         case "Calories": return "flame.fill"
+        case "Heart Rate Zones 1–3": return "heart"
+        case "Heart Rate Zones 4–5": return "heart.fill"
+        case "Strength Activity Time": return "dumbbell.fill"
         default: return "chart.bar.fill"
         }
     }
@@ -360,7 +366,10 @@ struct NativeScoreView: View {
                 color: card.band ? weekBand : nil,
                 highlightKey: dayKey,
                 plotHeight: 200,
-                accessibilityName: card.title
+                accessibilityName: card.title,
+                clockHero: card.format == .duration,
+                yTicks: card.format == .strain ? NativeDayLogic.strainYTicks(maxY: card.maxY) : nil,
+                stacks: card.stacks
             )
         }
         if let route = card.route {
@@ -380,9 +389,6 @@ struct NativeScoreView: View {
     private var weekBand: ((Double) -> Color)? {
         if kind == .recovery {
             return { NativePaint.recoveryBand($0, style: style) }
-        }
-        if kind == .sleep {
-            return { NativePaint.sleepBand($0, style: style) }
         }
         return nil
     }
@@ -435,15 +441,13 @@ struct NativeLastNightCard: View {
     var stages: [NativeStage] = []
     var sleepStart: Date? = nil
     var sleepEnd: Date? = nil
-    var overnightHr: [NativeHourPoint] = []
     var awakeTypical: Double? = nil
     var needMinutes: Double? = nil
     var debtMinutes: Double? = nil
     @Environment(\.nativeStyle) private var style
 
     private var inBedMinutes: Double? {
-        guard let sleepStart, let sleepEnd, sleepEnd > sleepStart else { return nil }
-        return sleepEnd.timeIntervalSince(sleepStart) / 60
+        NativeDayLogic.inBedMinutes(start: sleepStart, end: sleepEnd)
     }
 
     private var needDebtLine: String? {
@@ -488,15 +492,11 @@ struct NativeLastNightCard: View {
                         Text("Time in bed")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text(NativeScoreMath.duration(inBedMinutes))
+                        Text(NativeDayLogic.durationText(inBedMinutes))
                             .font(StrandFont.rounded(17, weight: .semibold))
                             .monospacedDigit()
                     }
                 }
-            }
-            if !overnightHr.isEmpty {
-                NativeOvernightLine(points: overnightHr, tint: NativePaint.heart(style))
-                    .frame(height: 160)
             }
             appleStages
         }
@@ -521,30 +521,28 @@ struct NativeLastNightCard: View {
                             .foregroundStyle(NativeTokens.whoopLabel)
                     }
                     if let inBedMinutes {
-                        Text(NativeScoreMath.duration(inBedMinutes))
+                        Text(NativeDayLogic.durationText(inBedMinutes))
                             .font(NativeTokens.whoopNumber(13, weight: .regular))
                             .foregroundStyle(NativeTokens.whoopLabel)
                     }
                 }
                 Spacer(minLength: 0)
             }
-            if !overnightHr.isEmpty {
-                NativeOvernightLine(points: overnightHr, tint: NativeTokens.whoopHeart)
-                    .frame(height: 160)
-            }
             if !lastNightStages.isEmpty {
                 HStack {
-                    Text("TYPICAL RANGE")
-                        .font(NativeTokens.whoopCaps(10))
-                        .tracking(NativeTokens.whoopCapsTracking)
-                        .foregroundStyle(NativeTokens.whoopLabel)
+                    if drawsTypicalRange {
+                        Text("TYPICAL RANGE")
+                            .font(NativeTokens.whoopCaps(10))
+                            .tracking(NativeTokens.whoopCapsTracking)
+                            .foregroundStyle(NativeTokens.whoopLabel)
+                    }
                     Spacer()
                     if let asleepMinutes {
                         Text("DURATION")
                             .font(NativeTokens.whoopCaps(10))
                             .tracking(NativeTokens.whoopCapsTracking)
                             .foregroundStyle(NativeTokens.whoopLabel)
-                        Text(NativeScoreMath.duration(asleepMinutes))
+                        Text(NativeDayLogic.durationText(asleepMinutes))
                             .font(NativeTokens.whoopNumber(15, weight: .semibold))
                     }
                 }
@@ -573,16 +571,22 @@ struct NativeLastNightCard: View {
         return rows.sorted { (order.firstIndex(of: $0.name) ?? 99) < (order.firstIndex(of: $1.name) ?? 99) }
     }
 
+    private var drawsTypicalRange: Bool {
+        lastNightStages.contains { ($0.typical ?? 0) > 0 }
+    }
+
     @ViewBuilder private var appleStages: some View {
         if !lastNightStages.isEmpty {
             let total = max(lastNightStages.compactMap(\.minutes).reduce(0, +), 1)
             HStack {
-                Text("Typical range")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if drawsTypicalRange {
+                    Text("Typical range")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 if let asleepMinutes {
-                    Text("Duration \(NativeScoreMath.duration(asleepMinutes))")
+                    Text("Duration \(NativeDayLogic.durationText(asleepMinutes))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
@@ -591,6 +595,30 @@ struct NativeLastNightCard: View {
             ForEach(lastNightStages) { stage in
                 NativeWhoopStageRow(stage: stage, total: total)
             }
+        }
+    }
+}
+
+struct NativeOvernightHeartCard: View {
+    var points: [NativeHourPoint]
+    @Environment(\.nativeStyle) private var style
+
+    private var average: Double? {
+        NativeScoreMath.mean(points.map(\.value).filter(\.isFinite))
+    }
+
+    var body: some View {
+        NativeChrome.panel {
+            NativeCardHeader(
+                title: "Heart Rate",
+                symbol: "heart.fill",
+                tint: NativePaint.heart(style)
+            )
+            if let average {
+                NativeHeroValue(caption: "Average", value: "\(Int(average.rounded()))", unit: "BPM")
+            }
+            NativeOvernightLine(points: points, tint: NativePaint.heart(style))
+                .frame(height: 160)
         }
     }
 }
@@ -629,16 +657,18 @@ struct NativeWhoopCompareChip: View {
 
 /// TIME ASLEEP / TIME IN BED pair: 34 pt hours + baseline unit, then minutes.
 struct NativeClockHero: View {
-    var caption: String
+    var caption: String? = nil
     var minutes: Double
 
     var body: some View {
         let parts = NativeScoreMath.clockParts(minutes)
         VStack(alignment: .leading, spacing: 2) {
-            Text(caption)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
+            if let caption, !caption.isEmpty {
+                Text(caption)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+            }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text("\(parts.hours)")
                     .font(StrandFont.rounded(34))
@@ -654,7 +684,7 @@ struct NativeClockHero: View {
             .monospacedDigit()
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(caption), \(parts.hours) hours \(parts.minutes) minutes")
+        .accessibilityLabel("\(caption ?? "Duration"), \(parts.hours) hours \(parts.minutes) minutes")
     }
 }
 
@@ -934,12 +964,6 @@ struct NativeActivityZoneRow: View {
     }
 
     static func color(_ zone: Int) -> Color {
-        switch zone {
-        case 5: return NativeTokens.recoveryLow
-        case 4: return NativeTokens.activity
-        case 3: return NativeTokens.recoveryHigh
-        case 2: return NativeTokens.strain
-        default: return NativeTokens.separator
-        }
+        NativeTokens.hrZone(zone)
     }
 }

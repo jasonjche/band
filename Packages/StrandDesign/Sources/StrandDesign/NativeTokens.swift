@@ -46,6 +46,24 @@ public enum NativeTokens {
     /// Legacy alias for heart-family charts that still read `vitals`.
     public static let vitals = heart
 
+    // MARK: Heart-rate zones (stacked Strain trends)
+
+    public static let hrZone1 = Color(light: "#C6C6C8", dark: "#8E8E93")
+    public static let hrZone2 = Color(light: "#2B6DE5", dark: "#5B9BFF")
+    public static let hrZone3 = Color(light: "#00B85C", dark: "#00E66A")
+    public static let hrZone4 = Color(light: "#E85D13", dark: "#FF5813")
+    public static let hrZone5 = Color(light: "#E53935", dark: "#FF3B30")
+
+    public static func hrZone(_ number: Int) -> Color {
+        switch number {
+        case 2: return hrZone2
+        case 3: return hrZone3
+        case 4: return hrZone4
+        case 5: return hrZone5
+        default: return hrZone1
+        }
+    }
+
     // MARK: Sleep stages (Apple hypnogram)
 
     /// Awake. Measured `#FF684F` / `#FE6A4E`.

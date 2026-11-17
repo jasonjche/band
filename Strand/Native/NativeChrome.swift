@@ -287,7 +287,8 @@ struct NativeHeroValue: View {
 
 /// Inset-list metric row: tinted symbol, title, bold value with unit, prior underneath, delta.
 /// One layout for Sleep / Recovery / Strain contributors, Home dashboard rows, and Health Monitor.
-/// The 3-segment band is opt-in (`showsBand`) and is only passed for Sleep contributors.
+/// Band colour may tint the value text; the three-dash ticks and Poor/Sufficient/Optimal legend
+/// are not part of this row.
 struct NativeContributorRow: View {
     var symbol: String
     var title: String
@@ -296,7 +297,6 @@ struct NativeContributorRow: View {
     var delta: NativeScore.Delta = .none
     var tint: Color
     var valueTint: Color = .primary
-    var showsBand: Bool = false
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
@@ -311,9 +311,6 @@ struct NativeContributorRow: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             Spacer(minLength: 6)
-            if showsBand, let percent = NativeScoreMath.percentValue(value) {
-                NativeWhoopBandTick(percent: percent)
-            }
             VStack(alignment: .trailing, spacing: 1) {
                 HStack(spacing: 4) {
                     Text(displayValue)
@@ -769,6 +766,31 @@ enum NativeChartDay {
         return "\(monthDay.string(from: start)), \(startYear)–\(monthDay.string(from: end)), \(endYear)"
     }
 
+    /// Consecutive finite points share a segment id; a NaN/missing day starts a new segment
+    /// so LineMark does not draw across the gap.
+    struct LinePoint: Identifiable {
+        var key: String
+        var value: Double
+        var segment: Int
+        var id: String { "\(segment)-\(key)" }
+    }
+
+    static func linePoints(_ points: [NativeDayPoint]) -> [LinePoint] {
+        var segment = 0
+        var lastFinite = false
+        var result: [LinePoint] = []
+        for point in points {
+            if point.value.isFinite {
+                if !lastFinite, !result.isEmpty { segment += 1 }
+                result.append(LinePoint(key: point.key, value: point.value, segment: segment))
+                lastFinite = true
+            } else {
+                lastFinite = false
+            }
+        }
+        return result
+    }
+
     static func fittedDomain(_ values: [Double], fallback: ClosedRange<Double>) -> ClosedRange<Double> {
         let finite = values.filter(\.isFinite)
         guard let lo0 = finite.min(), let hi0 = finite.max() else { return fallback }
@@ -810,6 +832,10 @@ struct NativeChartBlock: View {
     var highlightKey: String? = nil
     var plotHeight: CGFloat = 200
     var accessibilityName: String = "Week"
+    var clockHero: Bool = false
+    var yTicks: [Double]? = nil
+    var stacks: [NativeWeek.Card.Stack] = []
+    var showsValueLabels: Bool = true
 
     @State private var selectedDay: String?
 
@@ -830,7 +856,9 @@ struct NativeChartBlock: View {
     }
 
     @ViewBuilder private var hero: some View {
-        if let selectedPoint {
+        if clockHero {
+            clockHeroBlock
+        } else if let selectedPoint {
             NativeHeroValue(
                 caption: nil,
                 value: format(selectedPoint.value),
@@ -844,19 +872,48 @@ struct NativeChartBlock: View {
         }
     }
 
+    @ViewBuilder private var clockHeroBlock: some View {
+        if let selectedPoint {
+            NativeClockHero(minutes: selectedPoint.value)
+            Text(NativeChartDay.mediumDate(selectedPoint.key))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else if let average = NativeScoreMath.mean(known.map(\.value)), let range = rangeDate {
+            NativeClockHero(caption: "Average", minutes: average)
+            Text(range)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else if let range = rangeDate {
+            NativeHeroValue(value: "No Data", date: range)
+        }
+    }
+
     private var rangeDate: String? {
         guard let first = points.first?.key, let last = points.last?.key else { return nil }
         return NativeChartDay.rangeLabel(from: first, to: last)
     }
 
     @ViewBuilder private var plot: some View {
-        if known.isEmpty {
+        if known.isEmpty && stacks.allSatisfy({ !$0.points.contains { $0.value.isFinite } }) {
             NativeEmptyState(text: "No Data")
+        } else if !stacks.isEmpty {
+            NativeStackedWeekBars(
+                stacks: stacks,
+                format: format,
+                axisFormat: axisFormat ?? format,
+                maxY: maxY,
+                highlightKey: highlightKey,
+                selectedDay: $selectedDay,
+                showsValueLabels: showsValueLabels,
+                yTicks: yTicks
+            )
         } else if bars {
             NativeScoreWeekBars(
                 points: points, tint: tint, format: format,
                 axisFormat: axisFormat ?? format, maxY: maxY,
-                color: color, highlightKey: highlightKey, selectedDay: $selectedDay
+                color: color, highlightKey: highlightKey, selectedDay: $selectedDay,
+                showsValueLabels: showsValueLabels,
+                yTicks: yTicks
             )
         } else {
             NativeLabeledLine(
@@ -884,6 +941,7 @@ struct NativeLabeledLine: View {
 
     private var known: [NativeDayPoint] { points.filter { $0.value.isFinite } }
     private var whoop: Bool { style == .whoop }
+    private var segments: [NativeChartDay.LinePoint] { NativeChartDay.linePoints(points) }
 
     private var yDomain: ClosedRange<Double> {
         NativeChartDay.fittedDomain(known.map(\.value), fallback: domain)
@@ -899,19 +957,27 @@ struct NativeLabeledLine: View {
                         .foregroundStyle(Color.clear)
                         .accessibilityHidden(true)
                 }
-                ForEach(known) { point in
-                    LineMark(x: .value("Day", point.key), y: .value("Value", point.value))
-                        .foregroundStyle(tint)
-                        .interpolationMethod(.linear)
-                        .lineStyle(StrokeStyle(lineWidth: 2.5))
-                    PointMark(x: .value("Day", point.key), y: .value("Value", point.value))
-                        .foregroundStyle(tint)
-                        .symbol { NativeHollowVertex(tint: tint) }
-                        .annotation(position: .top, spacing: 4) {
-                            Text(format(point.value))
-                                .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
-                                .foregroundStyle(whoop ? NativeTokens.whoopLabel : Color.secondary)
-                        }
+                ForEach(segments) { point in
+                    LineMark(
+                        x: .value("Day", point.key),
+                        y: .value("Value", point.value),
+                        series: .value("Segment", point.segment)
+                    )
+                    .foregroundStyle(tint)
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5))
+                    PointMark(
+                        x: .value("Day", point.key),
+                        y: .value("Value", point.value),
+                        series: .value("Segment", point.segment)
+                    )
+                    .foregroundStyle(tint)
+                    .symbol { NativeHollowVertex(tint: tint) }
+                    .annotation(position: .top, spacing: 4) {
+                        Text(format(point.value))
+                            .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
+                            .foregroundStyle(whoop ? NativeTokens.whoopLabel : Color.secondary)
+                    }
                 }
                 if !whoop, let selected = selectedDay?.wrappedValue,
                    known.contains(where: { $0.key == selected || $0.day == selected }) {
@@ -947,7 +1013,8 @@ struct NativeStrainRecoveryChart: View {
         var value: Double
         var series: String
         var tint: Color
-        var id: String { series + day }
+        var segment: Int
+        var id: String { "\(series)-\(segment)-\(day)" }
     }
 
     private var axisKeys: [String] {
@@ -964,13 +1031,13 @@ struct NativeStrainRecoveryChart: View {
     }
 
     private var lines: [Line] {
-        strain.filter { $0.value.isFinite }.map {
-            Line(day: $0.key, value: $0.value / strainCeiling, series: "Strain",
-                 tint: NativePaint.strain(style))
-        } + recovery.filter { $0.value.isFinite }.map {
-            Line(day: $0.key, value: $0.value / 100, series: "Recovery",
-                 tint: NativePaint.recovery(style))
+        func mapped(_ points: [NativeDayPoint], series: String, scale: Double, tint: Color) -> [Line] {
+            NativeChartDay.linePoints(points).map {
+                Line(day: $0.key, value: $0.value / scale, series: series, tint: tint, segment: $0.segment)
+            }
         }
+        return mapped(strain, series: "Strain", scale: strainCeiling, tint: NativePaint.strain(style))
+            + mapped(recovery, series: "Recovery", scale: 100, tint: NativePaint.recovery(style))
     }
 
     @State private var selectedDay: String?
@@ -991,13 +1058,21 @@ struct NativeStrainRecoveryChart: View {
                         .accessibilityHidden(true)
                 }
                 ForEach(lines) { point in
-                    LineMark(x: .value("Day", point.day), y: .value("Value", point.value))
-                        .foregroundStyle(by: .value("Metric", point.series))
-                        .interpolationMethod(.linear)
-                        .lineStyle(StrokeStyle(lineWidth: 2.5))
-                    PointMark(x: .value("Day", point.day), y: .value("Value", point.value))
-                        .foregroundStyle(by: .value("Metric", point.series))
-                        .symbol { NativeHollowVertex(tint: point.tint) }
+                    LineMark(
+                        x: .value("Day", point.day),
+                        y: .value("Value", point.value),
+                        series: .value("Metric", "\(point.series)-\(point.segment)")
+                    )
+                    .foregroundStyle(by: .value("Metric", point.series))
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5))
+                    PointMark(
+                        x: .value("Day", point.day),
+                        y: .value("Value", point.value),
+                        series: .value("Metric", "\(point.series)-\(point.segment)")
+                    )
+                    .foregroundStyle(by: .value("Metric", point.series))
+                    .symbol { NativeHollowVertex(tint: point.tint) }
                 }
                 if let selectedDay {
                     RuleMark(x: .value("Day", selectedDay))
@@ -1097,6 +1172,8 @@ struct NativeScoreWeekBars: View {
     var highlightKey: String? = nil
     var selectedDay: Binding<String?>? = nil
     var compactYAxis: Bool = false
+    var showsValueLabels: Bool = true
+    var yTicks: [Double]? = nil
     @Environment(\.nativeStyle) private var style
 
     private var known: [NativeDayPoint] { points.filter { $0.value.isFinite } }
@@ -1129,10 +1206,12 @@ struct NativeScoreWeekBars: View {
                         .foregroundStyle(barColor(point.value))
                         .cornerRadius(whoop ? 3 : 4)
                         .annotation(position: .top, spacing: 4) {
-                            Text(format(point.value))
-                                .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
-                                .foregroundStyle(point.key == highlightKey ? Color.primary : (whoop ? NativeTokens.whoopLabel : Color.secondary))
-                                .monospacedDigit()
+                            if showsValueLabels {
+                                Text(format(point.value))
+                                    .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
+                                    .foregroundStyle(point.key == highlightKey ? Color.primary : (whoop ? NativeTokens.whoopLabel : Color.secondary))
+                                    .monospacedDigit()
+                            }
                         }
                     } else {
                         BarMark(
@@ -1157,7 +1236,7 @@ struct NativeScoreWeekBars: View {
                 highlightKey: highlightKey,
                 yFormat: axisFormat ?? format,
                 hideYAxis: whoop,
-                yTicks: NativeChartTicks.values(in: 0...ceiling, maxCount: compactYAxis ? 2 : 3)
+                yTicks: yTicks ?? NativeChartTicks.values(in: 0...ceiling, maxCount: compactYAxis ? 2 : 3)
             ))
             .modifier(NativeOptionalDaySelect(selected: selectedDay))
         }
@@ -1165,6 +1244,89 @@ struct NativeScoreWeekBars: View {
 
     private func barColor(_ value: Double) -> Color {
         color?(value) ?? tint
+    }
+}
+
+/// Stacked weekly bars (HR zones 1–3 / 4–5). No legend; colours are the zone tokens.
+struct NativeStackedWeekBars: View {
+    var stacks: [NativeWeek.Card.Stack]
+    var format: (Double) -> String
+    var axisFormat: ((Double) -> String)? = nil
+    var maxY: Double
+    var highlightKey: String? = nil
+    var selectedDay: Binding<String?>? = nil
+    var showsValueLabels: Bool = true
+    var yTicks: [Double]? = nil
+    @Environment(\.nativeStyle) private var style
+
+    private struct Slice: Identifiable {
+        var key: String
+        var value: Double
+        var series: String
+        var tint: Color
+        var id: String { series + key }
+    }
+
+    private var keys: [String] {
+        var seen = Set<String>()
+        return stacks.flatMap(\.points).map(\.key).filter { seen.insert($0).inserted }
+    }
+
+    private var slices: [Slice] {
+        stacks.flatMap { stack in
+            stack.points.compactMap { point in
+                guard point.value.isFinite, point.value > 0 else { return nil }
+                return Slice(key: point.key, value: point.value, series: stack.title, tint: stack.tint)
+            }
+        }
+    }
+
+    private var ceiling: Double { max(maxY, 1) }
+    private var whoop: Bool { style == .whoop }
+    private var plotCeiling: Double { ceiling * 1.22 }
+    private var scale: [String: Color] {
+        Dictionary(uniqueKeysWithValues: stacks.map { ($0.title, $0.tint) })
+    }
+
+    var body: some View {
+        if slices.isEmpty {
+            NativeEmptyState(text: "No Data")
+        } else {
+            Chart {
+                ForEach(keys, id: \.self) { key in
+                    if key == highlightKey {
+                        RectangleMark(
+                            x: .value("Day", key),
+                            yStart: .value("Low", 0),
+                            yEnd: .value("High", plotCeiling)
+                        )
+                        .foregroundStyle(whoop ? NativeTokens.whoopHighlight : NativeTokens.highlight)
+                        .cornerRadius(8)
+                        .accessibilityHidden(true)
+                    }
+                }
+                ForEach(slices) { slice in
+                    BarMark(
+                        x: .value("Day", slice.key),
+                        y: .value("Value", slice.value),
+                        width: .ratio(whoop ? 0.42 : 0.5)
+                    )
+                    .foregroundStyle(by: .value("Zone", slice.series))
+                    .cornerRadius(whoop ? 3 : 4)
+                }
+            }
+            .chartForegroundStyleScale(scale)
+            .chartLegend(.hidden)
+            .chartYScale(domain: 0...plotCeiling)
+            .modifier(NativeChartChrome(
+                keys: keys,
+                highlightKey: highlightKey,
+                yFormat: axisFormat ?? format,
+                hideYAxis: whoop,
+                yTicks: yTicks ?? NativeChartTicks.values(in: 0...ceiling, maxCount: 3)
+            ))
+            .modifier(NativeOptionalDaySelect(selected: selectedDay))
+        }
     }
 }
 
@@ -1532,17 +1694,37 @@ enum NativeScoreMath {
     }
 
     static func strainText(_ stored: Double?, scale: EffortScale) -> String {
-        guard let stored else { return "—" }
-        let shown = UnitFormatter.effortValue(stored, scale: scale)
-        return scale == .whoop ? String(format: "%.1f", shown) : String(Int(shown.rounded()))
+        NativeDayLogic.strainText(stored, scale: scale)
     }
 
-    static func labeled(_ value: Double?, unit: String, decimals: Int = 0) -> String {
+    static func labeled(_ value: Double?, unit: String, decimals: Int = 0, grouped: Bool = false) -> String {
         guard let value else { return "—" }
-        let shown = decimals == 0 ? String(Int(value.rounded())) : String(format: "%.\(decimals)f", value)
+        let shown: String
+        if grouped {
+            shown = count(value) ?? "—"
+        } else if decimals == 0 {
+            shown = String(Int(value.rounded()))
+        } else {
+            shown = String(format: "%.\(decimals)f", value)
+        }
         if unit.isEmpty { return shown }
         if unit == "%" { return "\(shown)%" }
         return "\(shown)\u{00A0}\(unit)"
+    }
+
+    /// Grouped integer. Home steps hero and Strain steps row both call this.
+    static func count(_ value: Double?) -> String? {
+        guard let value else { return nil }
+        let formatter = NumberFormatter()
+        formatter.locale = AppLanguage.activeLocale
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        formatter.roundingMode = .halfUp
+        return formatter.string(from: NSNumber(value: value.rounded()))
+    }
+
+    static func count(_ value: Double) -> String {
+        count(Optional(value)) ?? "\(Int(value.rounded()))"
     }
 
     /// "89 %" / "89\u{00A0}%" → "89%". Leaves non-percent values alone.
@@ -1564,8 +1746,8 @@ enum NativeScoreMath {
         return Double(stripped)
     }
 
-    static func priorText(_ values: [Double], unit: String, decimals: Int = 0) -> String {
-        labeled(mean(values), unit: unit, decimals: decimals)
+    static func priorText(_ values: [Double], unit: String, decimals: Int = 0, grouped: Bool = false) -> String {
+        labeled(mean(values), unit: unit, decimals: decimals, grouped: grouped)
     }
 
     static func delta(_ value: Double?, _ prior: [Double]) -> NativeScore.Delta {

@@ -74,7 +74,7 @@ final class NativeRouteScaleTests: XCTestCase {
         let cards = NativeWeek.cards(kind: .sleep, days: [day], todayKey: day.day, importedSleep: imported)
         XCTAssertEqual(cards.map(\.title), ["Sleep Performance", "Hours of Sleep", "Sleep Efficiency"])
         let hours = cards.first { $0.title == "Hours of Sleep" }?.points.filter { $0.value.isFinite }
-        XCTAssertEqual(hours?.first?.value ?? -1, 431, accuracy: 0.1)
+        XCTAssertEqual(hours?.first?.value ?? -1, 410, accuracy: 0.1)
         let efficiency = cards.first { $0.title == "Sleep Efficiency" }?.points.filter { $0.value.isFinite }
         XCTAssertEqual(efficiency?.first?.value ?? -1, 87, accuracy: 0.1)
     }
@@ -275,7 +275,9 @@ final class NativeRouteScaleTests: XCTestCase {
         XCTAssertEqual(NativeScoreMath.percent(sleepBar.value), model.sleep.value)
         XCTAssertEqual(sleepBar.value, NativeDay.sleepPerformance(scored, scores: scores) ?? -1, accuracy: 1e-9)
 
-        XCTAssertEqual(model.sleepHours, NativeScoreMath.duration(431))
+        XCTAssertEqual(model.sleepHours, NativeScoreMath.duration(410))
+        XCTAssertEqual(model.asleepMinutes ?? -1, 410, accuracy: 0.1)
+        XCTAssertEqual(model.sleepBlock, model.sleepHours)
         XCTAssertEqual(model.sleepStages.map(\.name), ["Light", "Deep", "REM"])
         XCTAssertEqual(model.sleepStages.first { $0.name == "Light" }?.minutes ?? -1, 250, accuracy: 0.1)
         XCTAssertEqual(model.sleepStages.first { $0.name == "Deep" }?.minutes ?? -1, 70, accuracy: 0.1)

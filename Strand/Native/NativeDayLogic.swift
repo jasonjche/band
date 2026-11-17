@@ -57,6 +57,43 @@ enum NativeDayLogic {
         scale == .whoop ? 21 : 100
     }
 
+    /// WHOOP 0–21: 0 / 7 / 14 / 21. 0–100: 0 / 50 / 100.
+    static func strainYTicks(_ scale: EffortScale) -> [Double] {
+        scale == .whoop ? [0, 7, 14, 21] : [0, 50, 100]
+    }
+
+    static func strainYTicks(maxY: Double) -> [Double] {
+        if abs(maxY - 21) < 0.01 { return [0, 7, 14, 21] }
+        if abs(maxY - 100) < 0.01 { return [0, 50, 100] }
+        return [0, maxY / 2, maxY]
+    }
+
+    /// Asleep minutes: sum of non-awake stages when all three are present, else stored totalSleepMin.
+    static func asleepMinutes(light: Double?, deep: Double?, rem: Double?, totalSleepMin: Double?) -> Double? {
+        if let light, let deep, let rem {
+            let sum = light + deep + rem
+            return sum > 0 ? sum : nil
+        }
+        return totalSleepMin.flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    /// In bed = session end − start. No session → nothing (do not invent from efficiency).
+    static func inBedMinutes(start: Date?, end: Date?) -> Double? {
+        guard let start, let end, end > start else { return nil }
+        let minutes = end.timeIntervalSince(start) / 60
+        return minutes > 0 ? minutes : nil
+    }
+
+    /// Compact `7:11` for pills, rows, axis labels.
+    static func durationText(_ minutes: Double) -> String {
+        NativeScoreMath.duration(minutes)
+    }
+
+    /// Grouped integer (`6,545`) for steps and calories. One formatter for Home and Strain.
+    static func countText(_ value: Double?) -> String {
+        NativeScoreMath.labeled(value, unit: "", grouped: true)
+    }
+
     /// Sleep sessions key off the same logical day the rings use, not midnight local.
     static func sleepSessionDayKey(_ end: Date) -> String {
         logicalToday(now: end)
