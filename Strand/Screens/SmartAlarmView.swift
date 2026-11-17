@@ -51,7 +51,7 @@ struct SmartAlarmView: View {
                 Form {
                     nativeAlarmSections
                 }
-                .appleSettingsChrome("Alarms")
+                .appleSettingsChrome(AppBrand.isPersonalBuild ? "Alarm" : "Alarms")
             } else {
                 alarmsScaffold
             }
@@ -87,7 +87,7 @@ struct SmartAlarmView: View {
             if behavior.smartAlarmEnabled {
                 DatePicker("Wake At", selection: alarmTimeBinding, displayedComponents: .hourAndMinute)
                 alarmWeekdayPicker
-                if model.whoop5Detected && !PuffinExperiment.isEnabled {
+                if model.whoop5Detected && !PuffinExperiment.isEnabled && !AppBrand.isPersonalBuild {
                     Text("WHOOP 5/MG alarms need Protocol probes in Test Centre.")
                         .foregroundStyle(.secondary)
                 }
@@ -96,7 +96,7 @@ struct SmartAlarmView: View {
                 }
             }
         } header: {
-            Text("Morning")
+            if !AppBrand.isPersonalBuild { Text("Morning") }
         } footer: {
             Text("Buzzes the wrist from the strap. Keep a phone alarm for anything you cannot miss.")
         }
@@ -104,8 +104,11 @@ struct SmartAlarmView: View {
         .onChangeCompat(of: behavior.smartAlarmMinutes) { _ in model.applySmartAlarm() }
         .onChangeCompat(of: behavior.smartAlarmWeekdays) { _ in model.applySmartAlarm() }
 
-        strapRejectedCard
+        if !AppBrand.isPersonalBuild {
+            strapRejectedCard
+        }
 
+        if !AppBrand.isPersonalBuild {
         Section {
             Toggle("Wind-Down Nudge", isOn: $windDownOn)
                 .onChangeCompat(of: windDownOn) { on in
@@ -134,6 +137,7 @@ struct SmartAlarmView: View {
             Text("Evening")
         } footer: {
             Text("A reminder before your usual wake. It is not a loud alarm.")
+        }
         }
     }
     #endif

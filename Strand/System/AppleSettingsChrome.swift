@@ -83,3 +83,39 @@ struct LicensesView: View {
         .appleSettingsChrome("Licenses")
     }
 }
+
+/// More → About. Version and licenses only.
+struct BandAboutView: View {
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Version", value: versionLabel)
+                NavigationLink("Licenses") { LicensesView() }
+            }
+        }
+        .appleSettingsChrome("About")
+    }
+
+    private var versionLabel: String {
+        let version = UpdateWatch.installedVersion
+        let build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
+            .flatMap { $0.isEmpty ? nil : $0 } ?? "—"
+        return "\(version) (\(build))"
+    }
+}
+
+/// More → Notifications. Wrist-alert master for the WHOOP 5.0 strap.
+struct BandNotificationsView: View {
+    @AppStorage("notif.masterEnabled") private var wristAlertsMaster = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Wrist alerts", isOn: $wristAlertsMaster)
+            } footer: {
+                Text("Master switch for strap buzzes. Off keeps the strap quiet.")
+            }
+        }
+        .appleSettingsChrome("Notifications")
+    }
+}

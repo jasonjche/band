@@ -173,10 +173,6 @@ struct SettingsView: View {
     /// Opt-in "Keep screen on while syncing" (default OFF, iOS only). `SyncKeepAwake` holds the screen awake
     /// for as long as a strap history sync runs while this is on.
     @AppStorage(ScreenIdle.strapSyncKeepAwakeKey) private var syncKeepScreenOn = false
-    #if os(iOS)
-    /// Wrist-alerts master (same key Automations binds). Personal Settings surfaces it as Notifications.
-    @AppStorage("notif.masterEnabled") private var wristAlertsMaster = false
-    #endif
 
     /// The strap model the user last picked (same key the scan pickers write). Gates the WHOOP 4.0-only
     /// rename control in the strap card — renaming uses the Harvard command set, which a 5/MG doesn't share.
@@ -331,65 +327,21 @@ struct SettingsView: View {
 
     #if os(iOS)
     /// iOS Settings-style root: inset grouped list, coloured glyphs, one screen per group.
+    /// Band More owns Strap/Alarm/Health/Import/Backup/Notifications/About; this page is Profile only.
+    @ViewBuilder
     private var appleSettingsRoot: some View {
-        List {
-            if AppBrand.isPersonalBuild {
-                personalAppleSettingsSections
-            } else {
+        if AppBrand.isPersonalBuild {
+            Form {
+                profileCard
+            }
+            .appleSettingsChrome("Profile")
+        } else {
+            List {
                 stockAppleSettingsSections
             }
-        }
-        .listStyle(.insetGrouped)
-        .navigationTitle("Settings")
-        .navigationBarTitleDisplayMode(.large)
-    }
-
-    /// Band: short iOS Settings list. Customisation pages are hidden; values are pinned in `PersonalDefaults`.
-    @ViewBuilder private var personalAppleSettingsSections: some View {
-        Section {
-            appleSettingsNav("Profile", "person.fill", .blue) {
-                appleSettingsPage("Profile") {
-                    profileCard
-                }
-            }
-            appleSettingsNav("Devices", "badge.plus.radiowaves.right", .blue) {
-                DevicesView()
-            }
-        }
-
-        Section {
-            appleSettingsNav("Apple Health", "heart.fill", .red) {
-                AppleHealthSettingsView()
-            }
-            appleSettingsNav("Data Sources", "square.and.arrow.down.fill", .blue) {
-                DataSourcesView()
-            }
-            appleSettingsNav("Backup", "externaldrive.fill", Color(white: 0.45)) {
-                appleSettingsPage("Backup") {
-                    backupCard
-                }
-            }
-        }
-
-        Section {
-            appleSettingsNav("Notifications & Alarms", "bell.badge.fill", .red) {
-                appleSettingsPage("Notifications & Alarms") {
-                    personalNotificationsCard
-                    Section {
-                        NavigationLink("Alarms") {
-                            SmartAlarmView()
-                        }
-                    }
-                }
-            }
-        }
-
-        Section {
-            appleSettingsNav("About", "info.circle.fill", .gray) {
-                appleSettingsPage("About") {
-                    aboutCard
-                }
-            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.large)
         }
     }
 
@@ -486,36 +438,6 @@ struct SettingsView: View {
                     aboutCard
                 }
             }
-        }
-    }
-
-    @ViewBuilder private var personalNotificationsCard: some View {
-        if appleSettingsStyle {
-            Section {
-                Toggle("Wrist alerts", isOn: $wristAlertsMaster)
-            } footer: {
-                Text("Master switch for strap buzzes. Off keeps the strap quiet.")
-            }
-        } else {
-        SettingsSection(
-            icon: "bell.badge.fill",
-            title: "Notifications",
-            blurb: "Alerts that actually fire."
-        ) {
-            VStack(alignment: .leading, spacing: NoopMetrics.space1) {
-                Toggle(isOn: $wristAlertsMaster) {
-                    Text("Wrist alerts")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(controlTint)
-                Text("Master switch for strap buzzes (inactivity, stress, alerts). Off keeps the strap quiet.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
         }
     }
 
@@ -893,11 +815,13 @@ struct SettingsView: View {
                                  accessibility: String(localized: "Weight in kilograms"))
                 }
             }
-            LabeledContent("Waist") {
-                if unitSystem == .imperial {
-                    waistInchesField(waistCm: $profile.waistCm)
-                } else {
-                    waistCentimetresField(waistCm: $profile.waistCm)
+            if !AppBrand.isPersonalBuild {
+                LabeledContent("Waist") {
+                    if unitSystem == .imperial {
+                        waistInchesField(waistCm: $profile.waistCm)
+                    } else {
+                        waistCentimetresField(waistCm: $profile.waistCm)
+                    }
                 }
             }
             LabeledContent("Max Heart Rate") {
@@ -915,7 +839,7 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("Health Details")
+            if !AppBrand.isPersonalBuild { Text("Health Details") }
         }
 
         if !AppBrand.isPersonalBuild {
@@ -935,28 +859,26 @@ struct SettingsView: View {
             }
         }
 
-        Section {
-            LabeledContent("Step Calibration") {
-                HStack(spacing: 10) {
-                    Text(String(format: "%.1f", profile.stepTicksPerStep))
-                    Stepper("Step calibration") {
-                        profile.stepTicksPerStep = ProfileStore.steppedStepScale(profile.stepTicksPerStep, up: true)
-                    } onDecrement: {
-                        profile.stepTicksPerStep = ProfileStore.steppedStepScale(profile.stepTicksPerStep, up: false)
+        if !AppBrand.isPersonalBuild {
+            Section {
+                LabeledContent("Step Calibration") {
+                    HStack(spacing: 10) {
+                        Text(String(format: "%.1f", profile.stepTicksPerStep))
+                        Stepper("Step calibration") {
+                            profile.stepTicksPerStep = ProfileStore.steppedStepScale(profile.stepTicksPerStep, up: true)
+                        } onDecrement: {
+                            profile.stepTicksPerStep = ProfileStore.steppedStepScale(profile.stepTicksPerStep, up: false)
+                        }
+                        .labelsHidden()
+                        .accessibilityLabel("Step calibration, \(String(format: "%.1f", profile.stepTicksPerStep)) counter ticks per step")
                     }
-                    .labelsHidden()
-                    .accessibilityLabel("Step calibration, \(String(format: "%.1f", profile.stepTicksPerStep)) counter ticks per step")
                 }
-            }
-            if !AppBrand.isPersonalBuild {
                 Button("Steps Estimate") { showStepsCalibration = true }
+            } header: {
+                Text("Steps")
+            } footer: {
+                Text("Calibration for strap step counts and the WHOOP 4.0 estimate.")
             }
-        } header: {
-            Text("Steps")
-        } footer: {
-            Text(AppBrand.isPersonalBuild
-                 ? "Counter ticks per step."
-                 : "Calibration for strap step counts and the WHOOP 4.0 estimate.")
         }
     }
 
@@ -3114,8 +3036,10 @@ struct SettingsView: View {
                 .disabled(backupBusy)
             Button("Import…") { runImport() }
                 .disabled(backupBusy)
-            Button("Export CSV…") { runCsvExport() }
-                .disabled(backupBusy)
+            if !AppBrand.isPersonalBuild {
+                Button("Export CSV…") { runCsvExport() }
+                    .disabled(backupBusy)
+            }
             if backupBusy {
                 ProgressView("Working…")
             }
@@ -3123,12 +3047,14 @@ struct SettingsView: View {
             Text("Importing replaces all data on this device. Backups are unencrypted ZIP files.")
         }
 
-        Section {
-            NavigationLink("Backup & Sync") {
-                BackupSyncView()
+        if !AppBrand.isPersonalBuild {
+            Section {
+                NavigationLink("Backup & Sync") {
+                    BackupSyncView()
+                }
+            } footer: {
+                Text("Save dated snapshots to a folder you choose.")
             }
-        } footer: {
-            Text("Save dated snapshots to a folder you choose.")
         }
     }
 
@@ -3540,8 +3466,8 @@ struct SettingsView: View {
         Section {
             LabeledContent("Version", value: "\(bundleVersionString) (\(bundleBuildString))")
             NavigationLink("Licenses") { LicensesView() }
-            NavigationLink("Storage") { StorageView() }
             if !AppBrand.isPersonalBuild {
+                NavigationLink("Storage") { StorageView() }
                 Button("What's New") { showWhatsNew = true }
                 Button("How \(AppBrand.name) Works") { showHowNoopWorks = true }
                 Button("How Your Scores Work") { showScoringGuide = true }
@@ -4438,6 +4364,87 @@ private struct SettingsRowDivider: View {
         .preferredColorScheme(.dark)
 }
 #endif
+
+/// More → Backup. File export / import only.
+struct BandBackupView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var backupBusy = false
+    @State private var backupAlertTitle = ""
+    @State private var backupAlertMessage = ""
+    @State private var showBackupAlert = false
+    @State private var showOversizeRestoreConfirm = false
+    @State private var oversizeRestoreMessage = ""
+
+    var body: some View {
+        Form {
+            Section {
+                Button("Export…") { runExport() }
+                    .disabled(backupBusy)
+                Button("Import…") { runImport() }
+                    .disabled(backupBusy)
+                if backupBusy {
+                    ProgressView("Working…")
+                }
+            } footer: {
+                Text("Importing replaces all data on this device. Backups are unencrypted ZIP files.")
+            }
+        }
+        .appleSettingsChrome("Backup")
+        .alert(backupAlertTitle, isPresented: $showBackupAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(backupAlertMessage)
+        }
+        .alert("Backup problem", isPresented: $showOversizeRestoreConfirm) {
+            Button("Restore") { runImport(allowOversize: true) }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(oversizeRestoreMessage)
+        }
+    }
+
+    private func runExport() {
+        backupBusy = true
+        Task {
+            handleBackup(await DataBackup.runExport(checkpoint: { await model.repo.checkpointForBackup() }))
+        }
+    }
+
+    private func runImport(allowOversize: Bool = false) {
+        backupBusy = true
+        Task {
+            handleBackup(await DataBackup.runImport(allowOversize: allowOversize))
+        }
+    }
+
+    @MainActor
+    private func handleBackup(_ result: DataBackup.BackupResult) {
+        backupBusy = false
+        switch result {
+        case .cancelled:
+            return
+        case .exported(let url):
+            backupAlertTitle = String(localized: "Backup exported")
+            backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent).")
+            showBackupAlert = true
+        case .exportedOversize(let url, _, _):
+            backupAlertTitle = String(localized: "Backup exported")
+            backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). Restoring it will ask you to confirm once.")
+            showBackupAlert = true
+        case .restoreTooLarge(let name, _):
+            oversizeRestoreMessage = String(localized: "\(name) is larger than NOOP restores without asking. You'll be asked to choose the file again.")
+            showOversizeRestoreConfirm = true
+        case .imported:
+            backupAlertTitle = String(localized: "Backup imported")
+            backupAlertMessage = String(localized: "Your data has been restored. Quit and reopen for it to take effect.")
+            showBackupAlert = true
+        case .failure(let message):
+            backupAlertTitle = String(localized: "Backup problem")
+            backupAlertMessage = message
+            showBackupAlert = true
+        }
+    }
+}
 
 // MARK: - Custom accent colour bridge
 

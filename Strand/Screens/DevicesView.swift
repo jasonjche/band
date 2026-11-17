@@ -32,7 +32,7 @@ struct DevicesView: View {
                             ProgressView("Getting your devices ready")
                         }
                     }
-                    .appleSettingsChrome("Devices")
+                    .appleSettingsChrome(AppBrand.isPersonalBuild ? "Strap" : "Devices")
                 }
             }
         } else {
@@ -104,6 +104,12 @@ private struct DevicesContent: View {
     @State private var pickNewActive = false
 
     private var activeDevices: [PairedDevice] { registry.devices.filter { $0.status != .archived } }
+    private var listedDevices: [PairedDevice] {
+        guard AppBrand.isPersonalBuild else { return activeDevices }
+        return activeDevices.filter {
+            DeviceFamily.isWhoop5Registry(model: $0.model, brand: $0.brand)
+        }
+    }
     private var removedDevices: [PairedDevice] { registry.devices.filter { $0.status == .archived } }
     /// I-1: `activeDevices` minus import sources (cloud/file) — the candidates actually eligible for
     /// "make active". An import source is a data partition, not a live device; offering it here would let
@@ -478,23 +484,20 @@ private struct DevicesContent: View {
                 }
             }
 
-            if activeDevices.isEmpty {
-                Section {
-                    Text("No strap paired.")
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            ForEach(activeDevices) { device in
+            ForEach(listedDevices) { device in
                 nativeDeviceSection(device)
             }
 
             Section {
                 Button("Pair") { showAddWizard = true }
                 Button("Re-scan") { model.scan() }
+                if listedDevices.contains(where: { $0.status == .active }) {
+                    Button("Sync Now") { model.ble.syncNow() }
+                        .disabled(!live.connected || live.backfilling)
+                }
             }
 
-            if !removedDevices.isEmpty {
+            if !AppBrand.isPersonalBuild, !removedDevices.isEmpty {
                 Section {
                     ForEach(removedDevices) { device in
                         Button("Forget \(device.displayName)", role: .destructive) {
@@ -509,7 +512,7 @@ private struct DevicesContent: View {
             }
         }
         .listStyle(.insetGrouped)
-        .appleSettingsChrome("Devices")
+        .appleSettingsChrome(AppBrand.isPersonalBuild ? "Strap" : "Devices")
         .task(id: activeDevices.count) { await loadStrapCompare() }
     }
 

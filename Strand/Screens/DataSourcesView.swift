@@ -146,23 +146,21 @@ struct DataSourcesView: View {
     private var nativeForm: some View {
         Form {
             nativeWhoopSection
-            nativeAppleHealthSection
             if !AppBrand.isPersonalBuild {
+                nativeAppleHealthSection
                 nativeXiaomiSection
-            }
-            nativeNutritionSection
-            nativeLiftingSection
-            nativeActivityFileSection
-            if !AppBrand.isPersonalBuild {
+                nativeNutritionSection
+                nativeLiftingSection
+                nativeActivityFileSection
                 nativeWearableSection
                 #if OURA_CLOUD_IMPORT
                 nativeOuraCloudSection
                 #endif
                 nativeBroadcastSection
+                nativeLiveStrapSection
             }
-            nativeLiveStrapSection
         }
-        .appleSettingsChrome("Data Sources")
+        .appleSettingsChrome(AppBrand.isPersonalBuild ? "Import WHOOP Export" : "Data Sources")
     }
 
     private var nativeWhoopSection: some View {
@@ -183,7 +181,7 @@ struct DataSourcesView: View {
             }
             LabeledContent("Stored", value: "\(repo.days.count) days, \(repo.sleeps.count) sleeps")
         } header: {
-            Text("WHOOP")
+            if !AppBrand.isPersonalBuild { Text("WHOOP") }
         } footer: {
             Text("Import a WHOOP data export (.zip or .csv).")
         }

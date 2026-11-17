@@ -590,31 +590,37 @@ struct RootTabView: View {
         }
         let personal = AppBrand.isPersonalBuild
         return List {
+            if personal {
+                row("Strap", "badge.plus.radiowaves.right", .blue, .devices)
+                row("Alarm", "alarm.fill", .orange, .alarms)
+                row("Profile", "person.fill", .blue, .settings)
+                row("Apple Health", "heart.fill", .red, .appleHealth)
+                row("Import WHOOP Export", "square.and.arrow.down.fill", .blue, .dataSources)
+                row("Backup", "externaldrive.fill", Color(white: 0.45), .backup)
+                row("Notifications", "bell.badge.fill", .red, .notifications)
+                row("About", "info.circle.fill", .gray, .about)
+            } else {
             Section {
                 row("Live", "waveform.path.ecg", .red, .live)
                 row("Workouts", "figure.run", .orange, .workouts)
                 row("Lift Log", "dumbbell.fill", .orange, .liftLog)
                 row("Health", "heart.text.square.fill", .pink, .health)
-                if !personal {
-                    row("Lab Book", "books.vertical.fill", .brown, .labBook)
-                }
+                row("Lab Book", "books.vertical.fill", .brown, .labBook)
                 row("Stress", "bolt.heart.fill", .orange, .stress)
-                if coachEnabled && !personal {
+                if coachEnabled {
                     row("Coach", "sparkles", .purple, .coach)
                 }
             } header: {
                 Text("Body")
             }
 
-            if !personal {
-                Section {
-                    row("Apple Health", "heart.fill", .red, .appleHealth)
-                    row("Data Sources", "square.and.arrow.down.fill", .blue, .dataSources)
-                    row("Backup & Sync", "externaldrive.fill.badge.icloud", .cyan, .backupSync)
-                    row("Mi Band", "figure.walk.motion", .orange, .miBand)
-                } header: {
-                    Text("Data")
-                }
+            Section {
+                row("Apple Health", "heart.fill", .red, .appleHealth)
+                row("Data Sources", "square.and.arrow.down.fill", .blue, .dataSources)
+                row("Backup & Sync", "externaldrive.fill.badge.icloud", .cyan, .backupSync)
+                row("Mi Band", "figure.walk.motion", .orange, .miBand)
+            } header: {
+                Text("Data")
             }
 
             Section {
@@ -622,13 +628,12 @@ struct RootTabView: View {
                 row("Alarms", "alarm.fill", .orange, .alarms)
                 row("Automations", "wand.and.stars", .purple, .automations)
                 row("Test Centre", "stethoscope", .gray, .testCentre)
-                if !personal {
-                    row("Siri & Shortcuts", "mic.fill", .indigo, .siriShortcuts)
-                }
+                row("Siri & Shortcuts", "mic.fill", .indigo, .siriShortcuts)
                 row("Power saving", "battery.25", .green, .powerSaving)
                 row("Settings", "gearshape.fill", .gray, .settings)
             } header: {
                 Text("App")
+            }
             }
         }
         .listStyle(.insetGrouped)
@@ -700,12 +705,13 @@ private enum MoreDestination: Hashable {
     case live, workouts, liftLog, health, labBook, stress, breathe, intervals, rhythm
     case fusedRecord, appleHealth, miBand, dataSources, backupSync, shortcutsExport, noopLimitations
     case devices, alarms, automations, testCentre, siriShortcuts, powerSaving, settings
+    case backup, notifications, about
 
     var usesAppleSettingsChrome: Bool {
         switch self {
         case .devices, .dataSources, .backupSync, .appleHealth, .alarms,
              .automations, .testCentre, .powerSaving, .settings,
-             .siriShortcuts, .shortcutsExport:
+             .siriShortcuts, .shortcutsExport, .backup, .notifications, .about:
             return true
         default:
             return false
@@ -748,6 +754,9 @@ private enum MoreDestination: Hashable {
         case .siriShortcuts:   SiriShortcutsSettingsView()
         case .powerSaving:     PowerSavingView()
         case .settings:        SettingsView()
+        case .backup:          BandBackupView()
+        case .notifications:   BandNotificationsView()
+        case .about:           BandAboutView()
         }
     }
 }

@@ -330,6 +330,13 @@ struct NativeSleepDualLineCard: View {
     @Environment(\.nativeStyle) private var style
 
     private var knownSlept: [NativeDayPoint] { slept.filter { $0.value.isFinite } }
+    private var knownNeeded: [NativeDayPoint] { needed.filter { $0.value.isFinite } }
+    private var yDomain: ClosedRange<Double> {
+        NativeChartDay.fittedDomain(
+            (knownSlept + knownNeeded).map(\.value),
+            fallback: 0...480
+        )
+    }
 
     var body: some View {
         NativeChrome.panel {
@@ -389,6 +396,7 @@ struct NativeSleepDualLineCard: View {
             }
         }
         .chartLegend(.hidden)
+        .chartYScale(domain: yDomain)
         .chartYAxis {
             AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
@@ -533,7 +541,6 @@ enum NativeSleepGallery {
             Section(name: "sleep-stress-card", padded: true, view: AnyView(stress)),
             Section(name: "sleep-week-hours-needed", padded: true, view: AnyView(weekHours)),
             Section(name: "sleep-week-time-in-bed", padded: true, view: AnyView(weekInBed)),
-            Section(name: "sleep-page-parity", padded: false, view: AnyView(sleepPage)),
         ]
     }
 
@@ -576,35 +583,6 @@ enum NativeSleepGallery {
         NativeSleepTimeInBedWeekCard(
             points: NativeSleepSnapshot.pageDetail.timeInBedWeek,
             highlightKey: NativeSleepSnapshot.highlightKey
-        )
-    }
-
-    private static var sleepPage: some View {
-        NativeScoreView(
-            score: NativeDay.make(
-                days: NativeSleepSnapshot.snapshotDays,
-                sleeps: NativeSleepSnapshot.snapshotSleeps,
-                workouts: [],
-                todayKey: NativeSleepSnapshot.highlightKey,
-                connected: true,
-                effortScale: .whoop,
-                now: NativeSleepSnapshot.local(2026, 11, 15, 16, 0),
-                importedSleep: NativeSleepSnapshot.snapshotImported,
-                highSleepStress: NativeSleepSnapshot.stress.highShare
-            ).sleep,
-            weekCards: NativeSleepSnapshot.extraWeekCards,
-            kind: .sleep,
-            sleepHours: NativeScoreMath.duration(410),
-            asleepMinutes: 410,
-            stages: NativeSleepSnapshot.stages,
-            sleepStart: NativeSleepSnapshot.sleepStart,
-            sleepEnd: NativeSleepSnapshot.sleepEnd,
-            overnightHr: NativeSleepSnapshot.stress.points,
-            dayKey: NativeSleepSnapshot.highlightKey,
-            needMinutes: NativeSleepSnapshot.importedNeed.needMin,
-            debtMinutes: 36,
-            scrolls: false,
-            sleepDetail: NativeSleepSnapshot.pageDetail
         )
     }
 }

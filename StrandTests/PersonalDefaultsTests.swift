@@ -35,7 +35,8 @@ final class PersonalDefaultsTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: UnitPrefs.effortScaleKey), EffortScale.hundred.rawValue)
         XCTAssertEqual(defaults.object(forKey: PuffinExperiment.experimentalSleepStressKey) as? Bool, false)
         XCTAssertEqual(defaults.string(forKey: UnitPrefs.systemKey), UnitSystem.imperial.rawValue)
-        XCTAssertNil(defaults.object(forKey: BandPowerPolicy.defaultsKey))
+        // Read the suite's own domain: `object(forKey:)` also sees defaults the host app registered.
+        XCTAssertNil(defaults.persistentDomain(forName: suite)?[BandPowerPolicy.defaultsKey])
     }
 
     func testPinsLayoutStyleEffortSleepStressAndLocaleUnitsWhenFlagIsOn() {
