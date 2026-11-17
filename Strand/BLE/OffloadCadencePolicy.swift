@@ -29,6 +29,12 @@ enum OffloadContinuePolicy {
                                    maxAutoContinues: Int = BackfillContinuation.defaultMaxAutoContinues,
                                    behindGapSeconds: Int = BackfillContinuation.defaultBehindGapSeconds) -> Bool {
         if policyEnabled && !endedOnSliceCap { return false }
+        // Under the Band policy "more pending" means the strap is measurably ahead of what we hold.
+        // Rows persisted this slice are not enough on their own: that is what kept re-kicking.
+        if policyEnabled, let newest = strapNewestTs, let frontier = ourFrontierTs,
+           (newest - frontier) <= max(behindGapSeconds, 900) {
+            return false
+        }
         return BackfillContinuation.shouldAutoContinue(
             stillConnected: stillConnected,
             strapNewestTs: strapNewestTs,
@@ -38,6 +44,8 @@ enum OffloadContinuePolicy {
             lastTrimAdvanced: lastTrimAdvanced,
             consecutiveCount: consecutiveCount,
             maxAutoContinues: maxAutoContinues,
-            behindGapSeconds: behindGapSeconds)
+            // Under the Band policy a strap only minutes ahead is not a backlog; the next
+            // scheduled offload picks it up. Continue immediately only for a real gap.
+            behindGapSeconds: policyEnabled ? max(behindGapSeconds, 900) : behindGapSeconds)
     }
 }
