@@ -122,7 +122,7 @@ public enum FrameLimits {
     public static func minimumFrameBytes(for family: DeviceFamily) -> Int {
         switch family {
         case .whoop4: return whoop4MinimumFrameBytes
-        case .whoop5: return whoop5MinimumFrameBytes
+        case .whoop5, .unsupported: return whoop5MinimumFrameBytes
         }
     }
 }
@@ -225,7 +225,7 @@ public func verifyFrame(_ frame: [UInt8], family: DeviceFamily) -> FrameCheck {
     switch family {
     case .whoop4:
         return verifyFrame(frame)
-    case .whoop5:
+    case .whoop5, .unsupported:
         return verifyFrameWhoop5(frame)
     }
 }
@@ -389,7 +389,7 @@ public final class Reassembler {
             switch family {
             case .whoop4:
                 total = (Int(buf[head + 1]) | (Int(buf[head + 2]) << 8)) + 4
-            case .whoop5:
+            case .whoop5, .unsupported:
                 total = (Int(buf[head + 2]) | (Int(buf[head + 3]) << 8)) + 8
             }
             if total < FrameLimits.minimumFrameBytes(for: family) {
@@ -429,7 +429,7 @@ public final class Reassembler {
             switch family {
             case .whoop4:
                 headerOK = crc8(buf, head + 1, head + 3) == buf[head + 3]
-            case .whoop5:
+            case .whoop5, .unsupported:
                 let got = UInt16(buf[head + 6]) | (UInt16(buf[head + 7]) << 8)
                 headerOK = crc16Modbus(buf, head, head + 6) == got
             }

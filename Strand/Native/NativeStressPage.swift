@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 import WhoopStore
 import StrandDesign
 import StrandAnalytics
@@ -191,17 +192,10 @@ struct NativeStressChartPage: View {
             if scope == .day {
                 dayBody
             } else {
-                NativeScopeChart(
+                NativeStressRangeChart(
                     series: series,
-                    bars: true,
-                    tint: NativeTokens.stressHigh,
-                    format: { String(format: "%.1f", $0) },
                     highlightKey: highlightKey,
-                    higherIsBetter: NativeMetricDirection.higherIsBetter("stress"),
-                    previewSelected: previewSelected,
-                    accessibilityName: "Stress",
-                    color: { NativeChrome.stressBandColor($0) },
-                    title: "Stress"
+                    previewSelected: previewSelected
                 )
             }
         }
@@ -297,15 +291,15 @@ struct NativeStressDayChart: View {
                 updated: NativeStressMonitorMath.lastUpdated(hours.last?.time)
             )
             ZStack {
-                NativeStressMonitor(
+                NativeStressDayPlot(
                     score: level ?? hours.last?.value ?? 0,
                     sleepStart: sleepStart,
                     sleepEnd: sleepEnd,
                     workouts: workouts,
+                    workoutSymbols: workoutSymbols,
                     dayStart: dayStart,
                     now: now,
                     sampleHours: hours,
-                    workoutSymbols: workoutSymbols,
                     previewSelected: previewSelected,
                     scrubValue: $scrubValue,
                     scrubTime: $scrubTime
@@ -773,5 +767,576 @@ private struct NativeStressArc: View {
                 style: StrokeStyle(lineWidth: line, lineCap: .round)
             )
         }
+    }
+}
+
+// MARK: - Week / month bars (0–3, band colours, gaps stay gaps)
+
+/// W / M / 6M stress: fixed 0–3 axis, per-bucket bars, average in the hero.
+struct NativeStressRangeChart: View {
+    var series: NativeScopeSeries
+    var highlightKey: String
+    var previewSelected: String? = nil
+    var calendar: Calendar = .current
+
+    @State private var scrub = NativeScopeScrub()
+
+    private var window: [NativeScopeBucket] { series.latestWindow() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            NativeStressRangeHero(
+                series: series,
+                window: window,
+                scrub: scrub,
+                calendar: calendar
+            )
+            NativeChrome.panel {
+                NativeStressRangePlot(
+                    series: series,
+                    window: window,
+                    highlightKey: highlightKey,
+                    calendar: calendar,
+                    scrub: scrub
+                )
+                .frame(height: NativeStressDayChart.heightPage)
+            }
+        }
+        .onAppear {
+            if scrub.key == nil { scrub.key = previewSelected }
+        }
+        .onChangeCompat(of: series.scope) { _ in
+            scrub.key = nil
+            scrub.time = nil
+        }
+        .onChangeCompat(of: highlightKey) { _ in
+            scrub.key = nil
+            scrub.time = nil
+        }
+    }
+}
+
+private struct NativeStressRangeHero: View {
+    var series: NativeScopeSeries
+    var window: [NativeScopeBucket]
+    @ObservedObject var scrub: NativeScopeScrub
+    var calendar: Calendar
+    @Environment(\.nativeStyle) private var style
+
+    private var selected: NativeScopeBucket? {
+        guard let key = scrub.key else { return nil }
+        return window.first { $0.key == key && $0.value != nil }
+            ?? series.buckets.first { $0.key == key && $0.value != nil }
+    }
+
+    var body: some View {
+        NativeHeroValue(
+            caption: NativeStressHero.caption(scrubbing: selected != nil),
+            value: valueText,
+            date: dateText,
+            valueTint: selected.flatMap(\.value).map { NativePaint.stressBand($0, style: style) } ?? .primary
+        )
+        .frame(height: 76, alignment: .topLeading)
+        .modifier(NativeSelectionFeedback(trigger: scrub.key ?? ""))
+    }
+
+    private var valueText: String {
+        if let value = selected?.value {
+            return String(format: "%.1f", value)
+        }
+        if let average = series.aggregate(of: window) {
+            return String(format: "%.1f", average)
+        }
+        return "No Data"
+    }
+
+    private var dateText: String? {
+        if let selected {
+            return series.selectionDateText(for: selected, calendar: calendar)
+        }
+        return series.heroDateText(of: window, calendar: calendar)
+    }
+}
+
+private struct NativeStressRangePlot: View {
+    var series: NativeScopeSeries
+    var window: [NativeScopeBucket]
+    var highlightKey: String
+    var calendar: Calendar
+    @ObservedObject var scrub: NativeScopeScrub
+    @Environment(\.nativeStyle) private var style
+
+    private var barUnit: Calendar.Component { NativeScopePlotMath.barUnit(scope: series.scope) }
+
+    private var xDomain: ClosedRange<Date> {
+        guard let first = window.first, let last = window.last, last.end > first.start else {
+            let now = Date()
+            return now...now.addingTimeInterval(86_400)
+        }
+        return first.start...last.end
+    }
+
+    private var columnKey: String { scrub.key ?? highlightKey }
+
+    private var timeBinding: Binding<Date?> {
+        Binding(
+            get: { scrub.time },
+            set: { time in
+                if let snapped = NativeChartScrubMath.snapBucket(date: time, buckets: window, bars: true) {
+                    scrub.time = snapped.time
+                    scrub.key = snapped.key
+                } else {
+                    scrub.time = nil
+                    scrub.key = nil
+                }
+            }
+        )
+    }
+
+    private var dayHighlight: Color {
+        style == .whoop ? NativeTokens.whoopHighlight : NativeTokens.highlight
+    }
+
+    var body: some View {
+        Chart {
+            if window.allSatisfy({ $0.value == nil }) {
+                BarMark(
+                    x: .value("Day", xDomain.lowerBound, unit: barUnit),
+                    y: .value("Stress", 0)
+                )
+                .foregroundStyle(NativePaint.separator(style).opacity(0.001))
+                .accessibilityHidden(true)
+            }
+            if let highlighted = window.first(where: { $0.key == columnKey }) {
+                RectangleMark(
+                    xStart: .value("Highlight start", highlighted.start),
+                    xEnd: .value("Highlight end", highlighted.end),
+                    yStart: .value("Low", 0),
+                    yEnd: .value("High", 3)
+                )
+                .foregroundStyle(dayHighlight)
+                .accessibilityHidden(true)
+            }
+            ForEach(window) { bucket in
+                if let value = bucket.value {
+                    BarMark(
+                        x: .value("Day", bucket.start, unit: barUnit),
+                        y: .value("Stress", value),
+                        width: .ratio(0.58)
+                    )
+                    .foregroundStyle(NativePaint.stressBand(value, style: style))
+                    .cornerRadius(4)
+                    .opacity(NativeChartScrubMath.barOpacity(
+                        isSelected: bucket.key == scrub.key,
+                        hasSelection: scrub.key != nil
+                    ))
+                    .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
+                    .accessibilityValue(String(format: "%.1f", value))
+                }
+            }
+        }
+        .chartYScale(domain: 0...3)
+        .chartXScale(domain: xDomain)
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: [1.0, 2.0, 3.0]) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativePaint.separator(style))
+                AxisValueLabel {
+                    if let raw = value.as(Double.self) {
+                        Text(NativeStressMonitorMath.yLabel(raw))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: labelDates) { value in
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(axisLabel(date))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                }
+            }
+        }
+        .chartPlotStyle { plot in
+            plot
+                .padding(.leading, NativeScopePlotMath.plotLeading)
+                .padding(.trailing, NativeScopePlotMath.plotTrailing)
+        }
+        .modifier(NativeTimeSelect(
+            selected: timeBinding,
+            snap: { NativeChartScrubMath.snapBucket(date: $0, buckets: window, bars: true)?.time },
+            onChange: { _ in }
+        ))
+        .accessibilityLabel("Stress")
+    }
+
+    private var labelDates: [Date] {
+        switch series.scope {
+        case .day, .week:
+            return window.map(\.start)
+        case .month:
+            return window.map(\.start).filter {
+                calendar.component(.weekday, from: $0) == calendar.firstWeekday
+            }
+        case .sixMonths, .year:
+            var seen = Set<Int>()
+            return window.map(\.start).filter { date in
+                let month = calendar.component(.month, from: date)
+                    + calendar.component(.year, from: date) * 12
+                return seen.insert(month).inserted
+            }
+        }
+    }
+
+    private func axisLabel(_ date: Date) -> String {
+        switch series.scope {
+        case .day, .week:
+            return NativeChartDay.weekday(NativeScopeSeries.key(from: date, calendar: calendar))
+        case .month:
+            return NativeScopeFormat.monthDay(date, calendar: calendar)
+        case .sixMonths, .year:
+            return NativeScopeFormat.month(date, calendar: calendar)
+        }
+    }
+}
+
+// MARK: - Day plot (full-height activity columns + plot-frame icons)
+
+/// 0–3 day plot. Sleep/workout columns fill the plot; icons sit on the pixel
+/// midpoint of each visible span so they cannot drift from the highlight.
+struct NativeStressDayPlot: View {
+    var score: Double
+    var sleepStart: Date?
+    var sleepEnd: Date?
+    var workouts: [(start: Date, end: Date)]
+    var workoutSymbols: [String] = []
+    var dayStart: Date
+    var now: Date
+    var sampleHours: [NativeHourPoint] = []
+    var previewSelected: Date? = nil
+    @Environment(\.nativeStyle) private var style
+    @Binding var scrubValue: Double
+    @Binding var scrubTime: Date?
+    @State private var selectedTime: Date?
+
+    private var hours: [NativeHourPoint] { sampleHours }
+
+    private var hourSegments: [[NativeHourPoint]] {
+        NativeStressMonitorMath.segments(hours).map { NativeStressMonitorMath.drawPoints($0) }
+    }
+
+    private var lineGradient: LinearGradient {
+        let stops = NativeStressMonitorMath.lineStops(style: style).map {
+            Gradient.Stop(color: $0.color, location: $0.value / 3)
+        }
+        return LinearGradient(stops: stops, startPoint: .bottom, endPoint: .top)
+    }
+
+    private var plotEnd: Date {
+        NativeStressMonitorMath.plotEnd(dayStart: dayStart, now: now)
+    }
+
+    private var showsNow: Bool {
+        NativeStressMonitorMath.showsNow(dayStart: dayStart, now: now)
+    }
+
+    private var activities: [(start: Date, end: Date, symbol: String)] {
+        NativeStressMonitorMath.activities(workouts: workouts, symbols: workoutSymbols)
+    }
+
+    private var laneItems: [NativeStressLaneIcon.Item] {
+        var items: [NativeStressLaneIcon.Item] = []
+        if let sleepStart, let sleepEnd, sleepEnd > sleepStart {
+            items.append(
+                NativeStressLaneIcon.Item(
+                    id: "sleep",
+                    start: sleepStart,
+                    end: sleepEnd,
+                    symbol: "moon.fill",
+                    kind: .sleep
+                )
+            )
+        }
+        for (index, bout) in activities.enumerated() {
+            items.append(
+                NativeStressLaneIcon.Item(
+                    id: "activity-\(index)",
+                    start: bout.start,
+                    end: bout.end,
+                    symbol: bout.symbol,
+                    kind: .workout
+                )
+            )
+        }
+        return items
+    }
+
+    private var sleepFill: Color { NativePaint.separator(style).opacity(0.22) }
+    private var sleepAccent: Color { NativePaint.separator(style) }
+    private var workoutFill: Color { NativePaint.strain(style).opacity(0.22) }
+    private var workoutAccent: Color { NativePaint.strain(style) }
+
+    var body: some View {
+        Chart {
+            if let sleepStart, let sleepEnd,
+               let visible = NativeStressLaneIcon.clip(
+                sleepStart, sleepEnd, plotStart: dayStart, plotEnd: plotEnd
+               ) {
+                RectangleMark(
+                    xStart: .value("Sleep shade start", visible.start),
+                    xEnd: .value("Sleep shade end", visible.end),
+                    yStart: .value("Plot", 0),
+                    yEnd: .value("Top", 3)
+                )
+                .foregroundStyle(sleepFill)
+                .accessibilityHidden(true)
+                RectangleMark(
+                    xStart: .value("Sleep accent start", visible.start),
+                    xEnd: .value("Sleep accent end", visible.end),
+                    yStart: .value("Accent", NativeStressLaneIcon.accentLow),
+                    yEnd: .value("Accent top", NativeStressLaneIcon.accentHigh)
+                )
+                .foregroundStyle(sleepAccent)
+                .accessibilityLabel("Sleep")
+            }
+            ForEach(Array(activities.enumerated()), id: \.offset) { _, bout in
+                if let visible = NativeStressLaneIcon.clip(
+                    bout.start, bout.end, plotStart: dayStart, plotEnd: plotEnd
+                ) {
+                    RectangleMark(
+                        xStart: .value("Activity shade start", visible.start),
+                        xEnd: .value("Activity shade end", visible.end),
+                        yStart: .value("Plot", 0),
+                        yEnd: .value("Top", 3)
+                    )
+                    .foregroundStyle(workoutFill)
+                    .accessibilityHidden(true)
+                    RectangleMark(
+                        xStart: .value("Activity accent start", visible.start),
+                        xEnd: .value("Activity accent end", visible.end),
+                        yStart: .value("Accent", NativeStressLaneIcon.accentLow),
+                        yEnd: .value("Accent top", NativeStressLaneIcon.accentHigh)
+                    )
+                    .foregroundStyle(workoutAccent)
+                    .accessibilityLabel("Activity")
+                }
+            }
+            ForEach(Array(hourSegments.enumerated()), id: \.offset) { index, segment in
+                ForEach(segment) { point in
+                    LineMark(
+                        x: .value("Time", point.time),
+                        y: .value("Stress", point.value),
+                        series: .value("Segment", index)
+                    )
+                    .foregroundStyle(lineGradient)
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
+                    .accessibilityLabel(NativeScopeFormat.time(point.time))
+                    .accessibilityValue(String(format: "%.1f", point.value))
+                }
+            }
+            if showsNow {
+                RuleMark(x: .value("Now", now))
+                    .foregroundStyle(NativePaint.separator(style))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .accessibilityHidden(true)
+                PointMark(x: .value("Now dot", now), y: .value("Base", 0))
+                    .foregroundStyle(Color.primary)
+                    .symbolSize(28)
+                    .accessibilityHidden(true)
+            }
+            if let selectedTime,
+               let point = NativeChartScrubMath.nearestHour(
+                to: selectedTime,
+                in: hours,
+                maxGap: NativeChartScrubMath.inferredMaxGap(in: hours)
+               ) {
+                PointMark(x: .value("Scrub", point.time), y: .value("Stress", point.value))
+                    .foregroundStyle(NativePaint.stressBand(point.value, style: style))
+                    .symbol { NativeSelectedVertex(tint: NativePaint.stressBand(point.value, style: style)) }
+                    .accessibilityHidden(true)
+            }
+        }
+        .chartYScale(domain: 0...3)
+        .chartXScale(domain: dayStart...plotEnd)
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: NativeStressMonitorMath.yAxisValues) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativePaint.separator(style))
+                AxisValueLabel {
+                    if let raw = value.as(Double.self) {
+                        Text(NativeStressMonitorMath.yLabel(raw))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: NativeStressMonitorMath.xAxisDates(dayStart: dayStart, plotEnd: plotEnd)) { value in
+                if let date = value.as(Date.self),
+                   !NativeStressMonitorMath.isNow(date, now: now) {
+                    AxisGridLine(stroke: NativeChrome.gridStroke)
+                        .foregroundStyle(NativePaint.separator(style))
+                }
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        let current = NativeStressMonitorMath.isNow(date, now: now)
+                        Text(NativeScopeFormat.time(date))
+                            .font(.caption2.weight(current ? .bold : .regular))
+                            .foregroundStyle(current ? Color.primary : Color.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .chartPlotStyle { plot in
+            plot.padding(.top, NativeStressLaneIcon.iconLane)
+        }
+        .chartOverlay { proxy in
+            NativeStressLaneOverlay(
+                proxy: proxy,
+                items: laneItems,
+                dayStart: dayStart,
+                plotEnd: plotEnd
+            )
+        }
+        .modifier(NativeTimeSelect(selected: $selectedTime, onChange: { time in
+            if let time, let point = NativeChartScrubMath.nearestHour(
+                to: time,
+                in: hours,
+                maxGap: NativeChartScrubMath.inferredMaxGap(in: hours)
+            ) {
+                scrubTime = point.time
+                scrubValue = point.value
+            } else {
+                scrubTime = nil
+            }
+        }))
+        .onAppear { if selectedTime == nil { selectedTime = previewSelected } }
+        .modifier(NativeSelectionFeedback(trigger: selectedTime ?? .distantPast))
+        .accessibilityLabel("Stress monitor \(String(format: "%.1f", score))")
+    }
+}
+
+enum NativeStressLaneIcon {
+    static let iconLane: CGFloat = 24
+    static let accentLow: Double = 2.94
+    static let accentHigh: Double = 3.0
+    static let minSeparation: CGFloat = 22
+
+    enum Kind: Equatable {
+        case sleep
+        case workout
+    }
+
+    struct Item: Identifiable, Equatable {
+        var id: String
+        var start: Date
+        var end: Date
+        var symbol: String
+        var kind: Kind
+        var duration: TimeInterval { end.timeIntervalSince(start) }
+    }
+
+    struct Placed: Equatable {
+        var item: Item
+        var x: CGFloat
+    }
+
+    static func clip(
+        _ start: Date,
+        _ end: Date,
+        plotStart: Date,
+        plotEnd: Date
+    ) -> (start: Date, end: Date)? {
+        let lo = max(start, plotStart)
+        let hi = min(end, plotEnd)
+        guard hi > lo else { return nil }
+        return (lo, hi)
+    }
+
+    /// Larger spans keep the span midpoint. A neighbour closer than
+    /// `minSeparation` is nudged; if it still collides it is dropped.
+    static func placed(
+        items: [Item],
+        plotStart: Date,
+        plotEnd: Date,
+        minSeparation: CGFloat = minSeparation,
+        xRange: ClosedRange<CGFloat>?,
+        xFor: (Date) -> CGFloat?
+    ) -> [Placed] {
+        let mids: [(Item, CGFloat)] = items.compactMap { item in
+            guard let visible = clip(item.start, item.end, plotStart: plotStart, plotEnd: plotEnd),
+                  let x0 = xFor(visible.start),
+                  let x1 = xFor(visible.end)
+            else { return nil }
+            return (item, (x0 + x1) / 2)
+        }
+        let ranked = mids.sorted { lhs, rhs in
+            if lhs.0.duration == rhs.0.duration { return lhs.1 < rhs.1 }
+            return lhs.0.duration > rhs.0.duration
+        }
+        var kept: [Placed] = []
+        for (item, natural) in ranked {
+            var x = natural
+            if let blocker = kept.min(by: { abs($0.x - x) < abs($1.x - x) }),
+               abs(blocker.x - x) < minSeparation {
+                let dir: CGFloat = natural >= blocker.x ? 1 : -1
+                x = blocker.x + dir * minSeparation
+            }
+            if let xRange {
+                let inset = minSeparation / 2
+                x = min(max(x, xRange.lowerBound + inset), xRange.upperBound - inset)
+            }
+            if kept.contains(where: { abs($0.x - x) < minSeparation }) {
+                continue
+            }
+            kept.append(Placed(item: item, x: x))
+        }
+        return kept.sorted { $0.x < $1.x }
+    }
+}
+
+private struct NativeStressLaneOverlay: View {
+    var proxy: ChartProxy
+    var items: [NativeStressLaneIcon.Item]
+    var dayStart: Date
+    var plotEnd: Date
+
+    var body: some View {
+        GeometryReader { geo in
+            let plot = proxy.plotRectCompat(in: geo)
+            ZStack(alignment: .topLeading) {
+                if plot.width > 1 {
+                    let placed = NativeStressLaneIcon.placed(
+                        items: items,
+                        plotStart: dayStart,
+                        plotEnd: plotEnd,
+                        xRange: plot.minX...plot.maxX,
+                        xFor: { date in
+                            guard let relative = proxy.position(forX: date) else { return nil }
+                            return plot.origin.x + relative
+                        }
+                    )
+                    ForEach(placed, id: \.item.id) { row in
+                        Image(systemName: row.item.symbol)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.secondary)
+                            .position(x: row.x, y: max(8, plot.minY - 11))
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }

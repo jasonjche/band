@@ -344,6 +344,32 @@ enum HomeMonitorTile {
             time: clock
         )
     }
+
+    /// Home Health Monitor primary line. Green path is "Within Range"; any out-of-range count is "N Outside Range".
+    static func healthPrimary(_ summary: NativeHealthRange.Summary) -> String {
+        guard summary.measured > 0 else { return "No Data" }
+        if summary.judged == 0 { return "Building baseline" }
+        if summary.outside == 0 { return "Within Range" }
+        return "\(summary.outside) Outside Range"
+    }
+}
+
+/// Strap battery glyph/percentage colour. Charging is its own level so the bolt stays green.
+enum HomeBatteryTint {
+    enum Level: Equatable {
+        case low
+        case mid
+        case high
+        case charging
+    }
+
+    /// Red at ≤20%, amber 21–49%, green ≥50%. Charging wins at any percent.
+    static func level(percent: Int, charging: Bool) -> Level {
+        if charging { return .charging }
+        if percent <= 20 { return .low }
+        if percent < 50 { return .mid }
+        return .high
+    }
 }
 
 /// Month grid for the Home day picker. Pure; the sheet never folds this in `body`.

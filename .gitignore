@@ -15,15 +15,15 @@ Icon?
 # Git won't descend into an excluded directory, so re-include each ancestor on the path, then
 # re-exclude its contents with a wildcard so ONLY Package.resolved gets tracked (not the
 # generated project.pbxproj / contents.xcworkspacedata / xcuserdata cruft).
-!Strand.xcodeproj/
-Strand.xcodeproj/*
-!Strand.xcodeproj/project.xcworkspace/
-Strand.xcodeproj/project.xcworkspace/*
-!Strand.xcodeproj/project.xcworkspace/xcshareddata/
-Strand.xcodeproj/project.xcworkspace/xcshareddata/*
-!Strand.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
-Strand.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
-!Strand.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+!Band.xcodeproj/
+Band.xcodeproj/*
+!Band.xcodeproj/project.xcworkspace/
+Band.xcodeproj/project.xcworkspace/*
+!Band.xcodeproj/project.xcworkspace/xcshareddata/
+Band.xcodeproj/project.xcworkspace/xcshareddata/*
+!Band.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+Band.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!Band.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 build/
 DerivedData/
 .build/

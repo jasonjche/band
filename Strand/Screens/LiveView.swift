@@ -6,7 +6,6 @@ import StrandDesign
 import StrandAnalytics
 import WhoopProtocol
 import WhoopStore
-import OuraProtocol
 
 /// Live — the connected strap in real time, in the liquid finish. Built on the shared design system
 /// (ScreenScaffold chrome + day-of-sky backdrop, StrandPalette, StrandFont) and the liquid vocabulary
@@ -30,7 +29,7 @@ struct LiveView: View {
     /// Which strap the user is pairing — persists across launches. Drives which
     /// BLE service we scan for so a WHOOP 4.0 scan never hangs on a WHOOP 5 wrist.
     @AppStorage("selectedWhoopModel") private var selectedModelRaw = WhoopModel.whoop4.rawValue
-    private var selectedModel: WhoopModel { WhoopModel(rawValue: selectedModelRaw) ?? .whoop4 }
+    private var selectedModel: WhoopModel { WhoopModel(rawValue: selectedModelRaw) ?? .whoop5mg }
 
     /// "Card transparency" (0–100, default 100): fades the live console cards in lockstep with the frosted
     /// cards; content stays readable. Mirrors Kotlin `NoopPrefs.cardOpacityPercent`.
@@ -66,10 +65,6 @@ struct LiveView: View {
             activeId: model.deviceRegistry?.activeDeviceId,
         )
     }
-
-    /// The live ring's link phase, mirrored off the Oura source (#2305). Meaningful only under
-    /// `activeIsOura`; `.disconnected` otherwise.
-    private var ringPhase: OuraLiveSource.LinkPhase { model.ouraLinkPhase }
 
     /// A trusted WHOOP link, for the console readouts and the bond-only controls.
     ///
@@ -131,7 +126,7 @@ struct LiveView: View {
                 if activeIsWhoop, !live.connected { offlineConnectCallout }
                 // The ring's own above-the-fold affordance: its link phase and a reconnect, shown until
                 // `auth OK` — the same "no link yet" slot the WHOOP callout fills.
-                if activeIsOura, ringPhase != .authenticated { ringConnectCallout }
+                if activeIsOura { ringConnectCallout }
                 bodyConsole
                 // Low-bandwidth fallback note (#80): the radio couldn't sustain the WHOOP 4 R10/R11 raw
                 // realtime burst, so live HR is riding the standard BLE Heart-Rate profile instead. Live HR
@@ -363,7 +358,7 @@ struct LiveView: View {
                 .font(StrandFont.headline)
                 .foregroundStyle(StrandPalette.textPrimary)
             Text(activeConnection
-                 ? "Start a workout when the stream matters. NOOP records the interval, HR, peak, average and effort from the same live feed."
+                 ? "Start a workout when the stream matters. Band records the interval, HR, peak, average and effort from the same live feed."
                  : "Connect the strap first, then mark a workout from the live stream.")
                 .font(StrandFont.subhead)
                 .foregroundStyle(StrandPalette.textSecondary)
@@ -550,7 +545,7 @@ struct LiveView: View {
             HStack(spacing: 10) {
                 Text("Strap").font(StrandFont.caption).foregroundStyle(StrandPalette.textSecondary)
                 SegmentedPillControl(
-                    WhoopModel.allCases,
+                    [WhoopModel.whoop5mg],
                     selection: Binding(
                         get: { selectedModel },
                         set: { newModel in
@@ -698,7 +693,7 @@ struct LiveView: View {
                         .foregroundStyle(StrandPalette.accent)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(LiveRingCopy.status(ringPhase, streaming: false))
+                        Text(LiveRingCopy.status(streaming: false))
                             .font(StrandFont.headline)
                             .foregroundStyle(StrandPalette.textPrimary)
                         Text("Reconnect drops the current link, if any, and connects to the ring again. To pair or switch bands, open Devices.")
@@ -720,7 +715,7 @@ struct LiveView: View {
     /// deactivated).
     private var ringControls: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
-            Text(LiveRingCopy.status(ringPhase, streaming: ringStreaming))
+            Text(LiveRingCopy.status(streaming: ringStreaming))
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -734,7 +729,7 @@ struct LiveView: View {
     private var ringReconnectButton: some View {
         NoopButton("Reconnect ring", systemImage: "arrow.clockwise",
                    kind: .primary, fullWidth: true) {
-            model.reconnectOuraRing()
+            model.scan()
         }
     }
 
@@ -958,7 +953,7 @@ private struct LiveHeartReadout: View {
         // A ring reads its OWN phase (#2305, #2304): `live.connected` here is whichever source last
         // wrote it, and under a ring parked in the nonce handshake it read "Connected, waiting for a
         // streaming state" for an hour (#2303). The ring's phase is what the console should say.
-        if activeIsOura { return LiveRingCopy.status(model.ouraLinkPhase, streaming: live.connected && live.streamingLiveHR) }
+        if activeIsOura { return LiveRingCopy.status(streaming: live.connected && live.streamingLiveHR) }
         if live.connected { return String(localized: "Connected, waiting for a streaming state.") }
         // The actionable "Scan and connect…" CTA now lives in `offlineConnectCallout` above the fold, so
         // this caption stays a calm empty-state descriptor rather than a second, competing CTA.
@@ -1455,15 +1450,9 @@ private struct SignalTrustTile: View {
 /// One line per ring link phase, shared by the console centrepiece caption, the above-the-fold callout
 /// and the controls row so the three never disagree about what the ring is doing.
 enum LiveRingCopy {
-    static func status(_ phase: OuraLiveSource.LinkPhase, streaming: Bool) -> String {
-        switch phase {
-        case .disconnected:   return String(localized: "Ring not connected.")
-        case .connecting:     return String(localized: "Connecting to the ring…")
-        case .authenticating: return String(localized: "Connected, authenticating…")
-        case .authenticated:
-            return streaming
-                ? String(localized: "Live heart rate is flowing from the ring.")
-                : String(localized: "Connected, waiting for live heart rate.")
-        }
+    static func status(streaming: Bool) -> String {
+        streaming
+            ? String(localized: "Live heart rate is flowing.")
+            : String(localized: "Waiting for live heart rate.")
     }
 }

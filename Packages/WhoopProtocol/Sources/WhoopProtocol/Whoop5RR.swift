@@ -17,7 +17,7 @@ public enum Whoop5RR {
     public static func usesCanonicalSource(model: String?, brand: String?, hasTaggedIntervals: Bool) -> Bool {
         if let brand, !brand.isEmpty, brand.caseInsensitiveCompare("WHOOP") != .orderedSame { return false }
         switch DeviceFamily.confirmedRegistryFamily(model: model, brand: brand) {
-        case .whoop4: return false
+        case .whoop4, .unsupported: return false
         case .whoop5: return true
         case nil: return hasTaggedIntervals
         }

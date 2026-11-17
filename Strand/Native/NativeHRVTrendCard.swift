@@ -4,13 +4,38 @@ import StrandDesign
 import WhoopStore
 
 /// Maps stored days into the Plews / Buchheit 7-day ln(RMSSD) trend.
+///
+/// `HRVTrend.result(on:nights:)` evaluates every night it is given. Callers pass
+/// only the 60-day window ending at `dayKey` so a full history is not walked on
+/// the main actor. There is no HRV kind in `derivedSeries` (stress / overnight HR /
+/// hourly steps only); adding one would belong in NativeDerivedSeries.
 enum NativeHRVTrend {
     static func nights(from days: [DailyMetric]) -> [HRVTrend.Night] {
-        days.map { HRVTrend.Night(day: $0.day, rmssdMs: $0.avgHrv) }
+        nights(from: days, ending: nil)
+    }
+
+    /// Nights on or before `ending`, capped at the 60-day baseline window.
+    static func nights(from days: [DailyMetric], ending dayKey: String?) -> [HRVTrend.Night] {
+        let relevant: Array<DailyMetric>.SubSequence
+        if let dayKey {
+            relevant = days.filter { $0.day <= dayKey }.suffix(HRVTrend.baselineWindowDays)
+        } else {
+            relevant = days.suffix(days.count)
+        }
+        return relevant.map { HRVTrend.Night(day: $0.day, rmssdMs: $0.avgHrv) }
     }
 
     static func result(days: [DailyMetric], dayKey: String) -> HRVTrend.DayResult? {
-        HRVTrend.result(on: dayKey, nights: nights(from: days))
+        HRVTrend.result(on: dayKey, nights: nights(from: days, ending: dayKey))
+    }
+
+    static func stateLabel(_ state: HRVTrend.State) -> String {
+        switch state {
+        case .building: return "Learning your range"
+        case .withinNormal: return "Within usual"
+        case .trendingBelow: return "Trending lower"
+        case .trendingAbove: return "Trending higher"
+        }
     }
 }
 
@@ -38,7 +63,7 @@ struct NativeHRVTrendCard: View {
                         unit: "ms",
                         valueTint: stateTint(result.state)
                     )
-                    Text(stateLabel(result.state))
+                    Text(NativeHRVTrend.stateLabel(result.state))
                         .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
                         .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
                         .foregroundStyle(stateTint(result.state))
@@ -69,17 +94,8 @@ struct NativeHRVTrendCard: View {
                     }
                 }
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel("HRV Trend, \(stateLabel(result.state))")
+                .accessibilityLabel("HRV Trend, \(NativeHRVTrend.stateLabel(result.state))")
             }
-        }
-    }
-
-    private func stateLabel(_ state: HRVTrend.State) -> String {
-        switch state {
-        case .building: return "Learning your range"
-        case .withinNormal: return "Within usual"
-        case .trendingBelow: return "Trending lower"
-        case .trendingAbove: return "Trending higher"
         }
     }
 

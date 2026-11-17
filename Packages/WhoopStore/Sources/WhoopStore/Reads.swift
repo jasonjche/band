@@ -596,7 +596,7 @@ extension WhoopStore {
             // The raw diagnostic export deliberately does NOT come through here and still shows both
             // copies. That is the point of a raw export, and it is the evidence the duplication was
             // diagnosed from, so a strap log and the app can legitimately disagree on beat counts.
-            return OuraRedrainCollapse.withoutRedrainedRuns(rows)
+            return rows
         }
     }
 

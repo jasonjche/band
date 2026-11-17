@@ -6,7 +6,7 @@ import WhoopProtocol
 // MARK: - DEBUG-only demo seed (Apple parity with Android's DemoSeeder)
 // Seeds a comprehensive, self-contained synthetic dataset so a DEBUG build can walk every screen —
 // Today, Sleep, Trends, Workouts, Health, Stress, Insights, Explore — with no strap and no import.
-// This is the Apple twin of `android/.../data/DemoSeeder.kt` (same RNG seed, same physiology, same
+// This is the Apple twin of (same RNG seed, same physiology, same
 // 120-day window) and exists so we can render iOS + macOS for verification and marketing screenshots.
 //
 // Gating: the whole file is `#if DEBUG`, so it is stripped from every Release build (the shipped

@@ -1,4 +1,6 @@
 import XCTest
+import WhoopStore
+import StrandAnalytics
 @testable import Strand
 
 final class NativeTrendsTests: XCTestCase {
@@ -109,5 +111,50 @@ final class NativeTrendsTests: XCTestCase {
         XCTAssertEqual(NativeMoreItem.trends.subtitle, "All metrics over weeks and months")
         XCTAssertEqual(NativeMoreItem.trends.icon, "chart.xyaxis.line")
         XCTAssertEqual(NativeMoreItem.allCases.filter { $0 == .trends }.count, 1)
+    }
+
+    func testHRVNightsWindowCapsAtTheSixtyDayBaseline() {
+        let days = (0..<90).map { index in
+            sampleDay(day: shift("2026-11-16", -89 + index), hrv: 40 + Double(index))
+        }
+        let nights = NativeHRVTrend.nights(from: days, ending: "2026-11-16")
+        XCTAssertEqual(nights.count, 60)
+        XCTAssertEqual(nights.first?.day, shift("2026-11-16", -59))
+        XCTAssertEqual(nights.last?.day, "2026-11-16")
+        let older = NativeHRVTrend.nights(from: days, ending: "2026-10-01")
+        XCTAssertLessThanOrEqual(older.count, 60)
+        XCTAssertEqual(older.last?.day, "2026-10-01")
+        XCTAssertTrue(older.allSatisfy { $0.day <= "2026-10-01" })
+        XCTAssertEqual(NativeHRVTrend.nights(from: days).count, 90)
+    }
+
+    func testHRVResultMatchesTheUnwindowedBaselineOnASixtyDaySeries() {
+        let days = (0..<60).map { index in
+            sampleDay(day: shift("2026-11-16", -59 + index), hrv: 60)
+        }
+        let result = NativeHRVTrend.result(days: days, dayKey: "2026-11-16")
+        XCTAssertEqual(result?.state, .withinNormal)
+        XCTAssertEqual(result?.trendMs ?? 0, 60, accuracy: 0.5)
+        XCTAssertEqual(NativeHRVTrend.stateLabel(.trendingBelow), "Trending lower")
+    }
+
+    private func sampleDay(day: String, hrv: Double?) -> DailyMetric {
+        DailyMetric(
+            day: day,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 52, avgHrv: hrv, recovery: nil, strain: nil,
+            exerciseCount: nil
+        )
+    }
+
+    private func shift(_ key: String, _ days: Int) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let date = formatter.date(from: key)!
+        return formatter.string(from: calendar.date(byAdding: .day, value: days, to: date)!)
     }
 }

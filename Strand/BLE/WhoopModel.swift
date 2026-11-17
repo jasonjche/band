@@ -17,10 +17,9 @@ public enum WhoopModel: String, CaseIterable, Identifiable, Hashable {
     /// the wrong service, so it runs forever with the strap sitting right there; rotating to the other
     /// family — and persisting whichever one actually advertises — recovers reconnect automatically.
     var fallbackScanModel: WhoopModel {
-        switch self {
-        case .whoop4:   return .whoop5mg
-        case .whoop5mg: return .whoop4
-        }
+        // Band supports WHOOP 5.0 / MG only. A stale 4.0 preference rotates to 5.0
+        // and stays there; 5.0 never falls back onto 4.0 GATT.
+        .whoop5mg
     }
 
     /// The protocol-layer device family this model maps to — drives framing (CRC8 vs CRC16),
@@ -37,7 +36,8 @@ public enum WhoopModel: String, CaseIterable, Identifiable, Hashable {
     /// didn't directly trigger — BLE state restoration, power-on reconnect — so those
     /// look for the right strap after a relaunch instead of falling back to WHOOP 4.0.
     public static var persisted: WhoopModel {
-        UserDefaults.standard.string(forKey: "selectedWhoopModel").flatMap(WhoopModel.init(rawValue:)) ?? .whoop4
+        let model = UserDefaults.standard.string(forKey: "selectedWhoopModel").flatMap(WhoopModel.init(rawValue:)) ?? .whoop5mg
+        return model == .whoop4 ? .whoop5mg : model
     }
 
     /// The BLE service to scan for, and to discover after connecting, for this model.

@@ -1,4 +1,4 @@
-name: Strand
+name: Band
 options:
   deploymentTarget:
     macOS: "13.0"
@@ -10,8 +10,7 @@ options:
   developmentLanguage: en
 # Project-level xcconfig: Xcode layers this beneath every target's OWN configFiles (a target-level
 # xcconfig only shadows keys it redefines itself), so this is the one place BUNDLE_ID_PREFIX is
-# defined — every target picks it up automatically, including Strand/StrandTests/NOOPiOS, which also
-# carry Strand/Oura/OuraConfig.xcconfig for their unrelated Oura credentials. See Config/BundleId.xcconfig.
+# defined — every target picks it up automatically. See Config/BundleId.xcconfig.
 configFiles:
   Debug: Config/BundleId.xcconfig
   Release: Config/BundleId.xcconfig
@@ -56,10 +55,6 @@ packages:
     path: Packages/StrandImport
   StrandDesign:
     path: Packages/StrandDesign
-  # Clean-room local Oura ring BLE protocol (framing, auth, decoders, driver). Pure value types,
-  # zero CoreBluetooth, so it stays headless/JVM-testable; the app target imports it for OuraLiveSource.
-  OuraProtocol:
-    path: Packages/OuraProtocol
   # Clean-room local Polar sensor facts: model identification + PMD stream capability catalog (pure value
   # types, zero CoreBluetooth, headless/JVM-testable). The app target imports it so StandardHRSource can
   # log which Polar model a connecting strap is, and the Test Centre can auto-detect it from the paired
@@ -91,37 +86,23 @@ targets:
       # The stress screen is shared with iOS and prints levels through the widget's parity formatter,
       # so its Foundation-only trace model belongs to the macOS app module as well.
       - StrandiOSShared/StressTrace.swift
-    # Oura BYO-app OAuth credentials. OuraConfig.xcconfig is a tracked wrapper that optionally
-    # includes the untracked, gitignored Strand/Oura/OuraSecrets.xcconfig (template at
-    # OuraSecrets.example.xcconfig) — absent secrets leave the $(OURA_*) references in the
-    # info.properties below empty, which disables the Oura Cloud lane at runtime.
-    configFiles:
-      Debug: Strand/Oura/OuraConfig.xcconfig
-      Release: Strand/Oura/OuraConfig.xcconfig
     info:
       path: Strand/Resources/Info.plist
       properties:
-        CFBundleName: NOOP
-        CFBundleDisplayName: NOOP
+        CFBundleName: Band
+        CFBundleDisplayName: Band
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "198"
         LSMinimumSystemVersion: "13.0"
         LSApplicationCategoryType: public.app-category.healthcare-fitness
-        NSBluetoothAlwaysUsageDescription: "NOOP connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your Mac. Nothing leaves your device."
-        NSLocationWhenInUseUsageDescription: "NOOP records your route during an outdoor workout to show distance, pace, and a map. The route stays on your device. Nothing leaves it."
+        NSBluetoothAlwaysUsageDescription: "Band connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your Mac. Nothing leaves your device."
+        NSLocationWhenInUseUsageDescription: "Band records your route during an outdoor workout to show distance, pace, and a map. The route stays on your device. Nothing leaves it."
         # The AI Coach's "Custom (OpenAI-compatible)" provider talks to a LOCAL LLM server over plain
         # HTTP on loopback (Ollama / LM Studio / llama.cpp at http://localhost:…). ATS blocks cleartext
         # by default; NSAllowsLocalNetworking exempts loopback/.local/unqualified hosts ONLY — public
         # HTTPS endpoints are unaffected. No arbitrary-loads blanket exemption.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        # Oura BYO-app OAuth credentials (values come from configFiles above); read at runtime via
-        # OuraCredentials.fromBundle. Absent/blank values cleanly disable the Connect-Oura lane.
-        OURA_CLIENT_ID: $(OURA_CLIENT_ID)
-        OURA_CLIENT_SECRET: $(OURA_CLIENT_SECRET)
-        OURA_REDIRECT_URI: $(OURA_REDIRECT_URI)
-        # Registers the noop:// URL scheme so ASWebAuthenticationSession's OAuth redirect
-        # (noop://oura/callback) reaches OuraOAuthProvider instead of bouncing off the OS.
         CFBundleURLTypes:
           - CFBundleURLSchemes: [noop]
     entitlements:
@@ -138,9 +119,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).noop.staging
-        PRODUCT_NAME: "NOOP Staging"
+        PRODUCT_NAME: Band
         # Pin the Swift module name so `@testable import Strand` resolves even though PRODUCT_NAME is
-        # NOOP — the test target and shared sources refer to the app module as `Strand`.
+        # Band — the test target and shared sources refer to the app module as `Strand`.
         PRODUCT_MODULE_NAME: Strand
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
@@ -156,7 +137,6 @@ targets:
       - package: StrandDesign
       - package: MarkdownUI
       - package: ZIPFoundation
-      - package: OuraProtocol
       - package: PolarProtocol
   StrandTests:
     type: bundle.unit-test
@@ -178,23 +158,17 @@ targets:
       # And the widget cost counters, for the same reason again: pure, iOS-only, and the arithmetic is
       # exactly the part that has been wrong twice on the Android side.
       - StrandiOSShared/WidgetTelemetry.swift
-    # Same wrapper as the app target, so the OURA_CLOUD_IMPORT-gated Oura tests compile exactly
-    # when the app's Oura lane does (flag + creds both come from the untracked OuraSecrets.xcconfig).
-    configFiles:
-      Debug: Strand/Oura/OuraConfig.xcconfig
-      Release: Strand/Oura/OuraConfig.xcconfig
     dependencies:
       - target: Strand
       - package: WhoopProtocol
       - package: WhoopStore
-      - package: OuraProtocol
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).strandtests
         # Host the unit tests in the app so `@testable import Strand` links against the real app module.
-        # NOTE: must track the app target's PRODUCT_NAME ("NOOP Staging" since the staging rename).
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/NOOP Staging.app/Contents/MacOS/NOOP Staging"
+        # NOTE: must track the app target's PRODUCT_NAME (Band).
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Band.app/Contents/MacOS/Band"
         BUNDLE_LOADER: "$(TEST_HOST)"
 
   # ---------------------------------------------------------------------------
@@ -221,9 +195,7 @@ targets:
           # Terms/What's-New gates around the TabView). Without this exclude the iOS target fails to
           # resolve RootView().
           - "App/ContentView.swift"
-          - "MenuBar"
           - "Data/NotificationSettingsStore.swift"
-          - "Screens/NotificationSettingsView.swift"
           # macOS-only AppIntents (BuzzStrap/MarkMoment) — iOS uses StrandiOS/System/NOOPAppIntents.swift.
           # Without this exclude both compile into the iOS target and collide on NOOPAppIntents.stringsdata.
           - "System/NOOPAppIntents.swift"
@@ -232,10 +204,6 @@ targets:
           - "Resources/Info.plist"
           - "Resources/NOOP.entitlements"
       - path: StrandiOSShared
-    # Same tracked wrapper as the macOS target (Strand/Oura/ is shared, not per-platform).
-    configFiles:
-      Debug: Strand/Oura/OuraConfig.xcconfig
-      Release: Strand/Oura/OuraConfig.xcconfig
     info:
       path: StrandiOS/Resources/Info.plist
       properties:
@@ -323,13 +291,6 @@ targets:
         # Both keys are required for the folder to actually appear in Files.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        # Oura BYO-app OAuth credentials (values come from configFiles above); read at runtime via
-        # OuraCredentials.fromBundle. Absent/blank values cleanly disable the Connect-Oura lane.
-        OURA_CLIENT_ID: $(OURA_CLIENT_ID)
-        OURA_CLIENT_SECRET: $(OURA_CLIENT_SECRET)
-        OURA_REDIRECT_URI: $(OURA_REDIRECT_URI)
-        # Registers the noop:// URL scheme so ASWebAuthenticationSession's OAuth redirect
-        # (noop://oura/callback) reaches OuraOAuthProvider instead of bouncing off the OS.
         CFBundleURLTypes:
           - CFBundleURLSchemes: [noop]
     entitlements:
@@ -348,7 +309,9 @@ targets:
         # because iOS has no App Store app to install beside (NoopApp is closed), so the overlay served
         # no purpose and only broke sideloading. The product name was missed by that same change. macOS
         # keeps both halves deliberately (#39) and is unaffected.
-        PRODUCT_NAME: NOOP
+        PRODUCT_NAME: Band
+        # Pin the Swift module so changing PRODUCT_NAME does not rename the iOS module.
+        PRODUCT_MODULE_NAME: NOOP
         # $(IOS_APP_ICON_NAME) defaults to AppIcon in Config/BundleId.xcconfig; a personal build can
         # pick another shipped set so it is distinguishable from an installed NOOP on the same phone.
         ASSETCATALOG_COMPILER_APPICON_NAME: $(IOS_APP_ICON_NAME)
@@ -527,10 +490,10 @@ targets:
     dependencies:
       - package: StrandDesign
 
-# Explicit schemes so `xcodebuild -scheme Strand …` builds + tests the macOS app (with StrandTests
-# wired in) and `-scheme NOOPiOS …` builds the iOS app. Names match the app-build CI matrix.
+# Explicit schemes so `xcodebuild -scheme BandMac …` builds + tests the macOS host (with StrandTests
+# wired in) and `-scheme Band …` builds the iOS app.
 schemes:
-  Strand:
+  BandMac:
     build:
       targets:
         Strand: all
@@ -540,7 +503,7 @@ schemes:
       config: Debug
       targets:
         - StrandTests
-  NOOPiOS:
+  Band:
     build:
       targets:
         NOOPiOS: all

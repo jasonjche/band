@@ -361,20 +361,27 @@ enum NativeSleepEstimatedHypnogram {
         var leftoverDeep = budget.deep - deep.reduce(0, +)
         var leftoverRem = budget.rem - rem.reduce(0, +)
         var leftover = interiorTotal - placed
-        func pour(_ extra: inout Int, into target: inout [Int]) {
+        // Index-addressed so no inout alias of a stage array overlaps the reads of all three
+        // (Release enforces exclusivity statically).
+        enum PourStage { case deep, rem, light }
+        func pour(_ extra: inout Int, into stage: PourStage) {
             guard extra > 0 else { return }
             for i in 0..<n {
                 let room = interiors[i] - light[i] - deep[i] - rem[i]
                 let take = min(room, extra)
-                target[i] += take
+                switch stage {
+                case .deep: deep[i] += take
+                case .rem: rem[i] += take
+                case .light: light[i] += take
+                }
                 extra -= take
                 leftover -= take
                 if extra == 0 { break }
             }
         }
-        pour(&leftoverDeep, into: &deep)
-        pour(&leftoverRem, into: &rem)
-        pour(&leftoverLight, into: &light)
+        pour(&leftoverDeep, into: .deep)
+        pour(&leftoverRem, into: .rem)
+        pour(&leftoverLight, into: .light)
         if leftover > 0 { light[n - 1] += leftover }
 
         var pieces: [Piece] = []

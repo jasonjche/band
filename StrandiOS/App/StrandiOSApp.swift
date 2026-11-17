@@ -586,47 +586,20 @@ private struct iOSRootView: View {
 }
 
 #if DEBUG
-/// DEBUG-only screenshot harness. Maps `--demo-screen <name>` to a single screen so a seeded
-/// simulator build can be captured deterministically (verification + marketing). Stripped from Release.
+/// DEBUG-only screenshot harness. Maps `--demo-screen <name>` to a live Band screen.
 enum DemoScreens {
-    /// The screen named by `--demo-screen <name>`, or nil if the arg is absent/unknown.
     static var requested: AnyView? {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--demo-screen"), i + 1 < args.count else { return nil }
         switch args[i + 1].lowercased() {
-        case "today":    return AnyView(TodayView())
-        case "nativetoday": return AnyView(NativeHomeView())
-        // The DEFAULT iOS Today (`noop.liquidTodayEnabled` ships true), so it needs its own entry — plain
-        // "today" renders the CLASSIC screen, which is exactly the screen whose behaviour Liquid was found
-        // to have diverged from. Without this, the default Today was the one screen the harness could not
-        // capture.
-        case "liquidtoday": return AnyView(LiquidTodayView())
-        case "trends":   return AnyView(TrendsView())
-        case "sleep":    return AnyView(SleepView())
+        case "today", "nativetoday": return AnyView(NativeHomeView())
         case "live":     return AnyView(LiveView())
-        case "stress":   return AnyView(StressView())
         case "workouts": return AnyView(WorkoutsView())
-        case "health":   return AnyView(HealthView())
         case "insights": return AnyView(InsightsView())
-        case "explore":  return AnyView(MetricExplorerView())
-        case "compare":  return AnyView(CompareView())
         case "settings": return AnyView(SettingsView())
-        case "chargebreakdown": return AnyView(ChargeBreakdownDemoHost())
         case "devices":  return AnyView(DevicesView())
         case "devicescatalog": return AnyView(DeviceCardCatalog())
-        case "fitnessage": return AnyView(FitnessAgeDemoScreen())
-        case "vitality": return AnyView(VitalityDemoScreen())
         case "addwizard": return AnyView(AddWizardDemoHost())
-        // Oura onboarding: the Add-device wizard deep-linked straight to the Oura factory-reset-and-adopt
-        // prep step (the Beta banner + get/lose card + the red irreversible-consent gate), screenshot-able
-        // WITHOUT a ring.
-        case "ouraonboarding": return AnyView(OuraOnboardingDemoHost())
-        // Oura device card: the locally-adopted Oura ring card (Beta chip + per-gen honest capability copy
-        // + battery + local-state note), rendered with mock data, no ring required.
-        case "ouradevice": return AnyView(OuraDeviceDemoScreen())
-        // #221: a WHOOP 5/MG whose encrypted bond was refused (#78) — the "Connected · not paired" pill
-        // + self-service pairing guidance, screenshot-able WITHOUT reproducing the bond refusal on real
-        // hardware.
         case "bondrefused": return AnyView(BondRefusedDemoScreen())
         default:         return nil
         }
@@ -643,16 +616,5 @@ private struct AddWizardDemoHost: View {
     @EnvironmentObject var live: LiveState
     var body: some View { AddDeviceWizard(live: live, onClose: {}) }
 }
-
-/// DEBUG-only host so `--demo-screen ouraonboarding` renders the Add-device wizard deep-linked to the
-/// Oura factory-reset-and-adopt prep step (the Beta banner + what-you-get/what-you-lose card + the red
-/// irreversible-consent gate). A SwiftUI View body is main-actor, so it can pull the injected LiveState
-/// and seed the wizard's `startAt` into the Oura prep step without a ring present.
-private struct OuraOnboardingDemoHost: View {
-    @EnvironmentObject var live: LiveState
-    var body: some View {
-        AddDeviceWizard(live: live, onClose: {}, startAt: (.oura, .prep))
-    }
-
-}
 #endif
+

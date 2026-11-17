@@ -515,7 +515,8 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertEqual(HomeCalendarSheetLayout.rows, 6)
         XCTAssertEqual(
             HomeCalendarSheetLayout.compactHeight,
-            NoopMetrics.space4 + HomeCalendarSheetLayout.header + NoopMetrics.space2
+            NoopMetrics.space4 + HomeCalendarSheetLayout.actions + NoopMetrics.space2
+                + HomeCalendarSheetLayout.header
                 + HomeCalendarSheetLayout.weekdayRow + HomeCalendarSheetLayout.gridHeight
                 + NoopMetrics.space4,
             accuracy: 0.5

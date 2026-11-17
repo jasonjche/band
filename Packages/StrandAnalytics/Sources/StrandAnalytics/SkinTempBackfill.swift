@@ -84,7 +84,7 @@ public enum SkinTempBackfill {
         case .whoop4:
             // No anchor ⇒ decline. The global 826 is NOT a fallback here (rule 3).
             return windowAnchorRaw
-        case .whoop5:
+        case .whoop5, .unsupported:
             // Centidegree path: no anchor, no decline on anchor grounds.
             return nil
         }

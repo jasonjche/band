@@ -100,7 +100,7 @@ struct AutomationsView: View {
     /// `notif.masterEnabled` key the SedentaryDetector and the notification posting read.
     private var wristAlertsCard: some View {
         Section2(icon: "bell.badge.fill", title: String(localized: "Wrist alerts"),
-                 blurb: String(localized: "Let NOOP tap your wrist for the things you turn on below, so you can leave your phone and still feel what matters."),
+                 blurb: String(localized: "Let Band tap your wrist for the things you turn on below, so you can leave your phone and still feel what matters."),
                  shortFooter: String(localized: "Master switch for strap buzzes."),
                  active: wristAlertsMaster) {
             VStack(spacing: 0) {
@@ -258,7 +258,7 @@ struct AutomationsView: View {
                 // v5 L3 closed-loop check-in (master + sub toggles). Default OFF, manual-first. The keys
                 // mirror BiofeedbackPrefs, which the central detector (AppModel.evaluateStress) reads.
                 ToggleRow(label: String(localized: "Stress check-ins (haptic)"),
-                          help: String(localized: "When a fresh, non-exercise HRV dip is detected while you're still, NOOP offers a one-minute guided breath: a single confirming buzz and a dismissible card. Never an alarm, never a diagnosis."),
+                          help: String(localized: "When a fresh, non-exercise HRV dip is detected while you're still, Band offers a one-minute guided breath: a single confirming buzz and a dismissible card. Never an alarm, never a diagnosis."),
                           isOn: $behavior.stressCheckIn)
                 if behavior.stressCheckIn {
                     rowDivider
@@ -519,7 +519,7 @@ struct AutomationsView: View {
                  shortFooter: String(localized: "Once a day when Effort hits today's range."),
                  active: behavior.strainTargetNudge) {
             ToggleRow(label: String(localized: "Notify when optimal strain is reached"),
-                      help: String(localized: "Posts after your strap syncs and NOOP scores the day — not the exact second you cross it. At most once per day."),
+                      help: String(localized: "Posts after your strap syncs and Band scores the day — not the exact second you cross it. At most once per day."),
                       isOn: $behavior.strainTargetNudge)
                 .onChangeCompat(of: behavior.strainTargetNudge) { on in
                     if on {

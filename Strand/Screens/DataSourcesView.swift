@@ -128,7 +128,6 @@ struct DataSourcesView: View {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 whoopCard.staggeredAppear(index: 0)
                 appleHealthCard.staggeredAppear(index: 1)
-                xiaomiCard.staggeredAppear(index: 2)
                 nutritionCard.staggeredAppear(index: 3)
                 liftingCard.staggeredAppear(index: 4)
                 activityFileCard.staggeredAppear(index: 5)
@@ -148,7 +147,6 @@ struct DataSourcesView: View {
             nativeWhoopSection
             if !AppBrand.isPersonalBuild {
                 nativeAppleHealthSection
-                nativeXiaomiSection
                 nativeNutritionSection
                 nativeLiftingSection
                 nativeActivityFileSection
@@ -212,24 +210,6 @@ struct DataSourcesView: View {
             Text("Apple Health")
         } footer: {
             Text("Import an Apple Health export.zip. Removing imported data cannot be undone.")
-        }
-    }
-
-    private var nativeXiaomiSection: some View {
-        let importing = model.isImporting(.xiaomi)
-        return Section {
-            Button("Import Mi Fitness Export…") { presentImporter(.xiaomi) }
-                .disabled(model.hasActiveImport)
-            if importing { ProgressView("Importing…") }
-            if let s = model.xiaomiImportSummary {
-                if model.xiaomiImportFailed {
-                    LabeledContent("Error", value: s).foregroundStyle(.red)
-                } else {
-                    LabeledContent("Last Import", value: s)
-                }
-            }
-        } header: {
-            Text("Mi Band")
         }
     }
 
@@ -433,26 +413,6 @@ struct DataSourcesView: View {
         }
     }
 
-    private var xiaomiCard: some View {
-        card(title: "Xiaomi Smart Band (Mi Band)", icon: "figure.walk.motion",
-             tint: StrandPalette.metricAmber,
-             subtitle: String(localized: "Import your Mi Band history (steps, heart rate, resting HR, sleep stages, SpO₂, stress and sleep score) straight from the Mi Fitness app. On your iPhone: Files → On My iPhone → Mi Fitness, long-press the folder → Compress, then choose the .zip here. Fully offline; no Xiaomi account or Bluetooth needed. Smart Band 8/9/10.")) {
-            let importingXiaomi = model.isImporting(.xiaomi)
-            HStack(spacing: NoopMetrics.space3) {
-                Button { presentImporter(.xiaomi) } label: {
-                    Label(importingXiaomi ? "Importing…" : "Choose Mi Fitness export…", systemImage: "tray.and.arrow.down")
-                }
-                .buttonStyle(NoopButtonStyle(.primary))
-                .disabled(model.hasActiveImport || nutritionImporting || liftingImporting || activityFileImporting)
-                if importingXiaomi { ProgressView().controlSize(.small) }
-            }
-            if let s = model.xiaomiImportSummary {
-                Text(s).font(StrandFont.subhead)
-                    .foregroundStyle(model.xiaomiImportFailed ? StrandPalette.statusWarning : StrandPalette.statusPositive)
-            }
-        }
-    }
-
     private var nutritionCard: some View {
         card(title: String(localized: "Nutrition (.csv)"), icon: "fork.knife",
              tint: StrandPalette.metricAmber,
@@ -597,8 +557,6 @@ struct DataSourcesView: View {
             model.importWhoop(url: url)
         case .appleHealth:
             model.importAppleHealth(url: url)
-        case .xiaomi:
-            model.importXiaomi(url: url)
         case .nutrition:
             importNutrition(url: url)
         case .lifting:
@@ -985,7 +943,6 @@ struct DataSourcesView: View {
     private enum ImportTarget {
         case whoop
         case appleHealth
-        case xiaomi
         case nutrition
         case lifting
         case activityFile
@@ -1008,15 +965,6 @@ struct DataSourcesView: View {
                 return [.zip, .xml, .folder]
                 #else
                 return [.zip, .xml]
-                #endif
-            case .xiaomi:
-                // The Mi Fitness sandbox is shared as a .zip (or, on macOS, an unzipped
-                // folder); the bare `<user_id>.db` is also accepted directly.
-                let db = UTType(filenameExtension: "db") ?? .data
-                #if os(macOS)
-                return [.zip, .folder, db]
-                #else
-                return [.zip, db]
                 #endif
             case .nutrition:
                 return [.commaSeparatedText, .plainText]
@@ -1065,7 +1013,7 @@ struct DataSourcesView: View {
             .onChangeCompat(of: broadcastHrEnabled) { on in
                 if on { hrBroadcaster.start() } else { hrBroadcaster.stop() }
             }
-            Text("Acts as a standard Bluetooth heart-rate strap. Pair NOOP from your treadmill, bike or app to see your strap's heart rate there.")
+            Text("Acts as a standard Bluetooth heart-rate strap. Pair Band from your treadmill, bike or app to see your strap's heart rate there.")
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1114,7 +1062,7 @@ struct DataSourcesView: View {
             generationRow(title: "WHOOP 4.0",
                           detail: String(localized: "Broadcasts the strap's own live heart rate over Bluetooth."))
             generationRow(title: "WHOOP 5.0 & MG",
-                          detail: String(localized: "Broadcasts the live heart rate NOOP derives from the strap once connected."))
+                          detail: String(localized: "Broadcasts the live heart rate Band derives from the strap once connected."))
         }
         .padding(.top, 2)
         .padding(.horizontal, 10).padding(.vertical, 8)

@@ -134,13 +134,13 @@ private struct TabRouteDestination: View {
         case .metricPage(let key):
             NativeMetricPage(key: key)
         case .metricDetail:
-            if case .metric(let key) = route, let metric = MetricCatalog.all.first(where: { $0.key == key }) {
-                MetricDetailView(metric: metric)
+            if case .metric(let key) = route {
+                NativeMetricPage(key: key)
             } else {
-                HealthView()
+                NativeHealthMonitorPage()
             }
         case .health:
-            HealthView()
+            NativeHealthMonitorPage()
         case .unchanged:
             original(route)
         }
@@ -149,36 +149,34 @@ private struct TabRouteDestination: View {
     @ViewBuilder
     private func original(_ route: TabRoute) -> some View {
         switch route {
-        case .fullDayChart: FullDayChartView()
+        case .fullDayChart:
+            NativeMetricPage(key: "hr")
         case .metric(let key):
-            // Every caller passes a catalog key, so the fallback is theoretical; Health is the
-            // catch-all vitals surface. (Pre-#198 Trends fell back to the Explorer instead —
-            // unified here rather than carrying two never-taken branches.)
-            if let m = MetricCatalog.all.first(where: { $0.key == key }) {
-                MetricDetailView(metric: m)
-            } else {
-                HealthView()
-            }
-        case .metricSourced(let key, let source):
-                // Exact (key, source) resolution, order-independent. Fall back to the bare-key entry,
-                // then Health, so a stale route can never dead-end.
-                if let m = MetricCatalog.metric(key: key, source: source)
-                    ?? MetricCatalog.all.first(where: { $0.key == key }) {
-                    MetricDetailView(metric: m)
-                } else {
-                    HealthView()
-                }
-            case .metricExplorer: MetricExplorerView()
-            case .workouts: WorkoutsView()
-            case .dataSources: DataSourcesView()
-            case .stress: StressView()
-            case .journal: NativeJournalView()
-            case .journalLog: NativeJournalView(startsLogging: true)
-            case .healthMonitor: NativeHealthMonitorPage()
-            case .sleep: SleepView()
-            case .health: HealthView()
-        case .hydration: HydrationView()
-        case .coupled: CoupledView()
+            NativeMetricPage(key: key)
+        case .metricSourced(let key, _):
+            NativeMetricPage(key: key)
+        case .metricExplorer:
+            NativeTrendsPage()
+        case .workouts:
+            WorkoutsView()
+        case .dataSources:
+            DataSourcesView()
+        case .stress:
+            NativeStressPage()
+        case .journal:
+            NativeJournalView()
+        case .journalLog:
+            NativeJournalView(startsLogging: true)
+        case .healthMonitor:
+            NativeHealthMonitorPage()
+        case .sleep:
+            NativeScorePage(kind: .sleep)
+        case .health:
+            NativeHealthMonitorPage()
+        case .hydration:
+            NativeMetricPage(key: "hydration")
+        case .coupled:
+            NativeHomeView()
         }
     }
 }

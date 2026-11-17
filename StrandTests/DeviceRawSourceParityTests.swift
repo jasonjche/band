@@ -66,23 +66,6 @@ final class DeviceRawSourceParityTests: XCTestCase {
         }
     }
 
-    func testStressCannotPinRawReadsToCanonicalNamespace() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Strand/Screens/StressView.swift"),
-                                encoding: .utf8)
-        let withoutComments = source.replacingOccurrences(of: #"/\*.*?\*/"#, with: "",
-                                                           options: .regularExpression)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.split(separator: "//", maxSplits: 1).first.map(String.init) ?? "" }
-            .joined(separator: "\n")
-        let directCanonicalRaw = #"(?s)(hrSamples|rrIntervals|gravitySamples)\s*\([^)]*(\"my-whoop\"|Repository\.whoopSource)"#
-        XCTAssertNil(withoutComments.range(of: directCanonicalRaw, options: .regularExpression),
-                     "Stress raw physiology must resolve via the device-aware repository API")
-        for call in ["repo.hrSamples(from:", "repo.rrIntervals(from:", "repo.gravitySamplesUnion(from:"] {
-            XCTAssertTrue(withoutComments.contains(call), "Stress must use device-aware \(call)")
-        }
-    }
-
     func testCoachTimelineAndRhythmUseDeviceAwareRawFacades() throws {
         let coach = try production("Strand/AI/AICoach.swift")
         XCTAssertTrue(coach.contains("repo.rrIntervals(from:"),

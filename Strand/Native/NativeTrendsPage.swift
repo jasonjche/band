@@ -117,8 +117,8 @@ struct NativeTrendsPage: View {
     private var selectedKey: String { NativeTrendsCatalog.resolvedKey(storedKey) }
 
     var body: some View {
-        NativeMetricPage(key: selectedKey, showsNavigationTitle: false)
-            .id(selectedKey)
+        NativeTrendsMetricHost(key: selectedKey)
+            .equatable()
             .safeAreaInset(edge: .top, spacing: 0) {
                 picker
             }
@@ -159,6 +159,16 @@ struct NativeTrendsPage: View {
         .background(NativePaint.page(style))
         .accessibilityLabel(NativeTrendsCatalog.title(for: selectedKey))
         .accessibilityHint("Shows all metrics over weeks and months")
+    }
+}
+
+/// Isolates the metric page so picker chrome invalidations do not rebuild the chart.
+private struct NativeTrendsMetricHost: View, Equatable {
+    var key: String
+
+    var body: some View {
+        NativeMetricPage(key: key, showsNavigationTitle: false)
+            .id(key)
     }
 }
 

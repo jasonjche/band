@@ -184,7 +184,7 @@ public enum FeatureFlagWriteGate {
 ///
 /// Pure and order-dependent (`nextStep` → `note…` → `nextStep` → …), so `swift test` covers the whole run —
 /// plan, gate, verdicts, rendering — without a strap. Kotlin twin: `R22DisableReport` in
-/// `android/…/protocol/R22Disable.kt`; the rendered text is byte-identical across platforms so a shared
+/// ; the rendered text is byte-identical across platforms so a shared
 /// strap log reads the same either side.
 public struct R22DisableReport: Equatable, Sendable {
 

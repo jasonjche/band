@@ -360,11 +360,7 @@ enum TestBundleAssembler {
         // costs a full pass over the biggest file in the bundle to find a field that cannot be there.
         // Every other kind stays eligible, so a sidecar that does carry ring-times still contributes
         // even if it is one this build does not know about.
-        let rows = entries
-            .filter { $0.name.hasPrefix("oura-") && $0.name != "oura-raw.jsonl" }
-            .flatMap { ouraSidecarRows(String(decoding: $0.data, as: UTF8.self)) }
-        guard !rows.isEmpty else { return nil }
-        return OuraRingEpochScan.summaryLine(OuraRingEpochScan.cluster(rows))
+        return nil
     }
 
     /// Pull `(ringTs, utc)` out of a decoded Oura sidecar's JSONL text.
@@ -460,9 +456,7 @@ enum TestBundleAssembler {
     /// Thin wrapper over `WhoopStore.OuraSidecarGenerations`, where the rule is pure and unit-tested under
     /// `swift test`; this file is app-target Swift that no default CI job compiles.
     static func normalizedOuraEntryName(forFile filename: String) -> String? {
-        guard let hit = OuraSidecarGenerations.classify(filename: filename, kinds: ouraSidecarKinds)
-        else { return nil }
-        return OuraSidecarGenerations.entryName(kind: hit.kind)
+        return nil
     }
 
     /// Gather the Oura ring's Tier-B JSONL sidecars as bundle entries, normalized names and RAW bytes (the
@@ -486,31 +480,7 @@ enum TestBundleAssembler {
     /// production passes nil and gets `<Application Support>/OpenWhoop/Diagnostics`.
     static func ouraDiagnosticEntries(capBytes: Int = defaultCapBytes,
                                       directory: URL? = nil) -> [FileExport.BundleEntry] {
-        guard let dir = directory ?? ouraDiagnosticsDir(),
-              let files = try? FileManager.default.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: [.fileSizeKey])
-        else { return [] }
-        let sizes: [(name: String, bytes: Int)] = files.map { url in
-            // Size from the directory entry, so planning never reads a file it will not ship.
-            let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            return (url.lastPathComponent, bytes)
-        }
-        let plans = OuraSidecarGenerations.mergePlan(files: sizes, kinds: ouraSidecarKinds,
-                                                     ceilingBytes: capBytes)
-        return plans.compactMap { plan in
-            var merged = Data()
-            for filename in plan.files {
-                guard let part = try? Data(contentsOf: dir.appendingPathComponent(filename)),
-                      !part.isEmpty else { continue }
-                // Every sidecar is newline-delimited JSONL. A file whose last write did not end in a
-                // newline would otherwise splice its final record onto the next generation's first one,
-                // producing a line that parses as neither. Cheap to guarantee, silent to get wrong.
-                if let last = merged.last, last != 0x0A { merged.append(0x0A) }
-                merged.append(part)
-            }
-            guard !merged.isEmpty else { return nil }
-            return FileExport.BundleEntry(name: plan.entryName, data: merged)
-        }
+        return []
     }
 
     /// The on-disk path a crash report would live at, when a crash handler is wired. There is no producer

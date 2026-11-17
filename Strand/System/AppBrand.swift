@@ -1,15 +1,13 @@
 import Foundation
 
-/// Runtime brand for the running bundle. Stock builds read "NOOP" from Info.plist; a personal
-/// iOS build overrides `CFBundleDisplayName` and `NoopPersonalBuild` via xcconfig.
+/// Runtime brand for the running bundle. Reads `CFBundleDisplayName` from Info.plist.
 enum AppBrand {
-    /// Home-screen / navigation name. Falls back to "NOOP" when the plist key is missing or empty
-    /// so a stock macOS build and tests keep the upstream name.
+    /// Home-screen / navigation name. Falls back to "Band" when the plist key is missing or empty.
     static var name: String {
         let raw = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "NOOP" : trimmed
+        return trimmed.isEmpty ? "Band" : trimmed
     }
 
     /// True when `NoopPersonalBuild` is YES in this target's Info.plist (set from

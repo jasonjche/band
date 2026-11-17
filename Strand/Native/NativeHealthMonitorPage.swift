@@ -56,11 +56,15 @@ struct NativeHealthMonitorPage: View {
                 nightsWorn: NativeHealthMonitorMath.nightsWorn(days: repoHandle?.days ?? [], todayKey: dayKey),
                 onBack: { shiftDay(-1) },
                 onForward: { shiftDay(1) },
-                onSelect: { path.wrappedValue.append($0) }
+                onSelect: { path.wrappedValue.append($0) },
+                onOpenHeartRate: { path.wrappedValue.append(NativeHeartRateRoute()) }
             )
         }
         .navigationTitle("Health Monitor")
         .modifier(NativeInlineTitle())
+        .navigationDestination(for: NativeHeartRateRoute.self) { _ in
+            NativeHeartRatePage()
+        }
         .background {
             NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
             NativeProfileSink { profileHandle = $0 }
@@ -85,8 +89,14 @@ struct NativeHealthMonitorPage: View {
     }
 
     private var sparkPoints: [NativeHourPoint] {
-        if viewingToday, liveSamples.count >= 2 { return liveSamples }
-        return storedSpark
+        if storedSpark.isEmpty, viewingToday {
+            return NativeHRSmoothing.smooth(liveSamples)
+        }
+        return NativeHeartRateMath.appendLive(
+            storedSpark,
+            bpm: viewingToday ? liveBpm : nil,
+            at: liveSamples.last?.time ?? Date()
+        )
     }
 
     private var displayBpm: Int? {
@@ -107,11 +117,17 @@ struct NativeHealthMonitorPage: View {
     private func loadStoredHR(repo: Repository) async {
         let start = Calendar.current.startOfDay(for: selectedDay)
         let from = Int(start.timeIntervalSince1970)
-        let end = min(from + 86_400, Int(Date().timeIntervalSince1970))
+        let now = Date()
+        let end = min(from + 86_400, Int(now.timeIntervalSince1970))
         let buckets = await repo.hrSamples(from: from, to: end, bucketSeconds: 60)
-        storedSpark = buckets.suffix(40).map {
+        if Task.isCancelled { return }
+        let raw = buckets.map {
             NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval($0.ts)), value: $0.bpm)
         }
+        let windowEnd = Date(timeIntervalSince1970: TimeInterval(end))
+        storedSpark = await Task.detached(priority: .utility) {
+            NativeHeartRateMath.spark(from: raw, now: windowEnd)
+        }.value
     }
 
     private func shiftDay(_ delta: Int) {
@@ -133,6 +149,7 @@ struct NativeHealthMonitorBody: View {
     var onBack: () -> Void
     var onForward: () -> Void
     var onSelect: (TabRoute) -> Void
+    var onOpenHeartRate: () -> Void = {}
 
     private var dayKey: String { Repository.localDayKey(selectedDay) }
     private var slots: [NativeHealthMonitorMath.Slot] {
@@ -151,13 +168,17 @@ struct NativeHealthMonitorBody: View {
             .frame(maxWidth: .infinity)
             .padding(.top, NoopMetrics.space4)
 
-            NativeHealthMonitorHero(
-                bpm: bpm,
-                spark: spark,
-                zone: zone,
-                live: live,
-                readingTime: readingTime
-            )
+            Button(action: onOpenHeartRate) {
+                NativeHealthMonitorHero(
+                    bpm: bpm,
+                    spark: spark,
+                    zone: zone,
+                    live: live,
+                    readingTime: readingTime
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows the day’s heart rate chart")
 
             if let remaining = NativeHealthMonitorMath.nightsRemaining(worn: nightsWorn) {
                 NativeHealthMonitorCalibrationBanner(remaining: remaining, worn: nightsWorn)
@@ -246,8 +267,10 @@ private struct NativeHealthMonitorSpark: View {
     var live: Bool
     var tint: Color
 
-    private var plot: [NativeHourPoint] {
-        NativeHRDisplay.line(points)
+    private var plot: [NativeHourPoint] { points }
+
+    private var yDomain: ClosedRange<Double> {
+        NativeHeartRateMath.fittedDomain(plot.map(\.value))
     }
 
     var body: some View {
@@ -260,20 +283,15 @@ private struct NativeHealthMonitorSpark: View {
                     .accessibilityHidden(true)
             }
             if let last = plot.last {
-                if live {
-                    RuleMark(x: .value("Now", last.time))
-                        .foregroundStyle(NativeTokens.separator)
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .accessibilityHidden(true)
-                }
                 PointMark(x: .value("Now", last.time), y: .value("BPM", last.value))
                     .foregroundStyle(tint)
-                    .symbol { NativeSelectedVertex(tint: tint, size: 8) }
+                    .symbol { NativeSelectedVertex(tint: tint, size: live ? 8 : 6) }
                     .accessibilityHidden(true)
             }
         }
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
+        .chartYScale(domain: yDomain)
         .chartPlotStyle { $0.padding(.top, NoopMetrics.space1) }
         .accessibilityHidden(true)
     }

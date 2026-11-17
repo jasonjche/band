@@ -11,18 +11,15 @@ public struct ImportCoordinator {
 
     private let appleHealth: AppleHealthImporter
     private let whoop: WhoopExportImporter
-    private let xiaomi: XiaomiBandImporter
     private let wearable: WearableExportImporter
 
     public init(
         appleHealth: AppleHealthImporter = AppleHealthImporter(),
         whoop: WhoopExportImporter = WhoopExportImporter(),
-        xiaomi: XiaomiBandImporter = XiaomiBandImporter(),
         wearable: WearableExportImporter = WearableExportImporter()
     ) {
         self.appleHealth = appleHealth
         self.whoop = whoop
-        self.xiaomi = xiaomi
         self.wearable = wearable
     }
 
@@ -52,12 +49,6 @@ public struct ImportCoordinator {
         try whoop.import(from: url)
     }
 
-    /// Parse a Xiaomi / Mi Band export (the Mi Fitness sandbox folder, a `.zip` of it,
-    /// or the bare `<user_id>.db`).
-    public func importXiaomiBand(from url: URL) throws -> XiaomiImportResult {
-        try xiaomi.import(from: url)
-    }
-
     /// Parse a user's own Oura / Fitbit / Garmin data export (a `.json`, a folder, or a `.zip`).
     /// The brand is auto-detected by content.
     public func importWearableExport(from url: URL) throws -> WearableImportResult {
@@ -70,14 +61,12 @@ public struct ImportCoordinator {
     public enum DetectedImport: Sendable, Equatable {
         case appleHealth(AppleHealthImportResult)
         case whoopExport(WhoopImportResult)
-        case xiaomiBand(XiaomiImportResult)
         case wearable(WearableImportResult)
 
         public var kind: DataSourceKind {
             switch self {
             case .appleHealth: return .appleHealth
             case .whoopExport: return .whoopExport
-            case .xiaomiBand: return .xiaomiBand
             case .wearable(let r): return r.brand.dataSourceKind
             }
         }
@@ -86,7 +75,6 @@ public struct ImportCoordinator {
             switch self {
             case .appleHealth(let r): return r.summary
             case .whoopExport(let r): return r.summary
-            case .xiaomiBand(let r): return r.summary
             case .wearable(let r): return r.summary
             }
         }
@@ -116,11 +104,9 @@ public struct ImportCoordinator {
             return .appleHealth(try appleHealth.import(from: url))
         case .whoopExport:
             return .whoopExport(try whoop.import(from: url))
-        case .xiaomiBand:
-            return .xiaomiBand(try xiaomi.import(from: url))
         // detectKind never returns the wearable-import kinds (it has no marker for them) — the wearable
         // importer owns brand detection. Unreachable but kept exhaustive.
-        case .ouraImport, .fitbitImport, .garminImport:
+        case .xiaomiBand, .ouraImport, .fitbitImport, .garminImport:
             return .wearable(try wearable.import(from: url))
         }
     }
@@ -135,8 +121,6 @@ public struct ImportCoordinator {
 
         let ext = url.pathExtension.lowercased()
         if ext == "xml" { return .appleHealth }
-        // A bare Mi Fitness SQLite file.
-        if ext == "db" { return .xiaomiBand }
 
         let names = try entryFilenames(of: url, isDirectory: isDir.boolValue)
         if names.contains("export.xml") { return .appleHealth }
@@ -145,30 +129,7 @@ public struct ImportCoordinator {
         ]
         if !names.isDisjoint(with: whoopNames) { return .whoopExport }
 
-        // Mi Fitness sandbox: a `DataBase/<user_id>/de/<user_id>.db` somewhere inside.
-        if try containsMiFitnessDB(of: url, isDirectory: isDir.boolValue) { return .xiaomiBand }
-
         throw ImportError.notAZipOrFolder(url.path)
-    }
-
-    /// True if a folder or zip holds a Mi Fitness health DB (`.../de/<…>.db`).
-    private func containsMiFitnessDB(of url: URL, isDirectory: Bool) throws -> Bool {
-        func isHealthDBPath(_ p: String) -> Bool {
-            let lower = p.lowercased()
-            return lower.hasSuffix(".db") && lower.contains("/de/")
-        }
-
-        if isDirectory {
-            let fm = FileManager.default
-            guard let e = fm.enumerator(at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
-                return false
-            }
-            for case let u as URL in e where isHealthDBPath(u.path) { return true }
-            return false
-        }
-
-        guard let paths = try? ZipPeek.paths(in: url) else { return false }
-        return paths.contains(where: isHealthDBPath)
     }
 
     // MARK: - Helpers

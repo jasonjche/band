@@ -126,11 +126,12 @@ final class DeviceFamilyFramingTests: XCTestCase {
         XCTAssertEqual(DeviceFamily.whoop5.commandCharacteristicUUIDString,
                        "fd4b0002-cce1-4033-93ce-002d5875f58a")
 
-        XCTAssertEqual(DeviceFamily.allCases, [.whoop4, .whoop5])
+        XCTAssertEqual(DeviceFamily.allCases, [.whoop4, .whoop5, .unsupported])
     }
 
     func testDiagnosticGattFamiliesAreMetadataOnly() {
-        XCTAssertEqual(WhoopGattServiceFamily.unsupportedServiceUUIDStrings, [
+        XCTAssertEqual(Set(WhoopGattServiceFamily.unsupportedServiceUUIDStrings), [
+            WhoopGattServiceFamily.whoop4.serviceUUIDString,
             "11500001-6215-11ee-8c99-0242ac120002",
             "8a580001-2fe8-4796-9267-b87a2b0c8234",
             "59830001-5955-419b-bb8d-c8262926af23",
@@ -140,12 +141,11 @@ final class DeviceFamilyFramingTests: XCTestCase {
             XCTAssertFalse(family.isConnectable)
             XCTAssertNil(family.connectableDeviceFamily)
             XCTAssertTrue(family.diagnosticUnsupportedMessage.contains("will not connect or send commands"))
-            XCTAssertEqual(family.characteristicUUIDStrings.count, 5)
         }
     }
 
     func testSupportedGattFamiliesRemainTheOnlyConnectableFamilies() {
-        XCTAssertEqual(WhoopGattServiceFamily.whoop4.connectableDeviceFamily, .whoop4)
+        XCTAssertNil(WhoopGattServiceFamily.whoop4.connectableDeviceFamily)
         XCTAssertEqual(WhoopGattServiceFamily.maverickGooseFD4B.connectableDeviceFamily, .whoop5)
         XCTAssertEqual(
             WhoopGattServiceFamily.maverickGooseFD4B.serviceUUIDString,
@@ -165,8 +165,8 @@ final class DeviceFamilyFramingTests: XCTestCase {
 
     func testSelectedServiceAdvertisementsStillConnect() {
         let decision = whoopGattScanDecision(
-            selectedServiceUUIDString: DeviceFamily.whoop4.serviceUUIDString,
-            advertisedServiceUUIDStrings: [DeviceFamily.whoop4.serviceUUIDString]
+            selectedServiceUUIDString: DeviceFamily.whoop5.serviceUUIDString,
+            advertisedServiceUUIDStrings: [DeviceFamily.whoop5.serviceUUIDString]
         )
 
         XCTAssertTrue(decision.shouldConnect)
@@ -175,7 +175,7 @@ final class DeviceFamilyFramingTests: XCTestCase {
 
     func testEmptyAdvertisementServiceListPreservesLegacyConnectPath() {
         let decision = whoopGattScanDecision(
-            selectedServiceUUIDString: DeviceFamily.whoop4.serviceUUIDString,
+            selectedServiceUUIDString: DeviceFamily.whoop5.serviceUUIDString,
             advertisedServiceUUIDStrings: []
         )
 

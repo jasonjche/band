@@ -49,11 +49,6 @@ final class ExperimentalDriversTests: XCTestCase {
         XCTAssertEqual(ExperimentalBrand.recognise(name: "Zepp E"), .amazfit)
     }
 
-    func testRecogniseMiBand() {
-        XCTAssertEqual(ExperimentalBrand.recognise(name: "Mi Band 7"), .miBand)
-        XCTAssertEqual(ExperimentalBrand.recognise(name: "Xiaomi Smart Band 8"), .miBand)
-    }
-
     func testRecogniseGarmin() {
         // Exercise the catalog-to-enum bridge used by discovery, including model-only names and
         // case/diacritic folding. Every recognised Garmin routes through standard broadcast HR.
@@ -74,10 +69,6 @@ final class ExperimentalDriversTests: XCTestCase {
         }
     }
 
-    func testRecogniseOura() {
-        XCTAssertEqual(ExperimentalBrand.recognise(name: "Oura Ring"), .oura)
-    }
-
     /// An unrecognised name returns nil — no wrong guess. (A Polar HR strap is the GENERIC path, not this
     /// experimental tier.)
     func testUnknownNameIsNil() {
@@ -88,10 +79,8 @@ final class ExperimentalDriversTests: XCTestCase {
 
     /// Oura is the only experimental brand with NO live HR — it must route to file import, not a fake live
     /// connect. The others can attempt live HR.
-    func testOnlyOuraCannotStreamLive() {
-        XCTAssertFalse(ExperimentalBrand.oura.canStreamLiveHR)
+    func testExperimentalBrandsCanStreamLive() {
         XCTAssertTrue(ExperimentalBrand.amazfit.canStreamLiveHR)
-        XCTAssertTrue(ExperimentalBrand.miBand.canStreamLiveHR)
         XCTAssertTrue(ExperimentalBrand.garmin.canStreamLiveHR)
     }
 

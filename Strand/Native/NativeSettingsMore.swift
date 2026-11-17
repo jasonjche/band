@@ -9,6 +9,9 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
     case sleepPlanner
     case assessments
     case dataBackup
+    case automations
+    case testCentre
+    case settings
     case about
 
     var id: String { rawValue }
@@ -22,6 +25,9 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
         case .sleepPlanner: return "Sleep Planner"
         case .assessments: return "Assessments"
         case .dataBackup: return "Data & Backup"
+        case .automations: return "Automations"
+        case .testCentre: return "Test Centre"
+        case .settings: return "Settings"
         case .about: return "About"
         }
     }
@@ -35,6 +41,9 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
         case .sleepPlanner: return "bed.double.fill"
         case .assessments: return "calendar"
         case .dataBackup: return "externaldrive.fill"
+        case .automations: return "wand.and.stars"
+        case .testCentre: return "stethoscope"
+        case .settings: return "gearshape.fill"
         case .about: return "info.circle.fill"
         }
     }
@@ -48,6 +57,9 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
         case .sleepPlanner: return NativeChrome.sleep
         case .assessments: return .blue
         case .dataBackup: return Color(white: 0.45)
+        case .automations: return .purple
+        case .testCentre: return .gray
+        case .settings: return Color(white: 0.45)
         case .about: return .gray
         }
     }

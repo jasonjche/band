@@ -226,7 +226,7 @@ enum BatteryNotifier {
     /// `BatteryAlertNotifier.onStrapNotSeen`.
     ///
     /// The live crossings need a connection, so a strap that drains out of range is never judged at all.
-    /// This reads the last BANKED reading instead, which is why the copy says "when NOOP last heard from
+    /// This reads the last BANKED reading instead, which is why the copy says "when Band last heard from
     /// it" rather than naming a current percentage: the app has not seen the strap since and does not know
     /// what it is at now.
     static func onStrapNotSeen(lastSocPct: Int?,
@@ -248,7 +248,7 @@ enum BatteryNotifier {
         let age = StaleBatteryAlertPolicy.ageLabel(decision.ageSeconds)
         post(identifier: "battery-stale",
              title: String(localized: "WHOOP last seen low"),
-             body: String(localized: "\(lastSocPct)% when NOOP last heard from it, \(age) ago. Charge it before tonight."),
+             body: String(localized: "\(lastSocPct)% when Band last heard from it, \(age) ago. Charge it before tonight."),
              interruptionLevel: .timeSensitive)
         // Persisted AFTER posting, keyed on the reading, so a failed post retries on the next wake.
         d.set(lastTsSec, forKey: staleAlertedTsKey)

@@ -57,9 +57,9 @@ You need Xcode with the iOS 26 SDK and [XcodeGen](https://github.com/yonaskolb/X
 ```bash
 xcodegen generate
 # iPhone
-xcodebuild -project Strand.xcodeproj -scheme NOOPiOS -destination 'generic/platform=iOS' build
+xcodebuild -project Band.xcodeproj -scheme Band -destination 'generic/platform=iOS' build
 # Tests (the app tests run on the macOS host)
-xcodebuild -project Strand.xcodeproj -scheme Strand -destination 'platform=macOS' test
+xcodebuild -project Band.xcodeproj -scheme BandMac -destination 'platform=macOS' test
 # Analytics and storage packages
 (cd Packages/StrandAnalytics && swift test)
 ```

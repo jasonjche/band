@@ -272,7 +272,7 @@ public func frameTypeName(_ frame: [UInt8], family: DeviceFamily) -> String? {
         // parseFrame's INVALID guard.
         guard frame.count >= FrameLimits.whoop4MinimumFrameBytes else { return nil }
         return schema.typeName(Int(frame[4]))
-    case .whoop5:
+    case .whoop5, .unsupported:
         // parseFrameWhoop5's INVALID guard.
         guard frame.count >= FrameLimits.whoop5MinimumFrameBytes else { return nil }
         return canonicalTypeName(Int(frame[8]), schema: schema)
@@ -293,7 +293,7 @@ public func parseFrame(_ frame: [UInt8], family: DeviceFamily, collectFields: Bo
     switch family {
     case .whoop4:
         return parseFrame(frame, collectFields: collectFields)
-    case .whoop5:
+    case .whoop5, .unsupported:
         return parseFrameWhoop5(frame, collectFields: collectFields)
     }
 }

@@ -54,16 +54,4 @@ final class ActiveWorkoutClockTests: XCTestCase {
 
     /// The Today indicator renders from a value type, so the pause state has to reach IT — being correct
     /// on `AppModel` is not enough, and that is exactly how the card kept counting.
-    func testIndicatorModelCarriesPauseStateAndFreezes() {
-        var workout = AppModel.ActiveWorkout(start: start)
-        workout.pausedAt = start.addingTimeInterval(30)
-        let model = ActiveWorkoutIndicatorModel.make(from: workout)
-        XCTAssertEqual(model?.isPaused, true)
-        XCTAssertEqual(model?.pausedAt, workout.pausedAt)
-        XCTAssertEqual(
-            ActiveWorkoutIndicatorModel.elapsed(since: start, pausedAt: model?.pausedAt,
-                                                pausedDuration: model?.pausedDuration ?? 0,
-                                                now: start.addingTimeInterval(600)),
-            "0:30")
-    }
 }

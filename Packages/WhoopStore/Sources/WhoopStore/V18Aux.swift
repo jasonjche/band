@@ -21,7 +21,7 @@ import WhoopProtocol
 /// 32-bit pattern. One uniform integer path is what lets the Swift and Kotlin codecs be checked
 /// byte-for-byte against each other; interpretation happens at the accessor, not on the wire.
 ///
-/// Byte-identical to the Kotlin `V18AuxCodec` (`android/.../data/V18AuxCodec.kt`). Both sides derive the
+/// Byte-identical to the Kotlin `V18AuxCodec` . Both sides derive the
 /// slot order and widths from `V18AuxSlot`, so neither can drift without the other failing its own test.
 public enum V18AuxCodec {
     /// Bumped only for an INCOMPATIBLE layout change. A reader that meets a version it does not know

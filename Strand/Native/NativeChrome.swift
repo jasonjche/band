@@ -1077,6 +1077,8 @@ struct NativeLabeledLine: View {
     private var known: [NativeDayPoint] { points.filter { $0.value.isFinite } }
     private var whoop: Bool { style == .whoop }
     private var segments: [NativeChartDay.LinePoint] { NativeChartDay.linePoints(points) }
+    /// Rest emphasises the viewing day; scrub replaces that with the touched day. No hairline.
+    private var emphasizedKey: String? { selectedDay?.wrappedValue ?? highlightKey }
 
     private var yDomain: ClosedRange<Double> {
         NativeChartDay.fittedDomain(known.map(\.value), fallback: domain)
@@ -1105,14 +1107,14 @@ struct NativeLabeledLine: View {
                     PointMark(x: .value("Day", point.key), y: .value("Value", point.value))
                     .foregroundStyle(tint)
                     .symbol {
-                        if point.key == selectedDay?.wrappedValue {
+                        if point.key == emphasizedKey {
                             NativeSelectedVertex(tint: tint, size: 10)
                         } else {
                             NativeHollowVertex(tint: tint, size: 8)
                         }
                     }
                     .annotation(position: .top, spacing: 4) {
-                        if showsValueLabels && (whoop || point.key == selectedDay?.wrappedValue) {
+                        if showsValueLabels && (whoop || point.key == emphasizedKey) {
                             Text(format(point.value))
                                 .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
                                 .foregroundStyle(whoop ? NativeTokens.whoopLabel : Color.secondary)
@@ -1120,12 +1122,6 @@ struct NativeLabeledLine: View {
                     }
                     .accessibilityLabel(NativeChartDay.longLabel(point.key))
                     .accessibilityValue(format(point.value))
-                }
-                if let key = selectedDay?.wrappedValue {
-                    RuleMark(x: .value("Day", key))
-                        .foregroundStyle(NativeTokens.separator)
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                        .accessibilityHidden(true)
                 }
             }
             .chartYScale(domain: yDomain)
@@ -1192,6 +1188,8 @@ struct NativeStrainRecoveryChart: View {
 
     @State private var selectedDay: String?
 
+    private var emphasizedDay: String? { selectedDay ?? highlightKey }
+
     private let heroHeight: CGFloat = 72
     private let plotHeight: CGFloat = 160
 
@@ -1238,7 +1236,7 @@ struct NativeStrainRecoveryChart: View {
                 PointMark(x: .value("Day", point.day), y: .value("Value", point.value))
                     .foregroundStyle(point.dotTint)
                     .symbol {
-                        if point.day == selectedDay {
+                        if point.day == emphasizedDay {
                             NativeSelectedVertex(tint: point.dotTint, size: 10)
                         } else {
                             NativeStrainRecoveryVertex(tint: point.dotTint)
@@ -1252,12 +1250,6 @@ struct NativeStrainRecoveryChart: View {
                                 .monospacedDigit()
                         }
                     }
-            }
-            if let selectedDay {
-                RuleMark(x: .value("Day", selectedDay))
-                    .foregroundStyle(NativeTokens.separator)
-                    .lineStyle(StrokeStyle(lineWidth: 1))
-                    .accessibilityHidden(true)
             }
         }
         .chartLegend(.hidden)
@@ -1775,10 +1767,6 @@ struct NativeOvernightLine: View {
                             .accessibilityValue("\(Int(point.value.rounded()))")
                     }
                     if let point = scrubPoint {
-                        RuleMark(x: .value("Scrub rule", point.time))
-                            .foregroundStyle(NativeTokens.separator)
-                            .lineStyle(StrokeStyle(lineWidth: 1))
-                            .accessibilityHidden(true)
                         PointMark(x: .value("Scrub", point.time), y: .value("HR", point.value))
                             .foregroundStyle(tint)
                             .symbol { NativeSelectedVertex(tint: tint) }

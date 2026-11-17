@@ -77,15 +77,9 @@ struct RootTabView: View {
     /// Turn it off to get the upstream Liquid or classic Today back, unchanged.
     @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
 
-    /// The Today tab root. Native wins when enabled; otherwise the upstream liquid/classic choice.
+    /// Home is the native shell. The upstream liquid/classic Today screens are gone.
     @ViewBuilder private var todayTabRoot: some View {
-        if nativeTodayEnabled {
-            NativeHomeView()
-        } else if liquidTodayEnabled {
-            LiquidTodayView()
-        } else {
-            TodayView()
-        }
+        NativeHomeView()
     }
 
     /// Health and Sleep follow the same flag. Off restores the upstream screens.
@@ -152,16 +146,6 @@ struct RootTabView: View {
         // the corresponding system material and safe-area behaviour from the same TabView.
         TabView(selection: nativeTabSelection) {
             tab(todayTabRoot, "Home", "house", path: $tabPaths[0], scrollSignal: scrollTop[0]).tag(0)
-            // Native layout follows the WHOOP bar: Home and More. Sleep, Recovery, and Strain
-            // are pages opened from the rings, not tabs. Health is a score we do not have.
-            if !nativeTodayEnabled {
-                tab(TrendsView(), "Health", "heart", path: $tabPaths[1], scrollSignal: scrollTop[1]).tag(1)
-                tab(SleepView(), "Sleep", "bed.double", path: $tabPaths[2], scrollSignal: scrollTop[2]).tag(2)
-            }
-            // Tags stay literal. Coach is 3, More is 4, so a flip does not reuse another tab's path.
-            if coachEnabled && !nativeTodayEnabled {
-                tab(CoachView(), "Coach", "sparkles", path: $tabPaths[3], scrollSignal: scrollTop[3]).tag(3)
-            }
             moreTab(path: $tabPaths[4], scrollSignal: scrollTop[4]).tag(4)
         }
         .tint(nativeTodayEnabled ? Color.primary : StrandPalette.accent)
@@ -230,23 +214,14 @@ struct RootTabView: View {
                 routedPillar = dest
                 router.requestedDestination = nil
             case .coach:
-                // K3: Coach is now a top-level tab (tag 3) — switch to it directly instead of
-                // presenting it as a pillar sheet.
-                //
-                // Guarded on the master switch, because this route is reachable with Coach OFF. A brief
-                // notification already sitting in Notification Centre still calls `openCoach()` when it is
-                // tapped (StrandApp wires `onCoachBriefTapped` to it), and with no tab claiming tag 3 the
-                // wearer would land on a BLANK tab. Dropping the request leaves them where they were, which
-                // is the honest answer for a feature that is switched off.
                 guard coachEnabled else {
                     router.requestedDestination = nil
                     break
                 }
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 3 }
+                routedPillar = dest
                 router.requestedDestination = nil
             case .trends:
-                // Trends is a primary tab on iPhone (not a pillar sheet) — switch to it.
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 1 }
+                routedPillar = dest
                 router.requestedDestination = nil
             case .activeWorkout:
                 // The Today active-workout indicator opens Live through the quick-action Live sheet; once
@@ -340,23 +315,10 @@ struct RootTabView: View {
                 case .fusedRecord: FusedRecordHost()
                 case .rhythm: RhythmHost(onClose: { routedPillar = nil })
                 case .devices: DevicesView()
-                // .trends is never presented as a pillar sheet on iPhone (it's a primary tab — the
-                // requestedDestination handler switches `selectedTab` instead), but the switch must stay
-                // exhaustive. Fall back to Trends inside the sheet host if it ever arrives here.
-                case .trends: TrendsView()
-                // .activeWorkout routes through the quick-action Live sheet (handled above); this keeps the
-                // switch exhaustive and falls back to Live if it ever reaches the pillar host.
+                case .trends: NativeTrendsPage()
                 case .activeWorkout: LiveView()
-                // .liveSession routes to the Today tab (handled above — its Start entry owns the cover);
-                // this keeps the switch exhaustive and falls back to Today if it ever reaches the host.
-                case .liveSession: LiquidTodayView()
-                // .journal opens through the quick-action Journal sheet (handled above); this keeps the
-                // switch exhaustive and falls back to the journal's Insights host if it ever reaches here.
+                case .liveSession: NativeHomeView()
                 case .journal: InsightsView()
-                // .coach switches to the Coach tab (handled above — the morning-brief tap-through and the
-                // #1862 launcher both arrive that way, the launcher's question riding on
-                // `AICoachEngine.pendingPrompt`); this keeps the switch exhaustive and falls back to Coach if
-                // it ever reaches the host.
                 case .coach: CoachView()
                 case .alarms: SmartAlarmView()
                 }
@@ -486,66 +448,7 @@ struct RootTabView: View {
             MoreRow(title, icon, route, path: path, suppressTabReselect: $suppressTabReselect)
         }
         return NavigationStack(path: path) {
-            Group {
-                if nativeTodayEnabled {
-                    nativeMoreList(path: path)
-                } else {
-            ScreenScaffold(title: "More",
-                           subtitle: "Everything else, one tap away",
-                           onRefresh: { await repoHandle?.refresh() },
-                           topBackground: liquidScaffoldSky()) {
-                moreSection("Insights") {
-                    moreRow("What Moves You", "wand.and.sparkles", .insightsHub)
-                    moreRow("Intelligence", "brain.head.profile", .intelligence)
-                    moreRow("Insights", "lightbulb.fill", .insights)
-                    moreRow("Explore", "square.grid.2x2.fill", .explore)
-                    moreRow("Compare", "rectangle.split.2x1.fill", .compare)
-                }
-                moreSection("Body") {
-                    moreRow("Live", "waveform.path.ecg", .live)
-                    moreRow("Workouts", "figure.run", .workouts)
-                    moreRow("Lift Log", "dumbbell.fill", .liftLog)
-                    moreRow("Health", "heart.text.square.fill", .health)
-                    moreRow("Lab Book", "books.vertical.fill", .labBook)
-                    moreRow("Stress", "bolt.heart.fill", .stress)
-                    moreRow("Breathe", "wind", .breathe)
-                    moreRow("Intervals", "timer", .intervals)
-                    moreRow("Rhythm", "waveform.path", .rhythm)
-                }
-                moreSection("Data") {
-                    moreRow("Your Data, Fused", "square.stack.3d.up.fill", .fusedRecord)
-                    moreRow("Apple Health", "heart.fill", .appleHealth)
-                    moreRow("Mi Band", "figure.walk.motion", .miBand)
-                    moreRow("Data Sources", "externaldrive.fill", .dataSources)
-                    moreRow("Backup & Sync", "externaldrive.fill.badge.icloud", .backupSync)
-                    moreRow("Shortcuts Export", "square.and.arrow.up.fill", .shortcutsExport)
-                    moreRow("NOOP Limitations", "list.bullet.rectangle", .noopLimitations)
-                }
-                moreSection("App") {
-                    // #805/#811: the v7.3.1 #766 alarm consolidation moved Smart Alarm under a single
-                    // "Alarms" sidebar entry (RootView .smartAlarm) but the regression dropped the row
-                    // from the iPhone More list, leaving Alarms unreachable on iPhone. Restore it here
-                    // (route to SmartAlarmView, the cross-platform iOS/macOS surface).
-                    //
-                    // Notifications (RootView .notifications) is deliberately NOT added: that screen is
-                    // macOS-only (it picks which Mac apps tap your wrist via NSWorkspace, imports AppKit,
-                    // and project.yml excludes Screens/NotificationSettingsView.swift from the iOS target),
-                    // so it can't compile or apply on iPhone. iPhone's wrist-alert controls live on the
-                    // Automations screen instead. Its absence from the iPhone More list is correct.
-                    moreRow("Alarms", "alarm.fill", .alarms)
-                    moreRow("Automations", "wand.and.stars", .automations)
-                    // The Test Centre (the diagnostics + bug-report hub) gets a first-class home here, not
-                    // just buried in Settings, so the feedback loop is one tap from the More tab.
-                    moreRow("Test Centre", "stethoscope", .testCentre)
-                    moreRow("Siri & Shortcuts", "mic.fill", .siriShortcuts)
-                    // #477 lives here rather than inside Settings: the strap-battery levers are the
-                    // ones people reach for when a strap is running down, so they get their own row.
-                    moreRow("Power saving", "battery.25", .powerSaving)
-                    moreRow("Settings", "gearshape.fill", .settings)
-                }
-            }
-                }
-            }
+            nativeMoreList(path: path)
             // The rows push MoreDestination VALUES so a re-tap of the More tab can pop them off the
             // bound path (#135/#198). Each destination keeps the per-screen wrapper the rows used to
             // apply inline (surfaceBase background, inline title bar, hidden bar background):
@@ -590,6 +493,9 @@ struct RootTabView: View {
         case .sleepPlanner: return .sleepPlanner
         case .assessments: return .assessments
         case .dataBackup: return .dataBackup
+        case .automations: return .automations
+        case .testCentre: return .testCentre
+        case .settings: return .settings
         case .about: return .about
         }
     }
@@ -654,18 +560,13 @@ struct RootTabView: View {
 /// per-screen chrome the old inline links applied lives at the single `navigationDestination(for:)`
 /// registration in `moreTab`.
 private enum MoreDestination: Hashable {
-    case insightsHub, intelligence, coach, insights, explore, compare
-    case live, workouts, liftLog, health, labBook, stress, breathe, intervals, rhythm
-    case fusedRecord, appleHealth, miBand, dataSources, backupSync, shortcutsExport, noopLimitations
-    case devices, alarms, automations, testCentre, siriShortcuts, powerSaving, settings
-    case backup, notifications, about, profile, dataBackup, healthspan, assessments, sleepPlanner, trends
+    case devices, automations, testCentre, settings
+    case about, profile, dataBackup, healthspan, assessments, sleepPlanner, trends
 
     var usesAppleSettingsChrome: Bool {
         switch self {
-        case .devices, .dataSources, .backupSync, .appleHealth, .alarms,
-             .automations, .testCentre, .powerSaving, .settings,
-             .siriShortcuts, .shortcutsExport, .backup, .notifications, .about,
-             .profile, .dataBackup, .sleepPlanner:
+        case .devices, .automations, .testCentre, .settings,
+             .about, .profile, .dataBackup, .sleepPlanner:
             return true
         default:
             return false
@@ -674,42 +575,10 @@ private enum MoreDestination: Hashable {
 
     @ViewBuilder var destination: some View {
         switch self {
-        case .insightsHub:     InsightsHubView()
-        case .intelligence:    IntelligenceView()
-        case .coach:           CoachView()
-        case .insights:        InsightsView()
-        case .explore:         MetricExplorerView()
-        case .compare:         CompareView()
-        case .live:            LiveView()
-        case .workouts:        WorkoutsView()
-        case .liftLog:         LiftLogView()
-        case .health:          HealthView()
-        case .labBook:         LabBookView()
-        case .stress:
-            if NativeRouteResolver.layoutEnabled() {
-                NativeStressPage()
-            } else {
-                StressView()
-            }
-        case .breathe:         BreathingView()
-        case .intervals:       IntervalTimerView()
-        case .rhythm:          RhythmHost()
-        case .fusedRecord:     FusedRecordHost()
-        case .appleHealth:     AppleHealthSettingsView()
-        case .miBand:          XiaomiBandView()
-        case .dataSources:     DataSourcesView()
         case .devices:         DevicesView()
-        case .noopLimitations: NoopLimitationsView()
-        case .backupSync:      BackupSyncView()
-        case .shortcutsExport: ShortcutExportSettingsView()
-        case .alarms:          SmartAlarmView()
         case .automations:     AutomationsView()
         case .testCentre:      TestCentreView()
-        case .siriShortcuts:   SiriShortcutsSettingsView()
-        case .powerSaving:     PowerSavingView()
         case .settings:        SettingsView()
-        case .backup:          BandBackupView()
-        case .notifications:   BandNotificationsView()
         case .about:           BandAboutView()
         case .profile:         NativeProfileView()
         case .dataBackup:      NativeDataBackupView()

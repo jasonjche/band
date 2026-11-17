@@ -26,7 +26,7 @@ Core logic lives in **Swift packages**. The iOS app is a thin layer over them.
 | Shared app | `Strand/` | `BLE/` (CoreBluetooth), `Collect/`, `Data/` (Repository), screens, native UI. |
 | iOS app | `StrandiOS/`, `StrandiOSShared/`, `StrandiOSWidgets/`, `NOOPWatch*` | `StrandiOSApp` (@main), tab shell, widgets, watch app. |
 
-`project.yml` is the **XcodeGen source of truth**; `Strand.xcodeproj/` is generated — never hand-edit
+`project.yml` is the **XcodeGen source of truth**; `Band.xcodeproj/` is generated — never hand-edit
 or commit it. Re-run `xcodegen generate` after adding/removing files or editing `project.yml`.
 
 Wire-level and math-level code belongs in `Packages/`, covered by `swift test` with no app, no strap,
@@ -45,8 +45,8 @@ swift test --package-path Tools/BandCheck
 
 # App (needs Xcode). project.yml is the source of truth:
 xcodegen generate
-xcodebuild -project Strand.xcodeproj -scheme NOOPiOS -destination 'generic/platform=iOS' build
-xcodebuild -project Strand.xcodeproj -scheme Strand -destination 'platform=macOS' test
+xcodebuild -project Band.xcodeproj -scheme Band -destination 'generic/platform=iOS' build
+xcodebuild -project Band.xcodeproj -scheme BandMac -destination 'platform=macOS' test
 ```
 
 Toolchain: Swift ≥ 5.9 (ships with Xcode on macOS). iOS 17+ / iOS 26 SDK for Liquid Glass.

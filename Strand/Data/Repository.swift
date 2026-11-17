@@ -2302,17 +2302,7 @@ final class Repository: ObservableObject {
                 s.map { Self.timelinePoint($0.ts, Double($0.state)) }
             }.value
         case .ouraMovement:
-            // The ring's OWN per-window motion from OURA_MOTION events (0x47, movement-gated): plot
-            // `motion_seconds` (0 when still, up to 31 s of movement in the ~30 s window). An honest
-            // activity track, NEVER scored and NEVER a step count; empty for a WHOOP strap (no such events).
-            let evs = (try? await store.events(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
-            return await Task.detached(priority: .utility) {
-                evs.compactMap { e -> TrendPoint? in
-                    guard e.kind == OuraStreamMapping.motionEventKind,
-                          let ms = e.payload["motion_seconds"]?.intValue else { return nil }
-                    return Self.timelinePoint(e.ts, Double(ms))
-                }
-            }.value
+            return []
         }
     }
 

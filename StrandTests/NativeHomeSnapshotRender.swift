@@ -229,7 +229,7 @@ enum NativeComparePage {
         </style>
         </head>
         <body>
-        <h1>Native hybrid vs WHOOP-style vs real WHOOP vs previous NOOP</h1>
+        <h1>Native hybrid vs WHOOP-style vs real WHOOP vs previous Band</h1>
         <p class="lede">Full page bodies. Same facts; five drawings.</p>
         """
         for row in rows {
@@ -265,7 +265,7 @@ enum NativeComparePage {
                 </figure>
                 <figure>
                   \(img(prev))
-                  <figcaption>NOOP before</figcaption>
+                  <figcaption>Band before</figcaption>
                 </figure>
               </div>
             </section>

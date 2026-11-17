@@ -12,7 +12,7 @@ import StrandDesign
 //
 // Opt-out via `PuffinExperiment.journalReminderKey` (default ON — the same key also gates the Android
 // morning sleep sheet twin). Read-only: it never writes a journal entry. Twin of Android
-// `JournalReminderCard` (android/.../ui/JournalReminder.kt). Design-Reset compliant — a flat accent-tinted
+// `JournalReminderCard` . Design-Reset compliant — a flat accent-tinted
 // NoopCard, NoopMetrics / StrandPalette / StrandFont tokens, matching the other Today cards.
 
 struct JournalReminderCard: View {

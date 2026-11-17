@@ -3,7 +3,7 @@ import WhoopProtocol
 
 // AutoWorkoutDetector.swift — opt-in MVP "did you just work out?" detector.
 //
-// Faithful Swift twin of android/.../com/noop/analytics/AutoWorkoutDetector.kt — the two MUST
+// Detection logic is frozen for byte-parity with the historical twin. The two MUST
 // stay BYTE-PARITY on the detection logic (same thresholds, same span/merge/overlap rules, same
 // outputs), verified by the mirrored unit tests on each platform.
 //

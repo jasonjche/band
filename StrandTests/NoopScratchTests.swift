@@ -127,7 +127,6 @@ final class NoopScratchTests: XCTestCase {
         let expected = #"(Bundle.main.bundleIdentifier ?? "com.noopapp.noop") + ".scratch""#
         for relative in [
             "Packages/StrandImport/Sources/StrandImport/AppleHealthImporter.swift",
-            "Packages/StrandImport/Sources/StrandImport/XiaomiBandImporter.swift",
             "Packages/WhoopStore/Sources/WhoopStore/StreamStore.swift",
         ] {
             let source = try String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)

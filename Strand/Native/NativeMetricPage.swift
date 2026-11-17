@@ -122,23 +122,36 @@ struct NativeMetricPage: View {
             await reloadVo2(repo: repo, calendar: calendar, ending: ending)
             return
         }
-        let scores = NativeBandScores.resolve(
-            days: repo.days, sleeps: repo.sleeps, importedSleep: repo.importedSleep
-        )
-        let points: [NativeDayPoint] = repo.days.filter { $0.day <= dayKey }.compactMap { day in
-            displayValue(resolvedValue(key: key, day: day, scores: scores)).map {
-                NativeDayPoint(key: day.day, value: $0)
+        // Score resolution walks every stored day and night, so it runs off the main actor and only
+        // for keys that need it. Doing it in place stalled range switches (weekly HRV in Trends).
+        let days = repo.days
+        let sleeps = Self.scoredKeys.contains(key) ? repo.sleeps : []
+        let imported = Self.scoredKeys.contains(key) ? repo.importedSleep : [:]
+        let key = key, dayKey = dayKey, scope = scope
+        let scale = UnitPrefs.resolveEffortScale(effortScaleRaw)
+        let computed = await Task.detached(priority: .userInitiated) { () -> ([NativeDayPoint], NativeScopeSeries) in
+            let scores = Self.scoredKeys.contains(key)
+                ? NativeBandScores.resolve(days: days, sleeps: sleeps, importedSleep: imported)
+                : nil
+            let points: [NativeDayPoint] = days.filter { $0.day <= dayKey }.compactMap { day in
+                Self.displayValue(
+                    Self.resolvedValue(key: key, day: day, scores: scores), key: key, scale: scale
+                ).map { NativeDayPoint(key: day.day, value: $0) }
             }
-        }
-        series = NativeScopeSeries.make(
-            points: points,
-            scope: scope,
-            kind: NativeScopeKindMap.kind(for: key),
-            calendar: calendar,
-            now: ending,
-            ending: ending,
-            cfg: NativeTypicalRange.cfg(for: key)
-        )
+            let made = NativeScopeSeries.make(
+                points: points,
+                scope: scope,
+                kind: NativeScopeKindMap.kind(for: key),
+                calendar: calendar,
+                now: ending,
+                ending: ending,
+                cfg: NativeTypicalRange.cfg(for: key)
+            )
+            return (points, made)
+        }.value
+        guard !Task.isCancelled else { return }
+        let points = computed.0
+        series = computed.1
         latest = points.last
         sourceCaption = nil
         hourPoints = []
@@ -190,8 +203,14 @@ struct NativeMetricPage: View {
         )
     }
 
-    private func resolvedValue(key: String, day: DailyMetric, scores: NativeBandScores.Snapshot) -> Double? {
-        let scored = scores.byDay[day.day]
+    /// Keys whose value comes from `NativeBandScores` rather than a stored daily column.
+    private static let scoredKeys: Set<String> = [
+        "recovery", "sleep_performance", "hours_vs_needed_pct", "sleep_consistency",
+        "sleep_need_min", "sleep_debt_min",
+    ]
+
+    private static func resolvedValue(key: String, day: DailyMetric, scores: NativeBandScores.Snapshot?) -> Double? {
+        let scored = scores?.byDay[day.day]
         switch key {
         case "recovery": return scored?.recovery
         case "sleep_performance": return scored?.sleepPerformance
@@ -203,10 +222,10 @@ struct NativeMetricPage: View {
         }
     }
 
-    private func displayValue(_ raw: Double?) -> Double? {
+    private static func displayValue(_ raw: Double?, key: String, scale: EffortScale) -> Double? {
         guard let raw else { return nil }
         if key == "strain" {
-            return NativeDayLogic.strainDisplayValue(raw, scale: UnitPrefs.resolveEffortScale(effortScaleRaw))
+            return NativeDayLogic.strainDisplayValue(raw, scale: scale)
         }
         if key == "sleep_efficiency", raw <= 1 { return raw * 100 }
         return raw

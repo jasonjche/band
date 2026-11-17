@@ -475,24 +475,27 @@ struct NativeHomeView: View {
             strainTargetFraction: strainTargetFraction
         )
         .equatable()
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: HomeMonitorTileLayout.spacing) {
             Button {
                 path.wrappedValue.append(TabRoute.healthMonitor)
             } label: {
                 HomeHealthMonitorTile(report: healthReport)
                     .equatable()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .buttonStyle(.plain)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             Button {
                 path.wrappedValue.append(TabRoute.stress)
             } label: {
                 HomeStressMonitorTile(level: stressLevel, updated: stressUpdatedAt)
                     .equatable()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .buttonStyle(.plain)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+        .fixedSize(horizontal: false, vertical: true)
         NativeIllnessSignalCard(result: overnightLoad, compact: true)
         NativeChrome.section("My Day")
         HomeActivitiesCard(
@@ -672,11 +675,23 @@ enum HomeCalendarSheetLayout {
     static let circle = NoopMetrics.compactControlSize
     static let weekdayRow = NoopMetrics.space6
     static let header = NoopMetrics.controlHeight
+    /// Today / Done row. Reserved at first frame so glass chrome cannot grow the detent.
+    static let actions = NoopMetrics.controlHeight
     static let rows = HomeCalendarMath.rows
     static var gridHeight: CGFloat { cell * CGFloat(rows) }
     static var compactHeight: CGFloat {
-        NoopMetrics.space4 + header + NoopMetrics.space2 + weekdayRow + gridHeight + NoopMetrics.space4
+        NoopMetrics.space4 + actions + NoopMetrics.space2 + header + weekdayRow + gridHeight + NoopMetrics.space4
     }
+}
+
+/// Recovery as calendar-number ink. Dark-sheet recovery tokens are already the brighter hexes.
+private enum HomeCalendarInk {
+    static func recovery(_ percent: Double) -> Color {
+        NativeTokens.recoveryBand(percent)
+    }
+
+    /// Contrasting fill-circle text. `page` is near-white on a black (light) fill and black on a white (dark) fill.
+    static let selectedText = NativeTokens.page
 }
 
 /// Calendar for jumping straight to a day. Past days carry that day's recovery zone.
@@ -705,17 +720,21 @@ struct HomeCalendarSheet: View {
     }
 
     var body: some View {
+        let cells = HomeCalendarMath.cells(month: month, calendar: calendar)
         VStack(spacing: 0) {
             HStack {
                 Button("Today") {
                     onPick(range.upperBound)
                     dismiss()
                 }
+                .homeCalendarGlassButton(prominent: false)
                 Spacer(minLength: NoopMetrics.space2)
                 Button("Done") { dismiss() }
                     .fontWeight(.semibold)
+                    .homeCalendarGlassButton(prominent: true)
             }
             .padding(.horizontal, NoopMetrics.space4)
+            .frame(height: HomeCalendarSheetLayout.actions)
             .padding(.top, NoopMetrics.space4)
             .padding(.bottom, NoopMetrics.space2)
 
@@ -726,6 +745,7 @@ struct HomeCalendarSheet: View {
                         .frame(width: NoopMetrics.compactControlSize, height: NoopMetrics.compactControlSize)
                         .contentShape(Circle())
                 }
+                .buttonStyle(.plain)
                 .disabled(!HomeCalendarMath.canPage(from: month, delta: -1, range: range, calendar: calendar))
                 Spacer(minLength: 0)
                 Text(HomeCalendarMath.monthTitle(month, calendar: calendar))
@@ -738,9 +758,9 @@ struct HomeCalendarSheet: View {
                         .frame(width: NoopMetrics.compactControlSize, height: NoopMetrics.compactControlSize)
                         .contentShape(Circle())
                 }
+                .buttonStyle(.plain)
                 .disabled(!HomeCalendarMath.canPage(from: month, delta: 1, range: range, calendar: calendar))
             }
-            .buttonStyle(.plain)
             .padding(.horizontal, NoopMetrics.space2)
             .frame(height: HomeCalendarSheetLayout.header)
 
@@ -756,34 +776,37 @@ struct HomeCalendarSheet: View {
             .padding(.horizontal, NoopMetrics.space2)
             .accessibilityHidden(true)
 
-            LazyVGrid(
-                columns: Array(
-                    repeating: GridItem(.flexible(), spacing: 0),
-                    count: HomeCalendarMath.columns
-                ),
-                spacing: 0
-            ) {
-                ForEach(Array(HomeCalendarMath.cells(month: month, calendar: calendar).enumerated()), id: \.offset) { _, date in
-                    HomeCalendarDayCell(
-                        date: date,
-                        selected: selected,
-                        today: range.upperBound,
-                        enabled: date.map { HomeCalendarMath.isEnabled($0, range: range, calendar: calendar) } ?? false,
-                        recovery: date.flatMap { recoveryByDay[Repository.localDayKey($0)] },
-                        calendar: calendar,
-                        onPick: { picked in
-                            onPick(picked)
-                            dismiss()
+            VStack(spacing: 0) {
+                ForEach(0..<HomeCalendarMath.rows, id: \.self) { row in
+                    HStack(spacing: 0) {
+                        ForEach(0..<HomeCalendarMath.columns, id: \.self) { column in
+                            dayCell(cells[row * HomeCalendarMath.columns + column])
                         }
-                    )
+                    }
                 }
             }
             .padding(.horizontal, NoopMetrics.space2)
             .frame(height: HomeCalendarSheetLayout.gridHeight)
+            .animation(nil, value: month)
             Spacer(minLength: 0)
         }
         .presentationDetents([.height(HomeCalendarSheetLayout.compactHeight), .large])
         .presentationDragIndicator(.visible)
+    }
+
+    private func dayCell(_ date: Date?) -> HomeCalendarDayCell {
+        HomeCalendarDayCell(
+            date: date,
+            selected: selected,
+            today: range.upperBound,
+            enabled: date.map { HomeCalendarMath.isEnabled($0, range: range, calendar: calendar) } ?? false,
+            recovery: date.flatMap { recoveryByDay[Repository.localDayKey($0)] },
+            calendar: calendar,
+            onPick: { picked in
+                onPick(picked)
+                dismiss()
+            }
+        )
     }
 
     private func page(_ delta: Int) {
@@ -809,7 +832,6 @@ private struct HomeCalendarDayCell: View {
                 Button { onPick(date) } label: { glyph(date) }
                     .buttonStyle(.plain)
                     .disabled(!enabled)
-                    .opacity(enabled ? 1 : 0.35)
                     .accessibilityLabel(accessibility(date))
             } else {
                 Color.clear
@@ -823,21 +845,25 @@ private struct HomeCalendarDayCell: View {
         let isToday = HomeCalendarMath.isSameDay(date, today, calendar: calendar)
         return ZStack {
             if isSelected {
-                Circle().fill(recovery.map(NativeTokens.recoveryBand) ?? NativeTokens.highlight)
-            } else if let recovery, enabled {
-                Circle().fill(NativeTokens.recoveryBand(recovery))
-            }
-            if isToday {
-                Circle().strokeBorder(Color.primary, lineWidth: NoopMetrics.hairlineWidth)
+                Circle().fill(Color.primary)
+            } else if isToday {
+                Circle().strokeBorder(Color.secondary, lineWidth: NoopMetrics.hairlineWidth)
             }
             Text("\(calendar.component(.day, from: date))")
-                .font(.body.weight(isToday || isSelected ? .semibold : .regular))
-                .foregroundStyle(Color.primary)
+                .font(.body.weight(isToday || isSelected ? .bold : .regular))
+                .foregroundStyle(numberInk(selected: isSelected))
                 .monospacedDigit()
         }
         .frame(width: HomeCalendarSheetLayout.circle, height: HomeCalendarSheetLayout.circle)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Circle())
+    }
+
+    private func numberInk(selected: Bool) -> Color {
+        if selected { return HomeCalendarInk.selectedText }
+        if !enabled { return Color.secondary }
+        if let recovery { return HomeCalendarInk.recovery(recovery) }
+        return Color.primary
     }
 
     private func accessibility(_ date: Date) -> String {
@@ -867,6 +893,30 @@ private extension View {
         }
         #else
         self.background(NativeTokens.card, in: Capsule())
+        #endif
+    }
+
+    /// Liquid Glass on the calendar Today / Done buttons. iOS 26 uses `.glass` / `.glassProminent`;
+    /// older OS and macOS fall back to bordered styles.
+    @ViewBuilder func homeCalendarGlassButton(prominent: Bool) -> some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            if prominent {
+                self.buttonStyle(.glassProminent)
+            } else {
+                self.buttonStyle(.glass)
+            }
+        } else if prominent {
+            self.buttonStyle(.borderedProminent)
+        } else {
+            self.buttonStyle(.bordered)
+        }
+        #else
+        if prominent {
+            self.buttonStyle(.borderedProminent)
+        } else {
+            self.buttonStyle(.bordered)
+        }
         #endif
     }
 }
@@ -919,43 +969,73 @@ struct HomeRingsRow: View {
 
 // MARK: - Health + Stress tiles
 
+enum HomeMonitorTileLayout {
+    static let spacing: CGFloat = 10
+    static let valueMinHeight: CGFloat = 28
+    static let captionMinHeight: CGFloat = 18
+}
+
+/// Apple Health summary-card header: tinted SF Symbol + title, chevron trailing.
+private struct HomeSummaryTileHeader: View {
+    var title: String
+    var symbol: String
+    var tint: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                Text(title)
+            }
+            .foregroundStyle(tint)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.forward")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .font(.subheadline.weight(.semibold))
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct HomeHealthMonitorTile: View {
     var report: NativeHealthRange.Report
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
         let summary = report.summary
-        NativeChrome.panel {
-            NativeCardHeader(
+        let primary = HomeMonitorTile.healthPrimary(summary)
+        let inRange = summary.tileWithinRange
+        let valueTint: Color = {
+            if summary.measured == 0 || summary.judged == 0 { return Color.secondary }
+            return inRange ? NativeTokens.recoveryHigh : NativeTokens.recoveryLow
+        }()
+        NativeChrome.panel(expands: true) {
+            HomeSummaryTileHeader(
                 title: "Health Monitor",
-                symbol: nil,
-                tint: NativePaint.heart(style),
-                chevron: true
+                symbol: "heart.fill",
+                tint: NativePaint.heart(style)
             )
-            HStack(alignment: .center, spacing: 8) {
-                Image(systemName: summary.tileWithinRange ? "checkmark.square.fill" : "exclamationmark.square.fill")
-                    .font(.title3)
-                    .foregroundStyle(
-                        summary.tileWithinRange ? NativeTokens.recoveryHigh : NativeTokens.recoveryLow
-                    )
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(summary.tileHeadline.uppercased())
-                        .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
-                        .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
-                        .foregroundStyle(
-                            summary.tileWithinRange ? NativeTokens.recoveryHigh : NativeTokens.recoveryLow
-                        )
-                    if !summary.tileDetail.isEmpty {
-                        Text(summary.tileDetail)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if summary.measured > 0, summary.judged > 0 {
+                    Image(systemName: inRange ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(valueTint)
                 }
-                Spacer(minLength: 0)
+                Text(primary)
+                    .foregroundStyle(valueTint)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(summary.tileHeadline), \(summary.tileDetail)")
+            .font(style == .whoop
+                  ? NativeTokens.whoopNumber(22, weight: .semibold)
+                  : .title3.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: HomeMonitorTileLayout.valueMinHeight, alignment: .leading)
+            Text(summary.tileDetail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: HomeMonitorTileLayout.captionMinHeight, alignment: .leading)
+            Spacer(minLength: 0)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(summary.tileHeadline), \(summary.tileDetail)")
     }
 }
 
@@ -966,48 +1046,40 @@ struct HomeStressMonitorTile: View {
 
     var body: some View {
         let tile = HomeMonitorTile.stress(level: level, at: updated)
-        NativeChrome.panel {
-            NativeCardHeader(
+        let tint = level.map { NativePaint.stressBand($0, style: style) } ?? NativeChrome.stress
+        NativeChrome.panel(expands: true) {
+            HomeSummaryTileHeader(
                 title: "Stress Monitor",
-                symbol: nil,
-                tint: level.map { NativePaint.stressBand($0, style: style) } ?? NativeChrome.stress,
-                chevron: true
+                symbol: "chart.xyaxis.line",
+                tint: tint
             )
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 if let value = tile.value, let band = tile.band, let level {
                     Text(value)
                         .font(style == .whoop
-                              ? NativeTokens.whoopNumber(15, weight: .semibold)
-                              : StrandFont.rounded(15, weight: .semibold))
+                              ? NativeTokens.whoopNumber(22, weight: .bold)
+                              : StrandFont.rounded(22, weight: .bold))
                         .monospacedDigit()
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
-                        .background(
-                            NativePaint.stressBand(level, style: style).opacity(0.22),
-                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(band.uppercased())
-                            .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
-                            .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
-                            .foregroundStyle(NativePaint.stressBand(level, style: style))
-                        if let time = tile.time {
-                            Text(time)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                    }
+                    Text(band.uppercased())
+                        .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
+                        .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
+                        .foregroundStyle(NativePaint.stressBand(level, style: style))
                 } else {
                     Text("No Data")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.title3.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
-                Spacer(minLength: 0)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(tile.accessibility)
+            .frame(maxWidth: .infinity, minHeight: HomeMonitorTileLayout.valueMinHeight, alignment: .leading)
+            Text(tile.time.map { "Updated \($0)" } ?? "")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .frame(maxWidth: .infinity, minHeight: HomeMonitorTileLayout.captionMinHeight, alignment: .leading)
+            Spacer(minLength: 0)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(tile.accessibility)
     }
 }
 
@@ -1884,18 +1956,14 @@ private struct NativeHomeEnvSink: View {
 
 /// Strap battery and a sync spinner beside the date stepper.
 /// Observes only battery %, charging, connected and backfilling via `.onReceive` of those
-/// publishers (removeDuplicates into `@State`), not the whole `LiveState` object, so live
-/// heart-rate ticks do not redraw Home. The spinner appears only when an offload has run
-/// for three seconds; routine catch-ups stay silent.
+/// publishers (removeDuplicates into `@State`), not the whole `LiveState` object.
+/// The spinner appears only when an offload has run for three seconds; routine catch-ups stay silent.
 struct HomeStrapStatus: View {
     @State private var connected = false
     @State private var batteryPct: Double?
     @State private var charging: Bool?
     @State private var backfilling = false
     @State private var showSync = false
-    @State private var liveFeedActive = false
-    @State private var liveBpm: Int?
-    @State private var showingLiveHR = false
 
     private var percent: Int? {
         guard connected else { return nil }
@@ -1915,6 +1983,14 @@ struct HomeStrapStatus: View {
         }
     }
 
+    private func batteryColor(percent: Int) -> Color {
+        switch HomeBatteryTint.level(percent: percent, charging: charging == true) {
+        case .low: return NativeTokens.recoveryLow
+        case .mid: return NativeTokens.recoveryMid
+        case .high, .charging: return NativeTokens.recoveryHigh
+        }
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             if showSync {
@@ -1922,26 +1998,6 @@ struct HomeStrapStatus: View {
                     .controlSize(.small)
                     .accessibilityLabel("Syncing")
             }
-            Button { showingLiveHR = true } label: {
-                HStack(spacing: 3) {
-                    // Opens live heart rate. Red when a live reading is streaming, grey otherwise.
-                    Image(systemName: "heart.fill")
-                        .font(.footnote)
-                        .foregroundStyle(liveFeedActive && liveBpm != nil ? NativeTokens.heart : Color.secondary)
-                    if liveFeedActive, let liveBpm {
-                        Text("\(liveBpm)")
-                            .font(.footnote.weight(.medium))
-                            .monospacedDigit()
-                    }
-                }
-                .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(
-                liveFeedActive && liveBpm != nil
-                    ? "Live heart rate \(liveBpm ?? 0) BPM"
-                    : "Live heart rate"
-            )
             if let percent {
                 HStack(spacing: 3) {
                     Text("\(percent)%")
@@ -1950,17 +2006,13 @@ struct HomeStrapStatus: View {
                     Image(systemName: symbol(percent))
                         .font(.footnote)
                 }
-                .foregroundStyle(.secondary)
+                .foregroundStyle(batteryColor(percent: percent))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Strap battery \(percent) percent")
             }
         }
-        .sheet(isPresented: $showingLiveHR) {
-            NativeLiveHeartRate()
-        }
         .background { Sink(connected: $connected, batteryPct: $batteryPct,
-                           charging: $charging, backfilling: $backfilling,
-                           liveFeedActive: $liveFeedActive, liveBpm: $liveBpm) }
+                           charging: $charging, backfilling: $backfilling) }
         .task(id: backfilling) {
             guard backfilling else {
                 showSync = false
@@ -1979,8 +2031,6 @@ struct HomeStrapStatus: View {
         @Binding var batteryPct: Double?
         @Binding var charging: Bool?
         @Binding var backfilling: Bool
-        @Binding var liveFeedActive: Bool
-        @Binding var liveBpm: Int?
 
         var body: some View {
             Color.clear
@@ -1990,10 +2040,6 @@ struct HomeStrapStatus: View {
                 .onReceive(live.$batteryPct.removeDuplicates()) { batteryPct = $0 }
                 .onReceive(live.$charging.removeDuplicates()) { charging = $0 }
                 .onReceive(live.$backfilling.removeDuplicates()) { backfilling = $0 }
-                .onReceive(live.$liveFeedActive.removeDuplicates()) { liveFeedActive = $0 }
-                .onReceive(
-                    live.$heartRate.throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
-                ) { liveBpm = $0 }
         }
     }
 }
@@ -2289,10 +2335,13 @@ enum HomeSnapshot {
                 strain: strainOnlyModel.strain,
                 onOpen: { _ in }
             )
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: HomeMonitorTileLayout.spacing) {
                 HomeHealthMonitorTile(report: NativeHealthRange.Report(vitals: []))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 HomeStressMonitorTile(level: nil, updated: nil)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
+            .fixedSize(horizontal: false, vertical: true)
             NativeChrome.section("My Day")
             HomeActivitiesCard(
                 items: HomeActivityItem.make(from: strainOnlyModel),
@@ -2351,10 +2400,13 @@ enum HomeSnapshot {
             HomeRingsRow(
                 sleep: sleepScore, recovery: recoveryScore, strain: strainScore, onOpen: { _ in }
             )
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: HomeMonitorTileLayout.spacing) {
                 HomeHealthMonitorTile(report: healthReport)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 HomeStressMonitorTile(level: 1.2, updated: dayStart.addingTimeInterval(16 * 3600))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
+            .fixedSize(horizontal: false, vertical: true)
             NativeChrome.section("My Day")
             HomeActivitiesCard(items: activities, onSleep: {}, onActivity: { _ in })
             HomeTonightSleepCard(model: tonightSleep, onAlarm: {})
@@ -2416,10 +2468,13 @@ enum HomeSnapshot {
                 HomeJournalCard(dots: journalDots, hasEntry: true, onOpen: {}, onLog: {})
             })),
             Section(name: "monitors", view: AnyView(VStack(spacing: 10) {
-                HStack(alignment: .top, spacing: 10) {
+                HStack(alignment: .top, spacing: HomeMonitorTileLayout.spacing) {
                     HomeHealthMonitorTile(report: healthReport)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     HomeStressMonitorTile(level: 1.2, updated: dayStart.addingTimeInterval(16 * 3600))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
+                .fixedSize(horizontal: false, vertical: true)
                 homeStressCard
             })),
             Section(name: "activities", view: AnyView(HomeActivitiesCard(

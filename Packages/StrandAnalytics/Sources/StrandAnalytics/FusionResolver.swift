@@ -10,7 +10,6 @@ import Foundation
 //   2. cross-validates the other sources against the winner and classifies agreement as
 //      single / agree / minorDelta / conflict (the honest part — conflicts are shown, not merged).
 // No I/O — the Repository feeds it rows it already loads. Value-for-value Kotlin twin in
-// android/.../analytics/FusionResolver.kt.
 public enum FusionResolver {
 
     /// Resolve one metric for one day from each source's value. `metricKey` is the resolver series key

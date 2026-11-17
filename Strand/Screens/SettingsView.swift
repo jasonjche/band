@@ -56,7 +56,6 @@ struct SettingsView: View {
     /// as a "strap estimate (unverified)" fallback when no calibrated `spo2Pct` exists. Display-only —
     /// writes nothing to the strap. See [PuffinExperiment.spo2CandidateDisplayKey].
     @AppStorage(PuffinExperiment.spo2CandidateDisplayKey) private var spo2CandidateDisplayEnabled = false
-    @AppStorage(AppModel.ouraAllDayLiveHRKey) private var ouraAllDayLiveHREnabled = false   // item 27
 
     /// #1545 opt-in: score Effort with Banister's exponential TRIMP instead of Edwards' heart-rate zones.
     /// Default OFF — it re-scores the whole window against a different recipe. See
@@ -147,7 +146,7 @@ struct SettingsView: View {
     @AppStorage(SkyBehindCardsPrefs.enabledKey) private var skyBehindCards = true
     // Card-surface opacity percent (100 = solid). Reactive — moving the slider live-updates every card.
     @AppStorage(CardAppearancePrefs.opacityKey) private var cardOpacityPercent = CardAppearancePrefs.defaultPercent
-    // "Reduce motion in NOOP" (default OFF): pose every looping animation still and stop the decorative
+    // "Reduce motion in Band" (default OFF): pose every looping animation still and stop the decorative
     // tilt sensor, without needing system Low Power Mode or system Reduce Motion. Apple-only so far —
     // Android has no such toggle yet and its gate reads two signals, not three (#941).
     @AppStorage(QuietMotionPrefs.enabledKey) private var quietMotion = false
@@ -176,7 +175,7 @@ struct SettingsView: View {
 
     /// The strap model the user last picked (same key the scan pickers write). Gates the WHOOP 4.0-only
     /// rename control in the strap card — renaming uses the Harvard command set, which a 5/MG doesn't share.
-    @AppStorage("selectedWhoopModel") private var selectedWhoopModelRaw = WhoopModel.whoop4.rawValue
+    @AppStorage("selectedWhoopModel") private var selectedWhoopModelRaw = WhoopModel.whoop5mg.rawValue
     /// Draft text for the strap-rename field (strap card). Empty placeholder; never pre-seeded so the
     /// current name stays visible separately above it.
     @State private var strapNameDraft = ""
@@ -220,7 +219,7 @@ struct SettingsView: View {
     /// "How your scores work" explainer sheet, reachable any time from About.
     @State private var showScoringGuide = false
 
-    /// "How NOOP works" primer sheet (the four-section explainability primer), reachable any
+    /// "How Band works" primer sheet (the four-section explainability primer), reachable any
     /// time from About — covers how sleep is sorted, how scores + calibration work, what
     /// recording means, and where the provenance badges come from.
     @State private var showHowNoopWorks = false
@@ -278,7 +277,7 @@ struct SettingsView: View {
                 Button("Clear flags on strap") { model.ble.disableWhoop5DeepData() }
                 Button("Just stop sending", role: .cancel) { }
             } message: {
-                Text("Turning this switch off only stops NOOP sending the unlock. The flags it already wrote stay on the strap until something clears them. NOOP can write the off value to all 16 now and read each one back so you can see what the strap actually stores. Needs the strap connected and bonded.")
+                Text("Turning this switch off only stops Band sending the unlock. The flags it already wrote stay on the strap until something clears them. Band can write the off value to all 16 now and read each one back so you can see what the strap actually stores. Needs the strap connected and bonded.")
             }
             .confirmationDialog("Mark optical experiment phase",
                                 isPresented: $showOpticalPhasePicker, titleVisibility: .visible) {
@@ -495,7 +494,6 @@ struct SettingsView: View {
         if showFiveMGControls || (!AppBrand.isPersonalBuild && model.repo.activeDeviceIsOura) {
             spo2CandidateCard
         }
-        if !AppBrand.isPersonalBuild && model.repo.activeDeviceIsOura { ouraAllDayLiveHRCard }
         rawSensorDiagnosticsCard
     }
     #endif
@@ -534,7 +532,7 @@ struct SettingsView: View {
 
     private var upstreamSettingsScaffold: some View {
         ScreenScaffold(title: "Settings",
-                       subtitle: "Your numbers, your strap, and how NOOP works. All on \(Platform.deviceNounPhrase).",
+                       subtitle: "Your numbers, your strap, and how Band works. All on \(Platform.deviceNounPhrase).",
                        topBackground: liquidScaffoldSky()) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 // Everyday sections stay expanded (S3): the ones a first-run user actually needs.
@@ -741,7 +739,7 @@ struct SettingsView: View {
                             .accessibilityLabel("Step calibration, \(String(format: "%.1f", profile.stepTicksPerStep)) counter ticks per step")
                     }
                 }
-                Text("Counter ticks per step. Leave at 1.0 unless your steps run high. On a WHOOP 5/MG they can run very high (10× or more), so this goes up to 30. Walk a known 1,000 steps and divide NOOP's count by the real count to get your value.")
+                Text("Counter ticks per step. Leave at 1.0 unless your steps run high. On a WHOOP 5/MG they can run very high (10× or more), so this goes up to 30. Walk a known 1,000 steps and divide Band's count by the real count to get your value.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -768,7 +766,7 @@ struct SettingsView: View {
                 }
                 .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("Steps estimate calibration. \(stepsCalibrationSummary). Opens the calibration screen.")
-                Text("For a WHOOP 4.0, which sends no step count: NOOP estimates steps from motion, calibrated to your phone. Tap to see how close it is and adjust it.")
+                Text("For a WHOOP 4.0, which sends no step count: Band estimates steps from motion, calibrated to your phone. Tap to see how close it is and adjust it.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1505,7 +1503,7 @@ struct SettingsView: View {
                     .accessibilityLabel("Language")
                     .onChangeCompat(of: appLanguageRaw) { AppLanguage.apply($0) }
                 }
-                Text("Language changes take effect after you reopen NOOP.")
+                Text("Language changes take effect after you reopen Band.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1675,7 +1673,7 @@ struct SettingsView: View {
                 // sensor, WITHOUT requiring system Low Power Mode. Off by default; system Reduce Motion
                 // and Low Power Mode already force the same behaviour, this is the third, in-app signal.
                 Toggle(isOn: $quietMotion) {
-                    Text("Reduce motion in NOOP")
+                    Text("Reduce motion in Band")
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
@@ -1908,7 +1906,7 @@ struct SettingsView: View {
         SettingsSection(
             icon: "antenna.radiowaves.left.and.right",
             title: "Strap",
-            blurb: "NOOP pairs directly with your WHOOP over Bluetooth: no WHOOP app, no cloud."
+            blurb: "Band pairs directly with your WHOOP over Bluetooth: no WHOOP app, no cloud."
         ) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 12) {
@@ -2138,7 +2136,7 @@ struct SettingsView: View {
         SettingsSection(
             icon: "bell.badge",
             title: "Live notifications",
-            blurb: "Shown on the Lock Screen and in the Dynamic Island. A switch only hides one: NOOP still measures and records everything."
+            blurb: "Shown on the Lock Screen and in the Dynamic Island. A switch only hides one: Band still measures and records everything."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 liveNotificationSwitch("Live heart rate", isOn: $liveActivityEnabled,
@@ -2148,7 +2146,7 @@ struct SettingsView: View {
                                        detail: "Your set, rest and heart rate, and the Lock Screen light-up on a double-tap.")
                 rowDivider
                 liveNotificationSwitch("Strap sync", isOn: $syncLiveActivityEnabled,
-                                       detail: "Progress while NOOP pulls history from the strap.")
+                                       detail: "Progress while Band pulls history from the strap.")
             }
         }
         }
@@ -2216,7 +2214,7 @@ struct SettingsView: View {
             await model.repo.refresh()
         }
         backupAlertTitle = String(localized: "Charge baseline recalibrating")
-        backupAlertMessage = String(localized: "NOOP will re-learn your baseline from tonight's data onward. Your history is kept, and it takes a few nights to settle.")
+        backupAlertMessage = String(localized: "Band will re-learn your baseline from tonight's data onward. Your history is kept, and it takes a few nights to settle.")
         showBackupAlert = true
     }
 
@@ -2286,7 +2284,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 #if os(iOS)
-                Text("Also imports water from Apple Health when connected and allowed to read water data. Drinks logged in NOOP are not written to Apple Health.")
+                Text("Also imports water from Apple Health when connected and allowed to read water data. Drinks logged in Band are not written to Apple Health.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2303,7 +2301,7 @@ struct SettingsView: View {
                 .tint(controlTint)
                 .accessibilityHint("Offers to save a workout when it spots sustained elevated heart rate")
 
-                Text("After a sync, NOOP looks over your recent heart rate for a sustained, raised stretch that looks like exercise and offers to save it. It only ever suggests. Nothing is saved until you tap Save, and you can dismiss any suggestion. Turning this off stops future suggestions but keeps your existing workout history. Deliberately conservative, so the odd workout may be missed. On \(Platform.deviceNounPhrase) only.")
+                Text("After a sync, Band looks over your recent heart rate for a sustained, raised stretch that looks like exercise and offers to save it. It only ever suggests. Nothing is saved until you tap Save, and you can dismiss any suggestion. Turning this off stops future suggestions but keeps your existing workout history. Deliberately conservative, so the odd workout may be missed. On \(Platform.deviceNounPhrase) only.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2367,7 +2365,7 @@ struct SettingsView: View {
         SettingsSection(
             icon: "arrow.triangle.2.circlepath",
             title: "Sync",
-            blurb: "How NOOP behaves while it pulls stored history from your strap."
+            blurb: "How Band behaves while it pulls stored history from your strap."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.space2 + 2) {
                 Toggle(isOn: $syncKeepScreenOn) {
@@ -2379,7 +2377,7 @@ struct SettingsView: View {
                 .tint(controlTint)
                 .accessibilityHint("Stops the screen locking while your strap's history syncs")
 
-                Text("Holds the screen awake while NOOP pulls stored history from your strap, so you can watch a long sync finish without the phone locking. Only applies while a sync is running and NOOP is open. The screen sleeps normally the rest of the time. It uses a bit more battery while the screen stays on.")
+                Text("Holds the screen awake while Band pulls stored history from your strap, so you can watch a long sync finish without the phone locking. Only applies while a sync is running and Band is open. The screen sleeps normally the rest of the time. It uses a bit more battery while the screen stays on.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2422,7 +2420,7 @@ struct SettingsView: View {
         SettingsSection(
             icon: "waveform.path.ecg",
             title: "HRV",
-            blurb: "Tune how NOOP captures and windows your heart-rate-variability reading."
+            blurb: "Tune how Band captures and windows your heart-rate-variability reading."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 // MARK: Continuous HRV capture — keep the dense beat-to-beat (R-R) stream armed 24/7.
@@ -2434,7 +2432,7 @@ struct SettingsView: View {
                 .toggleStyle(.switch)
                 .tint(controlTint)
                 .onChangeCompat(of: continuousHrvEnabled) { on in model.ble.setKeepRealtimeForData(on) }
-                Text("Keeps the detailed beat-to-beat heart-rate stream running all day and night, not just while a live screen is open, so NOOP captures much more for overnight HRV, recovery and sleep. Uses more battery: your strap streams heart rate continuously while connected.")
+                Text("Keeps the detailed beat-to-beat heart-rate stream running all day and night, not just while a live screen is open, so Band captures much more for overnight HRV, recovery and sleep. Uses more battery: your strap streams heart rate continuously while connected.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2478,7 +2476,7 @@ struct SettingsView: View {
                         Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
                     }
                 }
-                Text("Whole night is NOOP's default measure; Deep sleep pools HRV over slow-wave sleep only, reading lower and matching WHOOP. Switching re-scores your recent nights over the new window and takes effect right away once you have a few nights of data.")
+                Text("Whole night is Band's default measure; Deep sleep pools HRV over slow-wave sleep only, reading lower and matching WHOOP. Switching re-scores your recent nights over the new window and takes effect right away once you have a few nights of data.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2497,7 +2495,6 @@ struct SettingsView: View {
         // WHOOP 5/MG protocol research now lives in Test Centre. Everyday Settings no longer carries
         // a second copy; the persisted keys and reversible disable actions remain unchanged there.
         if showFiveMGControls || model.repo.activeDeviceIsOura { spo2CandidateCard }
-        if model.repo.activeDeviceIsOura { ouraAllDayLiveHRCard }   // item 27
         sleepStagingCard
         rawSensorDiagnosticsCard
     }
@@ -2666,7 +2663,7 @@ struct SettingsView: View {
         SettingsSection(
             icon: "bed.double.fill",
             title: "Sleep staging",
-            blurb: "How NOOP splits a night into light / deep / REM. The V2 recipe is the default; turn it off to fall back to the older V1 staging.",
+            blurb: "How Band splits a night into light / deep / REM. The V2 recipe is the default; turn it off to fall back to the older V1 staging.",
             shortFooter: "V2 is the default. Off falls back to V1 on the next night staged."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
@@ -2757,39 +2754,6 @@ struct SettingsView: View {
     /// produces daytime heart rate (and the beats behind windowed rMSSD) only while a client holds that
     /// mode, so the screen-keyed suspend that protects the night suite also empties a pocketed-phone day.
     /// ON stands the hold down only for the learned night band; OFF is today's behaviour. Oura-only.
-    @ViewBuilder private var ouraAllDayLiveHRCard: some View {
-        if appleSettingsStyle {
-            Section {
-                Toggle("All-Day Heart Rate & HRV", isOn: $ouraAllDayLiveHREnabled)
-            } header: {
-                Text("Oura")
-            } footer: {
-                Text("Oura only. Keeps daytime HR on; stands down at night. Uses ring battery.")
-            }
-        } else {
-        SettingsSection(
-            icon: "waveform.path.ecg",
-            title: "Experimental · Oura ring all-day heart rate",
-            blurb: "Oura ring only. Keeps your ring measuring heart rate through the day, standing it down only for your night. A WHOOP strap is not affected.",
-            shortFooter: "Oura only. Keeps daytime HR on; stands down at night. Uses ring battery."
-        ) {
-            VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
-                Toggle(isOn: $ouraAllDayLiveHREnabled) {
-                    Text("Oura ring: all-day heart rate & HRV")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(controlTint)
-                Text("Your Oura ring only measures daytime heart rate while NOOP keeps it in that mode, and NOOP stops asking whenever the screen has been off for five minutes — which protects the ring's own sleep tracking at night, but also leaves a pocketed phone's day blank on the Heart Rate and HRV charts. On, NOOP keeps asking through the day and stops only for your usual night, learned from your sleep history (an hour before your typical bedtime to an hour after your usual wake), so the night is unchanged. Costs ring battery: the ring runs its own optical sensor all day. Until enough nights are learned it behaves as if off. Off by default.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        }
-    }
-
     // MARK: - Diagnostics (every model)
 
     /// Raw-sensor CSV export — a read-only diagnostic over the decoded streams NOOP already stores
@@ -2817,7 +2781,7 @@ struct SettingsView: View {
         SettingsSection(
             icon: "doc.text.magnifyingglass",
             title: "Diagnostics",
-            blurb: "A read-only export of the decoded sensor streams NOOP already stores. Works on any strap. Nothing is written to your device, and nothing is uploaded.",
+            blurb: "A read-only export of the decoded sensor streams Band already stores. Works on any strap. Nothing is written to your device, and nothing is uploaded.",
             shortFooter: "Exports the last 24 hours of decoded sensor streams. Nothing is uploaded."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
@@ -2935,7 +2899,7 @@ struct SettingsView: View {
         SettingsSection(
             icon: "externaldrive.fill",
             title: "Backup & restore",
-            blurb: "Move all your NOOP data to another machine. Export saves everything (history, sleeps, workouts, settings) to a single file you can copy across; import replaces \(Platform.deviceNounPhrase)'s data with a backup."
+            blurb: "Move all your Band data to another machine. Export saves everything (history, sleeps, workouts, settings) to a single file you can copy across; import replaces \(Platform.deviceNounPhrase)'s data with a backup."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.space4) {
                 // Three labelled buttons must share a narrow iPhone row without wrapping mid-word
@@ -2984,7 +2948,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textTertiary)
                         .font(.system(size: 13))
                         .accessibilityHidden(true)
-                    Text("Importing overwrites everything currently on \(Platform.deviceNounPhrase). Your old data is kept in a side file just in case. NOOP needs a relaunch for an import to take effect. Export CSV writes a WHOOP-format zip of your days, sleeps, workouts and journal that re-imports into NOOP on Mac, iPhone, or Android. On-device computed rows are marked APPROXIMATE in its Source column; the full backup stays the lossless restore path.")
+                    Text("Importing overwrites everything currently on \(Platform.deviceNounPhrase). Your old data is kept in a side file just in case. Band needs a relaunch for an import to take effect. Export CSV writes a WHOOP-format zip of your days, sleeps, workouts and journal that re-imports into Band on Mac, iPhone, or Android. On-device computed rows are marked APPROXIMATE in its Source column; the full backup stays the lossless restore path.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3099,7 +3063,7 @@ struct SettingsView: View {
                 return
             case .exported(let url):
                 backupAlertTitle = String(localized: "CSV exported")
-                backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). The zip re-imports into NOOP (Data Sources → WHOOP Export) on any Mac, iPhone, or Android device.")
+                backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). The zip re-imports into Band (Data Sources → WHOOP Export) on any Mac, iPhone, or Android device.")
                 showBackupAlert = true
             case .failure(let message):
                 backupAlertTitle = String(localized: "Export problem")
@@ -3126,15 +3090,15 @@ struct SettingsView: View {
             let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
             let cap = ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)
             backupAlertTitle = String(localized: "Backup exported")
-            backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). Your database is \(size), over the \(cap) NOOP restores without asking — the backup is complete and valid, and restoring it will ask you to confirm once.")
+            backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). Your database is \(size), over the \(cap) Band restores without asking — the backup is complete and valid, and restoring it will ask you to confirm once.")
             showBackupAlert = true
         case .restoreTooLarge(let name, let limit):
             let cap = ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)
-            oversizeRestoreMessage = String(localized: "\(name) is larger than the \(cap) NOOP restores without asking. That limit guards against a malicious archive expanding to fill this \(Platform.deviceNoun) — a backup you exported yourself is not that. Restoring it needs the space the database will take. You'll be asked to choose the file again.")
+            oversizeRestoreMessage = String(localized: "\(name) is larger than the \(cap) Band restores without asking. That limit guards against a malicious archive expanding to fill this \(Platform.deviceNoun) — a backup you exported yourself is not that. Restoring it needs the space the database will take. You'll be asked to choose the file again.")
             showOversizeRestoreConfirm = true
         case .imported:
             backupAlertTitle = String(localized: "Backup imported")
-            backupAlertMessage = String(localized: "Your data has been restored. Quit and reopen NOOP for it to take effect.")
+            backupAlertMessage = String(localized: "Your data has been restored. Quit and reopen Band for it to take effect.")
             showBackupAlert = true
         case .failure(let message):
             backupAlertTitle = String(localized: "Backup problem")
@@ -3247,7 +3211,7 @@ struct SettingsView: View {
                             Text("About Apple Watch data")
                                 .font(StrandFont.body)
                                 .foregroundStyle(StrandPalette.textPrimary)
-                            Text("Use NOOP with just an Apple Watch. What it's great at, and where it's lighter than a strap.")
+                            Text("Use Band with just an Apple Watch. What it's great at, and where it's lighter than a strap.")
                                 .font(StrandFont.footnote)
                                 .foregroundStyle(StrandPalette.textTertiary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -3277,7 +3241,7 @@ struct SettingsView: View {
                             Text("Storage")
                                 .font(StrandFont.body)
                                 .foregroundStyle(StrandPalette.textPrimary)
-                            Text("Where NOOP's on-device space is going, and a one-tap clean-up.")
+                            Text("Where Band's on-device space is going, and a one-tap clean-up.")
                                 .font(StrandFont.footnote)
                                 .foregroundStyle(StrandPalette.textTertiary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -3421,7 +3385,7 @@ struct SettingsView: View {
                 }
                 .accessibilityLabel("Project home and source code on GitHub")
 
-                Text("A standalone companion for your WHOOP. Everything stays on this device: your history, your live stream, your numbers. Nothing is uploaded. NOOP is an independent, experimental project, not the WHOOP app.")
+                Text("A standalone companion for your WHOOP. Everything stays on this device: your history, your live stream, your numbers. Nothing is uploaded. Band is an independent, experimental project, not the WHOOP app.")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3560,7 +3524,7 @@ struct SettingsView: View {
         .accessibilityLabel("Diagnostics")
     }
 
-    /// Calm, honest "what to expect running NOOP on iPhone" callout — sideloading reality, re-sign
+    /// Calm, honest "what to expect running Band on iPhone" callout — sideloading reality, re-sign
     /// cadence, the unlock-after-reboot (#222) note, background-BLE limits, and beta-iOS caveat. Surfaces
     /// the live sideload-cert expiry when we can read it, with a gentle warning under ~3 days.
     private var iphoneExpectations: some View {
@@ -3571,14 +3535,14 @@ struct SettingsView: View {
                 Image(systemName: "iphone.gen3")
                     .foregroundStyle(StrandPalette.accent)
                     .accessibilityHidden(true)
-                Text("Using NOOP on iPhone")
+                Text("Using Band on iPhone")
                     .font(StrandFont.subhead.weight(.semibold))
                     .foregroundStyle(StrandPalette.textPrimary)
             }
 
             iphoneExpectationLine(String(localized: "This is a sideloaded build, installed outside the App Store. It needs re-signing periodically: roughly every 7 days on a free Apple ID, about a year on a paid developer account."))
-            iphoneExpectationLine(String(localized: "After your iPhone reboots, unlock it once. Until you do, iOS keeps NOOP's files locked (Data Protection), so new history can't be written or synced."))
-            iphoneExpectationLine(String(localized: "Background Bluetooth has OS limits: iOS may pause NOOP when it's not in the foreground, so keep it open while syncing a fresh strap."))
+            iphoneExpectationLine(String(localized: "After your iPhone reboots, unlock it once. Until you do, iOS keeps Band's files locked (Data Protection), so new history can't be written or synced."))
+            iphoneExpectationLine(String(localized: "Background Bluetooth has OS limits: iOS may pause Band when it's not in the foreground, so keep it open while syncing a fresh strap."))
             iphoneExpectationLine(String(localized: "On a beta version of iOS, things can break that work on the release build."))
 
             if let days = expiry {
@@ -3894,7 +3858,7 @@ struct StepsCalibrationSheet: View {
     /// #107: the sheet's guidance depends on the strap family. A WHOOP 4.0 streams motion automatically, so
     /// "let it sync" is right; a 5/MG only streams motion once the experimental deep-data unlock is on, so
     /// the 4.0 advice is futile there and the empty state must say so instead.
-    @AppStorage("selectedWhoopModel") private var selectedWhoopModelRaw = WhoopModel.whoop4.rawValue
+    @AppStorage("selectedWhoopModel") private var selectedWhoopModelRaw = WhoopModel.whoop5mg.rawValue
     @AppStorage(PuffinExperiment.deepDataKey) private var deepDataEnabled = false
     private var is5MG: Bool { selectedWhoopModelRaw == WhoopModel.whoop5mg.rawValue }
 
@@ -3982,12 +3946,12 @@ struct StepsCalibrationSheet: View {
                     .font(StrandFont.headline)
                     .foregroundStyle(StrandPalette.textPrimary)
                 Text(is5MG
-                     ? String(localized: "NOOP estimates your steps from your WHOOP's stored motion, calibrated to your phone's step count. It's an estimate, not a hardware step counter; normal WHOOP 5/MG history sync supplies the motion data.")
-                     : String(localized: "NOOP estimates your steps from your WHOOP's motion, calibrated to your phone's step count. It's an estimate, not a step counter. A WHOOP 4.0 doesn't transmit steps."))
+                     ? String(localized: "Band estimates your steps from your WHOOP's stored motion, calibrated to your phone's step count. It's an estimate, not a hardware step counter; normal WHOOP 5/MG history sync supplies the motion data.")
+                     : String(localized: "Band estimates your steps from your WHOOP's motion, calibrated to your phone's step count. It's an estimate, not a step counter. A WHOOP 4.0 doesn't transmit steps."))
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("On the days your phone also counted steps, NOOP learns how much your motion maps to steps, then applies that to the strap-only days. The more matching days it has, the more it trusts the estimate.")
+                Text("On the days your phone also counted steps, Band learns how much your motion maps to steps, then applies that to the strap-only days. The more matching days it has, the more it trusts the estimate.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -4023,20 +3987,20 @@ struct StepsCalibrationSheet: View {
     /// The "why it's empty" line — a 5/MG needs the deep-data unlock before it streams motion at all.
     private var noMotionLead: String {
         if is5MG {
-            return String(localized: "We're not seeing motion from your WHOOP 5.0 / MG yet. Keep NOOP connected and let strap history finish syncing; the experimental R22 flags are not required. Account or Apple Health imports do not contain the raw strap motion this estimate needs.")
+            return String(localized: "We're not seeing motion from your WHOOP 5.0 / MG yet. Keep Band connected and let strap history finish syncing; the experimental R22 flags are not required. Account or Apple Health imports do not contain the raw strap motion this estimate needs.")
         }
-        return String(localized: "We're not seeing any motion from your strap yet. Steps are estimated from your WHOOP's banked motion history, so your strap needs to sync that history before NOOP has anything to count.")
+        return String(localized: "We're not seeing any motion from your strap yet. Steps are estimated from your WHOOP's banked motion history, so your strap needs to sync that history before Band has anything to count.")
     }
 
     /// The "what to do" line — 5/MG points at the deep-data toggle (unless it's already on, then just sync).
     private var noMotionAction: String {
         if is5MG && !deepDataEnabled {
-            return String(localized: "Open NOOP near the strap and let WHOOP 5/MG history finish syncing. The step estimate and calibration fill in once enough stored motion has arrived; the legacy R22 experiment is not required.")
+            return String(localized: "Open Band near the strap and let WHOOP 5/MG history finish syncing. The step estimate and calibration fill in once enough stored motion has arrived; the legacy R22 experiment is not required.")
         }
         if is5MG {
-            return String(localized: "Deep data is on — open NOOP near your strap and let it sync its motion history (a full first-run sync can take a while). Once a day or two of motion lands, your step estimate and the calibration below fill in.")
+            return String(localized: "Deep data is on — open Band near your strap and let it sync its motion history (a full first-run sync can take a while). Once a day or two of motion lands, your step estimate and the calibration below fill in.")
         }
-        return String(localized: "Open NOOP near your strap and let it catch up (a full history sync can take a while on first run). Once a day or two of motion lands, your step estimate and the calibration below will start to fill in.")
+        return String(localized: "Open Band near your strap and let it catch up (a full history sync can take a while on first run). Once a day or two of motion lands, your step estimate and the calibration below will start to fill in.")
     }
 
     /// The current calibration read-out: coefficient, sample days, and a Low/Medium/High confidence —
@@ -4094,7 +4058,7 @@ struct StepsCalibrationSheet: View {
                         .headline)
                         .font(StrandFont.bodyNumber)
                         .foregroundStyle(StrandPalette.accent)
-                    Text("These are the days where your phone also counted steps, so NOOP can learn how your motion maps to steps. Or set the coefficient manually below.")
+                    Text("These are the days where your phone also counted steps, so Band can learn how your motion maps to steps. Or set the coefficient manually below.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -4111,7 +4075,7 @@ struct StepsCalibrationSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Estimated vs your phone").strandOverline()
                 if comparison.isEmpty {
-                    Text("No days yet where both NOOP and your phone counted steps. Once your phone logs a few days alongside the strap, they'll appear here so you can see how close the estimate is.")
+                    Text("No days yet where both Band and your phone counted steps. Once your phone logs a few days alongside the strap, they'll appear here so you can see how close the estimate is.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -4432,7 +4396,7 @@ struct BandBackupView: View {
             backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). Restoring it will ask you to confirm once.")
             showBackupAlert = true
         case .restoreTooLarge(let name, _):
-            oversizeRestoreMessage = String(localized: "\(name) is larger than NOOP restores without asking. You'll be asked to choose the file again.")
+            oversizeRestoreMessage = String(localized: "\(name) is larger than Band restores without asking. You'll be asked to choose the file again.")
             showOversizeRestoreConfirm = true
         case .imported:
             backupAlertTitle = String(localized: "Backup imported")

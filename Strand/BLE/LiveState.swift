@@ -3,7 +3,11 @@ import Combine
 import StrandAnalytics
 import WhoopProtocol
 import WhoopStore
-import OuraProtocol
+
+/// Residual ring wear slot after Oura removal; always nil at runtime.
+public enum OuraWearState: Equatable, Sendable {
+    case worn, charging, off
+}
 
 /// Observable snapshot of the live connection + biometric state, driven by FrameRouter
 /// (from decoded frames) and BLEManager (from CoreBluetooth callbacks).
@@ -944,7 +948,7 @@ public final class LiveState: ObservableObject {
         #else
         let osName = "macOS"
         #endif
-        var header = "NOOP strap log (scheduled export) — \(osName)\nApp: \(Self.appIdentityLine)\n\(osName): "
+        var header = "Band strap log (scheduled export) — \(osName)\nApp: \(Self.appIdentityLine)\n\(osName): "
             + ProcessInfo.processInfo.operatingSystemVersionString + "\n"
         // #453: the BODY is scrubbed as it is appended, but these header lines come from the diagnostics
         // block and never pass through that path - and they carry device ids, which embed a BLE address
@@ -1188,7 +1192,7 @@ public final class LiveState: ObservableObject {
         #else
         let osName = "macOS"
         #endif
-        var header = "NOOP strap log - \(osName)\nApp: \(Self.appIdentityLine)\n\(osName): "
+        var header = "Band strap log - \(osName)\nApp: \(Self.appIdentityLine)\n\(osName): "
             + ProcessInfo.processInfo.operatingSystemVersionString + "\n"
         #if os(iOS)
         let diagLines = IOSDiagnostics.capture().summaryLines()
@@ -1247,7 +1251,7 @@ public enum LiveConsoleReadout {
     /// reaches nothing. A device that is neither (Polar, Garmin, …) is neither — it gets the Devices row.
     public static func activeIsOura(devices: [PairedDevice], activeId: String?) -> Bool {
         guard let activeId, let active = devices.first(where: { $0.id == activeId }) else { return false }
-        return active.brand.caseInsensitiveCompare(ExperimentalBrand.oura.displayBrand) == .orderedSame
+        return active.brand.caseInsensitiveCompare("Oura") == .orderedSame
     }
 
     /// The charge to show for the ACTIVE device, or nil to show nothing.

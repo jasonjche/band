@@ -53,6 +53,16 @@ enum NativeStrainTarget {
             }
     }
 
+    /// Lower edge of the 0–21 optimal band used by the strain-target notification.
+    static func optimalLowerBound21(recovery: Double?) -> Int? {
+        guard let r = recovery else { return nil }
+        switch r {
+        case 67...: return 14
+        case 34..<67: return 10
+        default: return 4
+        }
+    }
+
     static func position(strain21: Double, range: ClosedRange<Double>) -> Position {
         if strain21 < range.lowerBound { return .below }
         if strain21 > range.upperBound { return .above }
