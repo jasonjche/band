@@ -1506,6 +1506,7 @@ public final class BLEManager: NSObject, ObservableObject {
         // The store can finish bootstrapping AFTER connect(model:) already ran (both wait on
         // poweredOn), so apply the family/clock configuration here too — whichever runs last wins.
         configureCollectorFamily()
+        overheardStore = store
         backfiller = Backfiller(store: store, deviceId: deviceId,
                                 ackTrim: { [weak self] trim, endData in
                                     self?.ackHistoricalChunk(trim: trim, endData: endData)
@@ -3549,6 +3550,66 @@ public final class BLEManager: NSObject, ObservableObject {
                 log("Deep-data: type-0x2F received outside our offload — this is historical-offload data (another BLE client pulling the strap's history, or a trailing flush), not a live R22 stream (#494).")
             } else if state.deepPacketsThisSession.isMultiple(of: 50) {
                 log("Deep-data: \(state.deepPacketsThisSession) type-0x2F historical-offload frames seen outside our session.")
+            }
+        }
+    }
+
+    // MARK: Overheard history (personal build)
+    //
+    // The strap frees a history record once ANY client has acked it. With the official app
+    // installed beside this one, that app drains the strap every ten minutes and our own offloads
+    // find only the few minutes it has not taken yet. Its records still reach us over the shared
+    // notify channel, and 5/MG records carry real-unix timestamps, so they decode without a session.
+    // This path stores them and sends nothing: no ack, no trim, no cursor write. Inserts are
+    // conflict-ignoring, so a record we later offload ourselves is not duplicated.
+    private var overheardStore: BackfillStoreWriting?
+    private var overheardFrames: [[UInt8]] = []
+    private var overheardFlush: DispatchWorkItem?
+    private var overheardSinceLog = 0
+    private static let overheardFlushCount = 120
+
+    private func noteOverheardHistoryFrame(_ frame: [UInt8]) {
+        guard AppBrand.isPersonalBuild, frame.count > 8, frame[8] == 0x2F else { return }
+        overheardFrames.append(frame)
+        overheardFlush?.cancel()
+        if overheardFrames.count >= BLEManager.overheardFlushCount {
+            flushOverheardHistory(burstEnded: false)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in self?.flushOverheardHistory(burstEnded: true) }
+        overheardFlush = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    private func flushOverheardHistory(burstEnded: Bool) {
+        overheardFlush?.cancel()
+        overheardFlush = nil
+        guard !overheardFrames.isEmpty, let store = overheardStore else { return }
+        let frames = overheardFrames
+        overheardFrames.removeAll(keepingCapacity: true)
+        let id = deviceId
+        let subLag = PuffinExperiment.ppgHrSubLagInterpEnabled
+        Task { @MainActor [weak self] in
+            let streams = await Task.detached(priority: .utility) { () -> Streams in
+                let parsed = frames.map { parseFrame($0, family: .whoop5) }
+                let now = Int(Date().timeIntervalSince1970)
+                return extractHistoricalStreams(parsed, deviceClockRef: now, wallClockRef: now,
+                                                family: .whoop5, subLagInterp: subLag)
+            }.value
+            guard let self else { return }
+            do {
+                try await store.insert(streams, deviceId: id)
+            } catch {
+                self.log("History: could not store \(frames.count) overheard records (\(error.localizedDescription)).")
+                return
+            }
+            self.overheardSinceLog += streams.hr.count
+            guard burstEnded else { return }
+            if self.overheardSinceLog > 0 {
+                self.log("History: stored \(self.overheardSinceLog) heart-rate records another app pulled from the strap (nothing acked by this app).")
+                self.overheardSinceLog = 0
+                self.state.lastOffloadBankedRows = true
+                self.state.lastSyncedAt = Date().timeIntervalSince1970
             }
         }
     }
@@ -7608,6 +7669,7 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 for frame in completedFrames {
                     let isOffload = backfilling && BLEManager.isOffloadFrame(frame, family: .whoop5)
                     noteWhoop5R22Telemetry(frame, duringOffload: isOffload)   // #174 deep-data telemetry
+                    if !isOffload { noteOverheardHistoryFrame(frame) }
                     // Durable EVENT-frame log for deep-data research (#103) — BEFORE the offload
                     // branch, so it sees both live events and their history replays (either path
                     // may be the only one that delivers a given record). Single byte compare when

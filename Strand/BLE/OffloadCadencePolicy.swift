@@ -17,10 +17,12 @@ enum OffloadTriggerPolicy {
     }
 }
 
-/// Auto-continue only when the previous slice ended on the idle-timeout slice cap AND the
-/// existing backlog guards still say the strap has more pending. Short HISTORY_COMPLETE
-/// chatter waits for the next scheduled offload, which is what stopped `backfilling`
-/// flipping every few seconds.
+/// Auto-continue only while the strap is measurably ahead of what we hold (more than 15 minutes).
+/// How the slice ended does not matter: a strap that segments a deep backlog into many small
+/// HISTORY_COMPLETE slices must keep draining, or an overnight backlog moves one slice per app
+/// open. A strap only minutes ahead (or with an unknown frontier) waits for the next scheduled
+/// offload unless the slice hit the idle cap, which is what stops `backfilling` flipping every
+/// few seconds on HISTORY_COMPLETE chatter.
 enum OffloadContinuePolicy {
     static func shouldAutoContinue(policyEnabled: Bool,
                                    endedOnSliceCap: Bool,
@@ -33,12 +35,12 @@ enum OffloadContinuePolicy {
                                    consecutiveCount: Int,
                                    maxAutoContinues: Int = BackfillContinuation.defaultMaxAutoContinues,
                                    behindGapSeconds: Int = BackfillContinuation.defaultBehindGapSeconds) -> Bool {
-        if policyEnabled && !endedOnSliceCap { return false }
-        // Under the Band policy "more pending" means the strap is measurably ahead of what we hold.
-        // Rows persisted this slice are not enough on their own: that is what kept re-kicking.
-        if policyEnabled, let newest = strapNewestTs, let frontier = ourFrontierTs,
-           (newest - frontier) <= max(behindGapSeconds, 900) {
-            return false
+        if policyEnabled {
+            if let newest = strapNewestTs, let frontier = ourFrontierTs {
+                if (newest - frontier) <= max(behindGapSeconds, 900) { return false }
+            } else if !endedOnSliceCap {
+                return false
+            }
         }
         return BackfillContinuation.shouldAutoContinue(
             stillConnected: stillConnected,

@@ -1,7 +1,7 @@
 import XCTest
 @testable import Strand
 
-/// Auto-continue only after a slice-cap (idle-timeout) exit while the strap still has backlog.
+/// Auto-continue while the strap is more than 15 minutes ahead, however the slice ended.
 final class OffloadContinuePolicyTests: XCTestCase {
 
     private let wallNow = 1_800_000_000
@@ -25,8 +25,21 @@ final class OffloadContinuePolicyTests: XCTestCase {
         XCTAssertTrue(behindArgs(endedOnSliceCap: true, policyEnabled: true))
     }
 
-    func testPolicyOnDoesNotContinueAfterHistoryComplete() {
-        XCTAssertFalse(behindArgs(endedOnSliceCap: false, policyEnabled: true))
+    func testPolicyOnContinuesAfterHistoryCompleteWithDeepBacklog() {
+        XCTAssertTrue(behindArgs(endedOnSliceCap: false, policyEnabled: true))
+    }
+
+    func testPolicyOnDoesNotContinueAfterHistoryCompleteWhenFrontierUnknown() {
+        XCTAssertFalse(OffloadContinuePolicy.shouldAutoContinue(
+            policyEnabled: true,
+            endedOnSliceCap: false,
+            stillConnected: true,
+            strapNewestTs: nil,
+            ourFrontierTs: nil,
+            wallNowUnix: wallNow,
+            persistedSensorRows: true,
+            lastTrimAdvanced: true,
+            consecutiveCount: 0))
     }
 
     func testFlagOffStillContinuesAfterHistoryComplete() {

@@ -799,6 +799,12 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+        // Personal build: log finished workouts from the HR that just landed, then rescore so the
+        // new rows get their strain.
+        if banked, await repo.autoSaveDetectedWorkouts() > 0 {
+            await repo.refresh()
+            await intelligence.analyzeRecent(maxDays: 2)
+        }
         await refreshV5Signals()
         #if os(iOS)
         // #980: a strap backfill routinely completes while the app is BACKGROUNDED (it runs as a

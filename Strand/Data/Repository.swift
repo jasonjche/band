@@ -3116,6 +3116,13 @@ final class Repository: ObservableObject {
     func deleteWorkout(_ row: WorkoutRow) async {
         if WorkoutSource.classify(row.source) == .detected { await dismissDetected(row); return }
         guard let store = await ensureStore() else { return }
+        // Personal build: bouts are saved automatically, so a delete must also stop the detector
+        // saving the same span again on the next pass.
+        if AppBrand.isPersonalBuild {
+            let token = WorkoutSource.dismissedToken(for: row)
+            var spans = dismissedDetectedSpans
+            if !spans.contains(token) { spans.append(token); dismissedDetectedSpans = spans }
+        }
         // Sweep every STRAP namespace, not just the active one. A manual row banked under a retained
         // strap or a computed sibling is shown by `workoutRows` and was previously undeletable: the
         // delete touched one namespace, the reload re-read the row from another, and it reappeared
@@ -3347,6 +3354,59 @@ final class Repository: ObservableObject {
                                                      energyKcal: nil) else { return false }
         await saveManualWorkout(row)
         return true
+    }
+
+    /// Personal build: save every finished detected bout as an "Activity" with no prompt, the way
+    /// WHOOP logs a workout nobody started by hand. Returns how many were saved. A bout whose end is
+    /// within `settleSeconds` of the newest stored HR sample is left for the next pass, because it may
+    /// still be in progress and a saved span blocks the detector from ever extending it. Rows are
+    /// manual-style, so the Activity page can re-label or delete them; a delete leaves a tombstone
+    /// (see `deleteWorkout`) so the same bout is not saved again.
+    @discardableResult
+    func autoSaveDetectedWorkouts(daysBack: Int = 2, settleSeconds: Int = 600) async -> Int {
+        guard AppBrand.isPersonalBuild else { return 0 }
+        let now = Int(Date().timeIntervalSince1970)
+        let samples = await hrSamples(from: now - daysBack * 86_400, to: now, limit: 200_000)
+        guard samples.count >= 2, let frontier = samples.map(\.ts).max() else { return 0 }
+        let restingBpm = days.last(where: { $0.restingHr != nil })?.restingHr
+        let savedSpans = await workoutRows().map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
+        let candidates = AutoWorkoutDetector.detect(
+            hr: samples.map { (ts: $0.ts, bpm: $0.bpm) }, restingBpm: restingBpm,
+            motion: nil, savedSpans: savedSpans,
+            minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin)
+        let keep = Self.autoSavableWorkouts(
+            candidates, frontierTs: frontier, settleSeconds: settleSeconds,
+            autoDismissedTokens: autoDetectDismissedSpans,
+            detectedDismissedTokens: dismissedDetectedSpans)
+        var saved = 0
+        for w in keep {
+            let start = Date(timeIntervalSince1970: TimeInterval(w.startSec))
+            guard let row = WorkoutSource.buildManualRow(start: start, durationMin: max(1, w.durationMin),
+                                                         sport: "Activity", avgHr: w.avgBpm,
+                                                         energyKcal: nil) else { continue }
+            await saveManualWorkout(row)
+            saved += 1
+        }
+        return saved
+    }
+
+    /// Finished, never-dismissed candidates, oldest first. Pure so the rule is testable.
+    nonisolated static func autoSavableWorkouts(
+        _ candidates: [DetectedWorkout],
+        frontierTs: Int,
+        settleSeconds: Int,
+        autoDismissedTokens: [String],
+        detectedDismissedTokens: [String]
+    ) -> [DetectedWorkout] {
+        let exact = Set(autoDismissedTokens)
+        let tombstones = WorkoutSource.parseDismissedSpans(detectedDismissedTokens)
+        return candidates
+            .filter { c in
+                c.endSec <= frontierTs - settleSeconds
+                    && !exact.contains(autoDetectToken(c))
+                    && !tombstones.contains { c.startSec < $0.end && $0.start < c.endSec }
+            }
+            .sorted { $0.startSec < $1.startSec }
     }
 
     /// DISMISS a suggested window: record its span durably so it never re-prompts. Idempotent.
