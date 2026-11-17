@@ -19,30 +19,32 @@ struct NativeStressPage: View {
     @State private var sampleHours: [NativeHourPoint] = []
     @State private var series: NativeScopeSeries = .empty
     @State private var timeInHighMinutes: Double?
+    @State private var level: Double?
+    @State private var sleepStart: Date?
+    @State private var sleepEnd: Date?
+    @State private var bouts: [(start: Date, end: Date)] = []
 
     private var dayKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
 
-    private var level: Double? {
-        NativeHomeCharts.stressLevel(hours: sampleHours, days: repo.days, todayKey: dayKey)
-    }
-
-    private var taskID: String { "\(scope.rawValue)|\(dayKey)|\(repo.days.count)" }
+    private var taskID: String { "\(scope.rawValue)|\(dayKey)|\(repo.refreshSeq)" }
 
     var body: some View {
+        let dayStart = Calendar.current.startOfDay(for: selectedDay)
+        let now = min(
+            Date(),
+            Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? Date()
+        )
         NativeStressChartPage(
             scope: scope,
             onScope: { scope = $0 },
             series: series,
             hours: sampleHours,
             level: level,
-            sleepStart: sleepBounds.start,
-            sleepEnd: sleepBounds.end,
+            sleepStart: sleepStart,
+            sleepEnd: sleepEnd,
             workouts: bouts,
-            dayStart: Calendar.current.startOfDay(for: selectedDay),
-            now: min(
-                Date(),
-                Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: selectedDay)) ?? Date()
-            ),
+            dayStart: dayStart,
+            now: now,
             scrubValue: $scrubValue,
             scrubTime: $scrubTime,
             timeInHighMinutes: timeInHighMinutes,
@@ -54,37 +56,30 @@ struct NativeStressPage: View {
         .task(id: taskID) { await reload() }
     }
 
-    private var sleepBounds: (start: Date?, end: Date?) {
-        let sleep = repo.sleeps.last {
-            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
-        }
-        return (
-            sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) },
-            sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
-        )
-    }
-
-    private var bouts: [(start: Date, end: Date)] {
-        workouts.compactMap { row in
-            let start = Date(timeIntervalSince1970: TimeInterval(row.startTs))
-            guard NativeDayLogic.sleepSessionDayKey(start) == dayKey else { return nil }
-            return (start, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
-        }
-    }
-
     private func reload() async {
         workouts = await repo.workoutRows(days: 14)
         let calendar = Calendar.current
         let ending = NativeScopeSeries.date(from: dayKey, calendar: calendar) ?? selectedDay
         let start = calendar.startOfDay(for: ending)
         let from = Int(start.timeIntervalSince1970)
-        let raw = await repo.hrSamples(from: from, to: from + 86_400, limit: 12_000)
-        sampleHours = NativeHomeCharts.stressSeries(samples: raw.map { (ts: $0.ts, bpm: $0.bpm) })
-        if let latest = NativeHomeCharts.stressLevel(hours: sampleHours, days: repo.days, todayKey: dayKey) {
+        let buckets = await repo.hrSamples(from: from, to: from + 86_400, bucketSeconds: 300)
+        sampleHours = NativeHomeCharts.stressSeries(buckets: buckets)
+        level = NativeHomeCharts.stressLevel(hours: sampleHours, days: repo.days, todayKey: dayKey)
+        if let latest = level {
             scrubValue = latest
         }
         scrubTime = nil
         timeInHighMinutes = NativeStressHistory.timeInHighMinutes(sampleHours)
+        let sleep = repo.sleeps.last {
+            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
+        }
+        sleepStart = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
+        sleepEnd = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
+        bouts = workouts.compactMap { row in
+            let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
+            guard NativeDayLogic.sleepSessionDayKey(boutStart) == dayKey else { return nil }
+            return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
+        }
         let daily = NativeStressHistory.daily(days: repo.days, ending: dayKey)
         series = NativeScopeSeries.make(
             points: daily,
@@ -146,7 +141,7 @@ struct NativeStressChartPage: View {
 
     @ViewBuilder private var dayBody: some View {
         NativeHeroValue(
-            caption: "Average",
+            caption: NativeStressHero.caption(scrubbing: scrubTime != nil),
             value: shownLevel.map { String(format: "%.1f", $0) } ?? "No Data",
             date: scrubTime.map { NativeScopeFormat.time($0) } ?? NativeScopeFormat.weekdayDate(dayStart, calendar: .current)
         )
@@ -198,6 +193,13 @@ struct NativeStressChartPage: View {
             return NativeScopeFormat.time(time)
         }
         return NativeScopeFormat.weekdayDate(dayStart, calendar: .current)
+    }
+}
+
+enum NativeStressHero {
+    /// Idle hero is AVERAGE; a held point is STRESS (Apple Health uppercases the caption).
+    static func caption(scrubbing: Bool) -> String {
+        scrubbing ? "Stress" : "Average"
     }
 }
 

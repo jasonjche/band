@@ -40,6 +40,26 @@ enum NativeHomeSync {
     }
 }
 
+/// Survives a Home re-appear / remount so live strain is not rescored unless `refreshSeq` or the day changed.
+enum NativeLiveStrainMemo {
+    private static var seq = -1
+    private static var day = ""
+    private static var value: Double?
+    private static var stored = false
+
+    static func read(seq: Int, day: String) -> Double?? {
+        guard stored, seq == self.seq, day == self.day else { return nil }
+        return Optional.some(value)
+    }
+
+    static func store(seq: Int, day: String, value: Double?) {
+        self.seq = seq
+        self.day = day
+        self.value = value
+        stored = true
+    }
+}
+
 struct NativeHomeView: View {
     @EnvironmentObject private var repo: Repository
     @EnvironmentObject private var ble: BLEManager
@@ -51,6 +71,13 @@ struct NativeHomeView: View {
     @State private var sampleHours: [NativeHourPoint] = []
     @State private var vo2max: Double?
     @State private var liveTodayStrain: Double?
+    @State private var dayModel: NativeDay.Model?
+    @State private var healthSummary: NativeHealthRange.Summary?
+    @State private var tonight: NativeTonightSleep.Model?
+    @State private var stressLevel: Double?
+    @State private var weekRecovery: [NativeDayPoint] = []
+    @State private var weekStrain: [NativeDayPoint] = []
+    @State private var dashboardItems: [HomeMetricItem] = []
     @State private var addingActivity = false
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @AppStorage("behavior.smartAlarmEnabled") private var smartAlarmEnabled = false
@@ -63,41 +90,10 @@ struct NativeHomeView: View {
 
     private var selectedKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
 
-    private var model: NativeDay.Model {
-        NativeDay.make(
-            days: repo.days,
-            sleeps: repo.sleeps,
-            workouts: workouts,
-            todayKey: selectedKey,
-            connected: false,
-            effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
-            journalEntries: journalEntries,
-            importedSleep: repo.importedSleep,
-            liveStrain: liveTodayStrain
-        )
-    }
-
     private var storeEmpty: Bool {
         NativeDayLogic.isEmptyStore(
             days: repo.days, sleeps: repo.sleeps, importedSleep: repo.importedSleep
         )
-    }
-
-    private var healthRange: NativeHealthRange.Summary {
-        NativeHealthRange.summary(days: repo.days, todayKey: selectedKey)
-    }
-
-    private var tonightSleep: NativeTonightSleep.Model? {
-        guard selectedKey == NativeDayLogic.logicalToday() else { return nil }
-        return NativeTonightSleep.make(
-            needMin: model.sleepNeedMin,
-            alarmEnabled: smartAlarmEnabled,
-            alarmMinutes: smartAlarmMinutes
-        )
-    }
-
-    private var stressLevel: Double? {
-        NativeHomeCharts.stressLevel(hours: sampleHours, days: repo.days, todayKey: selectedKey)
     }
 
     var body: some View {
@@ -120,8 +116,10 @@ struct NativeHomeView: View {
                     onImport: { path.wrappedValue.append(TabRoute.dataSources) },
                     onPair: { path.wrappedValue.append(NativePairRoute()) }
                 )
+            } else if let model = dayModel {
+                homeContent(model)
             } else {
-                homeContent
+                HomeLoadingSkeleton()
             }
         }
         .navigationTitle("Home")
@@ -129,6 +127,9 @@ struct NativeHomeView: View {
         .nativeStyleBridge()
         .refreshable { await NativeHomeSync.pull(ble: ble, repo: repo, reload: reload) }
         .task(id: "\(repo.refreshSeq)-\(selectedKey)") { await reload() }
+        .onChange(of: effortScaleRaw) { _ in rebuildModel() }
+        .onChange(of: smartAlarmEnabled) { _ in rebuildModel() }
+        .onChange(of: smartAlarmMinutes) { _ in rebuildModel() }
         .navigationDestination(for: NativePairRoute.self) { _ in
             DevicesView()
         }
@@ -169,32 +170,81 @@ struct NativeHomeView: View {
         journalEntries = await repo.journalEntries(days: 40)
         let start = Calendar.current.startOfDay(for: selectedDay)
         let from = Int(start.timeIntervalSince1970)
-        let raw = await repo.hrSamples(from: from, to: from + 86_400, limit: 12_000)
-        sampleHours = NativeHomeCharts.stressSeries(samples: raw.map { (ts: $0.ts, bpm: $0.bpm) })
+        let buckets = await repo.hrSamples(from: from, to: from + 86_400, bucketSeconds: 300)
+        sampleHours = NativeHomeCharts.stressSeries(buckets: buckets)
         let vo2 = await repo.exploreSeries(key: "vo2max_est", source: "my-whoop")
         vo2max = vo2.last?.value
         await refreshLiveStrain(from: from)
+        rebuildModel()
+    }
+
+    /// Rings, dashboard, tonight, week — once per data change, not per `body` pass.
+    private func rebuildModel() {
+        let scale = UnitPrefs.resolveEffortScale(effortScaleRaw)
+        let model = NativeDay.make(
+            days: repo.days,
+            sleeps: repo.sleeps,
+            workouts: workouts,
+            todayKey: selectedKey,
+            connected: false,
+            effortScale: scale,
+            journalEntries: journalEntries,
+            importedSleep: repo.importedSleep,
+            liveStrain: liveTodayStrain
+        )
+        dayModel = model
+        healthSummary = NativeHealthRange.summary(days: repo.days, todayKey: selectedKey)
+        if selectedKey == NativeDayLogic.logicalToday() {
+            tonight = NativeTonightSleep.make(
+                needMin: model.sleepNeedMin,
+                alarmEnabled: smartAlarmEnabled,
+                alarmMinutes: smartAlarmMinutes
+            )
+        } else {
+            tonight = nil
+        }
+        stressLevel = NativeHomeCharts.stressLevel(hours: sampleHours, days: repo.days, todayKey: selectedKey)
+        weekRecovery = NativeWeek.points(
+            kind: .recovery, days: repo.days, todayKey: selectedKey,
+            sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
+        )
+        weekStrain = NativeWeek.points(
+            kind: .strain, days: repo.days, todayKey: selectedKey,
+            effortScale: scale,
+            sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
+        )
+        dashboardItems = HomeMetricItem.make(dashboard: model.dashboard, days: repo.days, todayKey: selectedKey)
     }
 
     /// Same live Effort the classic Today ring reads: `StrainScorer.strain` over today's HR,
     /// then `NativeDayLogic.effectiveStrain` with the stored row. Past days stay stored-only.
+    /// Recomputes only when `refreshSeq` or the selected day changed — a Home re-appear is a cache hit.
     private func refreshLiveStrain(from: Int) async {
-        guard selectedKey == NativeDayLogic.logicalToday() else {
+        let seq = repo.refreshSeq
+        let day = selectedKey
+        if let cached = NativeLiveStrainMemo.read(seq: seq, day: day) {
+            liveTodayStrain = cached
+            return
+        }
+        guard day == NativeDayLogic.logicalToday() else {
             liveTodayStrain = nil
+            NativeLiveStrainMemo.store(seq: seq, day: day, value: nil)
             return
         }
         let todayHr = await repo.hrSamples(from: from, to: from + 86_400, limit: 200_000)
         let maxHR = profile.effortHRmax
-        let restHR = repo.days.last { $0.day == selectedKey }?.restingHr.map(Double.init)
+        let restHR = repo.days.last { $0.day == day }?.restingHr.map(Double.init)
             ?? StrainScorer.defaultRestingHR
         let method = PuffinExperiment.effortMethod
         let sex = profile.sex
-        liveTodayStrain = await Task.detached(priority: .utility) {
+        let scored = await Task.detached(priority: .utility) {
             StrainScorer.strain(todayHr, maxHR: maxHR, restingHR: restHR, method: method, sex: sex)
         }.value
+        liveTodayStrain = scored
+        NativeLiveStrainMemo.store(seq: seq, day: day, value: scored)
     }
 
-    @ViewBuilder private var homeContent: some View {
+    @ViewBuilder private func homeContent(_ model: NativeDay.Model) -> some View {
         HomeRingsRow(
             sleep: model.sleep,
             recovery: model.recovery,
@@ -208,7 +258,7 @@ struct NativeHomeView: View {
             resp: HomeMonitorValue.from(model.dashboard, title: "Respiratory Rate", unit: "breaths/min"),
             stressLevel: stressLevel,
             stressHours: sampleHours,
-            rangeCaption: healthRange.headerTrailing,
+            rangeCaption: healthSummary?.headerTrailing,
             onHealth: { path.wrappedValue.append(TabRoute.healthMonitor) },
             onStress: { path.wrappedValue.append(TabRoute.stress) }
         )
@@ -222,8 +272,8 @@ struct NativeHomeView: View {
             onActivity: { path.wrappedValue.append(NativeActivityRoute(startTs: $0)) },
             onAdd: { addingActivity = true }
         )
-        if let tonightSleep {
-            HomeTonightSleepCard(model: tonightSleep)
+        if let tonight {
+            HomeTonightSleepCard(model: tonight)
         }
         HomeJournalCard(
             dots: NativeHomeCharts.journalDots(filled: model.journalDays, todayKey: selectedKey),
@@ -232,18 +282,11 @@ struct NativeHomeView: View {
             onLog: { path.wrappedValue.append(TabRoute.journalLog) }
         )
         HomeWeekCard(
-            recovery: NativeWeek.points(
-                kind: .recovery, days: repo.days, todayKey: selectedKey,
-                sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
-            ),
-            strain: NativeWeek.points(
-                kind: .strain, days: repo.days, todayKey: selectedKey,
-                effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
-                sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
-            ),
+            recovery: weekRecovery,
+            strain: weekStrain,
             highlightKey: selectedKey
         )
-        ForEach(HomeMetricItem.make(dashboard: model.dashboard, days: repo.days, todayKey: selectedKey)) { item in
+        ForEach(dashboardItems) { item in
             Button {
                 path.wrappedValue.append(item.route)
             } label: {
@@ -966,6 +1009,16 @@ enum NativeHomeCharts {
         }
     }
 
+    /// Chart-width buckets (300 s day sparkline / day chart). Stress level is the last bucket, matching the drawn series.
+    static func stressSeries(buckets: [HRBucket]) -> [NativeHourPoint] {
+        buckets.map { bucket in
+            NativeHourPoint(
+                time: Date(timeIntervalSince1970: TimeInterval(bucket.ts)),
+                value: stressValue(bpm: bucket.bpm)
+            )
+        }
+    }
+
     static func stressValue(bpm: Double) -> Double {
         min(3, max(0, (bpm - 48) / 38))
     }
@@ -1377,6 +1430,62 @@ enum HomeSnapshot {
         )
     }
 
+    static var caloriesMetric: HomeMetricItem {
+        HomeMetricItem.make(
+            dashboard: NativeGallerySnapshot.snapshotModel.dashboard,
+            days: NativeGallerySnapshot.snapshotDays,
+            todayKey: highlightKey
+        ).first { $0.title == "Calories" } ?? HomeMetricItem(
+            title: "Calories",
+            value: NativeDayLogic.countText(512),
+            unit: "cal",
+            prior: nil,
+            delta: .none,
+            symbol: "flame.fill",
+            tint: NativeChrome.activity,
+            points: NativeWeek.series(NativeGallerySnapshot.snapshotDays, todayKey: highlightKey) {
+                $0.activeKcalEst
+            },
+            bars: true,
+            route: .metric("energy_kcal")
+        )
+    }
+
+    static var strainOnlyModel: NativeDay.Model {
+        let day = DailyMetric(
+            day: highlightKey,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: nil, avgHrv: nil, recovery: nil, strain: 34,
+            exerciseCount: 1
+        )
+        return NativeDay.make(
+            days: [day], sleeps: [], workouts: [],
+            todayKey: highlightKey, connected: false, effortScale: .whoop,
+            now: NativeGallerySnapshot.sleepEnd
+        )
+    }
+
+    static var strainOnlyPage: some View {
+        NativeChrome.stack {
+            HomeRingsRow(
+                sleep: strainOnlyModel.sleep,
+                recovery: strainOnlyModel.recovery,
+                strain: strainOnlyModel.strain,
+                onOpen: { _ in }
+            )
+            HomeMonitorPair(
+                hrv: nil, rhr: nil, resp: nil,
+                stressLevel: nil, stressHours: [],
+                onHealth: {}, onStress: {}
+            )
+            NativeChrome.section("My Day")
+            HomeActivitiesCard(
+                items: HomeActivityItem.make(from: strainOnlyModel),
+                onSleep: {}, onActivity: { _ in }
+            )
+        }
+    }
+
     static var healthRange: String? {
         NativeHealthRange.summary(
             days: NativeGallerySnapshot.snapshotDays, todayKey: highlightKey
@@ -1415,6 +1524,7 @@ enum HomeSnapshot {
             )
             HomeMetricCard(item: hrvMetric, highlightKey: highlightKey)
             HomeMetricCard(item: stepsMetric, highlightKey: highlightKey)
+            HomeMetricCard(item: caloriesMetric, highlightKey: highlightKey)
         }
     }
 
@@ -1441,6 +1551,7 @@ enum HomeSnapshot {
     static var sections: [Section] {
         [
             Section(name: "page", padded: false, view: AnyView(homePage)),
+            Section(name: "page-strain-only", padded: false, view: AnyView(strainOnlyPage)),
             Section(name: "empty", padded: false, view: AnyView(emptyPage)),
             Section(name: "loading", padded: false, view: AnyView(loadingPage)),
             Section(name: "rings", view: AnyView(HomeRingsRow(
@@ -1489,6 +1600,7 @@ enum HomeSnapshot {
             Section(name: "metrics", view: AnyView(VStack(spacing: 10) {
                 HomeMetricCard(item: hrvMetric, highlightKey: highlightKey)
                 HomeMetricCard(item: stepsMetric, highlightKey: highlightKey)
+                HomeMetricCard(item: caloriesMetric, highlightKey: highlightKey)
             })),
             Section(name: "stress", view: AnyView(HomeStressBody(
                 level: 1.2,

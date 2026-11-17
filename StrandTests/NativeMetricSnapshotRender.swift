@@ -118,7 +118,7 @@ final class NativeMetricSnapshotRender: XCTestCase {
         let dayStart = calendar.date(from: DateComponents(year: 2026, month: 11, day: 15))!
         return VStack(alignment: .leading, spacing: 12) {
             NativeHeroValue(
-                caption: "Average",
+                caption: NativeStressHero.caption(scrubbing: selected),
                 value: String(format: "%.1f", selected ? 2.1 : (stressHours.last?.value ?? 0)),
                 date: selected
                     ? NativeScopeFormat.time(stressHours[12].time, calendar: calendar)

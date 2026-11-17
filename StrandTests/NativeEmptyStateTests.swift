@@ -118,6 +118,42 @@ final class NativeEmptyStateTests: XCTestCase {
         XCTAssertEqual(model?.needClock, "7 hr 45 min")
     }
 
+    func testStrainOnlyDayKeepsEmptySleepAndRecoveryRings() {
+        let day = sampleMetric(day: "2026-11-16", strain: 34)
+        let model = NativeDay.make(
+            days: [day], sleeps: [], workouts: [],
+            todayKey: day.day,
+            connected: false,
+            effortScale: .whoop,
+            now: localDate(year: 2026, month: 11, day: 16, hour: 10, minute: 0)
+        )
+        XCTAssertFalse(model.sleep.known)
+        XCTAssertEqual(model.sleep.value, "—")
+        XCTAssertNil(model.sleep.fraction)
+        XCTAssertFalse(model.recovery.known)
+        XCTAssertEqual(model.recovery.value, "—")
+        XCTAssertNil(model.recovery.fraction)
+        XCTAssertTrue(model.strain.known)
+        XCTAssertEqual(model.strain.value, NativeDayLogic.strainText(34, scale: .whoop))
+        XCTAssertNil(model.dashboard.first { $0.title == "Heart Rate Variability" }.flatMap {
+            NativeScoreMath.hasValue($0.value) ? $0.value : nil
+        })
+    }
+
+    func testRespiratoryTrailingUnitIsRpmWithFullAccessibility() throws {
+        let today = sampleMetric(day: "2026-11-16", hrv: 66, rhr: 51, resp: 14.7)
+        let report = NativeHealthRange.report(days: [today], todayKey: today.day)
+        let resp = try XCTUnwrap(report.vitals.first { $0.id == "resp" })
+        XCTAssertEqual(resp.valueText, "14.7 breaths/min")
+        XCTAssertEqual(NativeHealthMonitorFormat.trailingValue(resp), "14.7 rpm")
+        let label = NativeHealthMonitorFormat.accessibilityLabel(resp)
+        XCTAssertTrue(label.contains("Respiratory Rate"))
+        XCTAssertTrue(label.contains("breaths/min"))
+        XCTAssertFalse(label.contains(" rpm"))
+        let hrv = try XCTUnwrap(report.vitals.first { $0.id == "hrv" })
+        XCTAssertEqual(NativeHealthMonitorFormat.trailingValue(hrv), hrv.valueText)
+    }
+
     private func localDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = .current

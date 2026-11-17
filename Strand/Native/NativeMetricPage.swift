@@ -30,20 +30,25 @@ struct NativeMetricPage: View {
     private var taskID: String { "\(key)|\(scope.rawValue)|\(dayKey)|\(repo.days.count)" }
 
     var body: some View {
+        let pageTitle = title
+        let pageBars = usesBars
+        let pageTint = tint
+        let pageUnit = displayUnit
+        let pageColor = bandColor
         NativeMetricChartPage(
-            title: title,
+            title: pageTitle,
             scope: scope,
             onScope: { scope = $0 },
             series: series,
             hourPoints: hourPoints,
-            bars: usesBars,
-            tint: tint,
+            bars: pageBars,
+            tint: pageTint,
             format: format,
-            unit: displayUnit,
+            unit: pageUnit,
             highlightKey: dayKey,
             higherIsBetter: NativeMetricDirection.higherIsBetter(key),
             latest: latest,
-            color: bandColor
+            color: pageColor
         )
         .task(id: taskID) { await reload() }
     }
@@ -106,9 +111,12 @@ struct NativeMetricPage: View {
         if scope == .day, key == "avg_hr" || key == "max_hr" {
             let start = calendar.startOfDay(for: ending)
             let from = Int(start.timeIntervalSince1970)
-            let raw = await repo.hrSamples(from: from, to: from + 86_400, limit: 12_000)
-            hourPoints = raw.map {
-                NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval($0.ts)), value: Double($0.bpm))
+            let buckets = await repo.hrSamples(from: from, to: from + 86_400, bucketSeconds: 300)
+            hourPoints = buckets.map { bucket in
+                NativeHourPoint(
+                    time: Date(timeIntervalSince1970: TimeInterval(bucket.ts)),
+                    value: key == "max_hr" ? bucket.maxBpm : bucket.bpm
+                )
             }
         }
     }

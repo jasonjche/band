@@ -2,6 +2,7 @@
 import XCTest
 import SwiftUI
 import AppKit
+import WhoopStore
 @testable import Strand
 
 /// Renders Native Home / Stress / Journal sections to `/tmp/native-snaps/home-*`.
@@ -28,6 +29,46 @@ final class NativeHomeSnapshotRender: XCTestCase {
         XCTAssertEqual(mapped[0].value, 1.0, accuracy: 0.01)
 
         XCTAssertNil(NativeHomeCharts.stressLevel(hours: [], days: [], todayKey: "2026-11-12"))
+    }
+
+    func testBucketedStressLevelMatchesRawOnFlatSyntheticDay() {
+        let start = 1_700_000_000
+        let bucketSeconds = 300
+        var samples: [(ts: Int, bpm: Int)] = []
+        var buckets: [HRBucket] = []
+        for index in 0..<10 {
+            let bpm = 50 + index * 5
+            let ts0 = start + index * bucketSeconds
+            for offset in 0..<bucketSeconds {
+                samples.append((ts: ts0 + offset, bpm: bpm))
+            }
+            buckets.append(HRBucket(ts: ts0, bpm: Double(bpm), minBpm: Double(bpm), maxBpm: Double(bpm)))
+        }
+        let rawHours = NativeHomeCharts.stressSeries(samples: samples, stride: 3)
+        let bucketHours = NativeHomeCharts.stressSeries(buckets: buckets)
+        let rawLevel = NativeHomeCharts.stressLevel(hours: rawHours, days: [], todayKey: "2026-11-12")
+        let bucketLevel = NativeHomeCharts.stressLevel(hours: bucketHours, days: [], todayKey: "2026-11-12")
+        XCTAssertEqual(rawLevel ?? -1, bucketLevel ?? -1, accuracy: 0.01)
+        XCTAssertEqual(bucketLevel ?? -1, NativeHomeCharts.stressValue(bpm: 95), accuracy: 0.01)
+    }
+
+    func testStressHeroCaptionIsStressWhileScrubbing() {
+        XCTAssertEqual(NativeStressHero.caption(scrubbing: false), "Average")
+        XCTAssertEqual(NativeStressHero.caption(scrubbing: true), "Stress")
+    }
+
+    func testTonightSleepFollowsActivitiesAndStrainOnlySnapshotExists() {
+        let names = HomeSnapshot.sections.map(\.name)
+        XCTAssertTrue(names.contains("myday"))
+        XCTAssertTrue(names.contains("page-strain-only"))
+        XCTAssertEqual(HomeSnapshot.activities.first?.kind, .sleep)
+        XCTAssertFalse(HomeSnapshot.strainOnlyModel.sleep.known)
+        XCTAssertEqual(HomeSnapshot.strainOnlyModel.sleep.value, "—")
+        XCTAssertNil(HomeSnapshot.strainOnlyModel.sleep.fraction)
+        XCTAssertFalse(HomeSnapshot.strainOnlyModel.recovery.known)
+        XCTAssertEqual(HomeSnapshot.strainOnlyModel.recovery.value, "—")
+        XCTAssertTrue(HomeSnapshot.strainOnlyModel.strain.known)
+        XCTAssertEqual(HomeSnapshot.caloriesMetric.title, "Calories")
     }
 
     func testHomeAndStressResolveTheSameSeries() {

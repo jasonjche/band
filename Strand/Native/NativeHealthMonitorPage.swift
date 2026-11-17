@@ -8,6 +8,7 @@ struct NativeHealthMonitorPage: View {
     @EnvironmentObject private var repo: Repository
     @Environment(\.nativeNavigationPath) private var path
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
+    @State private var report = NativeHealthRange.Report(vitals: [])
 
     private var selectedDay: Date {
         get { NativeDaySelection.date(from: selectedDayKey) }
@@ -16,9 +17,7 @@ struct NativeHealthMonitorPage: View {
 
     private var dayKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
 
-    private var report: NativeHealthRange.Report {
-        NativeHealthRange.report(days: repo.days, todayKey: dayKey)
-    }
+    private var taskID: String { "\(dayKey)|\(repo.refreshSeq)" }
 
     var body: some View {
         NativeChrome.screen {
@@ -34,6 +33,9 @@ struct NativeHealthMonitorPage: View {
         .navigationTitle("Health Monitor")
         .modifier(NativeInlineTitle())
         .nativeDateSubtitle(selectedDay)
+        .task(id: taskID) {
+            report = NativeHealthRange.report(days: repo.days, todayKey: dayKey)
+        }
     }
 
     private func shiftDay(_ delta: Int) {
@@ -87,20 +89,27 @@ struct NativeHealthMonitorBody: View {
     }
 }
 
+enum NativeHealthMonitorFormat {
+    /// Compact trailing so "Respiratory Rate" stays the same title size as the other rows.
+    /// `NativeContributorRow` rewrites `rpm` → `breaths/min`, so the page draws its own value.
+    static func trailingValue(_ vital: NativeHealthRange.Vital) -> String {
+        guard vital.id == "resp" else { return vital.valueText }
+        return vital.valueText.replacingOccurrences(of: "breaths/min", with: "rpm")
+    }
+
+    static func accessibilityLabel(_ vital: NativeHealthRange.Vital) -> String {
+        let range = vital.inRange ? "In Range" : "Out of Range"
+        return "\(vital.title), \(vital.valueText), Typical \(vital.typicalText), \(range)"
+    }
+}
+
 struct NativeHealthMonitorRow: View {
     var vital: NativeHealthRange.Vital
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            NativeContributorRow(
-                symbol: vital.symbol,
-                title: vital.title,
-                value: vital.valueText,
-                prior: "Typical \(vital.typicalText) · \(vital.inRange ? "In Range" : "Out of Range")",
-                tint: vital.heartFamily ? NativePaint.heart(style) : NativePaint.respiratory(style),
-                valueTint: vital.inRange ? Color.primary : NativeTokens.recoveryLow
-            )
+            row
             NativeVitalRangeBar(
                 value: vital.value,
                 typical: vital.typical,
@@ -109,6 +118,41 @@ struct NativeHealthMonitorRow: View {
             .padding(.leading, 32)
             .padding(.bottom, 6)
         }
+    }
+
+    private var row: some View {
+        let tint = vital.heartFamily ? NativePaint.heart(style) : NativePaint.respiratory(style)
+        let valueTint = vital.inRange ? Color.primary : NativeTokens.recoveryLow
+        let prior = "Typical \(vital.typicalText) · \(vital.inRange ? "In Range" : "Out of Range")"
+        return HStack(spacing: 10) {
+            Image(systemName: vital.symbol)
+                .font(.body)
+                .foregroundStyle(tint)
+                .frame(width: 22)
+            Text(style == .whoop ? vital.title.uppercased() : vital.title)
+                .font(style == .whoop ? NativeTokens.whoopCaps(13) : .body)
+                .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(NativeHealthMonitorFormat.trailingValue(vital))
+                    .font(style == .whoop
+                          ? NativeTokens.whoopNumber(17, weight: .semibold)
+                          : StrandFont.rounded(17, weight: .semibold))
+                    .foregroundStyle(style == .whoop ? Color.primary : valueTint)
+                    .lineLimit(1)
+                    .monospacedDigit()
+                Text(prior)
+                    .font(style == .whoop ? NativeTokens.whoopNumber(12, weight: .regular) : .footnote)
+                    .foregroundStyle(style == .whoop ? NativeTokens.whoopLabel : Color.secondary)
+                    .lineLimit(1)
+                    .monospacedDigit()
+            }
+        }
+        .frame(minHeight: 48)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(NativeHealthMonitorFormat.accessibilityLabel(vital))
     }
 }
 

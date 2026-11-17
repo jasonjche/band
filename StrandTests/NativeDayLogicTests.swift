@@ -238,6 +238,45 @@ final class NativeDayLogicTests: XCTestCase {
         XCTAssertEqual(home?.value, expected)
     }
 
+    func testHomeCaloriesRowUsesWholeDayEnergyAndHidesWhenNil() {
+        let with = DailyMetric(
+            day: "2026-11-16",
+            totalSleepMin: 410, efficiency: 0.92, deepMin: 70, remMin: 90, lightMin: 250,
+            disturbances: 1, restingHr: 51, avgHrv: 66, recovery: 49, strain: 34,
+            exerciseCount: 1, steps: 6545, activeKcalEst: 512
+        )
+        let without = DailyMetric(
+            day: "2026-11-16",
+            totalSleepMin: 410, efficiency: 0.92, deepMin: 70, remMin: 90, lightMin: 250,
+            disturbances: 1, restingHr: 51, avgHrv: 66, recovery: 49, strain: 34,
+            exerciseCount: 1, steps: 6545, activeKcalEst: nil
+        )
+        let now = localDate(year: 2026, month: 11, day: 16, hour: 10, minute: 0)
+        let modelWith = NativeDay.make(
+            days: [with], sleeps: [], workouts: [],
+            todayKey: with.day, connected: true, effortScale: .whoop, now: now
+        )
+        let expected = NativeDayLogic.countText(512)
+        XCTAssertEqual(modelWith.dashboard.first { $0.title == "Calories" }?.value, expected)
+        let home = HomeMetricItem.make(dashboard: modelWith.dashboard, days: [with], todayKey: with.day)
+            .first { $0.title == "Calories" }
+        XCTAssertEqual(home?.value, expected)
+        XCTAssertEqual(home?.unit, "cal")
+        let strainCard = NativeWeek.cards(kind: .strain, days: [with], todayKey: with.day)
+            .first { $0.title == "Calories" }
+        XCTAssertEqual(strainCard?.points.first { $0.key == with.day }?.value ?? -1, 512, accuracy: 0.1)
+
+        let modelWithout = NativeDay.make(
+            days: [without], sleeps: [], workouts: [],
+            todayKey: without.day, connected: true, effortScale: .whoop, now: now
+        )
+        XCTAssertFalse(NativeScoreMath.hasValue(modelWithout.dashboard.first { $0.title == "Calories" }?.value ?? "—"))
+        XCTAssertNil(
+            HomeMetricItem.make(dashboard: modelWithout.dashboard, days: [without], todayKey: without.day)
+                .first { $0.title == "Calories" }
+        )
+    }
+
     func testDayStrainAtLeastMaxActivityAndBothUseStrainText() {
         let day = sampleMetric(day: "2026-11-16", strain: 34, recovery: 49, sleepMin: 410)
         let start = localDate(year: 2026, month: 11, day: 16, hour: 8, minute: 27)
