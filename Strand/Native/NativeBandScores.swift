@@ -78,7 +78,8 @@ enum NativeBandScores {
     private static func compute(days: [DailyMetric], sleeps: [CachedSleepSession],
                                 workouts: [WorkoutRow],
                                 importedSleep: [String: ImportedSleepFigures]) -> Snapshot {
-        let inputs = dayInputs(days: days, sleeps: sleeps, workouts: workouts)
+        let inputs = dayInputs(days: days, sleeps: sleeps, workouts: workouts,
+                               importedSleep: importedSleep)
         let band: [BandScores.DayOutput]
         if let params = params(), !inputs.isEmpty {
             band = BandScores.evaluate(days: inputs, params: params)
@@ -101,9 +102,14 @@ enum NativeBandScores {
                 hours = nil
             }
             let day = Day(
-                // WHOOP's figure on imported days, NOOP's RecoveryScorer on strap days. The fitted Band
-                // recovery tied NOOP's on held-out days, so the scorer with no per-user parameters wins.
-                recovery: d.recovery,
+                // WHOOP's figure on imported days. Strap days use the Band logistic once it has a
+                // value (after warmup); NOOP's DailyMetric.recovery is the fallback while Band has none.
+                // Missing-signal rule (port_spec.md §5 + BandRecovery): recovery is published only when
+                // z_hrv, z_rhr, z_rr, z_temp, z_spo2, and sleep performance are all finite. A missing
+                // z is left missing (IEEE NaN through the logistic); there is no zero-fill. Missing
+                // energy on a cycle uses the train median of log_energy; missing Edwards / z45 fill 0.
+                // A missing night decays sleep debt and does not append a shortfall.
+                recovery: imported ? d.recovery : (strapRecovery(b) ?? d.recovery),
                 sleepPerformance: imported ? (fig?.performancePct ?? b?.perf) : b?.perf,
                 sleepNeed: need,
                 sleepDebt: imported ? (fig?.debtMin ?? b?.debt) : b?.debt,
@@ -136,7 +142,8 @@ enum NativeBandScores {
     // MARK: - Inputs
 
     static func dayInputs(days: [DailyMetric], sleeps: [CachedSleepSession],
-                          workouts: [WorkoutRow]) -> [BandScores.DayInput] {
+                          workouts: [WorkoutRow],
+                          importedSleep: [String: ImportedSleepFigures] = [:]) -> [BandScores.DayInput] {
         let sleepsByDay = Dictionary(grouping: sleeps) {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
         }
@@ -167,7 +174,9 @@ enum NativeBandScores {
             }
             // Whole-day energy only. Workout calories are a different scale and skew sleep need.
             let energy = day.activeKcalEst
-            let asleep = day.totalSleepMin
+            // Zero or absent sleep is a night the strap was not worn, not a night of no sleep.
+            // Counting it as a shortfall would inflate sleep debt and tonight's need.
+            let asleep = day.totalSleepMin.flatMap { $0 > 0 ? $0 : nil }
             let inbed: Double?
             if let asleep, let raw = day.efficiency, raw > 0 {
                 let eff = raw <= 1 ? raw : raw / 100
@@ -192,7 +201,8 @@ enum NativeBandScores {
                 rhr: day.restingHr.map(Double.init),
                 resp: day.respRateBpm,
                 temp: day.skinTempC,
-                spo2: day.spo2Pct
+                spo2: day.spo2Pct,
+                source: isImported(importedSleep[day.day]) ? .imported : .strap
             )
         }
     }
@@ -201,6 +211,22 @@ enum NativeBandScores {
         let date = Date(timeIntervalSince1970: TimeInterval(ts))
         let c = Calendar.current.dateComponents([.hour, .minute], from: date)
         return (c.hour ?? 0) * 60 + (c.minute ?? 0)
+    }
+
+    /// Band recovery for a strap day. HRV, resting HR, respiratory rate and sleep performance are
+    /// required. Skin temperature and SpO2 only enter as out-of-range flags with a dead zone, and
+    /// the strap does not report SpO2 by default, so a missing one counts as "no flag" (z = 0).
+    private static func strapRecovery(_ b: BandScores.DayOutput?) -> Double? {
+        guard let b else { return nil }
+        if let r = b.recovery { return r }
+        guard let zHrv = b.zHrv, let zRhr = b.zRhr, let zRr = b.zRr, let perf = b.perf,
+              let params = params() else { return nil }
+        let rec = BandRecovery.run(
+            zHrv: [zHrv], zRhr: [zRhr], zRr: [zRr],
+            zTemp: [b.zTemp ?? 0], zSpo2: [b.zSpo2 ?? 0],
+            perf: [perf], params: params.recovery
+        )
+        return BandScores.finite(rec[0])
     }
 
     static func epochs(from stagesJSON: String?, sessionStart: Int) -> [BandHrvSws.Epoch] {

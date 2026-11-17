@@ -63,10 +63,17 @@ enum PersonalDefaults {
             PuffinExperiment.journalReminderKey: true,
             "workoutKeepScreenOn": false,
             ScreenIdle.strapSyncKeepAwakeKey: false,
-            UnitPrefs.liveActivityKey: true,
-            UnitPrefs.syncLiveActivityKey: true,
+            // Off: the heart-rate banner re-pushes every 10–15 s and the sync banner on every offload
+            // slice, which costs battery and reads as constant syncing.
+            UnitPrefs.liveActivityKey: false,
+            UnitPrefs.syncLiveActivityKey: false,
             UnitPrefs.liftLiveActivityKey: true,
+            // Hourly offload batches; the strap keeps recording to its own memory in between.
+            PuffinExperiment.lowRefreshKey: true,
             "noop.bottomBarAutoHide": false,
+            // On: gate 0x2A37 notify, EVENT offload kicks, slice auto-continue, analysis, widget reloads.
+            // Off restores the previous cadence. Stock NOOP never registers this key.
+            BandPowerPolicy.defaultsKey: true,
         ]
     }
 }

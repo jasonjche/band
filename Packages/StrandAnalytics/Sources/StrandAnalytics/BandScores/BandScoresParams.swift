@@ -12,6 +12,10 @@ extension BandScores {
         public var recovery: BandRecovery.Params
         public var baselinesMinP: Int
         public var schemaVersion: Int
+        /// Frozen local-level Kalman for HRV at a source change. Default EWMA is unchanged.
+        public var hrvKalman: BandBaselines.KalmanParams
+        /// Default `.ewma` (round-2 goldens). `.kalman` is switch_over.md policy (c).
+        public var hrvBaselineMode: BandBaselines.HrvMode
 
         public static func bundled() throws -> Params {
             guard let url = Bundle.module.url(forResource: "params", withExtension: "json") else {
@@ -84,7 +88,9 @@ extension BandScores {
                     spo2Deadzone: raw.recovery.params.spo2Deadzone
                 ),
                 baselinesMinP: raw.baselinesMinP,
-                schemaVersion: raw.schemaVersion
+                schemaVersion: raw.schemaVersion,
+                hrvKalman: .bundled,
+                hrvBaselineMode: .ewma
             )
         }
 

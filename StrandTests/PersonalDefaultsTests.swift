@@ -35,6 +35,7 @@ final class PersonalDefaultsTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: UnitPrefs.effortScaleKey), EffortScale.hundred.rawValue)
         XCTAssertEqual(defaults.object(forKey: PuffinExperiment.experimentalSleepStressKey) as? Bool, false)
         XCTAssertEqual(defaults.string(forKey: UnitPrefs.systemKey), UnitSystem.imperial.rawValue)
+        XCTAssertNil(defaults.object(forKey: BandPowerPolicy.defaultsKey))
     }
 
     func testPinsLayoutStyleEffortSleepStressAndLocaleUnitsWhenFlagIsOn() {
@@ -53,6 +54,7 @@ final class PersonalDefaultsTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: UnitPrefs.effortScaleKey), EffortScale.whoop.rawValue)
         XCTAssertTrue(defaults.bool(forKey: PuffinExperiment.experimentalSleepStressKey))
         XCTAssertEqual(defaults.string(forKey: UnitPrefs.systemKey), UnitSystem.imperial.rawValue)
+        XCTAssertTrue(defaults.bool(forKey: BandPowerPolicy.defaultsKey))
     }
 
     func testMetricLocalePinsMetricUnits() {

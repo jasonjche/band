@@ -75,10 +75,12 @@ struct GoldenFile: Decodable {
     var paramsSchemaVersion: Int
     var days: [Day]
     var outputs: [Out]
+    var switchIndex: Int?
 
     enum CodingKeys: String, CodingKey {
         case name, days, outputs
         case paramsSchemaVersion = "params_schema_version"
+        case switchIndex = "switch_index"
     }
 
     struct Nap: Decodable {
@@ -106,9 +108,10 @@ struct GoldenFile: Decodable {
         var resp: Double?
         var temp: Double?
         var spo2: Double?
+        var source: String?
 
         enum CodingKeys: String, CodingKey {
-            case day, edwards, asleep, inbed, naps, rhr, resp, temp, spo2
+            case day, edwards, asleep, inbed, naps, rhr, resp, temp, spo2, source
             case energyKcal = "energy_kcal"
             case z45Min = "z45_min"
             case napMin = "nap_min"
@@ -122,7 +125,8 @@ struct GoldenFile: Decodable {
                 day: day, energyKcal: energyKcal, edwards: edwards, z45Min: z45Min,
                 asleep: asleep, inbed: inbed, napMin: napMin, onsetMin: onsetMin, wakeMin: wakeMin,
                 naps: naps.map { BandScores.NapSpan(onsetMin: $0.onsetMin, wakeMin: $0.wakeMin) },
-                hrvMs: hrvMs, rhr: rhr, resp: resp, temp: temp, spo2: spo2
+                hrvMs: hrvMs, rhr: rhr, resp: resp, temp: temp, spo2: spo2,
+                source: BandScores.DaySource(rawValue: source ?? "imported") ?? .imported
             )
         }
     }

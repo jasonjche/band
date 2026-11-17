@@ -1259,6 +1259,9 @@ public final class BLEManager: NSObject, ObservableObject {
     private var bondLoopPausedAt: Date?
     /// NotificationCenter token for the app-foreground salvage probe (installForegroundSalvageProbe).
     private var foregroundSalvageObserver: NSObjectProtocol?
+    /// Foreground / background tokens that re-evaluate 0x2A37 demand. Separate from the salvage
+    /// probe so that observer's contract is untouched.
+    private var liveHRLifecycleObservers: [NSObjectProtocol] = []
     /// Multi-WHOOP stale-pin recovery (#52). Consecutive "Encryption/Authentication is insufficient" bond
     /// refusals on the CURRENTLY PINNED peripheral. A stale registry pin (pointing at a strap that bonds to
     /// the official app / isn't really here) makes `connect()` drop the strap that DOES bond and loop
@@ -1384,6 +1387,7 @@ public final class BLEManager: NSObject, ObservableObject {
         router.onStrapSerial = { [weak self] serial in self?.noteHarvardSerial(serial) }   // #1193
         // #78 hole-4: a paused-for-bond-loop strap gets one bounded salvage attempt per app-foreground.
         installForegroundSalvageProbe()
+        installLiveHRDemandLifecycle()
     }
 
     /// Build the WhoopStore + Collector + Backfiller asynchronously. Safe to call multiple
@@ -1596,6 +1600,7 @@ public final class BLEManager: NSObject, ObservableObject {
         router.onStrapSerial = { [weak self] serial in self?.noteHarvardSerial(serial) }   // #1193
         // #78 hole-4: a paused-for-bond-loop strap gets one bounded salvage attempt per app-foreground.
         installForegroundSalvageProbe()
+        installLiveHRDemandLifecycle()
     }
 
     // MARK: Public API
@@ -1979,6 +1984,51 @@ public final class BLEManager: NSObject, ObservableObject {
             Task { @MainActor in self?.salvageProbeIfBondLoopPaused() }
         }
         #endif
+    }
+
+    /// Re-evaluate 0x2A37 demand when the app becomes active or goes to background. Does not
+    /// touch connect/bond/handshake — it only calls `setNotifyValue` on the existing HR char.
+    private func installLiveHRDemandLifecycle() {
+        #if os(iOS) || os(macOS)
+        #if os(iOS)
+        let active = UIApplication.didBecomeActiveNotification
+        let background = UIApplication.didEnterBackgroundNotification
+        #else
+        let active = NSApplication.didBecomeActiveNotification
+        let background = NSApplication.didResignActiveNotification
+        #endif
+        let nc = NotificationCenter.default
+        liveHRLifecycleObservers.append(nc.addObserver(forName: active, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.reconcileStandardHRNotify(reason: "foreground") }
+        })
+        liveHRLifecycleObservers.append(nc.addObserver(forName: background, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.reconcileStandardHRNotify(reason: "background") }
+        })
+        #endif
+    }
+
+    /// Standard 0x2A37 notify follows live-surface demand (and Continuous HRV). Handshake
+    /// discovery still subscribes; this only re-evaluates after bond / handshake, on
+    /// foreground/background, and when a live surface appears or leaves.
+    private func standardHRNotifyWanted() -> Bool {
+        LiveHRDemand.shouldSubscribe(
+            demandCount: screenWantsRealtime ? 1 : 0,
+            continuousHRV: continuousCaptureWantsNow(),
+            policyEnabled: BandPowerPolicy.enabled(),
+            holdForHandshake: !(connectHandshakeDone || didBond))
+    }
+
+    private func reconcileStandardHRNotify(reason: String) {
+        guard let p = peripheral, p.state == .connected, let c = heartRateCharacteristic else { return }
+        let want = standardHRNotifyWanted()
+        if want {
+            if !c.isNotifying || restoreNeedsResubscribe {
+                requestNotify(c, on: p, reason: reason)
+            }
+        } else if c.isNotifying {
+            p.setNotifyValue(false, for: c)
+            log("Notify released \(c.uuid) (\(reason); live-HR demand idle)")
+        }
     }
 
     // MARK: Multi-WHOOP (additive — inert on the single-WHOOP path)
@@ -3318,6 +3368,7 @@ public final class BLEManager: NSObject, ObservableObject {
         // what continuous capture keeps; the reconciler decides whether to disarm that.
         send(.sendR10R11Realtime, payload: [0x00])
         reconcileRealtime()
+        reconcileStandardHRNotify(reason: "stop realtime")
     }
 
     /// The "Continuous HRV capture" preference flipped: hold the realtime stream open with no Live screen
@@ -3327,6 +3378,7 @@ public final class BLEManager: NSObject, ObservableObject {
     public func setKeepRealtimeForData(_ keep: Bool) {
         keepRealtimeForData = keep
         reconcileRealtime()
+        reconcileStandardHRNotify(reason: "continuous HRV")
     }
 
     /// #477 (Settings): battery-% at/below which the offload cadence stretches while discharging (0 = off).
@@ -5191,7 +5243,6 @@ public final class BLEManager: NSObject, ObservableObject {
             cmdNotifyCharacteristic,
             eventNotifyCharacteristic,
             dataNotifyCharacteristic,
-            heartRateCharacteristic,
             batteryCharacteristic,
         ].compactMap { $0 }
         // #613: normally skip already-notifying chars (requestNotify would just log "already active" on

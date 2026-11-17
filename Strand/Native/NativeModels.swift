@@ -238,17 +238,11 @@ enum NativeDay {
             days: days, sleeps: sleeps, workouts: workouts, importedSleep: importedSleep
         )
         let todayScore = scores.byDay[todayKey]
-        // Carry last night's recovery only while looking at today before the overnight scores.
-        let recoveryKey: String?
-        if todayScore?.recovery == nil && viewingToday {
-            recoveryKey = days.last { scores.byDay[$0.day]?.recovery != nil && $0.day < todayKey }?.day
-        } else {
-            recoveryKey = todayKey
-        }
-        let hrvDay = today?.avgHrv == nil && viewingToday ? DailyMetric.lastHrvDay(days: days, todayKey: todayKey) : today
-        let sleepDay = today?.totalSleepMin == nil && viewingToday
-            ? days.last { $0.totalSleepMin != nil && $0.day < todayKey }
-            : today
+        // A day shows only its own night. A day the strap was not worn reads "No Data";
+        // it never borrows an older night's sleep, HRV or recovery.
+        let recoveryKey: String? = todayKey
+        let hrvDay = today
+        let sleepDay = today
         let sleepKey = sleepDay?.day
         let sleepScoreRow = sleepKey.flatMap { scores.byDay[$0] }
         let prior = Array(days.filter { $0.day < todayKey }.suffix(30))

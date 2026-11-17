@@ -569,6 +569,10 @@ public final class LiveState: ObservableObject {
     /// True while a historical offload session is running, so screens can say "Syncing strap
     /// history…" instead of presenting half-loaded data as final (#77).
     @Published public var backfilling = false
+    /// Last offload session (or burst) banked new sensor rows. Not `@Published` — Home must not
+    /// redraw on it. Sticky true until the dashboard refresh consumes it, so an empty trailing
+    /// HISTORY_COMPLETE slice cannot hide rows an earlier slice in the same debounce window stored.
+    public var lastOffloadBankedRows = false
     /// #1164 — true when the strap reports banked records newer than our local HR frontier (the strap has
     /// data we haven't ingested yet), even when no offload is actively running. Set by BLEManager from the
     /// GET_DATA_RANGE newest vs. the collector's latest HR sample, with the same 5-min `behindGapSeconds`

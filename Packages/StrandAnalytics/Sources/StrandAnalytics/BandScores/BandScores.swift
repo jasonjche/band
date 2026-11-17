@@ -51,6 +51,13 @@ public enum BandScores {
         return sqrt(ss / Double(n - 1))
     }
 
+    /// Where tonight's overnight physiology came from. Defaults to `.imported` so existing
+    /// fixtures (every day one source) keep the EWMA path byte-identical.
+    public enum DaySource: String, Sendable, Equatable {
+        case imported
+        case strap
+    }
+
     /// One night of portable inputs. Clock minutes are local 0…1439.
     public struct DayInput: Sendable, Equatable {
         public var day: String
@@ -68,17 +75,20 @@ public enum BandScores {
         public var resp: Double?
         public var temp: Double?
         public var spo2: Double?
+        public var source: DaySource
 
         public init(day: String, energyKcal: Double? = nil, edwards: Double? = nil,
                     z45Min: Double? = nil, asleep: Double? = nil, inbed: Double? = nil,
                     napMin: Double? = nil, onsetMin: Int? = nil, wakeMin: Int? = nil,
                     naps: [NapSpan] = [], hrvMs: Double? = nil, rhr: Double? = nil,
-                    resp: Double? = nil, temp: Double? = nil, spo2: Double? = nil) {
+                    resp: Double? = nil, temp: Double? = nil, spo2: Double? = nil,
+                    source: DaySource = .imported) {
             self.day = day; self.energyKcal = energyKcal; self.edwards = edwards
             self.z45Min = z45Min; self.asleep = asleep; self.inbed = inbed
             self.napMin = napMin; self.onsetMin = onsetMin; self.wakeMin = wakeMin
             self.naps = naps; self.hrvMs = hrvMs; self.rhr = rhr
             self.resp = resp; self.temp = temp; self.spo2 = spo2
+            self.source = source
         }
     }
 
@@ -158,7 +168,14 @@ public enum BandScores {
         let temp = days.map { nan($0.temp) }
         let spo2 = days.map { nan($0.spo2) }
 
-        let hrvB = BandBaselines.run(x: hrvLn, config: params.baselines.hrvLn, minP: params.baselinesMinP)
+        // RHR / resp / temp / SpO2 stay on the existing EWMA/median path (switch_over.md:
+        // only HRV jumps source). HRV uses EWMA until the first source change, then the
+        // local-level Kalman with one-shot P inflation. No source change → bit-identical EWMA.
+        let hrvB = BandBaselines.run(
+            x: hrvLn, config: params.baselines.hrvLn, minP: params.baselinesMinP,
+            sources: days.map(\.source), kalman: params.hrvKalman,
+            mode: params.hrvBaselineMode
+        )
         let rhrB = BandBaselines.run(x: rhr, config: params.baselines.rhr, minP: params.baselinesMinP)
         let rrB = BandBaselines.run(x: resp, config: params.baselines.resp, minP: params.baselinesMinP)
         let tempB = BandBaselines.run(x: temp, config: params.baselines.temp, minP: params.baselinesMinP)

@@ -30,7 +30,6 @@ struct RootTabView: View {
     let homeScreenQuickActionsEnabled: Bool
 
     @EnvironmentObject private var repo: Repository
-    @EnvironmentObject private var model: AppModel
     /// Cross-screen navigation requests (e.g. Live → "Manage devices"). Devices isn't a tab — it lives
     /// behind the More list — so a request presents it as a sheet, matching the quick-action screens.
     @EnvironmentObject private var router: NavRouter
@@ -590,9 +589,9 @@ struct RootTabView: View {
             }
         }
         let personal = AppBrand.isPersonalBuild
-        let showMiBand = !personal || (model.deviceRegistry?.devices.contains {
-            $0.brand == ExperimentalBrand.miBand.displayBrand || $0.id == XiaomiImporter.deviceId
-        } == true)
+        // Band never lists the experimental Mi Band import. Not reading AppModel here keeps the tab
+        // shell from rebuilding every time the model publishes.
+        let showMiBand = !personal
         return List {
             Section {
                 row("Live", "waveform.path.ecg", .red, .live)
