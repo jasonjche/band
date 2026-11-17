@@ -18,6 +18,9 @@ struct NativeJournalView: View {
     @State private var nativeAnswers: [String: Bool] = [:]
     @State private var nativeNumeric: [String: Double] = [:]
     @State private var logging: Bool
+    @State private var draftYes: [String: Bool] = [:]
+    @State private var draftNumeric: [String: Double] = [:]
+    @State private var draftTime: [String: Date] = [:]
 
     init(startsLogging: Bool = false) {
         self.startsLogging = startsLogging
@@ -31,7 +34,10 @@ struct NativeJournalView: View {
     }
 
     private var notes: String? {
-        entries.first { $0.day == dayKey && $0.notes != nil && !($0.notes?.isEmpty ?? true) }?.notes
+        entries.compactMap { entry -> String? in
+            guard entry.day == dayKey else { return nil }
+            return NativeJournalNotes.decode(entry.notes).note
+        }.first { !$0.isEmpty }
     }
 
     private var items: [JournalCatalogItem] {
@@ -43,22 +49,14 @@ struct NativeJournalView: View {
     var body: some View {
         Group {
             if logging {
-                NativeJournalLogForm(
+                NativeJournalEditor(
                     items: items,
-                    answers: nativeAnswers,
-                    numeric: nativeNumeric,
-                    onToggle: { question, yes in
-                        Task {
-                            await repo.saveJournalAnswer(day: dayKey, question: question, answeredYes: yes)
-                            await reload()
-                        }
-                    },
-                    onNumeric: { question, value in
-                        Task {
-                            await repo.saveJournalNumeric(day: dayKey, question: question, value: value)
-                            await reload()
-                        }
-                    }
+                    day: selectedDay,
+                    answers: $draftYes,
+                    numeric: $draftNumeric,
+                    times: $draftTime,
+                    catalog: catalog,
+                    imported: importedQuestions
                 )
             } else {
                 journalBody
@@ -68,13 +66,23 @@ struct NativeJournalView: View {
         .modifier(NativeInlineTitle())
         .nativeDateSubtitle(selectedDay)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button(logging ? "Done" : (hasEntry ? "Edit" : "Log")) {
-                    logging.toggle()
+            if logging {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { logging = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { Task { await saveDraft() } }
+                }
+            } else {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(hasEntry ? "Edit" : "Log") { beginEditing() }
                 }
             }
         }
-        .task(id: dayKey) { await reload() }
+        .task(id: dayKey) {
+            await reload()
+            if logging { seedDraft() }
+        }
     }
 
     @ViewBuilder private var journalBody: some View {
@@ -129,9 +137,68 @@ struct NativeJournalView: View {
         #endif
     }
 
+    @State private var seededYes: [String: Bool] = [:]
+    @State private var seededNumeric: [String: Double] = [:]
+    @State private var seededTime: [String: Date] = [:]
+
     private func shiftDay(_ delta: Int) {
         guard let next = HomeDayNav.shift(from: selectedDay, delta: delta, firstDay: repo.days.first?.day) else { return }
         selectedDay = next
+    }
+
+    private func beginEditing() {
+        seedDraft()
+        logging = true
+    }
+
+    private func seedDraft() {
+        var yes: [String: Bool] = [:]
+        var qty: [String: Double] = [:]
+        var time: [String: Date] = [:]
+        for entry in entries where entry.day == dayKey {
+            yes[entry.question] = entry.answeredYes
+            if let value = entry.numericValue { qty[entry.question] = value }
+            if let minutes = NativeJournalNotes.decode(entry.notes).timeMinutes {
+                time[entry.question] = NativeJournalNotes.date(minutes: minutes, on: selectedDay)
+            }
+        }
+        for (question, value) in nativeAnswers where yes[question] == nil {
+            yes[question] = value
+        }
+        for (question, value) in nativeNumeric where qty[question] == nil {
+            qty[question] = value
+        }
+        draftYes = yes
+        draftNumeric = qty
+        draftTime = time
+        seededYes = yes
+        seededNumeric = qty
+        seededTime = time
+    }
+
+    private func saveDraft() async {
+        for item in items {
+            // Write only what the user changed, so an untouched row cannot overwrite an imported answer.
+            let key = item.canonical
+            if draftYes[key] == seededYes[key], draftNumeric[key] == seededNumeric[key],
+               draftTime[key] == seededTime[key] { continue }
+            let yes = draftYes[item.canonical] ?? false
+            let follow = NativeJournalFollowUp.forItem(item)
+            let notes = NativeJournalNotes.encode(
+                timeMinutes: yes && follow.hasTime
+                    ? draftTime[item.canonical].map { NativeJournalNotes.minutes(from: $0) }
+                    : nil,
+                note: nil
+            )
+            if yes, follow.hasQuantity {
+                let value = draftNumeric[item.canonical] ?? follow.defaultQuantity
+                await repo.saveJournalNumeric(day: dayKey, question: item.canonical, value: value, notes: notes)
+            } else {
+                await repo.saveJournalAnswer(day: dayKey, question: item.canonical, answeredYes: yes, notes: notes)
+            }
+        }
+        logging = false
+        await reload()
     }
 
     private func reload() async {
@@ -148,8 +215,14 @@ struct NativeJournalLogForm: View {
     var items: [JournalCatalogItem]
     var answers: [String: Bool]
     var numeric: [String: Double]
+    var times: [String: Date] = [:]
+    var day: Date = Date()
+    var showsQuestionEditor: Bool = false
+    var catalog: JournalCatalogStore? = nil
+    var imported: [String] = []
     var onToggle: (String, Bool) -> Void
     var onNumeric: (String, Double) -> Void
+    var onTime: (String, Date) -> Void = { _, _ in }
 
     var body: some View {
         Form {
@@ -170,6 +243,13 @@ struct NativeJournalLogForm: View {
                     }
                 }
             }
+            if showsQuestionEditor, let catalog {
+                Section {
+                    NavigationLink("Edit Questions") {
+                        NativeJournalQuestionsView(catalog: catalog, imported: imported)
+                    }
+                }
+            }
         }
         #if os(iOS)
         .scrollContentBackground(.hidden)
@@ -178,32 +258,26 @@ struct NativeJournalLogForm: View {
     }
 
     @ViewBuilder private func row(_ item: JournalCatalogItem) -> some View {
-        if item.kind.isNumeric {
-            HStack {
-                Text(verbatim: item.display)
-                Spacer()
-                Button {
-                    onNumeric(item.canonical, max(0, (numeric[item.canonical] ?? 0) - 1))
-                } label: {
-                    Image(systemName: "minus.circle")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Decrease")
-                Text(numericLabel(item))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .frame(minWidth: 44, alignment: .trailing)
-                Button {
-                    onNumeric(item.canonical, (numeric[item.canonical] ?? 0) + 1)
-                } label: {
-                    Image(systemName: "plus.circle")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Increase")
-            }
-        } else {
+        let follow = NativeJournalFollowUp.forItem(item)
+        let yes = answers[item.canonical] ?? false
+        Group {
             Toggle(isOn: boolBinding(item)) {
                 Text(verbatim: item.display)
+            }
+            if yes, follow.hasQuantity {
+                Stepper(value: numericBinding(item), in: 0...99, step: 1) {
+                    LabeledContent("Amount", value: numericLabel(item, follow: follow))
+                }
+            }
+            if yes, follow.hasTime {
+                DatePicker(
+                    "Last at",
+                    selection: timeBinding(item),
+                    displayedComponents: .hourAndMinute
+                )
+                #if os(macOS)
+                .datePickerStyle(.compact)
+                #endif
             }
         }
     }
@@ -215,10 +289,24 @@ struct NativeJournalLogForm: View {
         )
     }
 
-    private func numericLabel(_ item: JournalCatalogItem) -> String {
-        let value = numeric[item.canonical]
-        let number = value.map { $0.rounded() == $0 ? String(Int($0.rounded())) : String(format: "%g", $0) } ?? "0"
-        if let unit = item.kind.unitLabel, !unit.isEmpty {
+    private func numericBinding(_ item: JournalCatalogItem) -> Binding<Double> {
+        Binding(
+            get: { numeric[item.canonical] ?? NativeJournalFollowUp.forItem(item).defaultQuantity },
+            set: { onNumeric(item.canonical, $0) }
+        )
+    }
+
+    private func timeBinding(_ item: JournalCatalogItem) -> Binding<Date> {
+        Binding(
+            get: { times[item.canonical] ?? NativeJournalNotes.defaultTime(on: day) },
+            set: { onTime(item.canonical, $0) }
+        )
+    }
+
+    private func numericLabel(_ item: JournalCatalogItem, follow: NativeJournalFollowUp) -> String {
+        let value = numeric[item.canonical] ?? follow.defaultQuantity
+        let number = value.rounded() == value ? String(Int(value.rounded())) : String(format: "%g", value)
+        if let unit = follow.unitLabel, !unit.isEmpty {
             return "\(number) \(unit)"
         }
         return number
@@ -234,11 +322,18 @@ struct HomeJournalAnswer: Identifiable, Equatable {
         entries
             .filter { $0.day == day }
             .map { entry in
+                let detail = NativeJournalNotes.decode(entry.notes)
                 let value: String
                 if let numeric = entry.numericValue {
                     value = Self.format(numeric)
                 } else {
                     value = entry.answeredYes ? "Yes" : "No"
+                }
+                if entry.answeredYes, let minutes = detail.timeMinutes {
+                    return HomeJournalAnswer(
+                        question: entry.question,
+                        value: "\(value) · \(NativeJournalNotes.formatTime(minutes))"
+                    )
                 }
                 return HomeJournalAnswer(question: entry.question, value: value)
             }

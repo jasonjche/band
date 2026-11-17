@@ -99,24 +99,63 @@ struct NativeSleepNeedBars: View {
 struct NativeSleepConsistencyCard: View {
     var nights: [NativeSleepNight]
     var percent: Double?
+    var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
+    @State private var selectedKey: String?
+
+    private var selected: NativeSleepNight? {
+        guard let selectedKey else { return nil }
+        return nights.first { $0.key == selectedKey }
+    }
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
-                title: "Sleep Consistency",
-                symbol: "calendar",
-                tint: NativePaint.sleep(style)
+            header
+            hero
+                .frame(height: 76, alignment: .topLeading)
+            NativeSleepConsistencyChart(
+                nights: nights,
+                tint: NativePaint.sleep(style),
+                selectedKey: $selectedKey
             )
-            if let percent {
-                NativeHeroValue(
-                    caption: "Last night",
-                    value: "\(Int(percent.rounded()))",
-                    unit: "%"
-                )
-            }
-            NativeSleepConsistencyChart(nights: nights, tint: NativePaint.sleep(style))
-                .frame(height: 220)
+            .frame(height: 220)
+        }
+    }
+
+    @ViewBuilder private var header: some View {
+        let title = NativeCardHeader(
+            title: "Sleep Consistency",
+            symbol: "calendar",
+            tint: NativePaint.sleep(style),
+            chevron: onOpen != nil
+        )
+        if let onOpen {
+            Button(action: onOpen) { title }
+                .buttonStyle(.plain)
+        } else {
+            title
+        }
+    }
+
+    @ViewBuilder private var hero: some View {
+        if let selected {
+            NativeHeroValue(
+                caption: NativeChartDay.longLabel(selected.key),
+                value: NativeSleepClock.clock(selected.bedtime),
+                date: NativeSleepClock.clock(selected.wake)
+            )
+        } else if let percent {
+            NativeHeroValue(
+                caption: "Last night",
+                value: "\(Int(percent.rounded()))",
+                unit: "%"
+            )
+        } else if let last = nights.last {
+            NativeHeroValue(
+                caption: NativeChartDay.longLabel(last.key),
+                value: NativeSleepClock.clock(last.bedtime),
+                date: NativeSleepClock.clock(last.wake)
+            )
         }
     }
 }
@@ -124,13 +163,15 @@ struct NativeSleepConsistencyCard: View {
 struct NativeSleepConsistencyChart: View {
     var nights: [NativeSleepNight]
     var tint: Color
+    var selectedKey: Binding<String?>? = nil
     @Environment(\.nativeStyle) private var style
 
     private var avgBed: Double? { NativeSleepConsistency.averageBed(nights) }
     private var avgWake: Double? { NativeSleepConsistency.averageWake(nights) }
+    private var selected: String? { selectedKey?.wrappedValue }
 
     var body: some View {
-        Chart {
+        let chart = Chart {
             ForEach(nights) { night in
                 BarMark(
                     x: .value("Day", night.key),
@@ -138,7 +179,7 @@ struct NativeSleepConsistencyChart: View {
                     yEnd: .value("Bed", NativeSleepClock.plotY(night.bedFromEvening)),
                     width: 14
                 )
-                .foregroundStyle(night.isToday ? tint : Color.secondary.opacity(0.45))
+                .foregroundStyle(night.key == selected || (selected == nil && night.isToday) ? tint : Color.secondary.opacity(0.45))
                 .clipShape(Capsule())
                 .accessibilityLabel(NativeChartDay.longLabel(night.key))
                 .accessibilityValue("\(NativeSleepClock.clock(night.bedtime)) to \(NativeSleepClock.clock(night.wake))")
@@ -154,6 +195,11 @@ struct NativeSleepConsistencyChart: View {
                     .foregroundStyle(Color.secondary)
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [6, 4]))
                     .accessibilityLabel("Average wake")
+            }
+            if let selected {
+                RuleMark(x: .value("Day", selected))
+                    .foregroundStyle(Color.secondary)
+                    .lineStyle(StrokeStyle(lineWidth: 1))
             }
         }
         .chartYScale(domain: NativeSleepClock.plotY(1140)...NativeSleepClock.plotY(180))
@@ -184,6 +230,12 @@ struct NativeSleepConsistencyChart: View {
             }
         }
         .accessibilityLabel("Sleep consistency, last \(nights.count) nights")
+
+        if #available(iOS 17.0, macOS 14.0, *), let selectedKey {
+            chart.chartXSelection(value: selectedKey)
+        } else {
+            chart
+        }
     }
 }
 
@@ -327,32 +379,50 @@ struct NativeSleepDualLineCard: View {
     var slept: [NativeDayPoint]
     var needed: [NativeDayPoint]
     var highlightKey: String?
+    var typical: ClosedRange<Double>? = nil
+    var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
 
     private var knownSlept: [NativeDayPoint] { slept.filter { $0.value.isFinite } }
     private var knownNeeded: [NativeDayPoint] { needed.filter { $0.value.isFinite } }
     private var yDomain: ClosedRange<Double> {
         NativeChartDay.fittedDomain(
-            (knownSlept + knownNeeded).map(\.value),
+            (knownSlept + knownNeeded).map(\.value) + typicalBounds,
             fallback: 0...480
         )
     }
 
+    private var typicalBounds: [Double] {
+        guard let typical else { return [] }
+        return [typical.lowerBound, typical.upperBound]
+    }
+
     var body: some View {
         NativeChrome.panel {
-            HStack(spacing: 6) {
-                Image(systemName: "clock.fill")
-                    .foregroundStyle(NativePaint.sleep(style))
-                Text(title)
-                    .foregroundStyle(NativePaint.sleep(style))
-                Spacer(minLength: 8)
-                NativeSleepSeriesKey(color: NativeTokens.sleep, name: "Hours of Sleep")
-                NativeSleepSeriesKey(color: Color.secondary, name: "Sleep Needed")
-            }
-            .font(.footnote.weight(.semibold))
+            header
             hero
             plot.frame(height: 200)
         }
+    }
+
+    @ViewBuilder private var header: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock.fill")
+                .foregroundStyle(NativePaint.sleep(style))
+            Text(title)
+                .foregroundStyle(NativePaint.sleep(style))
+            Spacer(minLength: 8)
+            NativeSleepSeriesKey(color: NativeTokens.sleep, name: "Hours of Sleep")
+            NativeSleepSeriesKey(color: Color.secondary, name: "Sleep Needed")
+            if onOpen != nil {
+                Image(systemName: "chevron.forward")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.footnote.weight(.semibold))
+        .contentShape(Rectangle())
+        .onTapGesture { onOpen?() }
     }
 
     @ViewBuilder private var hero: some View {
@@ -372,6 +442,15 @@ struct NativeSleepDualLineCard: View {
                 BarMark(x: .value("Day", point.key), y: .value("Slot", 0))
                     .foregroundStyle(Color.clear)
                     .accessibilityHidden(true)
+                if let typical {
+                    BarMark(
+                        x: .value("Day", point.key),
+                        yStart: .value("Typical lo", typical.lowerBound),
+                        yEnd: .value("Typical hi", typical.upperBound)
+                    )
+                    .foregroundStyle(NativeTokens.sleep.opacity(0.14))
+                    .accessibilityHidden(true)
+                }
             }
             ForEach(NativeChartDay.linePoints(slept)) { point in
                 LineMark(
@@ -464,6 +543,7 @@ private struct NativeSleepVertex: View {
 struct NativeSleepTimeInBedWeekCard: View {
     var points: [NativeDayPoint]
     var highlightKey: String?
+    var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
 
     private var known: [NativeDayPoint] {
@@ -472,11 +552,18 @@ struct NativeSleepTimeInBedWeekCard: View {
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
+            let header = NativeCardHeader(
                 title: "Time in Bed",
                 symbol: "bed.double.fill",
-                tint: NativePaint.sleep(style)
+                tint: NativePaint.sleep(style),
+                chevron: onOpen != nil
             )
+            if let onOpen {
+                Button(action: onOpen) { header }
+                    .buttonStyle(.plain)
+            } else {
+                header
+            }
             hero
             plot.frame(height: 200)
         }
@@ -561,6 +648,8 @@ enum NativeSleepGallery {
             Section(name: "sleep-stress-card", padded: true, view: AnyView(stress)),
             Section(name: "sleep-week-hours-needed", padded: true, view: AnyView(weekHours)),
             Section(name: "sleep-week-time-in-bed", padded: true, view: AnyView(weekInBed)),
+            Section(name: "sleep-last-night", padded: true, view: AnyView(lastNight)),
+            Section(name: "sleep-stage-detail", padded: true, view: AnyView(stageDetail)),
         ]
     }
 
@@ -595,7 +684,8 @@ enum NativeSleepGallery {
                                              totalSleepMin: $0.totalSleepMin)
             },
             needed: NativeSleepSnapshot.pageDetail.hoursNeededWeek,
-            highlightKey: NativeSleepSnapshot.highlightKey
+            highlightKey: NativeSleepSnapshot.highlightKey,
+            typical: NativeSleepSnapshot.pageDetail.hoursTypical
         )
     }
 
@@ -603,6 +693,32 @@ enum NativeSleepGallery {
         NativeSleepTimeInBedWeekCard(
             points: NativeSleepSnapshot.pageDetail.timeInBedWeek,
             highlightKey: NativeSleepSnapshot.highlightKey
+        )
+    }
+
+    private static var lastNight: some View {
+        NativeLastNightCard(
+            asleepMinutes: 410,
+            stages: NativeSleepSnapshot.stages,
+            sleepStart: NativeSleepSnapshot.sleepStart,
+            sleepEnd: NativeSleepSnapshot.sleepEnd,
+            awakeTypical: 45,
+            needMinutes: 465,
+            debtMinutes: 36,
+            spans: NativeSleepSnapshot.hypnogram
+        )
+    }
+
+    private static var stageDetail: some View {
+        let detail = NativeSleepSnapshot.stageDetails.first { $0.kind == .deep }
+            ?? NativeSleepSnapshot.stageDetails[0]
+        return NativeSleepStageDetailView(
+            detail: detail,
+            spans: NativeSleepSnapshot.hypnogram,
+            nightStart: NativeSleepSnapshot.sleepStart,
+            nightEnd: NativeSleepSnapshot.sleepEnd,
+            dayKey: NativeSleepSnapshot.highlightKey,
+            scrolls: false
         )
     }
 }

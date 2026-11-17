@@ -5,8 +5,11 @@ import XCTest
 /// for when the flag is off.
 final class OffloadTriggerPolicyTests: XCTestCase {
 
-    func testPolicyOnDropsStrapEvents() {
-        XCTAssertFalse(OffloadTriggerPolicy.shouldRequest(trigger: .strap, policyEnabled: true))
+    func testPolicyOnHoldsStrapEventsToAFifteenMinuteFloor() {
+        XCTAssertFalse(OffloadTriggerPolicy.shouldRequest(trigger: .strap, policyEnabled: true, secondsSinceLast: 120))
+        XCTAssertFalse(OffloadTriggerPolicy.shouldRequest(trigger: .strap, policyEnabled: true, secondsSinceLast: 899))
+        XCTAssertTrue(OffloadTriggerPolicy.shouldRequest(trigger: .strap, policyEnabled: true, secondsSinceLast: 900))
+        XCTAssertTrue(OffloadTriggerPolicy.shouldRequest(trigger: .strap, policyEnabled: true, secondsSinceLast: nil))
     }
 
     func testPolicyOnKeepsConnectForegroundPeriodicManualAndAutoContinue() {

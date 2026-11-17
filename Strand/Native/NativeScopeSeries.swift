@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import StrandAnalytics
 import StrandDesign
 
 /// D / W / M / 6M on Native metric pages. `Y` exists only for cheap monthly rollups.
@@ -79,11 +80,50 @@ struct NativeScopeBucket: Identifiable, Equatable {
 struct NativeScopeTrend: Equatable {
     var currentMean: Double
     var previousMean: Double
+    var percentChange: Double
     var delta: NativeScore.Delta
     var minValue: Double
     var minDate: Date
     var maxValue: Double
     var maxDate: Date
+}
+
+/// Trailing personal typical band: `Baselines.rollingMeanSD` ± `VitalBands.sigmaK` σ.
+/// Hidden below `Baselines.minNightsTrust` (14) valid days. Same helper Health Monitor uses.
+enum NativeTypicalRange {
+    static let minDays = Baselines.minNightsTrust
+    static let window = 30
+
+    static func cfg(for key: String) -> MetricCfg? {
+        switch key {
+        case "hrv": return Baselines.hrvCfg
+        case "rhr", "resting_hr": return Baselines.restingHRCfg
+        case "resp_rate": return Baselines.respCfg
+        default: return nil
+        }
+    }
+
+    static func band(values: [Double?], cfg: MetricCfg? = nil) -> ClosedRange<Double>? {
+        let used = cfg ?? MetricCfg(
+            minVal: -1e12, maxVal: 1e12, floorSpread: 1e-6, halfLifeB: 14, halfLifeS: 21
+        )
+        let state = Baselines.rollingMeanSD(values, cfg: used, window: window)
+        guard state.nValid >= minDays else { return nil }
+        let sig = Baselines.sigma(state)
+        let lo = state.baseline - VitalBands.sigmaK * sig
+        let hi = state.baseline + VitalBands.sigmaK * sig
+        guard lo.isFinite, hi.isFinite else { return nil }
+        return min(lo, hi)...max(lo, hi)
+    }
+
+    static func caption(range: ClosedRange<Double>, format: (Double) -> String, unit: String?) -> String {
+        let low = format(range.lowerBound)
+        let high = format(range.upperBound)
+        if let unit, !unit.isEmpty {
+            return "Typical range \(low)–\(high) \(unit)"
+        }
+        return "Typical range \(low)–\(high)"
+    }
 }
 
 /// Apple Health-style scope aggregation. One pure entry point; views never fold series in `body`.
@@ -92,8 +132,17 @@ struct NativeScopeSeries: Equatable {
     var kind: NativeScopeKind
     var buckets: [NativeScopeBucket]
     var caption: String
+    var typical: ClosedRange<Double>? = nil
 
     static let empty = NativeScopeSeries(scope: .week, kind: .rate, buckets: [], caption: "Average")
+
+    /// Horizontal average / trend line on W / M / 6M / Y. Day is a single slot.
+    var showsTrendLine: Bool {
+        switch scope {
+        case .week, .month, .sixMonths, .year: return true
+        case .day: return false
+        }
+    }
 
     var points: [NativeDayPoint] { buckets.map(\.point) }
 
@@ -110,7 +159,8 @@ struct NativeScopeSeries: Equatable {
         kind: NativeScopeKind,
         calendar: Calendar = .current,
         now: Date = Date(),
-        ending: Date? = nil
+        ending: Date? = nil,
+        cfg: MetricCfg? = nil
     ) -> NativeScopeSeries {
         let parsed: [(date: Date, value: Double, low: Double?, high: Double?)] = points.compactMap { point in
             guard let date = date(from: point.key, calendar: calendar) else { return nil }
@@ -119,8 +169,15 @@ struct NativeScopeSeries: Equatable {
         }.sorted { $0.date < $1.date }
 
         let finite = parsed.filter { $0.value.isFinite }
+        let typical = NativeTypicalRange.band(
+            values: parsed.map { $0.value.isFinite ? $0.value : nil },
+            cfg: cfg
+        )
         guard let first = finite.first?.date else {
-            return NativeScopeSeries(scope: scope, kind: kind, buckets: [], caption: caption(scope: scope, kind: kind))
+            return NativeScopeSeries(
+                scope: scope, kind: kind, buckets: [],
+                caption: caption(scope: scope, kind: kind), typical: typical
+            )
         }
         let today = calendar.startOfDay(for: now)
         let last = calendar.startOfDay(for: ending ?? finite.last?.date ?? today)
@@ -143,7 +200,8 @@ struct NativeScopeSeries: Equatable {
             scope: scope,
             kind: kind,
             buckets: buckets,
-            caption: caption(scope: scope, kind: kind)
+            caption: caption(scope: scope, kind: kind),
+            typical: typical
         )
     }
 
@@ -201,9 +259,11 @@ struct NativeScopeSeries: Equatable {
         guard let minPair = withValues.min(by: { $0.0 < $1.0 }),
               let maxPair = withValues.max(by: { $0.0 < $1.0 }) else { return nil }
 
+        let denom = max(abs(previousMean), 1e-9)
         return NativeScopeTrend(
             currentMean: current,
             previousMean: previousMean,
+            percentChange: (current - previousMean) / denom,
             delta: NativeMetricDirection.delta(
                 current: current, previous: previousMean, higherIsBetter: higherIsBetter
             ),
@@ -212,6 +272,24 @@ struct NativeScopeSeries: Equatable {
             maxValue: maxPair.0,
             maxDate: maxPair.1
         )
+    }
+
+    func priorPeriodName() -> String {
+        switch scope {
+        case .day: return "vs. prior day"
+        case .week: return "vs. prior week"
+        case .month: return "vs. prior month"
+        case .sixMonths: return "vs. prior 6 months"
+        case .year: return "vs. prior year"
+        }
+    }
+
+    func periodDeltaCaption(of window: [NativeScopeBucket], higherIsBetter: Bool?) -> String? {
+        guard showsTrendLine, let trend = trend(visible: window, higherIsBetter: higherIsBetter) else {
+            return nil
+        }
+        let percent = Int((abs(trend.percentChange) * 100).rounded())
+        return "\(percent)% \(priorPeriodName())"
     }
 
     func heroDateText(of window: [NativeScopeBucket], calendar: Calendar) -> String? {

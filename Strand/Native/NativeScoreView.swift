@@ -186,9 +186,10 @@ struct NativeScorePage: View {
 
     private func buildSleepDetail() -> NativeSleepPageDetail? {
         guard kind == .sleep else { return nil }
+        let parsed = nightSession.map { repo.parsedStages(for: $0) } ?? []
         return NativeSleepPageDetail.make(
             dayKey: dayKey, days: repo.days, sleeps: repo.sleeps, workouts: workouts,
-            importedSleep: repo.importedSleep, stress: sleepStress
+            importedSleep: repo.importedSleep, stress: sleepStress, parsedStages: parsed
         )
     }
 }
@@ -237,6 +238,32 @@ struct NativeScoreView: View {
         }
         .navigationTitle(score.name)
         .modifier(NativeInlineTitle())
+        .navigationDestination(for: NativeScoreMetricRoute.self) { route in
+            NativeMetricPage(key: route.key)
+        }
+        .navigationDestination(for: NativeSleepStageRoute.self) { route in
+            NativeSleepStageDetailView(
+                detail: stageDetail(for: route.kind),
+                spans: sleepDetail?.hypnogram ?? [],
+                nightStart: sleepStart,
+                nightEnd: sleepEnd,
+                dayKey: dayKey
+            )
+        }
+        .navigationDestination(for: NativeScoreTrendRoute.self) { route in
+            if let card = weekCards.first(where: { $0.title == route.title }) {
+                NativeScoreTrendPage(
+                    card: card,
+                    dayKey: dayKey,
+                    format: { weekLabel(card, $0) },
+                    axisFormat: { weekAxisLabel(card, $0) },
+                    unit: weekUnit(card),
+                    symbol: weekSymbol(card),
+                    tint: weekTint(card),
+                    color: card.band ? weekBand : nil
+                )
+            }
+        }
     }
 
     @Environment(\.nativeStyle) private var style
@@ -269,17 +296,22 @@ struct NativeScoreView: View {
                             Divider().padding(.leading, 34)
                         }
                         Button {
-                            path.wrappedValue.append(row.route)
+                            openRow(row)
                         } label: {
-                            NativeContributorRow(
-                                symbol: row.symbol,
-                                title: row.title,
-                                value: row.value,
-                                prior: NativeScoreMath.hasValue(row.prior) ? row.prior : nil,
-                                delta: row.delta,
-                                tint: contributorTint(row),
-                                valueTint: valueTint(row)
-                            )
+                            HStack(spacing: 8) {
+                                NativeContributorRow(
+                                    symbol: row.symbol,
+                                    title: row.title,
+                                    value: row.value,
+                                    prior: NativeScoreMath.hasValue(row.prior) ? row.prior : nil,
+                                    delta: row.delta,
+                                    tint: contributorTint(row),
+                                    valueTint: valueTint(row)
+                                )
+                                Image(systemName: "chevron.forward")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -303,7 +335,9 @@ struct NativeScoreView: View {
                 awakeTypical: awakeTypical,
                 needMinutes: needMinutes,
                 debtMinutes: debtMinutes,
-                onEdit: onEditSleep
+                onEdit: onEditSleep,
+                spans: sleepDetail?.hypnogram ?? [],
+                onStage: { path.wrappedValue.append(NativeSleepStageRoute(kind: $0)) }
             )
         }
         if kind == .sleep, !overnightHr.isEmpty {
@@ -470,10 +504,16 @@ struct NativeScoreView: View {
                 title: card.title,
                 slept: card.points,
                 needed: detail.hoursNeededWeek,
-                highlightKey: dayKey
+                highlightKey: dayKey,
+                typical: detail.hoursTypical,
+                onOpen: { openCard(card) }
             )
         } else if kind == .sleep, card.title == "Time in Bed" {
-            NativeSleepTimeInBedWeekCard(points: card.points, highlightKey: dayKey)
+            NativeSleepTimeInBedWeekCard(
+                points: card.points,
+                highlightKey: dayKey,
+                onOpen: { openCard(card) }
+            )
         } else {
             weekChartCard(card)
         }
@@ -481,13 +521,16 @@ struct NativeScoreView: View {
 
     @ViewBuilder private func weekChartCard(_ card: NativeWeek.Card) -> some View {
         let tint = weekTint(card)
-        let body = NativeChrome.panel {
-            NativeCardHeader(
-                title: card.title,
-                symbol: weekSymbol(card),
-                tint: tint,
-                chevron: card.route != nil
-            )
+        NativeChrome.panel {
+            Button { openCard(card) } label: {
+                NativeCardHeader(
+                    title: card.title,
+                    symbol: weekSymbol(card),
+                    tint: tint,
+                    chevron: true
+                )
+            }
+            .buttonStyle(.plain)
             NativeChartBlock(
                 points: card.points,
                 bars: card.bars,
@@ -505,12 +548,76 @@ struct NativeScoreView: View {
                 stacks: card.stacks
             )
         }
-        if let route = card.route {
-            Button { path.wrappedValue.append(route) } label: { body }
-                .buttonStyle(.plain)
-        } else {
-            body
+    }
+
+    private func openRow(_ row: NativeScore.Row) {
+        if case .metric(let key) = row.route {
+            path.wrappedValue.append(NativeScoreMetricRoute(key: key))
+            return
         }
+        path.wrappedValue.append(row.route)
+    }
+
+    private func openCard(_ card: NativeWeek.Card) {
+        switch card.title {
+        case "Hours of Sleep", "Time in Bed", "Heart Rate Zones 1–3", "Heart Rate Zones 4–5",
+             "Strength Activity Time", "Restorative Sleep":
+            path.wrappedValue.append(NativeScoreTrendRoute(title: card.title))
+        case "Sleep Stress":
+            path.wrappedValue.append(TabRoute.stress)
+        case "Sleep Debt":
+            path.wrappedValue.append(NativeScoreMetricRoute(key: "sleep_debt_min"))
+        default:
+            if let route = card.route, case .metric(let key) = route {
+                path.wrappedValue.append(NativeScoreMetricRoute(key: key))
+            } else if let key = metricKey(for: card.title) {
+                path.wrappedValue.append(NativeScoreMetricRoute(key: key))
+            } else if let route = card.route {
+                path.wrappedValue.append(route)
+            } else {
+                path.wrappedValue.append(NativeScoreTrendRoute(title: card.title))
+            }
+        }
+    }
+
+    private func metricKey(for title: String) -> String? {
+        switch title {
+        case "Sleep Performance": return "sleep_performance"
+        case "Sleep Efficiency": return "sleep_efficiency"
+        case "Hours vs. Needed", "Hours vs. Needed %": return "hours_vs_needed_pct"
+        case "Sleep Consistency": return "sleep_consistency"
+        case "Heart Rate Variability": return "hrv"
+        case "Resting Heart Rate": return "resting_hr"
+        case "Respiratory Rate": return "resp_rate"
+        case "Recovery": return "recovery"
+        case "Strain": return "strain"
+        case "Steps": return "steps"
+        case "Calories": return "energy_kcal"
+        case "Blood Oxygen": return "spo2"
+        case "Skin Temperature": return "skin_temp"
+        default: return nil
+        }
+    }
+
+    private func stageDetail(for kind: NativeSleepStageKind) -> NativeSleepStageDetail {
+        if let existing = sleepDetail?.stageDetails.first(where: { $0.kind == kind }) {
+            return existing
+        }
+        let stage = stages.first { NativeSleepStageKind.parse($0.name) == kind }
+        let inBed = NativeDayLogic.inBedMinutes(start: sleepStart, end: sleepEnd)
+            ?? stages.compactMap(\.minutes).reduce(0, +)
+        let minutes = stage?.minutes
+        let percent: Double? = {
+            guard let minutes, inBed > 0 else { return nil }
+            return NativeSleepHypnogramMath.share(minutes: minutes, inBed: inBed) * 100
+        }()
+        return NativeSleepStageDetail(
+            kind: kind,
+            minutes: minutes,
+            percent: percent,
+            typical: stage?.typical,
+            trend: []
+        )
     }
 
     @ViewBuilder private var sleepDetailCards: some View {
@@ -523,7 +630,8 @@ struct NativeScoreView: View {
                 nights: nights,
                 percent: NativeScoreMath.percentValue(
                     score.rows.first { $0.title == "Sleep Consistency" }?.value ?? ""
-                )
+                ),
+                onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "sleep_consistency")) }
             )
         }
         if let efficiency = sleepDetail?.efficiency {
@@ -612,6 +720,8 @@ struct NativeLastNightCard: View {
     var needMinutes: Double? = nil
     var debtMinutes: Double? = nil
     var onEdit: (() -> Void)? = nil
+    var spans: [NativeSleepStageSpan] = []
+    var onStage: ((NativeSleepStageKind) -> Void)? = nil
     @Environment(\.nativeStyle) private var style
 
     private var inBedMinutes: Double? {
@@ -666,6 +776,7 @@ struct NativeLastNightCard: View {
                     }
                 }
             }
+            hypnogram
             appleStages
         }
     }
@@ -696,6 +807,7 @@ struct NativeLastNightCard: View {
                 }
                 Spacer(minLength: 0)
             }
+            hypnogram
             if !lastNightStages.isEmpty {
                 HStack {
                     if drawsTypicalRange {
@@ -714,10 +826,7 @@ struct NativeLastNightCard: View {
                             .font(NativeTokens.whoopNumber(15, weight: .semibold))
                     }
                 }
-                let total = max(lastNightStages.compactMap(\.minutes).reduce(0, +), 1)
-                ForEach(lastNightStages) { stage in
-                    NativeWhoopStageRow(stage: stage, total: total)
-                }
+                stageRows
             }
         }
     }
@@ -754,9 +863,22 @@ struct NativeLastNightCard: View {
         lastNightStages.contains { ($0.typical ?? 0) > 0 }
     }
 
+    private var stageScale: Double {
+        max(inBedMinutes ?? lastNightStages.compactMap(\.minutes).reduce(0, +), 1)
+    }
+
+    @ViewBuilder private var hypnogram: some View {
+        if !spans.isEmpty, let sleepStart, let sleepEnd, sleepEnd > sleepStart {
+            NativeSleepHypnogram(
+                spans: spans,
+                nightStart: sleepStart,
+                nightEnd: sleepEnd
+            )
+        }
+    }
+
     @ViewBuilder private var appleStages: some View {
         if !lastNightStages.isEmpty {
-            let total = max(lastNightStages.compactMap(\.minutes).reduce(0, +), 1)
             HStack {
                 if drawsTypicalRange {
                     Text("Typical range")
@@ -771,8 +893,28 @@ struct NativeLastNightCard: View {
                         .monospacedDigit()
                 }
             }
-            ForEach(lastNightStages) { stage in
-                NativeWhoopStageRow(stage: stage, total: total)
+            stageRows
+        }
+    }
+
+    @ViewBuilder private var stageRows: some View {
+        let scale = stageScale
+        ForEach(lastNightStages) { stage in
+            let kind = NativeSleepStageKind.parse(stage.name)
+            let minutes = stage.minutes ?? 0
+            let row = NativeSleepStageRow(
+                kind: kind,
+                minutes: minutes,
+                percent: NativeSleepHypnogramMath.share(minutes: minutes, inBed: scale) * 100,
+                typical: stage.typical,
+                scale: scale,
+                chevron: onStage != nil
+            )
+            if let onStage {
+                Button { onStage(kind) } label: { row }
+                    .buttonStyle(.plain)
+            } else {
+                row
             }
         }
     }

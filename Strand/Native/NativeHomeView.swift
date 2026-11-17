@@ -101,9 +101,12 @@ struct NativeHomeView: View {
     @State private var weekStrain: [NativeDayPoint] = []
     @State private var dashboardItems: [HomeMetricItem] = []
     @State private var addingActivity = false
+    @State private var editingDashboard = false
+    @State private var sleepStreak = 0
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @AppStorage("behavior.smartAlarmEnabled") private var smartAlarmEnabled = false
     @AppStorage("behavior.smartAlarmMinutes") private var smartAlarmMinutes = 7 * 60
+    @AppStorage(HomeDashboardStore.key) private var dashboardJSON = ""
 
     private var selectedDay: Date {
         get { NativeDaySelection.date(from: selectedDayKey) }
@@ -119,39 +122,44 @@ struct NativeHomeView: View {
     }
 
     var body: some View {
-        NativeChrome.screen {
-            #if os(iOS)
-            HomeDateStepper(
-                title: HomeDayTitle.text(for: selectedDay),
-                canGoBack: canGoBack,
-                canGoForward: canGoForward,
-                onBack: { shiftDay(-1) },
-                onForward: { shiftDay(1) }
-            )
-            .frame(maxWidth: .infinity)
-            .overlay(alignment: .trailing) { HomeStrapStatus() }
-            #endif
-            if !repo.loaded {
-                HomeLoadingSkeleton()
-            } else if storeEmpty {
-                NativeNoDataCard(
-                    onImport: { path.wrappedValue.append(TabRoute.dataSources) },
-                    onPair: { path.wrappedValue.append(NativePairRoute()) }
+        ScrollView {
+            NativeChrome.stack {
+                #if os(iOS)
+                HomeDateStepper(
+                    title: HomeDayTitle.text(for: selectedDay),
+                    canGoBack: canGoBack,
+                    canGoForward: canGoForward,
+                    onBack: { shiftDay(-1) },
+                    onForward: { shiftDay(1) }
                 )
-            } else if let model = dayModel {
-                homeContent(model)
-            } else {
-                HomeLoadingSkeleton()
+                .frame(maxWidth: .infinity)
+                .overlay(alignment: .trailing) { HomeStrapStatus() }
+                #endif
+                if !repo.loaded {
+                    HomeLoadingSkeleton()
+                } else if storeEmpty {
+                    NativeNoDataCard(
+                        onImport: { path.wrappedValue.append(TabRoute.dataSources) },
+                        onPair: { path.wrappedValue.append(NativePairRoute()) }
+                    )
+                } else if let model = dayModel {
+                    homeContent(model)
+                } else {
+                    HomeLoadingSkeleton()
+                }
             }
+            .padding(.bottom, 136)
         }
+        .background(NativePageFill().ignoresSafeArea())
+        .refreshable { await NativeHomeSync.pull(ble: ble, repo: repo, reload: reload) }
         .navigationTitle("Home")
         .environment(\.nativeSelectedDay, selectedDay)
         .nativeStyleBridge()
-        .refreshable { await NativeHomeSync.pull(ble: ble, repo: repo, reload: reload) }
         .task(id: "\(repo.refreshSeq)-\(selectedKey)") { await reload() }
         .onChange(of: effortScaleRaw) { _ in rebuildModel() }
         .onChange(of: smartAlarmEnabled) { _ in rebuildModel() }
         .onChange(of: smartAlarmMinutes) { _ in rebuildModel() }
+        .onChange(of: dashboardJSON) { _ in rebuildModel() }
         .navigationDestination(for: NativePairRoute.self) { _ in
             DevicesView()
         }
@@ -161,7 +169,19 @@ struct NativeHomeView: View {
         .sheet(isPresented: $addingActivity) {
             HomeAddActivitySheet { await reload() }
         }
+        .sheet(isPresented: $editingDashboard) {
+            HomeDashboardEditor(selectedIds: HomeDashboardStore.decode(dashboardJSON)) { ids in
+                let encoded = HomeDashboardStore.encode(ids)
+                HomeDashboardStore.save(ids)
+                dashboardJSON = encoded
+            }
+        }
         .toolbar {
+            if sleepStreak >= 2 {
+                ToolbarItem(placement: streakPlacement) {
+                    HomeStreakBadge(count: sleepStreak)
+                }
+            }
             #if os(macOS)
             ToolbarItem(placement: .principal) {
                 HomeDateStepper(
@@ -172,9 +192,20 @@ struct NativeHomeView: View {
                     onForward: { shiftDay(1) }
                 )
             }
+            ToolbarItem(placement: .automatic) {
+                HomeStrapStatus()
+            }
             #endif
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private var streakPlacement: ToolbarItemPlacement {
+        #if os(iOS)
+        .navigationBarLeading
+        #else
+        .navigation
+        #endif
     }
 
     private var canGoBack: Bool {
@@ -252,8 +283,19 @@ struct NativeHomeView: View {
             effortScale: scale,
             sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
         )
+        sleepStreak = HomeSleepStreak.days(
+            sleeps: repo.sleeps,
+            imported: repo.importedSleep,
+            todayKey: NativeDayLogic.logicalToday()
+        )
         dashboardItems = HomeMetricItem.make(
-            dashboard: model.dashboard, days: repo.days, todayKey: selectedKey, vo2max: vo2max
+            dashboard: model.dashboard,
+            days: repo.days,
+            todayKey: selectedKey,
+            vo2max: vo2max,
+            model: model,
+            stress: stressLevel,
+            ids: HomeDashboardStore.decode(dashboardJSON)
         )
     }
 
@@ -323,16 +365,24 @@ struct NativeHomeView: View {
             onOpen: { path.wrappedValue.append(TabRoute.journal) },
             onLog: { path.wrappedValue.append(TabRoute.journalLog) }
         )
-        if !dashboardItems.isEmpty {
+        HStack(alignment: .firstTextBaseline) {
             NativeChrome.section("My Dashboard")
-            ForEach(dashboardItems) { item in
-                Button {
-                    path.wrappedValue.append(item.route)
-                } label: {
-                    HomeMetricCard(item: item)
-                }
+            Spacer(minLength: 8)
+            Button("Edit") { editingDashboard = true }
+                .font(.body)
+                .foregroundStyle(Color.accentColor)
                 .buttonStyle(.plain)
+                .padding(.top, 18)
+                .padding(.bottom, 8)
+                .accessibilityLabel("Edit Dashboard")
+        }
+        ForEach(dashboardItems) { item in
+            Button {
+                path.wrappedValue.append(item.route)
+            } label: {
+                HomeMetricCard(item: item)
             }
+            .buttonStyle(.plain)
         }
         HomeStressMonitorCard(
             level: stressLevel,
@@ -759,14 +809,74 @@ private struct HomeActivityRow: View {
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
-        NativeActivityRow(
-            symbol: item.symbol,
-            tint: item.kind == .sleep ? NativePaint.sleep(style) : NativePaint.strain(style),
-            title: item.title,
-            trailing: item.trailing,
-            startClock: item.startClock,
-            endClock: item.endClock
-        )
+        let tint = item.kind == .sleep ? NativePaint.sleep(style) : NativePaint.strain(style)
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: item.symbol)
+                    .font(.body.weight(.semibold))
+                    .frame(width: HomeActivityLayout.iconWidth, alignment: .center)
+                Text(item.trailing)
+                    .font(style == .whoop
+                          ? NativeTokens.whoopNumber(17, weight: .bold)
+                          : StrandFont.rounded(17, weight: .semibold))
+                    .monospacedDigit()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .minimumScaleFactor(0.7)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, HomeActivityLayout.paddingH)
+            .padding(.vertical, HomeActivityLayout.paddingV)
+            .frame(width: HomeActivityLayout.pillWidth)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(tint)
+            )
+
+            Text(item.title.uppercased())
+                .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
+                .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+            Spacer(minLength: 6)
+
+            if !item.startClock.isEmpty || !item.endClock.isEmpty {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(item.startClock)
+                    Text(item.endClock)
+                }
+                .font(style == .whoop ? NativeTokens.whoopCaps(10) : .caption2)
+                .foregroundStyle(style == .whoop ? NativeTokens.whoopLabel : Color.secondary)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                .frame(minWidth: 52, alignment: .trailing)
+            }
+
+            Capsule()
+                .fill(tint)
+                .frame(width: 3, height: 28)
+        }
+        .frame(minHeight: 52)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.title), \(item.trailing), \(item.startClock) \(item.endClock)")
+    }
+}
+
+struct HomeStreakBadge: View {
+    var count: Int
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "flame.fill")
+            Text("\(count)")
+                .font(.body.weight(.semibold))
+                .monospacedDigit()
+        }
+        .foregroundStyle(NativeChrome.activity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(count) day sleep streak")
     }
 }
 
@@ -914,82 +1024,124 @@ struct HomeMetricItem: Identifiable {
     var route: TabRoute
 
     static func make(dashboard: [NativeScore.Row], days: [DailyMetric], todayKey: String,
-                     vo2max: Double? = nil) -> [HomeMetricItem] {
-        _ = days
-        _ = todayKey
-        var items: [HomeMetricItem] = dashboard.compactMap { row in
-            guard NativeScoreMath.hasValue(row.value) else { return nil }
-            let prior = NativeScoreMath.hasValue(row.prior) ? row.prior : nil
-            switch row.title {
-            case "Heart Rate Variability":
-                return rowItem(row, unit: "ms", symbol: "waveform.path.ecg", tint: NativeChrome.heart, prior: prior)
-            case "Resting Heart Rate":
-                return rowItem(row, unit: "BPM", symbol: "heart.fill", tint: NativeChrome.heart, prior: prior)
-            case "Steps":
-                return rowItem(row, unit: "steps", symbol: "figure.walk", tint: NativeChrome.activity, prior: prior)
-            case "Heart Rate Zones 1–3", "Heart Rate Zones 4–5":
-                return rowItem(row, unit: nil, symbol: row.symbol == "heart.fill" ? "heart.fill" : "heart",
-                               tint: NativeChrome.heart, prior: prior)
-            case "Strength Activity Time":
-                return rowItem(row, unit: nil, symbol: "dumbbell.fill", tint: NativeChrome.strain, prior: prior)
-            case "Calories":
-                return rowItem(row, unit: "cal", symbol: "flame.fill", tint: NativeChrome.activity, prior: prior)
-            default:
-                return nil
-            }
-        }
-        if let vo2max {
-            let vo2 = HomeMetricItem(
-                title: "VO₂ Max",
-                value: String(format: "%.1f", vo2max),
-                unit: nil,
-                prior: nil,
-                delta: .none,
-                symbol: "lungs.fill",
-                tint: NativeChrome.respiratory,
-                points: [],
-                bars: false,
-                route: .metric("vo2max_est")
-            )
-            if let calories = items.firstIndex(where: { $0.title == "Calories" }) {
-                items.insert(vo2, at: calories)
-            } else {
-                items.append(vo2)
-            }
-        }
-        return items
+                     vo2max: Double? = nil, model: NativeDay.Model? = nil, stress: Double? = nil,
+                     ids: [String] = HomeDashboardMetric.defaultIds) -> [HomeMetricItem] {
+        let day = days.last { $0.day == todayKey }
+        let filled = fill(
+            dashboard: dashboard, day: day, vo2max: vo2max, model: model, stress: stress
+        )
+        return ids.compactMap { filled[$0] }
     }
 
-    private static func rowItem(_ row: NativeScore.Row, unit: String?, symbol: String,
-                                tint: Color, prior: String?) -> HomeMetricItem {
-        HomeMetricItem(
-            title: row.title,
-            value: row.value,
-            unit: unit,
-            prior: prior,
-            delta: row.delta,
-            symbol: symbol,
-            tint: tint,
-            points: [],
-            bars: false,
-            route: row.route
-        )
+    private static func fill(
+        dashboard: [NativeScore.Row],
+        day: DailyMetric?,
+        vo2max: Double?,
+        model: NativeDay.Model?,
+        stress: Double?
+    ) -> [String: HomeMetricItem] {
+        var filled: [String: HomeMetricItem] = [:]
+        func put(_ metric: HomeDashboardMetric, value: String, prior: String? = nil,
+                 unit: String? = nil, delta: NativeScore.Delta = .none) {
+            guard NativeScoreMath.hasValue(value) else { return }
+            filled[metric.rawValue] = HomeMetricItem(
+                title: metric.title,
+                value: value,
+                unit: unit ?? metric.unit,
+                prior: prior.flatMap { NativeScoreMath.hasValue($0) ? $0 : nil },
+                delta: delta,
+                symbol: metric.symbol,
+                tint: metric.tint,
+                points: [],
+                bars: false,
+                route: metric.route
+            )
+        }
+        func fromDashboard(_ metric: HomeDashboardMetric, title: String, unit: String?) {
+            guard let row = dashboard.first(where: { $0.title == title }),
+                  NativeScoreMath.hasValue(row.value) else { return }
+            put(metric, value: row.value, prior: row.prior, unit: unit, delta: row.delta)
+        }
+        fromDashboard(.hrv, title: "Heart Rate Variability", unit: "ms")
+        fromDashboard(.restingHr, title: "Resting Heart Rate", unit: "BPM")
+        fromDashboard(.respiratory, title: "Respiratory Rate", unit: "breaths/min")
+        fromDashboard(.steps, title: "Steps", unit: "steps")
+        fromDashboard(.calories, title: "Calories", unit: "cal")
+        fromDashboard(.hrZones13, title: "Heart Rate Zones 1–3", unit: nil)
+        fromDashboard(.hrZones45, title: "Heart Rate Zones 4–5", unit: nil)
+        fromDashboard(.strength, title: "Strength Activity Time", unit: nil)
+        if let vo2max {
+            put(.vo2max, value: String(format: "%.1f", vo2max))
+        }
+        if let spo2 = day?.spo2Pct {
+            put(.spo2, value: "\(Int(spo2.rounded()))%")
+        }
+        if let skin = day?.skinTempC ?? day?.skinTempDevC {
+            let unit = UnitPrefs.resolveTemperature(
+                system: UnitSystem(rawValue: UserDefaults.standard.string(forKey: UnitPrefs.systemKey) ?? "") ?? .imperial,
+                override: UserDefaults.standard.string(forKey: UnitPrefs.temperatureKey) ?? "")
+            put(.skinTemp, value: VitalBands.isAbsoluteSkinTemp(skin)
+                ? UnitFormatter.temperatureFromCelsius(skin, unit: unit)
+                : UnitFormatter.temperatureDeltaFromCelsius(skin, unit: unit))
+        }
+        if let model, NativeScoreMath.hasValue(model.sleep.value) {
+            put(.sleepPerformance, value: model.sleep.value, delta: .none)
+        }
+        if let hours = model?.sleepHours, NativeScoreMath.hasValue(hours) {
+            put(.sleepHours, value: hours)
+        }
+        if let need = model?.sleepNeedMin, need > 0 {
+            put(.sleepNeed, value: NativeTonightSleep.needText(need))
+        }
+        if let debt = model?.sleepDebtMin, debt > 0 {
+            put(.sleepDebt, value: NativeDayLogic.durationText(debt))
+        }
+        if let stress {
+            put(.stress, value: String(format: "%.1f", stress))
+        }
+        return filled
     }
 }
 
 struct HomeMetricCard: View {
     var item: HomeMetricItem
+    @Environment(\.nativeStyle) private var style
 
     var body: some View {
         NativeChrome.panel {
-            NativeContributorRow(
-                symbol: item.symbol,
-                title: item.title,
-                value: displayValue,
-                prior: item.prior,
-                delta: item.delta,
-                tint: item.tint
-            )
+            HStack(spacing: 10) {
+                Image(systemName: item.symbol)
+                    .font(.body)
+                    .foregroundStyle(item.tint)
+                    .frame(width: HomeActivityLayout.dashboardIconWidth, alignment: .center)
+                Text(style == .whoop ? item.title.uppercased() : item.title)
+                    .font(style == .whoop ? NativeTokens.whoopCaps(13) : .body)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Spacer(minLength: 6)
+                VStack(alignment: .trailing, spacing: 1) {
+                    HStack(spacing: 4) {
+                        Text(displayValue)
+                            .font(style == .whoop
+                                  ? NativeTokens.whoopNumber(17, weight: .semibold)
+                                  : StrandFont.rounded(17, weight: .semibold))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                        NativeDelta(delta: item.delta)
+                    }
+                    if let prior = item.prior, NativeScoreMath.hasValue(prior) {
+                        Text(prior)
+                            .font(style == .whoop ? NativeTokens.whoopNumber(12, weight: .regular) : .footnote)
+                            .foregroundStyle(style == .whoop ? NativeTokens.whoopLabel : Color.secondary)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                    }
+                }
+                .frame(minWidth: HomeActivityLayout.dashboardValueMinWidth, alignment: .trailing)
+                .layoutPriority(1)
+            }
+            .frame(minHeight: 48)
+            .accessibilityElement(children: .combine)
         }
     }
 
@@ -1110,6 +1262,9 @@ struct HomeStrapStatus: View {
     @State private var charging: Bool?
     @State private var backfilling = false
     @State private var showSync = false
+    @State private var liveFeedActive = false
+    @State private var liveBpm: Int?
+    @State private var showingLiveHR = false
 
     private var percent: Int? {
         guard connected else { return nil }
@@ -1136,6 +1291,24 @@ struct HomeStrapStatus: View {
                     .controlSize(.small)
                     .accessibilityLabel("Syncing")
             }
+            Button { showingLiveHR = true } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "heart.fill")
+                        .font(.footnote)
+                    if liveFeedActive, let liveBpm {
+                        Text("\(liveBpm)")
+                            .font(.footnote.weight(.medium))
+                            .monospacedDigit()
+                    }
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                liveFeedActive && liveBpm != nil
+                    ? "Live heart rate \(liveBpm ?? 0) BPM"
+                    : "Live heart rate"
+            )
             if let percent {
                 HStack(spacing: 3) {
                     Text("\(percent)%")
@@ -1149,8 +1322,12 @@ struct HomeStrapStatus: View {
                 .accessibilityLabel("Strap battery \(percent) percent")
             }
         }
+        .sheet(isPresented: $showingLiveHR) {
+            NativeLiveHeartRate()
+        }
         .background { Sink(connected: $connected, batteryPct: $batteryPct,
-                           charging: $charging, backfilling: $backfilling) }
+                           charging: $charging, backfilling: $backfilling,
+                           liveFeedActive: $liveFeedActive, liveBpm: $liveBpm) }
         .task(id: backfilling) {
             guard backfilling else {
                 showSync = false
@@ -1169,6 +1346,8 @@ struct HomeStrapStatus: View {
         @Binding var batteryPct: Double?
         @Binding var charging: Bool?
         @Binding var backfilling: Bool
+        @Binding var liveFeedActive: Bool
+        @Binding var liveBpm: Int?
 
         var body: some View {
             Color.clear
@@ -1178,24 +1357,20 @@ struct HomeStrapStatus: View {
                 .onReceive(live.$batteryPct.removeDuplicates()) { batteryPct = $0 }
                 .onReceive(live.$charging.removeDuplicates()) { charging = $0 }
                 .onReceive(live.$backfilling.removeDuplicates()) { backfilling = $0 }
+                .onReceive(live.$liveFeedActive.removeDuplicates()) { liveFeedActive = $0 }
+                .onReceive(
+                    live.$heartRate.throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
+                ) { liveBpm = $0 }
         }
     }
 }
 
-/// Manual activity entry from Home, using the existing workout sheet and save path.
+/// Manual activity entry from Home. Thin wrapper around NativeAddActivitySheet.
 struct HomeAddActivitySheet: View {
-    @EnvironmentObject private var repo: Repository
-    @EnvironmentObject private var intelligence: IntelligenceEngine
     var onSaved: () async -> Void
 
     var body: some View {
-        ManualWorkoutSheet { row, _ in
-            Task {
-                await repo.saveManualWorkout(row, replacing: nil)
-                await intelligence.analyzeRecent()
-                await onSaved()
-            }
-        }
+        NativeAddActivitySheet(onSaved: onSaved)
     }
 }
 
@@ -1303,13 +1478,13 @@ struct HomeTonightSleepCard: View {
                 Spacer(minLength: 0)
             }
             if let onAlarm {
-                Button("Set Alarm", action: onAlarm)
+                Button(model.alarmLabel ?? "Set Alarm", action: onAlarm)
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(NativePaint.sleep(style))
                     .frame(maxWidth: .infinity)
                     .padding(.top, 4)
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Set Alarm")
+                    .accessibilityLabel(model.alarmLabel ?? "Set Alarm")
             }
         }
         .accessibilityElement(children: .contain)
@@ -1508,7 +1683,10 @@ enum HomeSnapshot {
 
     static var tonightSleep: NativeTonightSleep.Model {
         NativeTonightSleep.make(needMin: 480, alarmEnabled: true, alarmMinutes: 7 * 60)
-            ?? NativeTonightSleep.Model(bedtimeClock: "11:00 PM", wakeClock: "7:00 AM", needClock: "8:00")
+            ?? NativeTonightSleep.Model(
+                bedtimeClock: "11:00 PM", wakeClock: "7:00 AM", needClock: "8:00",
+                alarmArmed: true, alarmLabel: "Alarm 7:00 AM"
+            )
     }
 
     static var healthCard: some View {
@@ -1545,8 +1723,16 @@ enum HomeSnapshot {
             HomeActivitiesCard(items: activities, onSleep: {}, onActivity: { _ in })
             HomeTonightSleepCard(model: tonightSleep, onAlarm: {})
             HomeJournalCard(dots: journalDots, hasEntry: true, onOpen: {}, onLog: {})
-            NativeChrome.section("My Dashboard")
-            HomeMetricCard(item: hrvMetric)
+            HStack(alignment: .firstTextBaseline) {
+                NativeChrome.section("My Dashboard")
+                Spacer(minLength: 8)
+                Button("Edit", action: {})
+                    .font(.body)
+                    .foregroundStyle(Color.accentColor)
+                    .buttonStyle(.plain)
+                    .padding(.top, 18)
+                    .padding(.bottom, 8)
+            }
             HomeMetricCard(item: stepsMetric)
             HomeVO2Card(value: 48.2)
             HomeMetricCard(item: caloriesMetric)

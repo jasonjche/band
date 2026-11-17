@@ -572,35 +572,22 @@ struct RootTabView: View {
         .tabItem { Label("More", systemImage: nativeTodayEnabled ? "line.3.horizontal" : "ellipsis") }
     }
 
-    /// Native More index: inset-grouped list with iOS Settings-style glyph rows. Pairing, WHOOP
-    /// import, and Alarms stay one tap away; marketing/novelty destinations stay on the classic list.
+    /// Native More index: Strap, Profile, Data & Backup, About. Alarm lives on Home; notifications
+    /// are hidden on the personal shell (the strap alarm still requests permission when armed).
     private func nativeMoreList(path: Binding<NavigationPath>) -> some View {
-        func row(_ title: LocalizedStringKey, _ icon: String, _ color: Color, _ route: MoreDestination) -> some View {
-            Button {
-                suppressTabReselect = true
-                path.wrappedValue.append(route)
-            } label: {
-                HStack(spacing: 12) {
-                    AppleSettingsGlyph(systemName: icon, background: color)
-                    Text(title)
-                        .foregroundStyle(.primary)
-                    Spacer(minLength: 8)
-                }
-            }
+        NativeMoreList { item in
+            suppressTabReselect = true
+            path.wrappedValue.append(moreDestination(item))
         }
-        return List {
-            row("Strap", "badge.plus.radiowaves.right", .blue, .devices)
-            row("Alarm", "alarm.fill", .orange, .alarms)
-            row("Profile", "person.fill", .blue, .settings)
-            row("Apple Health", "heart.fill", .red, .appleHealth)
-            row("Import WHOOP Export", "square.and.arrow.down.fill", .blue, .dataSources)
-            row("Backup", "externaldrive.fill", Color(white: 0.45), .backup)
-            row("Notifications", "bell.badge.fill", .red, .notifications)
-            row("About", "info.circle.fill", .gray, .about)
+    }
+
+    private func moreDestination(_ item: NativeMoreItem) -> MoreDestination {
+        switch item {
+        case .strap: return .devices
+        case .profile: return .profile
+        case .dataBackup: return .dataBackup
+        case .about: return .about
         }
-        .listStyle(.insetGrouped)
-        .navigationTitle("More")
-        .navigationBarTitleDisplayMode(.large)
     }
 
     /// One titled, COLLAPSIBLE group in the More index (S2): the app's overline (UPPERCASE) becomes a
@@ -667,13 +654,14 @@ private enum MoreDestination: Hashable {
     case live, workouts, liftLog, health, labBook, stress, breathe, intervals, rhythm
     case fusedRecord, appleHealth, miBand, dataSources, backupSync, shortcutsExport, noopLimitations
     case devices, alarms, automations, testCentre, siriShortcuts, powerSaving, settings
-    case backup, notifications, about
+    case backup, notifications, about, profile, dataBackup
 
     var usesAppleSettingsChrome: Bool {
         switch self {
         case .devices, .dataSources, .backupSync, .appleHealth, .alarms,
              .automations, .testCentre, .powerSaving, .settings,
-             .siriShortcuts, .shortcutsExport, .backup, .notifications, .about:
+             .siriShortcuts, .shortcutsExport, .backup, .notifications, .about,
+             .profile, .dataBackup:
             return true
         default:
             return false
@@ -719,6 +707,8 @@ private enum MoreDestination: Hashable {
         case .backup:          BandBackupView()
         case .notifications:   BandNotificationsView()
         case .about:           BandAboutView()
+        case .profile:         NativeProfileView()
+        case .dataBackup:      NativeDataBackupView()
         }
     }
 }

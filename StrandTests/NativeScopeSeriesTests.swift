@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import StrandAnalytics
 import StrandDesign
 @testable import Strand
 
@@ -263,6 +264,93 @@ final class NativeScopeSeriesTests: XCTestCase {
         )
         let series = NativeScopeSeries(scope: .sixMonths, kind: .rate, buckets: [bucket], caption: "Average")
         XCTAssertEqual(series.selectionDateText(for: bucket, calendar: cal), "Oct 26 – Nov 1")
+    }
+
+    func testTypicalRangeHiddenBelow14Days() {
+        let values = Array(repeating: Optional(50.0), count: 13)
+        XCTAssertNil(NativeTypicalRange.band(values: values, cfg: Baselines.hrvCfg))
+        XCTAssertNil(NativeTypicalRange.band(values: values))
+    }
+
+    func testTypicalRangeIsTrailingMeanPlusMinusTwoSigma() {
+        var values: [Double?] = Array(repeating: 40, count: 20)
+        values += Array(repeating: 60, count: 10)
+        let band = NativeTypicalRange.band(values: values, cfg: Baselines.hrvCfg)
+        let state = Baselines.rollingMeanSD(values, cfg: Baselines.hrvCfg, window: 30)
+        XCTAssertNotNil(band)
+        XCTAssertEqual(state.nValid, 30)
+        let sig = Baselines.sigma(state)
+        XCTAssertEqual(band?.lowerBound ?? -1, state.baseline - VitalBands.sigmaK * sig, accuracy: 1e-9)
+        XCTAssertEqual(band?.upperBound ?? -1, state.baseline + VitalBands.sigmaK * sig, accuracy: 1e-9)
+        XCTAssertEqual(NativeTypicalRange.cfg(for: "hrv"), Baselines.hrvCfg)
+        XCTAssertEqual(NativeTypicalRange.cfg(for: "rhr"), Baselines.restingHRCfg)
+        XCTAssertEqual(NativeTypicalRange.cfg(for: "resp_rate"), Baselines.respCfg)
+        XCTAssertNil(NativeTypicalRange.cfg(for: "steps"))
+    }
+
+    func testTypicalRangeCaption() {
+        let text = NativeTypicalRange.caption(range: 40...55, format: { "\(Int($0.rounded()))" }, unit: "ms")
+        XCTAssertEqual(text, "Typical range 40–55 ms")
+        let bare = NativeTypicalRange.caption(range: 40...55, format: { "\(Int($0.rounded()))" }, unit: nil)
+        XCTAssertEqual(bare, "Typical range 40–55")
+    }
+
+    func testMakeAttachesTypicalFromDailyValues() {
+        let cal = calendar(firstWeekday: 1)
+        let points = (1...20).map { point(String(format: "2026-11-%02d", $0), 50 + Double($0)) }
+        let now = NativeScopeSeries.date(from: "2026-11-20", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .week, kind: .rate, calendar: cal, now: now, ending: now,
+            cfg: Baselines.hrvCfg
+        )
+        XCTAssertNotNil(series.typical)
+        XCTAssertTrue(series.showsTrendLine)
+        let day = NativeScopeSeries.make(
+            points: points, scope: .day, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertFalse(day.showsTrendLine)
+    }
+
+    func testSixMonthDoesNotPlotDailyMarks() {
+        let cal = calendar(firstWeekday: 1)
+        var points: [NativeDayPoint] = []
+        var cursor = NativeScopeSeries.date(from: "2026-05-17", calendar: cal)!
+        let end = NativeScopeSeries.date(from: "2026-11-15", calendar: cal)!
+        while cursor <= end {
+            points.append(point(NativeScopeSeries.key(from: cursor, calendar: cal), 50))
+            cursor = cal.date(byAdding: .day, value: 1, to: cursor) ?? cursor
+        }
+        let series = NativeScopeSeries.make(
+            points: points, scope: .sixMonths, kind: .rate, calendar: cal, now: end, ending: end
+        )
+        XCTAssertEqual(series.latestWindow().count, 26)
+        XCTAssertLessThan(series.buckets.count, points.count / 4)
+        XCTAssertGreaterThan(series.buckets.first?.sampleCount ?? 0, 1)
+    }
+
+    func testPeriodDeltaCaptionUsesPriorWindowName() {
+        let cal = calendar(firstWeekday: 1)
+        let points = (1...14).map { point(String(format: "2026-11-%02d", $0), Double($0 * 10)) }
+        let now = NativeScopeSeries.date(from: "2026-11-14", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .week, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        let visible = Array(series.buckets.suffix(7))
+        let trend = series.trend(visible: visible, higherIsBetter: true)
+        XCTAssertNotNil(trend)
+        XCTAssertGreaterThan(trend?.percentChange ?? 0, 0)
+        XCTAssertEqual(series.priorPeriodName(), "vs. prior week")
+        let caption = series.periodDeltaCaption(of: visible, higherIsBetter: true)
+        XCTAssertNotNil(caption)
+        XCTAssertTrue(caption?.contains("vs. prior week") == true)
+        let month = NativeScopeSeries.make(
+            points: points, scope: .month, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(month.priorPeriodName(), "vs. prior month")
+        XCTAssertEqual(
+            NativeScopeSeries(scope: .sixMonths, kind: .rate, buckets: [], caption: "Average").priorPeriodName(),
+            "vs. prior 6 months"
+        )
     }
 
     func testIntradayTimeFormat() {

@@ -3,6 +3,10 @@ import Charts
 import StrandDesign
 
 /// Apple Health-style metric plot: fixed-height hero, D/W/M/6M aggregation, scrub, scroll.
+///
+/// Scrub lives on a reference-type box the hero (and hairline) observe. The chart marks
+/// do not, so dragging does not rebuild LineMarks. Dense scopes are LineMark-only;
+/// hollow vertices are week-scale. 6M is weekly buckets from `NativeScopeSeries.make`.
 struct NativeScopeChart: View {
     var series: NativeScopeSeries
     var hourPoints: [NativeHourPoint] = []
@@ -20,11 +24,9 @@ struct NativeScopeChart: View {
     var plotHeight: CGFloat = 280
     var scrolls: Bool = true
 
-    @State private var selectedKey: String?
-    @State private var selectedTime: Date?
+    /// Class in `@State` so publishes do not rebuild this view (or the Chart).
+    @State private var scrub = NativeScopeScrub()
     @State private var scrollDate: Date?
-
-    private let heroHeight: CGFloat = 76
 
     private var usesHours: Bool { series.scope == .day && !hourPoints.isEmpty }
 
@@ -36,26 +38,39 @@ struct NativeScopeChart: View {
         return series.latestWindow()
     }
 
-    private var selectedBucket: NativeScopeBucket? {
-        guard let selectedKey else { return nil }
-        return series.buckets.first { $0.key == selectedKey && $0.value != nil }
-    }
-
-    private var selectedHour: NativeHourPoint? {
-        guard let selectedTime else { return nil }
-        return hourPoints.min(by: {
-            abs($0.time.timeIntervalSince(selectedTime)) < abs($1.time.timeIntervalSince(selectedTime))
-        })
-    }
-
     var body: some View {
+        let window = visible
         VStack(alignment: .leading, spacing: 4) {
-            hero
-                .frame(height: heroHeight, alignment: .topLeading)
-            plot
-                .frame(height: plotHeight)
+            NativeScopeHeroView(
+                series: series,
+                visible: window,
+                hourPoints: hourPoints,
+                usesHours: usesHours,
+                scrub: scrub,
+                format: format,
+                unit: unit,
+                higherIsBetter: higherIsBetter,
+                calendar: calendar,
+                color: color
+            )
+            NativeScopePlotHost(
+                series: series,
+                visible: window,
+                hourPoints: hourPoints,
+                bars: bars,
+                tint: tint,
+                format: format,
+                calendar: calendar,
+                color: color,
+                plotHeight: plotHeight,
+                scrolls: scrolls,
+                usesHours: usesHours,
+                previewTime: previewTime,
+                scrub: scrub,
+                scrollDate: $scrollDate
+            )
             NativeTrendRows(
-                trend: series.trend(visible: visible, higherIsBetter: higherIsBetter),
+                trend: series.trend(visible: window, higherIsBetter: higherIsBetter),
                 format: format,
                 unit: unit,
                 tint: tint,
@@ -63,82 +78,333 @@ struct NativeScopeChart: View {
             )
         }
         .onAppear {
-            if selectedKey == nil { selectedKey = previewSelected }
-            if selectedTime == nil { selectedTime = previewTime }
             if scrollDate == nil {
                 scrollDate = series.latestWindow().first?.start
             }
+            if scrub.key == nil { scrub.key = previewSelected }
+            if scrub.time == nil { scrub.time = previewTime }
         }
-        .modifier(NativeSelectionFeedback(trigger: selectedKey ?? selectedTime.map { "\($0.timeIntervalSince1970)" } ?? ""))
+        .modifier(NativeScopeResetOnScope(scope: series.scope) {
+            scrub.key = nil
+            scrub.time = nil
+            scrollDate = series.latestWindow().first?.start
+        })
     }
+}
 
-    @ViewBuilder private var hero: some View {
-        if usesHours, let hour = selectedHour {
-            NativeHeroValue(
-                caption: series.caption,
-                value: format(hour.value),
-                unit: unit,
-                date: NativeScopeFormat.time(hour.time, calendar: calendar)
-            )
-        } else if let bucket = selectedBucket, let value = bucket.value {
-            NativeHeroValue(
-                caption: series.caption,
-                value: format(value),
-                unit: unit,
-                date: series.selectionDateText(for: bucket, calendar: calendar)
-            )
-        } else if usesHours, let average = NativeScoreMath.mean(hourPoints.map(\.value)),
-                  let range = series.heroDateText(of: visible, calendar: calendar) {
-            NativeHeroValue(caption: series.caption, value: format(average), unit: unit, date: range)
-        } else if let average = series.aggregate(of: visible),
-                  let range = series.heroDateText(of: visible, calendar: calendar) {
-            NativeHeroValue(caption: series.caption, value: format(average), unit: unit, date: range)
+/// Selection box. `@Published` updates observers (hero, hairline) without
+/// invalidating the `NativeScopeChart` that holds this in `@State`.
+private final class NativeScopeScrub: ObservableObject {
+    @Published var key: String?
+    @Published var time: Date?
+}
+
+private struct NativeScopeResetOnScope: ViewModifier {
+    var scope: NativeMetricScope
+    var onReset: () -> Void
+
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            content.onChange(of: scope) { _, _ in onReset() }
         } else {
-            NativeHeroValue(
-                caption: series.caption,
-                value: "No Data",
-                date: series.heroDateText(of: visible, calendar: calendar)
-            )
+            content
         }
     }
+}
 
-    @ViewBuilder private var plot: some View {
-        if usesHours {
-            NativeOvernightLine(
-                points: hourPoints,
-                tint: tint,
-                selectedTime: $selectedTime,
-                previewSelected: previewTime
+/// Caption / value / date / period-delta / typical range. Height depends on the
+/// series (typical + trend), never on the scrub tick.
+private struct NativeScopeHeroView: View {
+    var series: NativeScopeSeries
+    var visible: [NativeScopeBucket]
+    var hourPoints: [NativeHourPoint]
+    var usesHours: Bool
+    @ObservedObject var scrub: NativeScopeScrub
+    var format: (Double) -> String
+    var unit: String?
+    var higherIsBetter: Bool?
+    var calendar: Calendar
+    var color: ((Double) -> Color)?
+
+    private let footnoteHeight: CGFloat = 18
+
+    private var selectedBucket: NativeScopeBucket? {
+        guard let key = scrub.key else { return nil }
+        return series.buckets.first { $0.key == key && $0.value != nil }
+    }
+
+    private var selectedHour: NativeHourPoint? {
+        guard let time = scrub.time else { return nil }
+        return hourPoints.min(by: {
+            abs($0.time.timeIntervalSince(time)) < abs($1.time.timeIntervalSince(time))
+        })
+    }
+
+    private var isScrubbing: Bool {
+        selectedBucket != nil || (usesHours && selectedHour != nil)
+    }
+
+    private var deltaCaption: String? {
+        series.periodDeltaCaption(of: visible, higherIsBetter: higherIsBetter)
+    }
+
+    private var typicalCaption: String? {
+        guard let typical = series.typical else { return nil }
+        return NativeTypicalRange.caption(range: typical, format: format, unit: unit)
+    }
+
+    private var heroHeight: CGFloat {
+        var height: CGFloat = 76
+        if deltaCaption != nil { height += footnoteHeight }
+        if typicalCaption != nil { height += footnoteHeight }
+        return height
+    }
+
+    private var valueTint: Color {
+        if let bucket = selectedBucket, let value = bucket.value, let color {
+            return color(value)
+        }
+        return .primary
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            NativeHeroValue(
+                caption: isScrubbing ? nil : series.caption,
+                value: valueText,
+                unit: unit,
+                date: dateText,
+                valueTint: valueTint
             )
-        } else if series.known.isEmpty {
-            NativeEmptyState(text: "No Data")
-        } else if scrolls, #available(iOS 17.0, macOS 14.0, *) {
-            datePlot(series.buckets)
+            if deltaCaption != nil {
+                periodDeltaRow
+                    .frame(height: footnoteHeight, alignment: .leading)
+            }
+            if let typicalCaption {
+                Text(typicalCaption)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(height: footnoteHeight, alignment: .leading)
+                    .accessibilityLabel(typicalCaption)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: heroHeight, maxHeight: heroHeight, alignment: .topLeading)
+        .modifier(NativeSelectionFeedback(trigger: scrub.key ?? scrub.time.map { "\($0.timeIntervalSince1970)" } ?? ""))
+    }
+
+    private var valueText: String {
+        if usesHours, let hour = selectedHour {
+            return format(hour.value)
+        }
+        if let bucket = selectedBucket, let value = bucket.value {
+            return format(value)
+        }
+        if usesHours, let average = NativeScoreMath.mean(hourPoints.map(\.value)) {
+            return format(average)
+        }
+        if let average = series.aggregate(of: visible) {
+            return format(average)
+        }
+        return "No Data"
+    }
+
+    private var dateText: String? {
+        if usesHours, let hour = selectedHour {
+            return NativeScopeFormat.time(hour.time, calendar: calendar)
+        }
+        if let bucket = selectedBucket {
+            return series.selectionDateText(for: bucket, calendar: calendar)
+        }
+        return series.heroDateText(of: visible, calendar: calendar)
+    }
+
+    @ViewBuilder private var periodDeltaRow: some View {
+        if let deltaCaption, !isScrubbing, let trend = series.trend(visible: visible, higherIsBetter: higherIsBetter) {
+            HStack(spacing: 4) {
+                NativeDelta(delta: trend.delta)
+                Text(deltaCaption)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(trend.delta == .flat ? Color.secondary : trend.delta.tint)
+                    .monospacedDigit()
+            }
+        } else {
+            Color.clear
+        }
+    }
+}
+
+/// Chart host. Does not observe `scrub`, so mark building is not on the scrub path.
+private struct NativeScopePlotHost: View {
+    var series: NativeScopeSeries
+    var visible: [NativeScopeBucket]
+    var hourPoints: [NativeHourPoint]
+    var bars: Bool
+    var tint: Color
+    var format: (Double) -> String
+    var calendar: Calendar
+    var color: ((Double) -> Color)?
+    var plotHeight: CGFloat
+    var scrolls: Bool
+    var usesHours: Bool
+    var previewTime: Date?
+    var scrub: NativeScopeScrub
+    @Binding var scrollDate: Date?
+
+    var body: some View {
+        Group {
+            if usesHours {
+                NativeOvernightLine(
+                    points: hourPoints,
+                    tint: tint,
+                    selectedTime: timeBinding,
+                    previewSelected: previewTime
+                )
+            } else if series.known.isEmpty {
+                NativeEmptyState(text: "No Data")
+            } else {
+                scopedChart
+            }
+        }
+        .frame(height: plotHeight)
+    }
+
+    private var timeBinding: Binding<Date?> {
+        Binding(
+            get: { scrub.time },
+            set: { time in
+                scrub.time = time
+                if usesHours {
+                    scrub.key = nil
+                } else {
+                    scrub.key = time.flatMap { nearestBucket(to: $0)?.key }
+                }
+            }
+        )
+    }
+
+    private var marks: NativeScopeStaticChart {
+        NativeScopeStaticChart(
+            series: series,
+            plotBuckets: scrolls ? series.buckets : series.latestWindow(),
+            visible: visible,
+            bars: bars,
+            tint: tint,
+            format: format,
+            calendar: calendar,
+            color: color
+        )
+    }
+
+    @ViewBuilder private var scopedChart: some View {
+        if scrolls, #available(iOS 17.0, macOS 14.0, *) {
+            marks
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: series.scope.visibleSeconds)
                 .chartScrollPosition(x: Binding(
                     get: { scrollDate ?? series.latestWindow().first?.start ?? Date() },
                     set: { scrollDate = $0 }
                 ))
-                .chartXSelection(value: $selectedTime)
-                .onChange(of: selectedTime) { _, time in
-                    selectedKey = time.flatMap { nearestBucket(to: $0)?.key }
+                .chartXSelection(value: timeBinding)
+                .chartOverlay { proxy in
+                    NativeScopeHairline(
+                        proxy: proxy, series: series, scrub: scrub, tint: tint, color: color
+                    )
+                }
+        } else if #available(iOS 17.0, macOS 14.0, *) {
+            marks
+                .chartXSelection(value: timeBinding)
+                .chartOverlay { proxy in
+                    NativeScopeHairline(
+                        proxy: proxy, series: series, scrub: scrub, tint: tint, color: color
+                    )
                 }
         } else {
-            datePlot(series.latestWindow())
+            marks
         }
     }
 
-    private func datePlot(_ buckets: [NativeScopeBucket]) -> some View {
-        let known = buckets.filter { $0.value != nil }
-        let values = known.compactMap(\.value)
-        let barCeiling = max(values.max() ?? 1, 1)
-        let lineDomain = NativeChartDay.fittedDomain(values, fallback: 0...1)
+    private func nearestBucket(to date: Date) -> NativeScopeBucket? {
+        series.buckets.min(by: {
+            abs($0.start.timeIntervalSince(date)) < abs($1.start.timeIntervalSince(date))
+        }).flatMap { $0.value == nil ? nil : $0 }
+    }
+}
+
+/// Vertical scrub rule + one selected point. Observes `scrub`; the LineMarks do not.
+private struct NativeScopeHairline: View {
+    var proxy: ChartProxy
+    var series: NativeScopeSeries
+    @ObservedObject var scrub: NativeScopeScrub
+    var tint: Color
+    var color: ((Double) -> Color)?
+
+    var body: some View {
+        GeometryReader { geo in
+            if let key = scrub.key,
+               let bucket = series.buckets.first(where: { $0.key == key && $0.value != nil }),
+               let value = bucket.value,
+               let x = proxy.position(forX: bucket.start) {
+                Rectangle()
+                    .fill(Color.secondary)
+                    .frame(width: 1, height: geo.size.height)
+                    .position(x: x, y: geo.size.height / 2)
+                if let y = proxy.position(forY: value) {
+                    Circle()
+                        .fill(color?(value) ?? tint)
+                        .frame(width: 8, height: 8)
+                        .position(x: x, y: y)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// Chart marks. No selection. Typical band + period average line live here.
+private struct NativeScopeStaticChart: View {
+    var series: NativeScopeSeries
+    var plotBuckets: [NativeScopeBucket]
+    var visible: [NativeScopeBucket]
+    var bars: Bool
+    var tint: Color
+    var format: (Double) -> String
+    var calendar: Calendar
+    var color: ((Double) -> Color)?
+
+    var body: some View {
+        let known = plotBuckets.filter { $0.value != nil }
+        let visibleKnown = visible.filter { $0.value != nil }
+        let values = visibleKnown.compactMap(\.value)
+        let barCeiling = max(values.max() ?? known.compactMap(\.value).max() ?? 1, 1)
+        let domainValues: [Double] = {
+            var list = values
+            if let typical = series.typical {
+                list.append(typical.lowerBound)
+                list.append(typical.upperBound)
+            }
+            return list
+        }()
+        let lineDomain = NativeChartDay.fittedDomain(domainValues, fallback: 0...1)
         let yDomain: ClosedRange<Double> = bars ? 0...(barCeiling * 1.22) : lineDomain
-        let segments = NativeChartDay.linePoints(buckets.map(\.point))
+        let segments = lineSegments(plotBuckets)
+        let visibleKeys = Set(visibleKnown.map(\.key))
+        let showVertices = series.scope == .week || series.scope == .day
+        let average = series.showsTrendLine ? series.aggregate(of: visible) : nil
+        let lineTint = color == nil ? tint : Color.secondary
         return Chart {
-            ForEach(buckets) { bucket in
-                if bars {
+            if let typical = series.typical, let first = plotBuckets.first, let last = plotBuckets.last {
+                RectangleMark(
+                    xStart: .value("Range start", first.start),
+                    xEnd: .value("Range end", last.end),
+                    yStart: .value("Typical low", typical.lowerBound),
+                    yEnd: .value("Typical high", typical.upperBound)
+                )
+                .foregroundStyle(tint.opacity(0.14))
+                .accessibilityLabel("Typical range")
+                .accessibilityValue(NativeTypicalRange.caption(range: typical, format: format, unit: nil))
+            }
+            if bars {
+                ForEach(plotBuckets) { bucket in
                     if let value = bucket.value {
                         BarMark(
                             x: .value("Day", bucket.start),
@@ -150,44 +416,52 @@ struct NativeScopeChart: View {
                         .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
                         .accessibilityValue(format(value))
                     }
-                } else if let low = bucket.low, let high = bucket.high, let value = bucket.value {
-                    BarMark(
-                        x: .value("Day", bucket.start),
-                        yStart: .value("Low", low),
-                        yEnd: .value("High", high),
-                        width: 7
-                    )
-                    .foregroundStyle(tint)
-                    .clipShape(Capsule())
-                    .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
-                    .accessibilityValue(format(value))
                 }
-            }
-            if !bars, buckets.allSatisfy({ $0.low == nil && $0.high == nil }) {
-                ForEach(segments) { point in
-                    if let date = NativeScopeSeries.date(from: point.key, calendar: calendar) {
-                        LineMark(
-                            x: .value("Day", date),
-                            y: .value("Value", point.value),
-                            series: .value("Segment", point.segment)
+            } else if plotBuckets.contains(where: { $0.low != nil && $0.high != nil }) {
+                ForEach(plotBuckets) { bucket in
+                    if let low = bucket.low, let high = bucket.high, let value = bucket.value {
+                        BarMark(
+                            x: .value("Day", bucket.start),
+                            yStart: .value("Low", low),
+                            yEnd: .value("High", high),
+                            width: 7
                         )
                         .foregroundStyle(tint)
-                        .interpolationMethod(.linear)
-                        .lineStyle(StrokeStyle(lineWidth: 2.5))
-                        .accessibilityHidden(true)
-                        PointMark(x: .value("Day", date), y: .value("Value", point.value))
-                            .foregroundStyle(tint)
-                            .symbol { NativeScopeVertex(tint: tint) }
+                        .clipShape(Capsule())
+                        .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
+                        .accessibilityValue(format(value))
+                    }
+                }
+            } else {
+                ForEach(segments) { point in
+                    LineMark(
+                        x: .value("Day", point.date),
+                        y: .value("Value", point.value),
+                        series: .value("Segment", point.segment)
+                    )
+                    .foregroundStyle(lineTint)
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5))
+                    .accessibilityHidden(true)
+                }
+                if showVertices {
+                    ForEach(segments.filter { visibleKeys.contains($0.key) }) { point in
+                        PointMark(x: .value("Day", point.date), y: .value("Value", point.value))
+                            .foregroundStyle(color?(point.value) ?? tint)
+                            .symbol {
+                                NativeScopeVertex(tint: color?(point.value) ?? tint)
+                            }
                             .accessibilityLabel(NativeChartDay.longLabel(point.key))
                             .accessibilityValue(format(point.value))
                     }
                 }
             }
-            if let selected = selectedBucket {
-                RuleMark(x: .value("Day", selected.start))
+            if let average {
+                RuleMark(y: .value("Average", average))
                     .foregroundStyle(Color.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: 1))
-                    .accessibilityHidden(true)
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .accessibilityLabel("Period average")
+                    .accessibilityValue(format(average))
             }
         }
         .chartYScale(domain: yDomain)
@@ -206,7 +480,7 @@ struct NativeScopeChart: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: labelDates(in: buckets)) { value in
+            AxisMarks(values: labelDates(in: plotBuckets)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeTokens.separator)
                 AxisValueLabel {
@@ -218,6 +492,30 @@ struct NativeScopeChart: View {
                 }
             }
         }
+    }
+
+    private struct LinePoint: Identifiable {
+        var date: Date
+        var value: Double
+        var segment: Int
+        var key: String
+        var id: String { "\(segment)-\(key)" }
+    }
+
+    private func lineSegments(_ buckets: [NativeScopeBucket]) -> [LinePoint] {
+        var segment = 0
+        var lastFinite = false
+        var result: [LinePoint] = []
+        for bucket in buckets {
+            if let value = bucket.value, value.isFinite {
+                if !lastFinite, !result.isEmpty { segment += 1 }
+                result.append(LinePoint(date: bucket.start, value: value, segment: segment, key: bucket.key))
+                lastFinite = true
+            } else {
+                lastFinite = false
+            }
+        }
+        return result
     }
 
     private func labelDates(in buckets: [NativeScopeBucket]) -> [Date] {
@@ -244,12 +542,6 @@ struct NativeScopeChart: View {
         case .sixMonths, .year:
             return NativeScopeFormat.month(date, calendar: calendar)
         }
-    }
-
-    private func nearestBucket(to date: Date) -> NativeScopeBucket? {
-        series.buckets.min(by: {
-            abs($0.start.timeIntervalSince(date)) < abs($1.start.timeIntervalSince(date))
-        }).flatMap { $0.value == nil ? nil : $0 }
     }
 }
 

@@ -262,6 +262,7 @@ struct NativeHeroValue: View {
     var value: String
     var unit: String? = nil
     var date: String? = nil
+    var valueTint: Color = .primary
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
@@ -273,6 +274,7 @@ struct NativeHeroValue: View {
                 .textCase(.uppercase)
                 .opacity(caption == nil || caption?.isEmpty == true ? 0 : 1)
             NativeValueText(value: value, unit: unit, size: style == .whoop ? 40 : 34)
+                .foregroundStyle(valueTint)
             Text(date ?? " ")
                 .font(style == .whoop ? NativeTokens.whoopCaps(11) : .subheadline)
                 .foregroundStyle(.secondary)
@@ -915,7 +917,8 @@ struct NativeChartBlock: View {
                 unit: unit,
                 date: selectionUsesLongDate
                     ? NativeChartDay.longLabel(selectedPoint.key)
-                    : NativeChartDay.mediumDate(selectedPoint.key)
+                    : NativeChartDay.mediumDate(selectedPoint.key),
+                valueTint: color?(selectedPoint.value) ?? .primary
             )
         } else if let average = NativeScoreMath.mean(known.map(\.value)), let range = rangeDate {
             NativeHeroValue(caption: caption ?? "Average", value: format(average), unit: unit, date: range)
@@ -1221,33 +1224,22 @@ struct NativeStrainRecoveryChart: View {
     }
 
     private var dualHero: some View {
-        let selected = selectedDay.flatMap { inspectCaption($0) }
-        let strainAvg = NativeScoreMath.mean(strain.filter { $0.value.isFinite }.map(\.value))
-        let recoveryAvg = NativeScoreMath.mean(recovery.filter { $0.value.isFinite }.map(\.value))
-        let range: String? = {
-            guard let first = axisKeys.first, let last = axisKeys.last else { return nil }
-            return NativeChartDay.rangeLabel(from: first, to: last)
-        }()
-        let value: String
-        let date: String?
+        let selectedKey = selectedDay
+        let strainVal: Double?
+        let recoveryVal: Double?
         let caption: String?
-        if let selected, let selectedDay {
-            caption = nil
-            value = selected
-            date = NativeChartDay.mediumDate(selectedDay)
-        } else if strainAvg != nil || recoveryAvg != nil {
-            caption = "Average"
-            value = [
-                strainAvg.map { String(format: "%.1f", $0) },
-                recoveryAvg.map { "\(Int($0.rounded()))%" },
-            ].compactMap { $0 }.joined(separator: "   ")
-            date = range
+        if let selectedKey, inspectCaption(selectedKey) != nil {
+            let s = strain.first { $0.key == selectedKey || $0.day == selectedKey }
+            let r = recovery.first { $0.key == selectedKey || $0.day == selectedKey }
+            strainVal = (s?.value.isFinite ?? false) ? s?.value : nil
+            recoveryVal = (r?.value.isFinite ?? false) ? r?.value : nil
+            caption = NativeChartDay.mediumDate(selectedKey)
         } else {
+            strainVal = NativeScoreMath.mean(strain.filter { $0.value.isFinite }.map(\.value))
+            recoveryVal = NativeScoreMath.mean(recovery.filter { $0.value.isFinite }.map(\.value))
             caption = "Average"
-            value = "No Data"
-            date = range
         }
-        return NativeStrainRecoveryHero(caption: caption, value: value, date: date)
+        return NativeStrainRecoveryColumns(strain: strainVal, recovery: recoveryVal, caption: caption)
     }
 
     private func inspectCaption(_ day: String) -> String? {
@@ -2072,5 +2064,74 @@ enum NativeScoreMath {
     static func clockParts(_ minutes: Double) -> (hours: Int, minutes: Int) {
         let total = max(0, Int(minutes.rounded()))
         return (total / 60, total % 60)
+    }
+}
+
+/// Two labelled columns on one baseline. Recovery uses that day's band colour.
+/// Fixed height is applied by the chart so scrubbing cannot resize the card.
+struct NativeStrainRecoveryColumns: View {
+    var strain: Double?
+    var recovery: Double?
+    var caption: String?
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 28) {
+            if let strain {
+                column(
+                    label: "Strain",
+                    value: String(format: "%.1f", strain),
+                    unit: nil,
+                    tint: NativePaint.strain(style)
+                )
+            }
+            if let recovery {
+                column(
+                    label: "Recovery",
+                    value: "\(Int(recovery.rounded()))",
+                    unit: "%",
+                    tint: NativePaint.recoveryBand(recovery, style: style)
+                )
+            }
+            if strain == nil && recovery == nil {
+                NativeValueText(value: "No Data", size: 28)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibility)
+    }
+
+    private func column(label: String, value: String, unit: String?, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption.weight(.medium))
+                .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            HStack(alignment: .firstTextBaseline, spacing: unit == "%" ? 1 : 4) {
+                Text(value)
+                    .font(NativePaint.number(style == .whoop ? 34 : 28, style: style))
+                    .monospacedDigit()
+                if let unit, !unit.isEmpty {
+                    Text(unit)
+                        .font(NativePaint.number(style == .whoop ? 14 : 17, weight: .medium, style: style))
+                }
+            }
+            .foregroundStyle(tint)
+            Text(caption ?? " ")
+                .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption)
+                .foregroundStyle(.secondary)
+                .opacity(caption == nil ? 0 : 1)
+        }
+    }
+
+    private var accessibility: String {
+        var parts: [String] = []
+        if let strain { parts.append("Strain \(String(format: "%.1f", strain))") }
+        if let recovery { parts.append("Recovery \(Int(recovery.rounded())) percent") }
+        if let caption { parts.append(caption) }
+        return parts.isEmpty ? "No Data" : parts.joined(separator: ", ")
     }
 }

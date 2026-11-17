@@ -265,11 +265,17 @@ enum NativeStressHistory {
         }
     }
 
+    /// Duration in the High band (≥ 2.0). Each high point contributes only the gap to the next
+    /// point when that gap is one chart bucket (5 min ± slack). A hole in stored HR is not High.
+    static let highBucketMaxGap: TimeInterval = 6 * 60
+
     static func timeInHighMinutes(_ hours: [NativeHourPoint]) -> Double? {
         guard hours.count >= 2 else { return nil }
         var total: TimeInterval = 0
         for index in 0..<(hours.count - 1) where hours[index].value >= 2 {
-            total += hours[index + 1].time.timeIntervalSince(hours[index].time)
+            let dt = hours[index + 1].time.timeIntervalSince(hours[index].time)
+            guard dt > 0, dt <= highBucketMaxGap else { continue }
+            total += dt
         }
         let minutes = total / 60
         return minutes > 0 ? minutes : nil

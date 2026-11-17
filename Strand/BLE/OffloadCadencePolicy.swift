@@ -1,14 +1,19 @@
 import Foundation
 
-/// Whether an incoming strap EVENT packet should kick a historical offload.
+/// Whether an incoming strap EVENT packet may kick a historical offload.
 ///
-/// When the Band power policy is on, EVENT packets no longer start a sync — connect,
-/// foreground, the 15-minute periodic timer, manual, and auto-continue still do.
-/// When the flag is off, `.strap` keeps its 90 s floor in `BackfillPolicy`.
+/// With the Band power policy on, a strap EVENT packet starts a sync only when the last one is
+/// at least 15 minutes old. In the background nothing else wakes the app (the periodic timer is
+/// suspended and 0x2A37 no longer notifies), so blocking `.strap` outright stopped background
+/// sync entirely. With the flag off, `.strap` keeps its 90 s floor in `BackfillPolicy`.
 enum OffloadTriggerPolicy {
-    static func shouldRequest(trigger: BackfillTrigger, policyEnabled: Bool) -> Bool {
-        if policyEnabled && trigger == .strap { return false }
-        return true
+    static let strapFloorSeconds: TimeInterval = 900
+
+    static func shouldRequest(trigger: BackfillTrigger, policyEnabled: Bool,
+                              secondsSinceLast: TimeInterval? = nil) -> Bool {
+        guard policyEnabled, trigger == .strap else { return true }
+        guard let secondsSinceLast else { return true }
+        return secondsSinceLast >= strapFloorSeconds
     }
 }
 

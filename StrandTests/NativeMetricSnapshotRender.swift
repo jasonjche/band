@@ -2,6 +2,7 @@
 import XCTest
 import SwiftUI
 import AppKit
+import StrandAnalytics
 import StrandDesign
 @testable import Strand
 
@@ -63,11 +64,11 @@ final class NativeMetricSnapshotRender: XCTestCase {
         return points
     }
 
-    private static func series(_ scope: NativeMetricScope) -> NativeScopeSeries {
+    private static func series(_ scope: NativeMetricScope, cfg: MetricCfg? = Baselines.hrvCfg) -> NativeScopeSeries {
         let end = NativeScopeSeries.date(from: endKey, calendar: calendar)!
         return NativeScopeSeries.make(
             points: hrvPoints, scope: scope, kind: .rate,
-            calendar: calendar, now: end, ending: end
+            calendar: calendar, now: end, ending: end, cfg: cfg
         )
     }
 
@@ -87,6 +88,42 @@ final class NativeMetricSnapshotRender: XCTestCase {
                 previewSelected: selected,
                 calendar: calendar,
                 accessibilityName: "Heart Rate Variability",
+                plotHeight: 240,
+                scrolls: false
+            )
+        }
+        .padding(16)
+    }
+
+    private static var recoveryPoints: [NativeDayPoint] {
+        hrvPoints.enumerated().map { index, point in
+            let value = [18.0, 52, 63, 71, 44, 78, 33][index % 7]
+            return NativeDayPoint(key: point.key, value: value)
+        }
+    }
+
+    private static func recoveryPage(selected: String?) -> some View {
+        let end = NativeScopeSeries.date(from: endKey, calendar: calendar)!
+        let series = NativeScopeSeries.make(
+            points: recoveryPoints, scope: .week, kind: .rate,
+            calendar: calendar, now: end, ending: end
+        )
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("D   W   M   6M")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            NativeScopeChart(
+                series: series,
+                bars: true,
+                tint: NativeTokens.recoveryHigh,
+                format: { "\(Int($0.rounded()))" },
+                unit: "%",
+                highlightKey: endKey,
+                higherIsBetter: true,
+                previewSelected: selected,
+                calendar: calendar,
+                accessibilityName: "Recovery",
+                color: { NativeTokens.recoveryBand($0) },
                 plotHeight: 240,
                 scrolls: false
             )
@@ -143,12 +180,15 @@ final class NativeMetricSnapshotRender: XCTestCase {
 
     private static var sections: [Section] {
         [
+            Section(name: "metric-hrv-d", view: AnyView(metricPage(scope: .day, selected: nil))),
             Section(name: "metric-hrv-w", view: AnyView(metricPage(scope: .week, selected: nil))),
             Section(name: "metric-hrv-w-selected", view: AnyView(metricPage(scope: .week, selected: "2026-11-10"))),
             Section(name: "metric-hrv-m", view: AnyView(metricPage(scope: .month, selected: nil))),
             Section(name: "metric-hrv-m-selected", view: AnyView(metricPage(scope: .month, selected: "2026-11-01"))),
             Section(name: "metric-hrv-6m", view: AnyView(metricPage(scope: .sixMonths, selected: nil))),
             Section(name: "metric-hrv-6m-selected", view: AnyView(metricPage(scope: .sixMonths, selected: "2026-11-09"))),
+            Section(name: "metric-recovery-w", view: AnyView(recoveryPage(selected: nil))),
+            Section(name: "metric-recovery-w-selected", view: AnyView(recoveryPage(selected: "2026-11-10"))),
             Section(name: "stress-idle", view: AnyView(stressPage(selected: false))),
             Section(name: "stress-selected", view: AnyView(stressPage(selected: true))),
         ]

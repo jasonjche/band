@@ -24,6 +24,10 @@ enum PersonalDefaults {
         defaults.set(unitSystem(for: locale).rawValue, forKey: UnitPrefs.systemKey)
         // Pins, not register(): UnitPrefs live-activity readers and CoachBriefScheduler treat a
         // missing key as ON. Coach, Live HR, sync island, and Lift Log are gone from the Native shell.
+        // The owner wants miles regardless of the phone's region.
+        if defaults.string(forKey: UnitPrefs.distanceSystemKey) == nil {
+            defaults.set(UnitSystem.imperial.rawValue, forKey: UnitPrefs.distanceSystemKey)
+        }
         defaults.set(false, forKey: "noop.coachEnabled")
         defaults.set(false, forKey: UnitPrefs.liveActivityKey)
         defaults.set(false, forKey: UnitPrefs.syncLiveActivityKey)

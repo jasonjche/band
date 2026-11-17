@@ -89,6 +89,7 @@ final class NativeActivityPageTests: XCTestCase {
         XCTAssertFalse(model.stats.contains { $0.title == "Duration" })
         XCTAssertEqual(model.strainDelta, .up)
         XCTAssertTrue(model.isManual)
+        XCTAssertTrue(model.hasStrain)
         XCTAssertNil(model.sourceLine)
         XCTAssertTrue(model.zones.isEmpty)
     }

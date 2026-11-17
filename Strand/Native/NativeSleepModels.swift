@@ -183,6 +183,97 @@ enum NativeSleepClock {
     }
 }
 
+enum NativeSleepStageKind: String, Hashable, CaseIterable, Identifiable {
+    case awake = "Awake"
+    case rem = "REM"
+    case light = "Light"
+    case deep = "Deep"
+
+    var id: String { rawValue }
+    var title: String { rawValue }
+
+    /// WHOOP hypnogram lanes, top to bottom.
+    static let hypnogramLanes: [NativeSleepStageKind] = [.awake, .rem, .light, .deep]
+    /// Last Night duration rows.
+    static let durationOrder: [NativeSleepStageKind] = [.awake, .light, .deep, .rem]
+
+    static func parse(_ name: String) -> NativeSleepStageKind {
+        switch name.lowercased() {
+        case "wake", "awake": return .awake
+        case "rem": return .rem
+        case "deep", "sws": return .deep
+        default: return .light
+        }
+    }
+
+    var about: String {
+        switch self {
+        case .awake: return "Time spent awake during the night."
+        case .rem: return "Rapid-eye-movement sleep."
+        case .light: return "Lighter sleep between deep and REM."
+        case .deep: return "Slow-wave sleep."
+        }
+    }
+}
+
+struct NativeSleepStageDetail: Equatable, Identifiable {
+    var id: NativeSleepStageKind { kind }
+    var kind: NativeSleepStageKind
+    var minutes: Double?
+    var percent: Double?
+    var typical: Double?
+    var trend: [NativeDayPoint]
+}
+
+enum NativeSleepHypnogramMath {
+    /// Unit interval in `[0, 1]` for a segment on the true night axis.
+    static func unitRange(start: Int, end: Int, nightStart: Int, nightEnd: Int) -> (lo: Double, hi: Double)? {
+        let span = nightEnd - nightStart
+        guard span > 0, end > start else { return nil }
+        let lo = Double(start - nightStart) / Double(span)
+        let hi = Double(end - nightStart) / Double(span)
+        return (min(max(lo, 0), 1), min(max(hi, 0), 1))
+    }
+
+    static func xRange(
+        start: Int, end: Int, nightStart: Int, nightEnd: Int, width: Double
+    ) -> (x: Double, width: Double)? {
+        guard width > 0, let unit = unitRange(start: start, end: end, nightStart: nightStart, nightEnd: nightEnd)
+        else { return nil }
+        let x = unit.lo * width
+        let w = max(0, (unit.hi - unit.lo) * width)
+        return (x, w)
+    }
+
+    static func share(minutes: Double, inBed: Double) -> Double {
+        guard inBed > 0, minutes >= 0 else { return 0 }
+        return minutes / inBed
+    }
+
+    static func barWidth(minutes: Double, inBed: Double, width: Double) -> Double {
+        max(0, width * share(minutes: minutes, inBed: inBed))
+    }
+
+    static func timestamp(x: Double, width: Double, nightStart: Int, nightEnd: Int) -> Int {
+        guard width > 0 else { return nightStart }
+        let t = min(max(x / width, 0), 1)
+        return nightStart + Int((Double(nightEnd - nightStart) * t).rounded())
+    }
+
+    static func span(at ts: Int, spans: [NativeSleepStageSpan]) -> NativeSleepStageSpan? {
+        spans.first { ts >= $0.startTs && ts < $0.endTs }
+            ?? spans.last { ts >= $0.startTs && ts <= $0.endTs }
+    }
+
+    static func axisTimes(start: Date, end: Date, count: Int = 4) -> [Date] {
+        let span = end.timeIntervalSince(start)
+        guard span > 0, count > 1 else { return [start] }
+        return (0..<count).map { index in
+            start.addingTimeInterval(span * Double(index) / Double(count - 1))
+        }
+    }
+}
+
 enum NativeSleepConsistency {
     static func nights(
         dayKey: String,
@@ -223,6 +314,7 @@ struct NativeSleepStageSpan: Identifiable, Equatable {
     var name: String
 
     var minutes: Double { Double(max(0, endTs - startTs)) / 60 }
+    var kind: NativeSleepStageKind { NativeSleepStageKind.parse(name) }
 }
 
 enum NativeSleepEfficiency {
@@ -253,6 +345,12 @@ enum NativeSleepEfficiency {
 
     static func spans(from segments: [StageSegment]) -> [NativeSleepStageSpan] {
         segments.filter { $0.end > $0.start }.map {
+            NativeSleepStageSpan(startTs: $0.start, endTs: $0.end, name: displayName($0.stage))
+        }
+    }
+
+    static func spans(from parsed: [ParsedSleepStage]) -> [NativeSleepStageSpan] {
+        parsed.filter { $0.end > $0.start }.map {
             NativeSleepStageSpan(startTs: $0.start, endTs: $0.end, name: displayName($0.stage))
         }
     }
@@ -510,7 +608,7 @@ enum NativeSleepWeek {
         let card = NativeWeek.Card(
             title: "Sleep Performance",
             points: points,
-            maxY: 100, bars: true, tint: NativeChrome.sleep, route: .sleep,
+            maxY: 100, bars: true, tint: NativeChrome.sleep, route: .metric("sleep_performance"),
             format: .percent, band: false
         )
         if base.contains(where: { $0.title == "Sleep Performance" }) { return base }
@@ -564,6 +662,9 @@ struct NativeSleepPageDetail {
     var stress: NativeSleepStress.Model?
     var hoursNeededWeek: [NativeDayPoint]
     var timeInBedWeek: [NativeDayPoint]
+    var hypnogram: [NativeSleepStageSpan]
+    var hoursTypical: ClosedRange<Double>?
+    var stageDetails: [NativeSleepStageDetail]
 
     static func make(
         dayKey: String,
@@ -571,7 +672,8 @@ struct NativeSleepPageDetail {
         sleeps: [CachedSleepSession],
         workouts: [WorkoutRow],
         importedSleep: [String: ImportedSleepFigures],
-        stress: NativeSleepStress.Model? = nil
+        stress: NativeSleepStress.Model? = nil,
+        parsedStages: [ParsedSleepStage] = []
     ) -> NativeSleepPageDetail {
         let metric = days.last { $0.day == dayKey }
         let prior = Array(days.filter { $0.day < dayKey }.suffix(30))
@@ -579,6 +681,9 @@ struct NativeSleepPageDetail {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
         }
         let segments = AnalyticsEngine.decodeStages(session?.stagesJSON)
+        let hypnogram = parsedStages.isEmpty
+            ? NativeSleepEfficiency.spans(from: segments)
+            : NativeSleepEfficiency.spans(from: parsedStages)
         return NativeSleepPageDetail(
             need: NativeSleepNeed.resolve(
                 dayKey: dayKey, days: days, sleeps: sleeps, workouts: workouts, importedSleep: importedSleep
@@ -589,8 +694,93 @@ struct NativeSleepPageDetail {
             hoursNeededWeek: NativeSleepWeek.neededSeries(
                 days: days, todayKey: dayKey, sleeps: sleeps, workouts: workouts, importedSleep: importedSleep
             ),
-            timeInBedWeek: NativeSleepWeek.timeInBedPoints(todayKey: dayKey, sleeps: sleeps)
+            timeInBedWeek: NativeSleepWeek.timeInBedPoints(todayKey: dayKey, sleeps: sleeps),
+            hypnogram: hypnogram,
+            hoursTypical: hoursTypicalRange(days: days, dayKey: dayKey),
+            stageDetails: stageDetails(dayKey: dayKey, days: days, sleeps: sleeps)
         )
+    }
+
+    static func hoursTypicalRange(days: [DailyMetric], dayKey: String) -> ClosedRange<Double>? {
+        let prior = days.filter { $0.day < dayKey }.suffix(30)
+        let hours = prior.compactMap {
+            NativeDayLogic.asleepMinutes(
+                light: $0.lightMin, deep: $0.deepMin, rem: $0.remMin, totalSleepMin: $0.totalSleepMin
+            )
+        }
+        guard hours.count >= 7, let lo = hours.min(), let hi = hours.max(), hi > lo else { return nil }
+        return lo...hi
+    }
+
+    static func stageDetails(
+        dayKey: String,
+        days: [DailyMetric],
+        sleeps: [CachedSleepSession]
+    ) -> [NativeSleepStageDetail] {
+        let metric = days.last { $0.day == dayKey }
+        let prior = Array(days.filter { $0.day < dayKey }.suffix(30))
+        let inBed = inBedMinutes(dayKey: dayKey, sleeps: sleeps)
+        let asleep = NativeDayLogic.asleepMinutes(
+            light: metric?.lightMin, deep: metric?.deepMin, rem: metric?.remMin,
+            totalSleepMin: metric?.totalSleepMin
+        )
+        let scale = inBed ?? ((asleep ?? 0) + (awakeMinutes(day: metric) ?? 0))
+        return NativeSleepStageKind.durationOrder.compactMap { kind in
+            let minutes = stageMinutes(kind, day: metric, inBed: inBed, asleep: asleep)
+            let typical = NativeScoreMath.mean(prior.compactMap { stageMinutes(kind, day: $0, inBed: nil, asleep: nil) })
+            guard (minutes ?? 0) > 0 || (typical ?? 0) > 0 else { return nil }
+            let percent: Double? = {
+                guard let minutes, scale > 0 else { return nil }
+                return NativeSleepHypnogramMath.share(minutes: minutes, inBed: scale) * 100
+            }()
+            return NativeSleepStageDetail(
+                kind: kind,
+                minutes: minutes,
+                percent: percent,
+                typical: typical,
+                trend: NativeWeek.series(days, todayKey: dayKey) {
+                    stageMinutes(kind, day: $0, inBed: nil, asleep: nil)
+                }
+            )
+        }
+    }
+
+    static func inBedMinutes(dayKey: String, sleeps: [CachedSleepSession]) -> Double? {
+        let session = sleeps
+            .filter {
+                NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
+            }
+            .sorted { ($0.endTs - $0.effectiveStartTs) > ($1.endTs - $1.effectiveStartTs) }
+            .first
+        guard let session, session.endTs > session.effectiveStartTs else { return nil }
+        return Double(session.endTs - session.effectiveStartTs) / 60
+    }
+
+    static func awakeMinutes(day: DailyMetric?) -> Double? {
+        let asleep = NativeDayLogic.asleepMinutes(
+            light: day?.lightMin, deep: day?.deepMin, rem: day?.remMin, totalSleepMin: day?.totalSleepMin
+        )
+        guard let asleep, let raw = day?.efficiency, asleep > 0, raw > 0 else { return nil }
+        let eff = raw <= 1 ? raw : raw / 100
+        guard eff > 0, eff < 1 else { return nil }
+        let awake = asleep / eff - asleep
+        return awake > 0 ? awake : nil
+    }
+
+    static func stageMinutes(
+        _ kind: NativeSleepStageKind,
+        day: DailyMetric?,
+        inBed: Double?,
+        asleep: Double?
+    ) -> Double? {
+        switch kind {
+        case .light: return day?.lightMin.flatMap { $0 > 0 ? $0 : nil }
+        case .deep: return day?.deepMin.flatMap { $0 > 0 ? $0 : nil }
+        case .rem: return day?.remMin.flatMap { $0 > 0 ? $0 : nil }
+        case .awake:
+            if let inBed, let asleep, inBed > asleep { return inBed - asleep }
+            return awakeMinutes(day: day)
+        }
     }
 }
 
@@ -762,6 +952,16 @@ enum NativeSleepSnapshot {
         )
     }
 
+    static var hypnogram: [NativeSleepStageSpan] {
+        NativeSleepEfficiency.spans(from: AnalyticsEngine.decodeStages(stagesJSON))
+    }
+
+    static var stageDetails: [NativeSleepStageDetail] {
+        NativeSleepPageDetail.stageDetails(
+            dayKey: highlightKey, days: snapshotDays, sleeps: snapshotSleeps
+        )
+    }
+
     static var pageDetail: NativeSleepPageDetail {
         NativeSleepPageDetail(
             need: importedNeed,
@@ -772,7 +972,10 @@ enum NativeSleepSnapshot {
                 days: snapshotDays, todayKey: highlightKey, sleeps: snapshotSleeps,
                 workouts: [], importedSleep: snapshotImported
             ),
-            timeInBedWeek: NativeSleepWeek.timeInBedPoints(todayKey: highlightKey, sleeps: snapshotSleeps)
+            timeInBedWeek: NativeSleepWeek.timeInBedPoints(todayKey: highlightKey, sleeps: snapshotSleeps),
+            hypnogram: hypnogram,
+            hoursTypical: NativeSleepPageDetail.hoursTypicalRange(days: snapshotDays, dayKey: highlightKey),
+            stageDetails: stageDetails
         )
     }
 }

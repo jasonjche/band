@@ -43,6 +43,7 @@ enum NativeActivityPageLogic {
         var zones: [Zone]
         var stats: [Stat]
         var isManual: Bool
+        var hasStrain: Bool
     }
 
     static func make(
@@ -64,8 +65,14 @@ enum NativeActivityPageLogic {
             duration: durationClock(workout),
             zones: zones(percents: percents, durationS: durationSeconds(workout), zoneSet: zoneSet),
             stats: stats(workout, same: sameWindow),
-            isManual: WorkoutSource.classify(workout.source) == .manual
+            isManual: WorkoutSource.classify(workout.source) == .manual,
+            hasStrain: workout.strain != nil
         )
+    }
+
+    /// True when the window has no HR yet — strap samples have not offloaded, so skip empty cards.
+    static func awaitingHeartRate(hrPointCount: Int, zoneCount: Int, heartStatCount: Int) -> Bool {
+        hrPointCount == 0 && zoneCount == 0 && heartStatCount == 0
     }
 
     /// Strain delta vs the average of prior same-sport workouts, only when at least three exist.
@@ -193,12 +200,15 @@ enum NativeActivityPageLogic {
             ))
         }
         if let meters = workout.distanceM, meters > 0 {
-            let km = meters / 1000
+            let imperial = UserDefaults.standard.string(forKey: UnitPrefs.distanceSystemKey) != UnitSystem.metric.rawValue
+            let perUnit = imperial ? 1609.344 : 1000.0
+            let unit = imperial ? "mi" : "km"
+            let shown = meters / perUnit
             rows.append(stat(
-                "Distance", String(format: "%.2f km", km), km,
-                same.compactMap(\.distanceM).filter { $0 > 0 }.map { $0 / 1000 },
+                "Distance", String(format: "%.2f \(unit)", shown), shown,
+                same.compactMap(\.distanceM).filter { $0 > 0 }.map { $0 / perUnit },
                 "point.topleft.down.to.point.bottomright.curvepath",
-                heart: false, unit: "km", decimals: 2
+                heart: false, unit: unit, decimals: 2
             ))
         }
         if let steps = workout.steps {
@@ -280,7 +290,7 @@ struct NativeActivityView: View {
                     }
                 }
                 .sheet(isPresented: $showEdit) {
-                    ManualWorkoutSheet(editing: workout) { row, replacing in
+                    NativeAddPastActivityForm(editing: workout, workouts: prior) { row, replacing in
                         Task {
                             await repo.saveManualWorkout(row, replacing: replacing)
                             await intelligence.analyzeRecent()
@@ -369,17 +379,20 @@ struct NativeActivityBody: View {
         }
 
         HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    NativeValueText(value: model.strainText, size: 34)
-                    NativeDelta(delta: model.strainDelta)
+            if model.hasStrain {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        NativeValueText(value: model.strainText, size: 34)
+                        NativeDelta(delta: model.strainDelta)
+                    }
+                    Text("Activity Strain")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
                 }
-                Text("Activity Strain")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
+                Spacer()
             }
-            Spacer()
+            if !model.hasStrain { Spacer() }
             VStack(alignment: .trailing, spacing: 2) {
                 Text(model.duration)
                     .font(StrandFont.rounded(28, weight: .semibold))
@@ -391,6 +404,13 @@ struct NativeActivityBody: View {
             }
         }
         .padding(.top, model.sourceLine == nil ? 8 : 0)
+
+        if awaitingHeartRate {
+            Text("Heart rate appears after the next sync")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+        }
 
         if !hr.isEmpty {
             NativeChrome.panel {
@@ -443,6 +463,14 @@ struct NativeActivityBody: View {
 
     private var totalZoneMinutes: Double {
         max(model.zones.reduce(0) { $0 + $1.minutes }, 1)
+    }
+
+    private var awaitingHeartRate: Bool {
+        NativeActivityPageLogic.awaitingHeartRate(
+            hrPointCount: hr.count,
+            zoneCount: model.zones.count,
+            heartStatCount: model.stats.filter(\.heartFamily).count
+        )
     }
 }
 

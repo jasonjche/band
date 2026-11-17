@@ -104,7 +104,8 @@ struct NativeMetricPage: View {
             kind: NativeScopeKindMap.kind(for: key),
             calendar: calendar,
             now: ending,
-            ending: ending
+            ending: ending,
+            cfg: NativeTypicalRange.cfg(for: key)
         )
         latest = points.last
         hourPoints = []

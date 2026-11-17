@@ -525,8 +525,10 @@ enum NativeDay {
     }
 
     private static func activities(workouts: [WorkoutRow], todayKey: String, scale: EffortScale) -> [Activity] {
-        workouts
-            .filter { Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs))) == todayKey }
+        let today = workouts.filter {
+            Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs))) == todayKey
+        }
+        return HomeActivityDedupe.collapse(today)
             .sorted { $0.startTs > $1.startTs }
             .map { workout in
                 Activity(
@@ -652,7 +654,15 @@ enum NativeActivity {
         }
         rows.append(Stat(title: "Duration", value: duration(workout), comparison: "—", symbol: "timer"))
         if let meters = workout.distanceM, meters > 0 {
-            rows.append(Stat(title: "Distance", value: String(format: "%.2f km", meters / 1000), comparison: "—", symbol: "point.topleft.down.to.point.bottomright.curvepath"))
+            let imperial = UserDefaults.standard.string(forKey: UnitPrefs.distanceSystemKey) != UnitSystem.metric.rawValue
+            let perUnit = imperial ? 1609.344 : 1000.0
+            let unit = imperial ? "mi" : "km"
+            rows.append(Stat(
+                title: "Distance",
+                value: String(format: "%.2f \(unit)", meters / perUnit),
+                comparison: "—",
+                symbol: "point.topleft.down.to.point.bottomright.curvepath"
+            ))
         }
         if let steps = workout.steps {
             rows.append(Stat(title: "Steps", value: "\(steps)", comparison: "—", symbol: "figure.walk"))
@@ -836,6 +846,8 @@ enum NativeTonightSleep {
         var bedtimeClock: String?
         var wakeClock: String?
         var needClock: String?
+        var alarmArmed: Bool
+        var alarmLabel: String?
     }
 
     static func make(needMin: Double?, alarmEnabled: Bool, alarmMinutes: Int) -> Model? {
@@ -852,7 +864,9 @@ enum NativeTonightSleep {
         return Model(
             bedtimeClock: bedtime,
             wakeClock: wake,
-            needClock: need.map { needText($0) }
+            needClock: need.map { needText($0) },
+            alarmArmed: alarmEnabled,
+            alarmLabel: alarmEnabled ? "Alarm \(clock(alarmMinutes))" : nil
         )
     }
 

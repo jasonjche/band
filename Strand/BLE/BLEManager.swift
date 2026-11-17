@@ -5021,12 +5021,13 @@ public final class BLEManager: NSObject, ObservableObject {
     /// gate AND the BackfillPolicy rate-limiter for the trigger. On a go: records the attempt time
     /// (persisted) and starts the offload.
     func requestSync(_ trigger: BackfillTrigger) {
-        guard OffloadTriggerPolicy.shouldRequest(trigger: trigger,
-                                                 policyEnabled: BandPowerPolicy.enabled()) else { return }
-        guard BLEManager.shouldRunPeriodicBackfill(
-            connected: state.connected, bonded: state.bonded, backfilling: backfilling) else { return }
         let now = Date().timeIntervalSince1970
         let last = UserDefaults.standard.object(forKey: BLEManager.backfillLastAtKey) as? Double
+        guard OffloadTriggerPolicy.shouldRequest(trigger: trigger,
+                                                 policyEnabled: BandPowerPolicy.enabled(),
+                                                 secondsSinceLast: last.map { now - $0 }) else { return }
+        guard BLEManager.shouldRunPeriodicBackfill(
+            connected: state.connected, bonded: state.bonded, backfilling: backfilling) else { return }
         // #160: a future-dated-clock strap's recurring automatic offloads (#928/#1012) are near-useless
         // AND each ~60s session blocks the WHOOP4 realtime-HR keep-alive re-arm (guard !backfilling), so
         // live HR lapses. Feed the already-tracked future-dated signal into BackfillPolicy, which SKIPS
