@@ -116,7 +116,7 @@ final class RepositoryRefreshBenchTests: XCTestCase {
         let vitalRows: [SourcedDailyMetric]
         let freshness: RepositoryFreshness
         let chargeBaselines: ChargeBaselines.Resolved?
-        init(_ repo: Repository) {
+        @MainActor init(_ repo: Repository) {
             days = repo.days
             sleeps = repo.sleeps
             importedSleep = repo.importedSleep

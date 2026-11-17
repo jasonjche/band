@@ -317,11 +317,18 @@ final class NativeStartLocation: NSObject, ObservableObject {
         manager.stopUpdatingLocation()
     }
 
+    private static func isAuthorized(_ status: CLAuthorizationStatus) -> Bool {
+        #if os(iOS)
+        return status == .authorizedWhenInUse || status == .authorizedAlways
+        #else
+        return status == .authorizedAlways
+        #endif
+    }
+
     private func requestOneShotIfWanted() {
         guard NativeStartLocationPolicy.shouldRequestFix(
             wanted: wanted,
-            authorized: manager.authorizationStatus == .authorizedWhenInUse
-                || manager.authorizationStatus == .authorizedAlways
+            authorized: Self.isAuthorized(manager.authorizationStatus)
         ) else { return }
         manager.requestLocation()
     }

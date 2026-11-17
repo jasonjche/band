@@ -1145,7 +1145,7 @@ final class Repository: ObservableObject {
     }
 
     nonisolated private static func mergeCaches(_ raw: RawDashboard, chargeAnchorDay: String,
-                                                hrvEpoch: Int, recoveryEpoch: Int) -> MergedCaches {
+                                                hrvEpoch: Double, recoveryEpoch: Double) -> MergedCaches {
         var fig: [String: ImportedSleepFigures] = [:]
         for p in raw.perf { fig[p.day, default: ImportedSleepFigures()].performancePct = p.value }
         for p in raw.cons { fig[p.day, default: ImportedSleepFigures()].consistencyPct = p.value }
