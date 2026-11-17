@@ -43,9 +43,7 @@ public enum BandConsistency {
     }
 
     public static func sriPair(_ m1: [Int8], _ m2: [Int8]) -> Double {
-        var same = 0
-        for i in 0..<1440 where m1[i] == m2[i] { same += 1 }
-        return 200.0 * (Double(same) / 1440.0 - 0.5)
+        sriPair(pack(m1), pack(m2))
     }
 
     public static func run(masks: [[Int8]], params: Params) -> Series {
@@ -54,41 +52,80 @@ public enum BandConsistency {
         var mapped = [Double](repeating: .nan, count: n)
         let k = params.nNights
         guard k >= 2 else { return Series(sri: sri, mapped: mapped) }
+        var packed = [PackedMask]()
+        packed.reserveCapacity(n)
+        for mask in masks { packed.append(pack(mask)) }
         for i in 0..<n {
             if i + 1 < k { continue }
-            let ms = Array(masks[(i - k + 1)...i])
-            if ms.contains(where: { $0.reduce(0) { $0 + Int($1) } < 60 }) { continue }
-            var vals: [Double] = []
-            var wts: [Double] = []
+            let base = i - k + 1
+            var thin = false
+            for j in 0..<k where packed[base + j].occupied < 60 { thin = true; break }
+            if thin { continue }
+            var acc = 0.0
+            var wsum = 0.0
             switch params.mode {
             case "consecutive":
                 for j in 0..<(k - 1) {
                     let age = (k - 2) - j
-                    vals.append(sriPair(ms[j], ms[j + 1]))
-                    wts.append(pow(params.recency, Double(age)))
+                    let w = pow(params.recency, Double(age))
+                    acc += sriPair(packed[base + j], packed[base + j + 1]) * w
+                    wsum += w
                 }
             case "all_pairs":
                 for a in 0..<k {
                     for b in (a + 1)..<k {
                         let age = (k - 1) - b
-                        vals.append(sriPair(ms[a], ms[b]))
-                        wts.append(pow(params.recency, Double(age)))
+                        let w = pow(params.recency, Double(age))
+                        acc += sriPair(packed[base + a], packed[base + b]) * w
+                        wsum += w
                     }
                 }
             default: // last_vs_each
+                let last = packed[i]
                 for j in 0..<(k - 1) {
                     let age = (k - 2) - j
-                    vals.append(sriPair(ms[k - 1], ms[j]))
-                    wts.append(pow(params.recency, Double(age)))
+                    let w = pow(params.recency, Double(age))
+                    acc += sriPair(last, packed[base + j]) * w
+                    wsum += w
                 }
             }
-            let wsum = wts.reduce(0, +)
             guard wsum > 0 else { continue }
-            var acc = 0.0
-            for idx in vals.indices { acc += vals[idx] * wts[idx] }
             sri[i] = acc / wsum
             mapped[i] = BandScores.clip(params.intercept + params.slope * sri[i], params.clipLo, params.clipHi)
         }
         return Series(sri: sri, mapped: mapped)
+    }
+
+    /// 1440 sleep/wake minutes packed into 23 × UInt64. Hamming distance of the XOR
+    /// is 1440 − same, so SRI is bit-identical to comparing Int8 slots.
+    struct PackedMask {
+        static let words = (1440 + 63) / 64
+        var bits: [UInt64]
+        var occupied: Int
+    }
+
+    static func pack(_ m: [Int8]) -> PackedMask {
+        var bits = [UInt64](repeating: 0, count: PackedMask.words)
+        var occupied = 0
+        let n = min(m.count, 1440)
+        var i = 0
+        while i < n {
+            if m[i] != 0 {
+                bits[i >> 6] |= 1 << (i & 63)
+                occupied += 1
+            }
+            i += 1
+        }
+        return PackedMask(bits: bits, occupied: occupied)
+    }
+
+    static func sriPair(_ a: PackedMask, _ b: PackedMask) -> Double {
+        var diff = 0
+        var i = 0
+        while i < PackedMask.words {
+            diff += (a.bits[i] ^ b.bits[i]).nonzeroBitCount
+            i += 1
+        }
+        return 200.0 * (Double(1440 - diff) / 1440.0 - 0.5)
     }
 }

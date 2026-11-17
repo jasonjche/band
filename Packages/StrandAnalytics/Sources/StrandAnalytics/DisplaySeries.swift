@@ -30,11 +30,31 @@ public enum DisplaySeries {
 
     /// A hole larger than the smoothing window, or 2× the median spacing, is a gap.
     public static func gapLimit(in points: [(ts: Int, value: Double)], window: Int) -> Int {
-        let spacings = zip(points, points.dropFirst()).map {
-            $1.ts - $0.ts
-        }.filter { $0 > 0 }.sorted()
-        let median = spacings.isEmpty ? window : spacings[spacings.count / 2]
-        return max(window, median * 2)
+        var n = 0
+        var first = 0
+        var allSame = true
+        var i = 1
+        while i < points.count {
+            let d = points[i].ts - points[i - 1].ts
+            if d > 0 {
+                if n == 0 { first = d }
+                else if d != first { allSame = false }
+                n += 1
+            }
+            i += 1
+        }
+        if n == 0 { return window }
+        if allSame { return max(window, first * 2) }
+        var spacings = [Int]()
+        spacings.reserveCapacity(n)
+        i = 1
+        while i < points.count {
+            let d = points[i].ts - points[i - 1].ts
+            if d > 0 { spacings.append(d) }
+            i += 1
+        }
+        spacings.sort()
+        return max(window, spacings[spacings.count / 2] * 2)
     }
 
     /// Mean-per-bucket downsample so a 1 Hz / 1-minute day stays at `maxPoints`.
@@ -127,37 +147,67 @@ public enum DisplaySeries {
         let half = window / 2
         var lo = 0
         var hi = 0
-        var buf: [Double] = []
-        buf.reserveCapacity(16)
+        var sorted: [Double] = []
+        sorted.reserveCapacity(64)
         var out: [(ts: Int, value: Double)] = []
         out.reserveCapacity(points.count)
         for point in points {
             let start = point.ts - half
             let end = point.ts + half
-            while lo < points.count, points[lo].ts < start { lo += 1 }
-            if hi < lo { hi = lo }
-            while hi < points.count, points[hi].ts <= end { hi += 1 }
+            while lo < points.count, points[lo].ts < start {
+                removeSorted(&sorted, points[lo].value)
+                lo += 1
+            }
+            if hi < lo {
+                sorted.removeAll(keepingCapacity: true)
+                hi = lo
+            }
+            while hi < points.count, points[hi].ts <= end {
+                insertSorted(&sorted, points[hi].value)
+                hi += 1
+            }
+            if sorted.count != hi - lo {
+                sorted.removeAll(keepingCapacity: true)
+                var m = lo
+                while m < hi {
+                    insertSorted(&sorted, points[m].value)
+                    m += 1
+                }
+            }
             if lo >= hi {
                 out.append(point)
                 continue
             }
-            buf.removeAll(keepingCapacity: true)
-            var m = lo
-            while m < hi {
-                buf.append(points[m].value)
-                m += 1
-            }
-            buf.sort()
-            let mid = buf.count / 2
+            let mid = sorted.count / 2
             let value: Double
-            if buf.count.isMultiple(of: 2) {
-                value = (buf[mid - 1] + buf[mid]) / 2
+            if sorted.count.isMultiple(of: 2) {
+                value = (sorted[mid - 1] + sorted[mid]) / 2
             } else {
-                value = buf[mid]
+                value = sorted[mid]
             }
             out.append((point.ts, value))
         }
         return out
+    }
+
+    private static func insertSorted(_ a: inout [Double], _ x: Double) {
+        var lo = 0, hi = a.count
+        while lo < hi {
+            let m = (lo + hi) / 2
+            if a[m] < x { lo = m + 1 } else { hi = m }
+        }
+        a.insert(x, at: lo)
+    }
+
+    private static func removeSorted(_ a: inout [Double], _ x: Double) {
+        var lo = 0, hi = a.count
+        while lo < hi {
+            let m = (lo + hi) / 2
+            if a[m] < x { lo = m + 1 } else { hi = m }
+        }
+        if lo < a.count, a[lo] == x {
+            a.remove(at: lo)
+        }
     }
 
     private static func rollingMean(

@@ -137,16 +137,14 @@ public struct SleepStageTrees: Sendable {
         guard index.allSatisfy({ $0 != nil }), rows.allSatisfy({ $0.count == columns.count }) else { return nil }
         let map = index.map { $0! }
         let nClass = base.count
+        let nRows = rows.count
         var raw = [Double](repeating: 0, count: nClass)
-        var out: [[Double]] = []
-        out.reserveCapacity(rows.count)
-        for row in rows {
-            row.withUnsafeBufferPointer { rowBuf in
+        var out = [[Double]](repeating: [Double](repeating: 0, count: map.count), count: nRows)
+        for r in 0..<nRows {
+            rows[r].withUnsafeBufferPointer { rowBuf in
                 fillProbabilities(rowBuf.baseAddress!, into: &raw)
             }
-            var ordered = [Double](repeating: 0, count: map.count)
-            for i in 0..<map.count { ordered[i] = raw[map[i]] }
-            out.append(ordered)
+            for i in 0..<map.count { out[r][i] = raw[map[i]] }
         }
         return out
     }

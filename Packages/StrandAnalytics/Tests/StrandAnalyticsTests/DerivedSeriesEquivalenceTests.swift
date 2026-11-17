@@ -195,6 +195,65 @@ final class DerivedSeriesEquivalenceTests: XCTestCase {
         XCTAssertTrue(DisplaySeries.downsample([], maxPoints: 300).isEmpty)
     }
 
+    func testRollingRmssdMatchesLegacyOnRandomAndEdges() {
+        let series: [[RRInterval]] = [
+            [],
+            (0..<5).map { RRInterval(ts: $0, rrMs: 800) },
+            (0..<60).map { RRInterval(ts: 1000 + $0, rrMs: $0.isMultiple(of: 2) ? 800 : 810) },
+            spikeRR(),
+            shuffledRRIntervals(count: 400, seed: 3),
+            gappedRRIntervals(),
+            edgeMalikWindow(),
+        ]
+        for rr in series {
+            for window in [5, 20, 60, 120] {
+                for step in [0, 10] {
+                    let got = HRVAnalyzer.rollingRmssd(
+                        rr: rr, windowSec: window, stepSec: step, minBeatsPerWindow: 8
+                    )
+                    let old = legacyRollingRmssd(
+                        rr: rr, windowSec: window, stepSec: step, minBeatsPerWindow: 8
+                    )
+                    XCTAssertEqual(got.count, old.count, "window=\(window) step=\(step)")
+                    for (a, b) in zip(got, old) {
+                        XCTAssertEqual(a.ts, b.ts)
+                        XCTAssertEqual(a.rmssd, b.rmssd, accuracy: 0)
+                    }
+                }
+            }
+        }
+    }
+
+    func testBandConsistencyMatchesLegacy() {
+        var nights: [(Int, Int)] = []
+        for i in 0..<40 {
+            nights.append((23 * 60 + (i % 5) * 3, 7 * 60 + (i % 4) * 2))
+        }
+        nights[3] = (0, 10)  // short night, occupancy < 60
+        let masks = nights.map { BandConsistency.mask(onsetMin: $0.0, wakeMin: $0.1, naps: []) }
+        for mode in ["last_vs_each", "consecutive", "all_pairs"] {
+            let params = BandConsistency.Params(
+                nNights: 5, mode: mode, recency: 0.7,
+                intercept: 0, slope: 1, clipLo: 0, clipHi: 100
+            )
+            let got = BandConsistency.run(masks: masks, params: params)
+            let old = legacyBandConsistency(masks: masks, params: params)
+            XCTAssertEqual(got.sri.count, old.sri.count)
+            for i in got.sri.indices {
+                if got.sri[i].isNaN {
+                    XCTAssertTrue(old.sri[i].isNaN, "mode=\(mode) i=\(i)")
+                } else {
+                    XCTAssertEqual(got.sri[i], old.sri[i], accuracy: 0, "mode=\(mode) i=\(i)")
+                    XCTAssertEqual(got.mapped[i], old.mapped[i], accuracy: 0)
+                }
+            }
+        }
+        let a = BandConsistency.mask(onsetMin: 22 * 60, wakeMin: 6 * 60, naps: [])
+        let b = BandConsistency.mask(onsetMin: 23 * 60, wakeMin: 7 * 60, naps: [])
+        XCTAssertEqual(BandConsistency.sriPair(a, b), legacySriPair(a, b), accuracy: 0)
+        XCTAssertEqual(BandConsistency.sriPair(a, a), 100, accuracy: 0)
+    }
+
     func testHRVCleanMatchesForRandomAndEdges() {
         let series: [[Double]] = [
             [],
@@ -206,8 +265,11 @@ final class DerivedSeriesEquivalenceTests: XCTestCase {
         ]
         for rr in series {
             let a = HRVAnalyzer.cleanRR(rr)
-            let b = HRVAnalyzer.cleanRRGapAware(rr).nn
-            XCTAssertEqual(a, b)
+            let b = HRVAnalyzer.cleanRRGapAware(rr)
+            let old = legacyCleanRRGapAware(rr)
+            XCTAssertEqual(a, b.nn)
+            XCTAssertEqual(b.nn, old.nn)
+            XCTAssertEqual(b.contiguous, old.contiguous)
             let result = HRVAnalyzer.analyze(rawRR: rr)
             if rr.count >= 20 {
                 XCTAssertEqual(result.nInput, rr.count)
@@ -630,6 +692,158 @@ final class DerivedSeriesEquivalenceTests: XCTestCase {
             (t0 + 8 * 3600, t0 + 9 * 3600),
             (t0 + 8 * 3600 + 1800, t0 + 9 * 3600 + 900),
         ]
+    }
+
+    private func legacyRollingRmssd(rr: [RRInterval], windowSec: Int, stepSec: Int,
+                                    minBeatsPerWindow: Int) -> [HRVAnalyzer.RollingRmssdPoint] {
+        guard windowSec > 0, rr.count >= minBeatsPerWindow else { return [] }
+        let sorted = rr.sortedByTsStable()
+        var ms: [Double] = []
+        ms.reserveCapacity(sorted.count)
+        for sample in sorted { ms.append(Double(sample.rrMs)) }
+        var out: [HRVAnalyzer.RollingRmssdPoint] = []
+        var lastEmitTs: Int? = nil
+        var left = 0
+        for right in 0..<sorted.count {
+            let edgeTs = sorted[right].ts
+            while left < right && edgeTs - sorted[left].ts >= windowSec { left += 1 }
+            if stepSec > 0, let last = lastEmitTs, edgeTs - last < stepSec { continue }
+            let cleaned = legacyCleanRRGapAware(Array(ms[left..<(right + 1)]))
+            guard cleaned.nn.count >= minBeatsPerWindow,
+                  let r = HRVAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous) else { continue }
+            out.append(.init(ts: edgeTs, rmssd: r))
+            lastEmitTs = edgeTs
+        }
+        return out
+    }
+
+    private func legacyBandConsistency(masks: [[Int8]], params: BandConsistency.Params)
+        -> BandConsistency.Series {
+        let n = masks.count
+        var sri = [Double](repeating: .nan, count: n)
+        var mapped = [Double](repeating: .nan, count: n)
+        let k = params.nNights
+        guard k >= 2 else { return .init(sri: sri, mapped: mapped) }
+        for i in 0..<n {
+            if i + 1 < k { continue }
+            let ms = Array(masks[(i - k + 1)...i])
+            if ms.contains(where: { $0.reduce(0) { $0 + Int($1) } < 60 }) { continue }
+            var vals: [Double] = []
+            var wts: [Double] = []
+            switch params.mode {
+            case "consecutive":
+                for j in 0..<(k - 1) {
+                    let age = (k - 2) - j
+                    vals.append(legacySriPair(ms[j], ms[j + 1]))
+                    wts.append(pow(params.recency, Double(age)))
+                }
+            case "all_pairs":
+                for a in 0..<k {
+                    for b in (a + 1)..<k {
+                        let age = (k - 1) - b
+                        vals.append(legacySriPair(ms[a], ms[b]))
+                        wts.append(pow(params.recency, Double(age)))
+                    }
+                }
+            default:
+                for j in 0..<(k - 1) {
+                    let age = (k - 2) - j
+                    vals.append(legacySriPair(ms[k - 1], ms[j]))
+                    wts.append(pow(params.recency, Double(age)))
+                }
+            }
+            let wsum = wts.reduce(0, +)
+            guard wsum > 0 else { continue }
+            var acc = 0.0
+            for idx in vals.indices { acc += vals[idx] * wts[idx] }
+            sri[i] = acc / wsum
+            mapped[i] = BandScores.clip(params.intercept + params.slope * sri[i], params.clipLo, params.clipHi)
+        }
+        return .init(sri: sri, mapped: mapped)
+    }
+
+    private func legacyCleanRRGapAware(_ rr: [Double]) -> HRVAnalyzer.CleanSeries {
+        legacyCleanRRGapAware(ms: rr, start: 0, end: rr.count)
+    }
+
+    private func legacyCleanRRGapAware(ms: [Double], start: Int, end: Int) -> HRVAnalyzer.CleanSeries {
+        let n = max(0, end - start)
+        var rangedIdx: [Int] = []; rangedIdx.reserveCapacity(n)
+        var rangedVal: [Double] = []; rangedVal.reserveCapacity(n)
+        var i = start
+        while i < end {
+            let v = ms[i]
+            if v >= HRVAnalyzer.rrMinMs && v <= HRVAnalyzer.rrMaxMs {
+                rangedIdx.append(i - start); rangedVal.append(v)
+            }
+            i += 1
+        }
+        var keptOrig: [Int] = []; keptOrig.reserveCapacity(rangedVal.count)
+        var keptVal: [Double] = []; keptVal.reserveCapacity(rangedVal.count)
+        if rangedVal.count <= HRVAnalyzer.ectopicWindowRadius {
+            for k in 0..<rangedVal.count { keptOrig.append(rangedIdx[k]); keptVal.append(rangedVal[k]) }
+        } else {
+            var neighbours: [Double] = []
+            neighbours.reserveCapacity(2 * HRVAnalyzer.ectopicWindowRadius)
+            for i in 0..<rangedVal.count {
+                let lo = max(0, i - HRVAnalyzer.ectopicWindowRadius)
+                let hi = min(rangedVal.count - 1, i + HRVAnalyzer.ectopicWindowRadius)
+                neighbours.removeAll(keepingCapacity: true)
+                for j in lo...hi where j != i { neighbours.append(rangedVal[j]) }
+                let keep: Bool
+                if neighbours.count < 2 {
+                    keep = true
+                } else {
+                    let med = HRVAnalyzer.median(neighbours)
+                    keep = med <= 0 ? true : abs(rangedVal[i] - med) / med <= HRVAnalyzer.ectopicThreshold
+                }
+                if keep { keptOrig.append(rangedIdx[i]); keptVal.append(rangedVal[i]) }
+            }
+        }
+        var contiguous: [Bool] = []; contiguous.reserveCapacity(keptVal.count)
+        for i in 0..<keptVal.count { contiguous.append(i > 0 && keptOrig[i] == keptOrig[i - 1] + 1) }
+        return HRVAnalyzer.CleanSeries(nn: keptVal, contiguous: contiguous)
+    }
+
+    private func legacySriPair(_ m1: [Int8], _ m2: [Int8]) -> Double {
+        var same = 0
+        for i in 0..<1440 where m1[i] == m2[i] { same += 1 }
+        return 200.0 * (Double(same) / 1440.0 - 0.5)
+    }
+
+    private func spikeRR() -> [RRInterval] {
+        var rr = (0..<80).map { RRInterval(ts: 2000 + $0, rrMs: 800) }
+        rr[10] = RRInterval(ts: 2010, rrMs: 1400)
+        rr[40] = RRInterval(ts: 2040, rrMs: 250)
+        rr[60] = RRInterval(ts: 2060, rrMs: 2100)
+        return rr
+    }
+
+    private func shuffledRRIntervals(count: Int, seed: UInt64) -> [RRInterval] {
+        var rng = seed
+        func next() -> UInt64 {
+            rng = rng &* 6_364_136_223_846_793_005 &+ 1
+            return rng
+        }
+        var out: [RRInterval] = []
+        out.reserveCapacity(count)
+        for i in 0..<count {
+            out.append(RRInterval(ts: 1_000 + Int(next() % 500), rrMs: 600 + Int(next() % 400)))
+            _ = i
+        }
+        return out
+    }
+
+    private func gappedRRIntervals() -> [RRInterval] {
+        var out: [RRInterval] = []
+        for i in 0..<80 { out.append(RRInterval(ts: 1_000 + i, rrMs: 800)) }
+        for i in 0..<80 { out.append(RRInterval(ts: 10_000 + i, rrMs: 810)) }
+        return out
+    }
+
+    private func edgeMalikWindow() -> [RRInterval] {
+        let values = [800, 821, 812, 783, 804, 845, 1006, 847]
+        return values.enumerated().map { RRInterval(ts: $0.offset * 2, rrMs: $0.element) }
     }
 
     private func spikeSeries() -> [Double] {

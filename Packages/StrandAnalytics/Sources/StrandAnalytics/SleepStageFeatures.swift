@@ -238,23 +238,35 @@ public enum SleepStageFeatures {
             if !beatT.isEmpty {
                 let r5 = beatRange(e - 150, e + 180)
                 if r5.count >= minBeats {
-                    let ms = Array(beatMs[r5])
-                    let m = ms.reduce(0, +) / Double(ms.count)
-                    rawSdnn[k] = (ms.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(ms.count)).squareRoot()
+                    var sum = 0.0
+                    var i = r5.lowerBound
+                    while i < r5.upperBound { sum += beatMs[i]; i += 1 }
+                    let m = sum / Double(r5.count)
+                    var ss = 0.0
+                    i = r5.lowerBound
+                    while i < r5.upperBound {
+                        let d = beatMs[i] - m
+                        ss += d * d
+                        i += 1
+                    }
+                    rawSdnn[k] = (ss / Double(r5.count)).squareRoot()
                     // Successive differences only across beats that follow one another: a pair further
                     // apart in time than the later interval is long has a dropped beat between.
                     var sq = 0.0, pairs = 0
-                    for i in r5.dropFirst() {
-                        if Double(beatT[i] - beatT[i - 1]) > beatMs[i] / 1000 + 1 { continue }
+                    i = r5.lowerBound + 1
+                    while i < r5.upperBound {
+                        if Double(beatT[i] - beatT[i - 1]) > beatMs[i] / 1000 + 1 { i += 1; continue }
                         let d = beatMs[i] - beatMs[i - 1]
                         sq += d * d; pairs += 1
+                        i += 1
                     }
                     if pairs >= minBeats / 2 { rawRmssd[k] = (sq / Double(pairs)).squareRoot() }
                 }
                 let rs = beatRange(e - 90, e + 120)
                 if rs.count >= 12 {
-                    let beats = rs.map { (Double(beatT[$0]), beatMs[$0]) }
-                    rawResp[k] = SleepStagerV2.respRegularity(beats, dft: &respDFT)
+                    rawResp[k] = SleepStagerV2.respRegularity(
+                        tSec: beatT, ms: beatMs, range: rs, dft: &respDFT
+                    )
                 }
             }
         }

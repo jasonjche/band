@@ -3148,6 +3148,12 @@ public enum SleepStager {
         // 480 nights covering dense, sparse, duplicate-timestamp, tail-loaded, boundary and empty input and
         // found them identical.
         var i = seg.startIndex
+        var bucket = [Double]()
+        bucket.reserveCapacity(64)
+        var rangedIdx: [Int] = []
+        var rangedVal: [Double] = []
+        var keptOrig: [Int] = []
+        var keptVal: [Double] = []
         repeat {
             // Final window closes on `end` — same closed-window rule as sessionRestingHR, so an
             // endpoint beat counts instead of vanishing after admission. `repeat` runs once for a
@@ -3165,7 +3171,9 @@ public enum SleepStager {
                 let upper = t + windowS
                 while j < seg.endIndex && seg[j].ts < upper { j += 1 }
             }
-            let bucket = seg[i..<j].map { Double($0.rrMs) }
+            bucket.removeAll(keepingCapacity: true)
+            var k = i
+            while k < j { bucket.append(Double(seg[k].rrMs)); k += 1 }
             if !isFinal { i = j }
             // Full clean (range + Malik ectopic rejection), not just range — matches the
             // analyze() pipeline. The 0x2A37 RR on a WHOOP 5/MG is PPG-derived and noisier
@@ -3173,15 +3181,33 @@ public enum SleepStager {
             // jitter spike inflates the session HRV. Ectopic rejection drops those (#262/#235).
             // #204/#195: gap-aware — a successive difference straddling a dropped beat is skipped so a
             // removed out-of-range/ectopic beat can't splice its neighbours into a spurious delta.
-            let cleaned = HRVAnalyzer.cleanRRGapAware(bucket)
-            // The same `minBeats` floor the spot reading and the SDNN index apply. The night is a plain mean
-            // over windows, so without it a window left with a handful of clean beats (a dropout, a
-            // movement-shredded stretch, a short final window) weighed as much as a full five minutes.
-            let rmssd: Double? = (cleaned.nn.count >= HRVAnalyzer.minBeats)
-                ? HRVAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous) : nil
+            let nClean: Int
+            let rmssd: Double?
+            bucket.withUnsafeBufferPointer { buf in
+                HRVAnalyzer.rangeAndEctopic(
+                    ms: buf, start: 0, end: buf.count,
+                    rangedIdx: &rangedIdx, rangedVal: &rangedVal,
+                    keptOrig: &keptOrig, keptVal: &keptVal
+                )
+            }
+            nClean = keptVal.count
+            if nClean >= HRVAnalyzer.minBeats {
+                var sumSq = 0.0, pairs = 0, p = 1
+                while p < keptVal.count {
+                    if keptOrig[p] == keptOrig[p - 1] + 1 {
+                        let d = keptVal[p] - keptVal[p - 1]
+                        sumSq += d * d
+                        pairs += 1
+                    }
+                    p += 1
+                }
+                rmssd = pairs < 1 ? nil : (sumSq / Double(pairs)).squareRoot()
+            } else {
+                rmssd = nil
+            }
             let center = t + windowS / 2
             let stage = stages.first { center >= $0.start && center < $0.end }?.stage ?? "?"
-            out.append(HrvWindow(startTs: t, stage: stage, cleanBeats: cleaned.nn.count, rmssd: rmssd))
+            out.append(HrvWindow(startTs: t, stage: stage, cleanBeats: nClean, rmssd: rmssd))
             t += windowS
         } while t < end
         return out

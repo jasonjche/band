@@ -176,28 +176,63 @@ public enum BandStress {
     public static func rmssdByBucket(rr: [(ts: Int, ms: Double)],
                                      bucketSeconds: Int = bucketSeconds) -> [Int: Double] {
         guard bucketSeconds > 0, !rr.isEmpty else { return [:] }
+        var buf: [Double] = []
+        buf.reserveCapacity(256)
+        var out: [Int: Double] = [:]
+        out.reserveCapacity(min(rr.count, 1_440))
+
+        var monotonic = true
+        var prevKey = Int.min
+        for sample in rr {
+            let key = floorDiv(sample.ts, bucketSeconds) * bucketSeconds
+            if key < prevKey { monotonic = false; break }
+            prevKey = key
+        }
+
+        if monotonic {
+            var i = 0
+            while i < rr.count {
+                let key = floorDiv(rr[i].ts, bucketSeconds) * bucketSeconds
+                buf.removeAll(keepingCapacity: true)
+                var j = i
+                while j < rr.count && floorDiv(rr[j].ts, bucketSeconds) * bucketSeconds == key {
+                    buf.append(rr[j].ms)
+                    j += 1
+                }
+                if let rmssd = HRVAnalyzer.rmssdOnly(buf) { out[key] = rmssd }
+                i = j
+            }
+            return out
+        }
+
         var counts: [Int: Int] = [:]
         counts.reserveCapacity(min(rr.count, 1_440))
         for sample in rr {
             let key = floorDiv(sample.ts, bucketSeconds) * bucketSeconds
             counts[key, default: 0] += 1
         }
-        var groups: [Int: [Double]] = [:]
-        groups.reserveCapacity(counts.count)
+        var offsets: [Int: Int] = [:]
+        offsets.reserveCapacity(counts.count)
+        var total = 0
         for (key, n) in counts {
-            var buf: [Double] = []
-            buf.reserveCapacity(n)
-            groups[key] = buf
+            offsets[key] = total
+            total += n
         }
+        var storage = [Double](repeating: 0, count: total)
+        var cursor = offsets
         for sample in rr {
             let key = floorDiv(sample.ts, bucketSeconds) * bucketSeconds
-            groups[key]!.append(sample.ms)
+            let p = cursor[key]!
+            storage[p] = sample.ms
+            cursor[key] = p + 1
         }
-        var out: [Int: Double] = [:]
-        out.reserveCapacity(groups.count)
-        for (key, values) in groups {
-            if let rmssd = HRVAnalyzer.analyze(rawRR: values).rmssd {
-                out[key] = rmssd
+        storage.withUnsafeBufferPointer { all in
+            for (key, off) in offsets {
+                let n = counts[key]!
+                let slice = UnsafeBufferPointer(start: all.baseAddress! + off, count: n)
+                if let rmssd = HRVAnalyzer.rmssdOnly(ms: slice, start: 0, end: n, minBeats: HRVAnalyzer.minBeats) {
+                    out[key] = rmssd
+                }
             }
         }
         return out

@@ -126,21 +126,10 @@ public enum HRVAnalyzer {
         guard nn.count > ectopicWindowRadius else { return nn }
         var kept: [Double] = []
         kept.reserveCapacity(nn.count)
-        var neighbours: [Double] = []
-        neighbours.reserveCapacity(2 * ectopicWindowRadius)
-        for i in 0..<nn.count {
-            let lo = max(0, i - ectopicWindowRadius)
-            let hi = min(nn.count - 1, i + ectopicWindowRadius)
-            neighbours.removeAll(keepingCapacity: true)
-            for j in lo...hi where j != i { neighbours.append(nn[j]) }
-            guard neighbours.count >= 2 else { kept.append(nn[i]); continue }
-            let med = median(neighbours)
-            if med <= 0 { kept.append(nn[i]); continue }
-            let deviation = abs(nn[i] - med) / med
-            if deviation <= ectopicThreshold {
-                kept.append(nn[i])
-            }
-            // else: drop this beat as ectopic.
+        nn.withUnsafeBufferPointer { buf in
+            let p = buf.baseAddress!
+            let n = buf.count
+            for i in 0..<n where malikKeep(p, i, n) { kept.append(p[i]) }
         }
         return kept
     }
@@ -172,46 +161,68 @@ public enum HRVAnalyzer {
     /// Clean `ms[start..<end]` as a local window. Indices in `CleanSeries.contiguous` are
     /// relative to `start`, matching `cleanRRGapAware(Array(ms[start..<end]))`.
     static func cleanRRGapAware(ms: [Double], start: Int, end: Int) -> CleanSeries {
-        let n = max(0, end - start)
-        // Pass 1: range filter, keeping each survivor's index in the ORIGINAL series.
-        var rangedIdx: [Int] = []; rangedIdx.reserveCapacity(n)
-        var rangedVal: [Double] = []; rangedVal.reserveCapacity(n)
-        var i = start
-        while i < end {
-            let v = ms[i]
-            if v >= rrMinMs && v <= rrMaxMs { rangedIdx.append(i - start); rangedVal.append(v) }
+        ms.withUnsafeBufferPointer { buf in
+            cleanRRGapAware(ms: buf, start: start, end: end)
+        }
+    }
+
+    static func cleanRRGapAware(ms: UnsafeBufferPointer<Double>, start: Int, end: Int) -> CleanSeries {
+        var rangedIdx: [Int] = []
+        var rangedVal: [Double] = []
+        var keptOrig: [Int] = []
+        var keptVal: [Double] = []
+        rangeAndEctopic(
+            ms: ms, start: start, end: end,
+            rangedIdx: &rangedIdx, rangedVal: &rangedVal,
+            keptOrig: &keptOrig, keptVal: &keptVal
+        )
+        var contiguous = [Bool](repeating: false, count: keptVal.count)
+        if keptVal.count > 1 {
+            for i in 1..<keptVal.count { contiguous[i] = keptOrig[i] == keptOrig[i - 1] + 1 }
+        }
+        return CleanSeries(nn: keptVal, contiguous: contiguous)
+    }
+
+    /// RMSSD after the same range + Malik clean `analyze` uses, skipping SDNN / mean / pNN50.
+    static func rmssdOnly(_ rawRR: [Double]) -> Double? {
+        rawRR.withUnsafeBufferPointer { rmssdOnly(ms: $0, start: 0, end: $0.count, minBeats: minBeats) }
+    }
+
+    static func rmssdOnly(ms: UnsafeBufferPointer<Double>, start: Int, end: Int, minBeats: Int) -> Double? {
+        var rangedIdx: [Int] = []
+        var rangedVal: [Double] = []
+        var keptOrig: [Int] = []
+        var keptVal: [Double] = []
+        return rmssdOnly(
+            ms: ms, start: start, end: end, minBeats: minBeats,
+            rangedIdx: &rangedIdx, rangedVal: &rangedVal,
+            keptOrig: &keptOrig, keptVal: &keptVal
+        )
+    }
+
+    static func rmssdOnly(
+        ms: UnsafeBufferPointer<Double>, start: Int, end: Int, minBeats: Int,
+        rangedIdx: inout [Int], rangedVal: inout [Double],
+        keptOrig: inout [Int], keptVal: inout [Double]
+    ) -> Double? {
+        rangeAndEctopic(
+            ms: ms, start: start, end: end,
+            rangedIdx: &rangedIdx, rangedVal: &rangedVal,
+            keptOrig: &keptOrig, keptVal: &keptVal
+        )
+        guard keptVal.count >= minBeats else { return nil }
+        var sumSq = 0.0
+        var count = 0
+        var i = 1
+        while i < keptVal.count {
+            if keptOrig[i] == keptOrig[i - 1] + 1 {
+                let d = keptVal[i] - keptVal[i - 1]
+                sumSq += d * d
+                count += 1
+            }
             i += 1
         }
-        // Pass 2: Malik ectopic rejection over the range-filtered values, mirroring `rejectEctopic`
-        // (same windows, same median, same threshold) so the kept values match `cleanRR` exactly, while
-        // carrying each survivor's original index forward.
-        var keptOrig: [Int] = []; keptOrig.reserveCapacity(rangedVal.count)
-        var keptVal: [Double] = []; keptVal.reserveCapacity(rangedVal.count)
-        if rangedVal.count <= ectopicWindowRadius {
-            // rejectEctopic returns the input unchanged for a series this short.
-            for k in 0..<rangedVal.count { keptOrig.append(rangedIdx[k]); keptVal.append(rangedVal[k]) }
-        } else {
-            var neighbours: [Double] = []
-            neighbours.reserveCapacity(2 * ectopicWindowRadius)
-            for i in 0..<rangedVal.count {
-                let lo = max(0, i - ectopicWindowRadius)
-                let hi = min(rangedVal.count - 1, i + ectopicWindowRadius)
-                neighbours.removeAll(keepingCapacity: true)
-                for j in lo...hi where j != i { neighbours.append(rangedVal[j]) }
-                let keep: Bool
-                if neighbours.count < 2 {
-                    keep = true
-                } else {
-                    let med = median(neighbours)
-                    keep = med <= 0 ? true : abs(rangedVal[i] - med) / med <= ectopicThreshold
-                }
-                if keep { keptOrig.append(rangedIdx[i]); keptVal.append(rangedVal[i]) }
-            }
-        }
-        // A survivor is contiguous with its predecessor only when their ORIGINAL indices are adjacent.
-        var contiguous: [Bool] = []; contiguous.reserveCapacity(keptVal.count)
-        for i in 0..<keptVal.count { contiguous.append(i > 0 && keptOrig[i] == keptOrig[i - 1] + 1) }
-        return CleanSeries(nn: keptVal, contiguous: contiguous)
+        return count < 1 ? nil : (sumSq / Double(count)).squareRoot()
     }
 
     /// Task Force RMSSD that counts a successive difference only when the two beats were adjacent in the
@@ -364,35 +375,96 @@ public enum HRVAnalyzer {
         guard windowSec > 0, rr.count >= minBeatsPerWindow else { return [] }
         // Stable: preserves the store's #823 emission order for same-second beats, which RMSSD needs.
         let sorted = rr.sortedByTsStable()
-        var ms: [Double] = []
-        ms.reserveCapacity(sorted.count)
-        for sample in sorted { ms.append(Double(sample.rrMs)) }
+        let n = sorted.count
+        var ts = [Int](repeating: 0, count: n)
+        var ms = [Double](repeating: 0, count: n)
+        for i in 0..<n {
+            ts[i] = sorted[i].ts
+            ms[i] = Double(sorted[i].rrMs)
+        }
+        var filt = [Int]()
+        var keep = [Bool]()
+        let cap = min(n, max(32, windowSec * 4))
+        filt.reserveCapacity(cap)
+        keep.reserveCapacity(cap)
+        var head = 0
         var out: [RollingRmssdPoint] = []
         var lastEmitTs: Int? = nil
         var left = 0   // index of the oldest interval still inside the trailing window
-        for right in 0..<sorted.count {
-            let edgeTs = sorted[right].ts
-            // Advance the left edge so [left, right] contains exactly (edgeTs - windowSec, edgeTs].
-            while left < right && edgeTs - sorted[left].ts >= windowSec { left += 1 }
-            // Thinning stride: skip emitting until at least `stepSec` has passed since the last emitted point.
-            if stepSec > 0, let last = lastEmitTs, edgeTs - last < stepSec { continue }
-            // Clean the window's raw R-R values with the shared range + Malik ectopic pipeline, then
-            // require enough survivors before trusting a windowed rMSSD.
-            //
-            // #1448: GAP-AWARE, exactly as the nightly `analyze` above already is. Dropping a beat joins
-            // two intervals that were never adjacent, and their difference is a splice rather than a
-            // physiological delta — the spurious large delta this analyzer's gap-aware pair (#204/#195)
-            // exists to exclude. `cleaned.nn` is byte-identical to `cleanRR` over the same input, so the
-            // survivor gate is unchanged, and `rmssdGapAware` equals `rmssdRaw` on a window with no gaps:
-            // only windows that actually lost a beat move. A window whose survivors share NO adjacent
-            // pair now emits nothing rather than a number built entirely from splices.
-            let cleaned = cleanRRGapAware(ms: ms, start: left, end: right + 1)
-            guard cleaned.nn.count >= minBeatsPerWindow,
-                  let r = rmssdGapAware(cleaned.nn, cleaned.contiguous) else { continue }
-            out.append(RollingRmssdPoint(ts: edgeTs, rmssd: r))
-            lastEmitTs = edgeTs
+        return ms.withUnsafeBufferPointer { msBuf in
+            let mp = msBuf.baseAddress!
+            let radius = ectopicWindowRadius
+            for right in 0..<n {
+                let edgeTs = ts[right]
+                let oldEnd = filt.count
+                // Advance the left edge so [left, right] contains exactly (edgeTs - windowSec, edgeTs].
+                while left < right && edgeTs - ts[left] >= windowSec { left += 1 }
+                while head < filt.count && filt[head] < left { head += 1 }
+                if mp[right] >= rrMinMs && mp[right] <= rrMaxMs {
+                    filt.append(right)
+                    keep.append(false)
+                }
+                var compacted = false
+                if head > 1024 && head * 2 > filt.count {
+                    filt.removeFirst(head)
+                    keep.removeFirst(head)
+                    head = 0
+                    compacted = true
+                }
+                let end = filt.count
+                if end > head {
+                    filt.withUnsafeBufferPointer { fBuf in
+                        let fp = fBuf.baseAddress!
+                        let nFilt = end - head
+                        if compacted || nFilt <= 2 * radius + 1 {
+                            for p in head..<end {
+                                keep[p] = malikKeepScattered(ms: mp, idx: fp, pos: p, head: head, end: end)
+                            }
+                        } else {
+                            let leftHi = min(end, head + radius)
+                            for p in head..<leftHi {
+                                keep[p] = malikKeepScattered(ms: mp, idx: fp, pos: p, head: head, end: end)
+                            }
+                            let rightLo = max(head, oldEnd - radius)
+                            var p = rightLo < leftHi ? leftHi : rightLo
+                            while p < end {
+                                keep[p] = malikKeepScattered(ms: mp, idx: fp, pos: p, head: head, end: end)
+                                p += 1
+                            }
+                        }
+                    }
+                }
+                // Thinning stride: skip emitting until at least `stepSec` has passed since the last emitted point.
+                if stepSec > 0, let last = lastEmitTs, edgeTs - last < stepSec { continue }
+                if end - head < minBeatsPerWindow { continue }
+                var sumSq = 0.0
+                var pairs = 0
+                var nClean = 0
+                var prevOrig = -2
+                var prevVal = 0.0
+                var p = head
+                while p < end {
+                    if keep[p] {
+                        let orig = filt[p] - left
+                        let val = mp[filt[p]]
+                        if nClean > 0 && orig == prevOrig + 1 {
+                            let d = val - prevVal
+                            sumSq += d * d
+                            pairs += 1
+                        }
+                        nClean += 1
+                        prevOrig = orig
+                        prevVal = val
+                    }
+                    p += 1
+                }
+                if nClean >= minBeatsPerWindow, pairs >= 1 {
+                    out.append(RollingRmssdPoint(ts: edgeTs, rmssd: (sumSq / Double(pairs)).squareRoot()))
+                    lastEmitTs = edgeTs
+                }
+            }
+            return out
         }
-        return out
     }
 
     // MARK: - R-R integrity diagnostics (#257)
@@ -973,6 +1045,126 @@ public enum HRVAnalyzer {
     }
 
     // MARK: - Helpers
+
+    /// Range filter then Malik ectopic into `kept*`. `keptOrig` is the index in
+    /// `ms[start..<end]` (0-based from `start`), matching `cleanRRGapAware`.
+    static func rangeAndEctopic(
+        ms: UnsafeBufferPointer<Double>, start: Int, end: Int,
+        rangedIdx: inout [Int], rangedVal: inout [Double],
+        keptOrig: inout [Int], keptVal: inout [Double]
+    ) {
+        rangedIdx.removeAll(keepingCapacity: true)
+        rangedVal.removeAll(keepingCapacity: true)
+        keptOrig.removeAll(keepingCapacity: true)
+        keptVal.removeAll(keepingCapacity: true)
+        let nRaw = max(0, end - start)
+        if nRaw == 0 { return }
+        if rangedIdx.capacity < nRaw { rangedIdx.reserveCapacity(nRaw) }
+        if rangedVal.capacity < nRaw { rangedVal.reserveCapacity(nRaw) }
+        var i = start
+        while i < end {
+            let v = ms[i]
+            if v >= rrMinMs && v <= rrMaxMs {
+                rangedIdx.append(i - start)
+                rangedVal.append(v)
+            }
+            i += 1
+        }
+        let n = rangedVal.count
+        if keptOrig.capacity < n { keptOrig.reserveCapacity(n) }
+        if keptVal.capacity < n { keptVal.reserveCapacity(n) }
+        if n <= ectopicWindowRadius {
+            for k in 0..<n {
+                keptOrig.append(rangedIdx[k])
+                keptVal.append(rangedVal[k])
+            }
+            return
+        }
+        rangedVal.withUnsafeBufferPointer { buf in
+            let p = buf.baseAddress!
+            for k in 0..<n where malikKeep(p, k, n) {
+                keptOrig.append(rangedIdx[k])
+                keptVal.append(p[k])
+            }
+        }
+    }
+
+    /// Malik keep/drop for a beat whose neighbours live at `idx[head..<end]` (raw indices into `ms`).
+    @inline(__always)
+    static func malikKeepScattered(
+        ms: UnsafePointer<Double>, idx: UnsafePointer<Int>,
+        pos: Int, head: Int, end: Int
+    ) -> Bool {
+        let i = pos - head
+        let n = end - head
+        if i >= ectopicWindowRadius && i + ectopicWindowRadius < n {
+            let med = median4(
+                ms[idx[pos - 2]], ms[idx[pos - 1]],
+                ms[idx[pos + 1]], ms[idx[pos + 2]]
+            )
+            return med <= 0 || abs(ms[idx[pos]] - med) / med <= ectopicThreshold
+        }
+        let lo = i > ectopicWindowRadius ? pos - ectopicWindowRadius : head
+        let hi = i + ectopicWindowRadius < n ? pos + ectopicWindowRadius : end - 1
+        var a = 0.0, b = 0.0, c = 0.0, d = 0.0
+        var k = 0
+        var j = lo
+        while j <= hi {
+            if j != pos {
+                switch k {
+                case 0: a = ms[idx[j]]
+                case 1: b = ms[idx[j]]
+                case 2: c = ms[idx[j]]
+                default: d = ms[idx[j]]
+                }
+                k += 1
+            }
+            j += 1
+        }
+        if k < 2 { return true }
+        let med: Double
+        switch k {
+        case 2: med = (a + b) / 2.0
+        case 3: med = median3(a, b, c)
+        default: med = median4(a, b, c, d)
+        }
+        return med <= 0 || abs(ms[idx[pos]] - med) / med <= ectopicThreshold
+    }
+
+    /// Malik keep/drop for beat `i` of a range-filtered series. Radius 2 is unrolled
+    /// (at most 4 neighbours) so the ectopic filter never allocates.
+    @inline(__always)
+    static func malikKeep(_ vals: UnsafePointer<Double>, _ i: Int, _ n: Int) -> Bool {
+        if i >= ectopicWindowRadius && i + ectopicWindowRadius < n {
+            let med = median4(vals[i - 2], vals[i - 1], vals[i + 1], vals[i + 2])
+            return med <= 0 || abs(vals[i] - med) / med <= ectopicThreshold
+        }
+        let lo = i > ectopicWindowRadius ? i - ectopicWindowRadius : 0
+        let hi = i + ectopicWindowRadius < n ? i + ectopicWindowRadius : n - 1
+        var a = 0.0, b = 0.0, c = 0.0, d = 0.0
+        var k = 0
+        var j = lo
+        while j <= hi {
+            if j != i {
+                switch k {
+                case 0: a = vals[j]
+                case 1: b = vals[j]
+                case 2: c = vals[j]
+                default: d = vals[j]
+                }
+                k += 1
+            }
+            j += 1
+        }
+        if k < 2 { return true }
+        let med: Double
+        switch k {
+        case 2: med = (a + b) / 2.0
+        case 3: med = median3(a, b, c)
+        default: med = median4(a, b, c, d)
+        }
+        return med <= 0 || abs(vals[i] - med) / med <= ectopicThreshold
+    }
 
     /// Median of a non-empty array. (Caller guarantees non-empty.)
     /// n≤4 (Malik radius-2 neighbourhood) is unrolled so the ectopic filter

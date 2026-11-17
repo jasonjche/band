@@ -156,6 +156,96 @@ final class DerivedSeriesPerfTests: XCTestCase {
         }
     }
 
+    func testPerf_bandConsistencyRun() {
+        let nights = Self.fixtures.healthspanDays.map {
+            (onsetMin: $0.sleepOnsetMin ?? 0, wakeMin: $0.sleepWakeMin ?? 0)
+        }
+        let masks = nights.map {
+            BandConsistency.mask(onsetMin: $0.onsetMin, wakeMin: $0.wakeMin, naps: [])
+        }
+        let params = BandConsistency.Params(
+            nNights: 5, mode: "last_vs_each", recency: 0.7,
+            intercept: 0, slope: 1, clipLo: 0, clipHi: 100
+        )
+        report("BandConsistency.run") {
+            _ = BandConsistency.run(masks: masks, params: params)
+        }
+    }
+
+    func testPerf_analysisPassDenseNight() {
+        let nights = Self.fixtures.denseNights
+        var i = 0
+        func next() -> DenseNight {
+            let n = nights[i % nights.count]
+            i += 1
+            return n
+        }
+        report("SleepStageFeatures.rows") {
+            let n = next()
+            _ = SleepStageFeatures.rows(start: n.start, end: n.end, grav: n.grav, hr: n.hr, rr: n.rr)
+        }
+        i = 0
+        let rows = SleepStageFeatures.rows(
+            start: nights[0].start, end: nights[0].end,
+            grav: nights[0].grav, hr: nights[0].hr, rr: nights[0].rr
+        )
+        report("SleepStageContext.firstInput") {
+            _ = SleepStageContext.firstInput(rows)
+        }
+        let first = SleepStageContext.firstInput(rows)
+        let trees = SleepStageTrees.bundled("SleepStageFirst")
+        let trees2 = SleepStageTrees.bundled("SleepStageSecond")
+        report("SleepStageTrees.first") {
+            if let trees {
+                _ = trees.probabilities(first, order: SleepStageDecoder.stages)
+            }
+        }
+        if let trees, let p1 = trees.probabilities(first, order: SleepStageDecoder.stages) {
+            report("SleepStageContext.secondInput") {
+                _ = SleepStageContext.secondInput(first: first, probabilities: p1)
+            }
+            let second = SleepStageContext.secondInput(first: first, probabilities: p1)
+            report("SleepStageTrees.second") {
+                if let trees2 {
+                    _ = trees2.probabilities(second, order: SleepStageDecoder.stages)
+                }
+            }
+        }
+        i = 0
+        report("SleepStager.sessionRestingHR") {
+            let n = next()
+            _ = SleepStager.sessionRestingHR(start: n.start, end: n.end, hr: n.hr)
+        }
+        i = 0
+        report("SleepStager.sessionAvgHRV") {
+            let n = next()
+            _ = SleepStager.sessionAvgHRV(start: n.start, end: n.end, rr: n.rr)
+        }
+        i = 0
+        report("SleepStager.detectSleep.learned") {
+            let n = next()
+            _ = SleepStager.detectSleep(
+                hr: n.hr, rr: n.rr, gravity: n.grav,
+                useSleepStagerV2: true, useSleepStageLearned: true,
+                traceSink: { _ in }
+            )
+        }
+        i = 0
+        let profile = UserProfile(weightKg: 80, heightCm: 180, age: 32, sex: "male")
+        report("AnalyticsEngine.analyzeDay.denseNight") {
+            let n = next()
+            _ = AnalyticsEngine.analyzeDay(
+                day: n.day,
+                hr: n.hr, rr: n.rr, gravity: n.grav,
+                dayHr: n.hr, dayGravity: n.grav,
+                profile: profile,
+                useSleepStagerV2: true,
+                useSleepStageLearned: true,
+                traceSink: { _ in }
+            )
+        }
+    }
+
     // MARK: - Timing
 
     private func report(_ name: String, body: () -> Void) {
@@ -199,6 +289,7 @@ final class DerivedSeriesPerfTests: XCTestCase {
         let healthspanDays: [HealthspanEngine.Day]
         let assessmentSeries: PerformanceAssessment.Series
         let scopePoints: [ScopeSeries.Point]
+        let denseNights: [DenseNight]
 
         init() {
             let dayStart = DerivedSeriesPerfTests.dayStart
@@ -314,6 +405,44 @@ final class DerivedSeriesPerfTests: XCTestCase {
                 recovery: recovery, strain21: strain, sleepPerformance: sleepPerf,
                 sleepHours: sleepHours, hrv: hrv, rhr: rhr, steps: stepsMap
             )
+
+            // 10 synthetic 8-hour 1 Hz nights so learned staging, sessionRestingHR and
+            // sessionAvgHRV actually run. Distinct days so memo caches miss across timed runs.
+            let night0 = 1_749_513_600 + 2 * 3_600   // 2026-06-10 02:00 UTC
+            let dur = 8 * 3_600
+            var dense: [DenseNight] = []
+            dense.reserveCapacity(10)
+            for n in 0..<10 {
+                let start = night0 + n * 86_400
+                var grav: [GravitySample] = []
+                var hr: [HRSample] = []
+                var rr: [RRInterval] = []
+                grav.reserveCapacity(dur)
+                hr.reserveCapacity(dur)
+                rr.reserveCapacity(dur)
+                for t in 0..<dur {
+                    let ts = start + t
+                    let wobble = 0.002 * Double((t + n) % 17)
+                    grav.append(GravitySample(ts: ts, x: wobble, y: 0.01, z: 0.99))
+                    let bpm = 52 + (t % 11) / 5
+                    hr.append(HRSample(ts: ts, bpm: bpm))
+                    rr.append(RRInterval(ts: ts, rrMs: 1_150 - bpm * 2 + (t % 7)))
+                }
+                dense.append(DenseNight(
+                    day: String(format: "2026-06-%02d", 10 + n),
+                    start: start, end: start + dur, grav: grav, hr: hr, rr: rr
+                ))
+            }
+            denseNights = dense
         }
+    }
+
+    fileprivate struct DenseNight {
+        let day: String
+        let start: Int
+        let end: Int
+        let grav: [GravitySample]
+        let hr: [HRSample]
+        let rr: [RRInterval]
     }
 }

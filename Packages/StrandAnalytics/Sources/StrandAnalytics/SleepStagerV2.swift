@@ -406,22 +406,32 @@ public enum SleepStagerV2 {
     /// computes each factor with the very expressions the transform used inline, so reading it back is
     /// bit-identical to recomputing it; a night builds it once per `n` and drops it with the night.
     /// Kotlin twin: `SleepStagerV2.RespDft`.
-    struct RespDFT {
+    /// Reference type so a night's per-`n` table is not copied on every epoch lookup.
+    final class RespDFT {
         let kLo: Int
-        let cosines: [[Double]]
-        let sines: [[Double]]
+        let n: Int
+        let nBins: Int
+        /// Sample-major: `cosines[j * nBins + b]` is cos of bin `kLo+b` at sample `j`.
+        /// Built in the same (k, j) order as the inline transform so each bin's
+        /// successive sum is bit-identical.
+        let cosines: [Double]
+        let sines: [Double]
 
         init(n: Int, kLo: Int, kHi: Int) {
             self.kLo = kLo
-            var cosines: [[Double]] = []
-            var sines: [[Double]] = []
+            self.n = n
+            let nBins = kHi - kLo + 1
+            self.nBins = nBins
+            var cosines = [Double](repeating: 0, count: n * nBins)
+            var sines = [Double](repeating: 0, count: n * nBins)
             for k in kLo...kHi {
+                let b = k - kLo
                 let w = -2.0 * Double.pi * Double(k) / Double(n)
-                var c = [Double](repeating: 0, count: n)
-                var s = [Double](repeating: 0, count: n)
-                for j in 0..<n { let a = w * Double(j); c[j] = cos(a); s[j] = sin(a) }
-                cosines.append(c)
-                sines.append(s)
+                for j in 0..<n {
+                    let a = w * Double(j)
+                    cosines[j * nBins + b] = cos(a)
+                    sines[j * nBins + b] = sin(a)
+                }
             }
             self.cosines = cosines
             self.sines = sines
@@ -435,7 +445,46 @@ public enum SleepStagerV2 {
     /// one for a night. Kotlin twin: `SleepStagerV2.respRegularity`.
     static func respRegularity(_ beats: [(Double, Double)], dft: inout [Int: RespDFT]) -> Double? {
         if beats.count < 12 { return nil }
-        let t0 = beats.first!.0, tN = beats.last!.0
+        return beats.withUnsafeBufferPointer { buf in
+            respRegularity(times: { buf[$0].0 }, ms: { buf[$0].1 }, count: buf.count, dft: &dft)
+        }
+    }
+
+    /// Same transform as `respRegularity(_ beats:)`, over parallel beat arrays (the feature
+    /// extractor holds times and intervals separately and should not allocate tuples per epoch).
+    static func respRegularity(
+        tSec: [Int], ms: [Double], range: Range<Int>, dft: inout [Int: RespDFT]
+    ) -> Double? {
+        let count = range.count
+        if count < 12 { return nil }
+        let origin = range.lowerBound
+        let last = origin + count - 1
+        let t0 = Double(tSec[origin]), tN = Double(tSec[last])
+        if tN <= t0 { return nil }
+        let n = Int(ceil((tN - t0) / 0.25 - 1e-9))
+        if n < 16 { return nil }
+        var y = [Double](repeating: 0, count: n)
+        var seg = 0
+        tSec.withUnsafeBufferPointer { tBuf in
+            ms.withUnsafeBufferPointer { mBuf in
+                let tp = tBuf.baseAddress!
+                let mp = mBuf.baseAddress!
+                for i in 0..<n {
+                    let t = t0 + 0.25 * Double(i)
+                    while seg < count - 2 && Double(tp[origin + seg + 1]) < t { seg += 1 }
+                    let ta = Double(tp[origin + seg]), tb = Double(tp[origin + seg + 1])
+                    let va = mp[origin + seg], vb = mp[origin + seg + 1]
+                    y[i] = tb <= ta ? va : va + min(max((t - ta) / (tb - ta), 0), 1) * (vb - va)
+                }
+            }
+        }
+        return finishRespRegularity(y: &y, n: n, dft: &dft)
+    }
+
+    private static func respRegularity(
+        times: (Int) -> Double, ms: (Int) -> Double, count: Int, dft: inout [Int: RespDFT]
+    ) -> Double? {
+        let t0 = times(0), tN = times(count - 1)
         if tN <= t0 { return nil }
         let n = Int(ceil((tN - t0) / 0.25 - 1e-9))   // np.arange(t0, tN, 0.25) length
         if n < 16 { return nil }
@@ -445,12 +494,18 @@ public enum SleepStagerV2 {
         var seg = 0
         for i in 0..<n {
             let t = t0 + 0.25 * Double(i)
-            while seg < beats.count - 2 && beats[seg + 1].0 < t { seg += 1 }
-            let ta = beats[seg].0, tb = beats[seg + 1].0
-            let va = beats[seg].1, vb = beats[seg + 1].1
+            while seg < count - 2 && times(seg + 1) < t { seg += 1 }
+            let ta = times(seg), tb = times(seg + 1)
+            let va = ms(seg), vb = ms(seg + 1)
             y[i] = tb <= ta ? va : va + min(max((t - ta) / (tb - ta), 0), 1) * (vb - va)
         }
-        let mean = y.reduce(0, +) / Double(n)
+        return finishRespRegularity(y: &y, n: n, dft: &dft)
+    }
+
+    private static func finishRespRegularity(y: inout [Double], n: Int, dft: inout [Int: RespDFT]) -> Double? {
+        var mean = 0.0
+        for i in 0..<n { mean += y[i] }
+        mean /= Double(n)
         for i in 0..<n { y[i] -= mean }
 
         // Band bins: f[k] = k / (n·0.25); keep 0.15 ≤ f ≤ 0.40.
@@ -464,14 +519,41 @@ public enum SleepStagerV2 {
             table = RespDFT(n: n, kLo: kLo, kHi: kHi)
             dft[n] = table
         }
+        let nBins = table.nBins
+        var re = [Double](repeating: 0, count: nBins)
+        var im = [Double](repeating: 0, count: nBins)
+        y.withUnsafeBufferPointer { yBuf in
+            table.cosines.withUnsafeBufferPointer { cBuf in
+                table.sines.withUnsafeBufferPointer { sBuf in
+                    let yp = yBuf.baseAddress!
+                    let cp = cBuf.baseAddress!
+                    let sp = sBuf.baseAddress!
+                    re.withUnsafeMutableBufferPointer { reBuf in
+                        im.withUnsafeMutableBufferPointer { imBuf in
+                            let rp = reBuf.baseAddress!
+                            let ip = imBuf.baseAddress!
+                            for j in 0..<n {
+                                let yj = yp[j]
+                                let off = j * nBins
+                                var b = 0
+                                while b < nBins {
+                                    rp[b] += yj * cp[off + b]
+                                    ip[b] += yj * sp[off + b]
+                                    b += 1
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         var maxP = 0.0, sumP = 0.0
-        for k in kLo...kHi {
-            var re = 0.0, im = 0.0
-            let c = table.cosines[k - kLo], s = table.sines[k - kLo]
-            for j in 0..<n { re += y[j] * c[j]; im += y[j] * s[j] }
-            let p = re * re + im * im
+        var b = 0
+        while b < nBins {
+            let p = re[b] * re[b] + im[b] * im[b]
             sumP += p
             if p > maxP { maxP = p }
+            b += 1
         }
         if sumP == 0 { return nil }
         return maxP / sumP
