@@ -30,6 +30,13 @@ final class NativeSnapshotRender: XCTestCase {
                 try render(section.view, padded: section.padded, pass: pass, to: url)
             }
         }
+        for section in NativeSleepGallery.sections {
+            for pass in NativeSnapshotPass.all {
+                NSApp.appearance = NSAppearance(named: pass.scheme == .dark ? .darkAqua : .aqua)
+                let url = dir.appendingPathComponent("\(section.name)-\(pass.suffix).png")
+                try render(section.view, padded: section.padded, pass: pass, to: url)
+            }
+        }
     }
 
     @available(macOS 13.1, *)

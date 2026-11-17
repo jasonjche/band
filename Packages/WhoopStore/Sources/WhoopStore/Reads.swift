@@ -192,17 +192,25 @@ extension WhoopStore {
     /// The original analysis watermark covered `hrSample` only. Historical offloads do not commit their
     /// streams atomically: HR can land first and motion/gravity later. A pass run between those commits sees
     /// no usable sleep, then the post-offload gate used to skip the decisive retry because HR itself had not
-    /// changed. Fingerprint the complete scoring input instead. HR keeps its established count+timestamp
-    /// fingerprint; the other streams use SQLite's monotonic rowid frontier, which catches old backfills
-    /// without full-table COUNT scans over millions of dense motion/R-R rows.
-    /// `v3` also witnesses authoritative WHOOP 5 RR promotions and registry-only source-policy changes.
-    /// The version changes the persisted watermark once so the normal recent window is recomputed.
-    /// Older persisted scores remain until explicitly rescored; raw legacy intervals stay on disk.
+    /// changed. Fingerprint the complete scoring input instead.
+    ///
+    /// HR used to be `COUNT(*)` + `MAX(ts)` over the whole table. On a Band library (455 days of 1 Hz
+    /// 0x2A37) that COUNT is a full covering-index walk of tens of millions of rows on every analyze
+    /// tick. `MAX(rowid)` + `MAX(ts)` is O(1) on the rowid btree / `idx_hrSample_ts`, and moves on
+    /// every successful insert the old pair would: a new row always gets a new max rowid (SQLite
+    /// never reuses one while the table lives), including a backfilled OLD ts that would leave
+    /// `MAX(ts)` unmoved; `ON CONFLICT DO NOTHING` inserts nothing, so neither frontier moves.
+    /// `hrSample` is never pruned in place (only whole-device `DELETE`s, which empty the table and
+    /// make `MAX(rowid)` NULL → 0, matching COUNT). Version prefix `v6` invalidates persisted
+    /// watermarks once so the recent window is recomputed against the new encoding.
+    ///
+    /// Other streams keep SQLite's monotonic rowid frontier. WHOOP 5 RR promotions still use the
+    /// filtered COUNTs (they change scoring without inserting a row) over `rrInterval_source_suspect`.
     public func analysisFingerprint() async throws -> String {
         try syncRead { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT
-                  (SELECT COUNT(*) FROM hrSample) AS hc,
+                  (SELECT COALESCE(MAX(rowid), 0) FROM hrSample) AS hc,
                   (SELECT COALESCE(MAX(ts), 0) FROM hrSample) AS hm,
                   (SELECT COALESCE(MAX(rowid), 0) FROM ppgHrSample) AS p,
                   (SELECT COALESCE(MAX(rowid), 0) FROM rrInterval) AS r,
@@ -231,7 +239,7 @@ extension WhoopStore {
             }
             let historyCount: Int = row["w5"]
             let registry: String = row["registry"]
-            return "v5|h\(hc):\(hm)|" + tails.joined(separator: "|")
+            return "v6|h\(hc):\(hm)|" + tails.joined(separator: "|")
                 + "|w5\(historyCount)|w7\(row["w7"] as Int)|tagged\(row["w5tagged"] as Int)"
                 + "|w4history\(row["w4history"] as Int)|registry\(registry)"
         }
@@ -378,6 +386,13 @@ extension WhoopStore {
     /// second wins, and any second with NO hrSample row falls back to its PPG estimate so the chart
     /// stays continuous through v26-heavy stretches. The fallback rows are `bpm REAL` and only appear
     /// where the device genuinely had no measured HR for that second (anti-join), never doubling a beat.
+    /// Chart-path alias of [hrBuckets]: avg/min/max bpm per `bucketSeconds` bucket, aggregated in SQL.
+    /// Callers that draw a day/workout curve should use this (or `hrBuckets`) instead of
+    /// [hrSamples(deviceId:from:to:limit:)], which materialises the raw 1 Hz series.
+    public func hrSamples(deviceId: String, from: Int, to: Int, bucketSeconds: Int) async throws -> [HRBucket] {
+        try await hrBuckets(deviceId: deviceId, from: from, to: to, bucketSeconds: bucketSeconds)
+    }
+
     public func hrBuckets(deviceId: String, from: Int, to: Int, bucketSeconds: Int) async throws -> [HRBucket] {
         let bucket = max(1, bucketSeconds)
         return try syncRead { db in

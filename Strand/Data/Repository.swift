@@ -203,6 +203,10 @@ final class Repository: ObservableObject {
     /// data load on this so they reload when fresh strap data lands , `today?.day` alone is a stable
     /// date string within a day and would freeze e.g. the Today HR trend until the date rolls over.
     @Published private(set) var refreshSeq = 0
+    /// Parsed `stagesJSON` / `zonesJSON` keyed by row identity. Built off the main actor when
+    /// `refresh()` / `workoutRows` load, so a Home/Score redraw never re-decodes hundreds of blobs.
+    private var stagesByRowId: [String: [ParsedSleepStage]] = [:]
+    private var zonesByRowId: [String: [Double]] = [:]
 
     /// #989: bumped by every hydration mutation (log / edit / delete). Today's hydration card re-reads on
     /// this instead of waiting for a full `refreshSeq` data refresh, which a hydration write never causes,
@@ -856,6 +860,7 @@ final class Repository: ObservableObject {
         let sleeps: [CachedSleepSession]
         let vitalRows: [SourcedDailyMetric]
         let freshness: RepositoryFreshness
+        let stagesByRowId: [String: [ParsedSleepStage]]
     }
 
     /// Reload the dashboard caches over the last `nDays`, merging imported history with the
@@ -989,6 +994,12 @@ final class Repository: ObservableObject {
             // and IntelligenceEngine re-keys the computed DAILY row from it; collect those edited days so the
             // merge lets the computed row's SLEEP fields win there (imports still win on every un-edited day).
             let editedDays = Self.userEditedDays(compSleep)
+            let sleeps = Self.mergeSleep(imported: impSleep, computed: compSleep)
+            var stages: [String: [ParsedSleepStage]] = [:]
+            stages.reserveCapacity(sleeps.count)
+            for s in sleeps {
+                stages[Self.sleepStageCacheKey(s)] = Self.parseStagesJSON(s.stagesJSON)
+            }
             return MergedCaches(
                 importedSleep: fig,
                 days: Self.mergeActivityFileSteps(
@@ -1000,10 +1011,11 @@ final class Repository: ObservableObject {
                 chargeBaselines: ChargeBaselines.resolve(imported: imported, own: computed,
                                                          anchorDay: chargeAnchorDay,
                                                          hrvEpoch: hrvEpoch, recoveryEpoch: recoveryEpoch),
-                sleeps: Self.mergeSleep(imported: impSleep, computed: compSleep),
+                sleeps: sleeps,
                 vitalRows: Self.sourceRows(imported: imported, computed: computed, apple: apple),
                 freshness: Self.computeFreshness(imported: imported, computed: computed, apple: apple,
-                                                 importedSleeps: impSleep, computedSleeps: compSleep))
+                                                 importedSleeps: impSleep, computedSleeps: compSleep),
+                stagesByRowId: stages)
         }.value
 
         // Generation guard (#review): if a newer refresh() started while this one merged off-actor, drop
@@ -1031,6 +1043,7 @@ final class Repository: ObservableObject {
         self.sleeps = merged.sleeps
         self.vitalRows = merged.vitalRows
         self.freshness = merged.freshness
+        self.stagesByRowId = merged.stagesByRowId
         self.loaded = true
         // Drop the Explorer's cross-catalog memo rather than leaving it to be evicted lazily by a key
         // mismatch: its key is about to go stale, and lazy eviction only frees the memory when the NEXT
@@ -1249,7 +1262,34 @@ final class Repository: ObservableObject {
                 byTs[s.ts] = s
             }
         }
-        return byTs.values.sorted { $0.ts < $1.ts }
+        return await Task.detached(priority: .utility) {
+            byTs.values.sorted { $0.ts < $1.ts }
+        }.value
+    }
+
+    /// Downsampled HR (avg/min/max per `bucketSeconds`) for a chart. Aggregated in SQL so a 24h
+    /// 1 Hz window returns hundreds of buckets instead of tens of thousands of raw samples.
+    /// Keep `hrSamples(from:to:limit:)` for callers that need the raw series (live Effort).
+    func hrSamples(from: Int, to: Int, bucketSeconds: Int) async -> [HRBucket] {
+        await hrBuckets(from: from, to: to, bucketSeconds: bucketSeconds)
+    }
+
+    /// Parsed hypnogram segments for a sleep row. Hits the per-row cache filled on `refresh()`.
+    func parsedStages(for session: CachedSleepSession) -> [ParsedSleepStage] {
+        let key = Self.sleepStageCacheKey(session)
+        if let hit = stagesByRowId[key] { return hit }
+        let parsed = Self.parseStagesJSON(session.stagesJSON)
+        stagesByRowId[key] = parsed
+        return parsed
+    }
+
+    /// Parsed Z1…Z5 percentages for a workout row. Hits the per-row cache filled on `workoutRows()`.
+    func parsedZones(for workout: WorkoutRow) -> [Double]? {
+        let key = Self.workoutZoneCacheKey(workout)
+        if let hit = zonesByRowId[key] { return hit }
+        guard let parsed = Self.parseZonesJSON(workout.zonesJSON) else { return nil }
+        zonesByRowId[key] = parsed
+        return parsed
     }
 
     /// R-R beats across the active physical WHOOP and canonical history. Exact duplicates are removed
@@ -1735,16 +1775,13 @@ final class Repository: ObservableObject {
     /// JSON is the fallback awake-only block / unparseable. Used to seed a manually-added nap's efficiency
     /// so its hypnogram footer reads sensibly before the next recompute re-derives it. (#508)
     private func sleepEfficiency(fromStagesJSON json: String?) -> Double? {
-        guard let json, let data = json.data(using: .utf8),
-              let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+        let segs = Self.parseStagesJSON(json)
+        guard !segs.isEmpty else { return nil }
         var asleep = 0.0, total = 0.0
-        for seg in arr {
-            guard let s = (seg["start"] as? NSNumber)?.intValue,
-                  let e = (seg["end"] as? NSNumber)?.intValue,
-                  let stage = seg["stage"] as? String, e > s else { continue }
-            let dur = Double(e - s)
+        for seg in segs {
+            let dur = Double(seg.end - seg.start)
             total += dur
-            if stage != "wake" && stage != "awake" { asleep += dur }
+            if seg.stage != "wake" && seg.stage != "awake" { asleep += dur }
         }
         return total > 0 && asleep > 0 ? asleep / total : nil
     }
@@ -2799,6 +2836,16 @@ final class Repository: ObservableObject {
             deduped = WorkoutSource.dedupCrossSource(filtered)
         }
         let visible = deduped.sorted { $0.startTs > $1.startTs }
+        let zoneMap = await Task.detached(priority: .utility) {
+            var map: [String: [Double]] = [:]
+            for row in visible {
+                if let p = Self.parseZonesJSON(row.zonesJSON) {
+                    map[Self.workoutZoneCacheKey(row)] = p
+                }
+            }
+            return map
+        }.value
+        for (k, v) in zoneMap { zonesByRowId[k] = v }
         return await reconcileWorkoutHrWithTrace(visible, store: store)
     }
 

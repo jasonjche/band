@@ -1153,6 +1153,14 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "ts", "sequence"])
             }
         }
+        // Band-sized libraries bank ~1 Hz HR (tens of millions of rows). The PK is (deviceId, ts),
+        // which already serves every device-scoped window read. Unbounded MAX(ts) — the
+        // analysisFingerprint / hrFingerprint half that is not COUNT(*) — cannot use that PK
+        // (it leads with deviceId). Additive ts index; no column changes, no rewrite.
+        migrator.registerMigration("v49-hr-read-indexes") { db in
+            try db.create(index: "idx_hrSample_ts", on: "hrSample", columns: ["ts"],
+                          options: [.ifNotExists])
+        }
         return migrator
     }
 }

@@ -19,7 +19,7 @@ struct NativeScorePage: View {
     @State private var workouts: [WorkoutRow] = []
     @State private var overnightHr: [NativeHourPoint] = []
     @State private var highSleepStress: Double?
-    @AppStorage(PuffinExperiment.experimentalSleepStressKey) private var sleepStressEnabled = false
+    @State private var sleepStress: NativeSleepStress.Model?
 
     private var selectedDay: Date {
         NativeDaySelection.date(from: selectedDayKey)
@@ -36,13 +36,24 @@ struct NativeScorePage: View {
             highSleepStress: kind == .sleep ? highSleepStress : nil
         )
         let score = kind == .recovery ? model.recovery : kind == .strain ? model.strain : model.sleep
+        let baseWeek = NativeWeek.cards(
+            kind: kind, days: repo.days, todayKey: dayKey,
+            effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
+            sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
+        )
+        let weekCards = NativeSleepWeek.cards(
+            kind: kind, base: baseWeek, days: repo.days, todayKey: dayKey,
+            sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
+        )
+        let sleepDetail: NativeSleepPageDetail? = kind == .sleep
+            ? NativeSleepPageDetail.make(
+                dayKey: dayKey, days: repo.days, sleeps: repo.sleeps, workouts: workouts,
+                importedSleep: repo.importedSleep, stress: sleepStress
+            )
+            : nil
         NativeScoreView(
             score: score,
-            weekCards: NativeWeek.cards(
-                kind: kind, days: repo.days, todayKey: dayKey,
-                effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
-                sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
-            ),
+            weekCards: weekCards,
             kind: kind,
             sleepHours: model.sleepHours,
             asleepMinutes: model.asleepMinutes,
@@ -53,12 +64,13 @@ struct NativeScorePage: View {
             overnightHr: overnightHr,
             awakeTypical: model.awakeTypical,
             dayKey: dayKey,
-            needMinutes: model.sleepNeedMin,
-            debtMinutes: model.sleepDebtMin
+            needMinutes: NativeSleepNeed.needMinutes(sleepDetail?.need) ?? model.sleepNeedMin,
+            debtMinutes: model.sleepDebtMin,
+            sleepDetail: sleepDetail
         )
         .nativeDateSubtitle(selectedDay)
         .task(id: repo.refreshSeq) { workouts = await repo.workoutRows(days: 120) }
-        .task(id: "\(model.sleepStart?.timeIntervalSince1970 ?? 0)-\(model.sleepEnd?.timeIntervalSince1970 ?? 0)-\(sleepStressEnabled)") {
+        .task(id: "\(model.sleepStart?.timeIntervalSince1970 ?? 0)-\(model.sleepEnd?.timeIntervalSince1970 ?? 0)") {
             guard let start = model.sleepStart, let end = model.sleepEnd else {
                 overnightHr = []
                 highSleepStress = nil
@@ -71,13 +83,15 @@ struct NativeScorePage: View {
                 guard i % 2 == 0 else { return nil }
                 return NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval(sample.ts)), value: Double(sample.bpm))
             }
-            guard kind == .sleep, sleepStressEnabled else {
+            guard kind == .sleep else {
                 highSleepStress = nil
+                sleepStress = nil
                 return
             }
             // Overnight scoring needs the full night of HR (the sparkline above is capped at 8_000).
             let overnightHR = await repo.hrSamples(from: from, to: to, limit: 200_000)
             highSleepStress = SleepStressShare.percent(hr: overnightHR, startTs: from, endTs: to)
+            sleepStress = NativeSleepStress.make(hr: overnightHR, startTs: from, endTs: to)
         }
         .task(id: "hrv-sws-\(model.sleepStart?.timeIntervalSince1970 ?? 0)-\(model.sleepEnd?.timeIntervalSince1970 ?? 0)") {
             guard kind == .recovery, let start = model.sleepStart, let end = model.sleepEnd else { return }
@@ -114,10 +128,21 @@ struct NativeScoreView: View {
     var needMinutes: Double? = nil
     var debtMinutes: Double? = nil
     var scrolls: Bool = true
+    var sleepDetail: NativeSleepPageDetail? = nil
     @Environment(\.nativeNavigationPath) private var path
 
     private var visibleRows: [NativeScore.Row] {
-        score.rows.filter { NativeScoreMath.hasValue($0.value) }
+        var rows = score.rows.filter { NativeScoreMath.hasValue($0.value) }
+        if kind == .sleep, let restorative = NativeSleepContributors.restorative(from: stages),
+           NativeScoreMath.hasValue(restorative.value),
+           !rows.contains(where: { $0.title == restorative.title }) {
+            if let idx = rows.firstIndex(where: { $0.title == "High Sleep Stress" }) {
+                rows.insert(restorative, at: idx)
+            } else {
+                rows.append(restorative)
+            }
+        }
+        return rows
     }
 
     var body: some View {
@@ -201,6 +226,9 @@ struct NativeScoreView: View {
         if kind == .sleep, !overnightHr.isEmpty {
             NativeOvernightHeartCard(points: overnightHr)
         }
+        if kind == .sleep {
+            sleepDetailCards
+        }
         if kind == .strain {
             activitiesCard
         }
@@ -246,7 +274,8 @@ struct NativeScoreView: View {
         switch row.title {
         case "Heart Rate Variability", "Resting Heart Rate": return NativePaint.heart(style)
         case "Respiratory Rate": return NativePaint.respiratory(style)
-        case "Sleep Performance", "Sleep Efficiency", "Hours vs. Needed", "Sleep Consistency": return NativePaint.sleep(style)
+        case "Sleep Performance", "Sleep Efficiency", "Hours vs. Needed", "Sleep Consistency",
+             "Restorative Sleep", "High Sleep Stress": return NativePaint.sleep(style)
         case "Steps", "Calories": return NativePaint.activity(style)
         case "Heart Rate Zones 1–3", "Heart Rate Zones 4–5": return NativePaint.heart(style)
         case "Strength Activity Time": return NativePaint.strain(style)
@@ -323,15 +352,21 @@ struct NativeScoreView: View {
         case "Strength Activity Time": return NativePaint.strain(style)
         case "Strain": return NativePaint.strain(style)
         case "Recovery": return NativePaint.recovery(style)
-        case "Sleep Performance", "Hours of Sleep", "Sleep Efficiency": return NativePaint.sleep(style)
+        case "Sleep Performance", "Hours of Sleep", "Sleep Efficiency", "Hours vs. Needed",
+             "Hours vs. Needed %", "Restorative Sleep", "Sleep Consistency", "Time in Bed",
+             "Sleep Debt", "Sleep Stress": return NativePaint.sleep(style)
         default: return card.tint
         }
     }
 
     private func weekSymbol(_ card: NativeWeek.Card) -> String {
         switch card.title {
-        case "Sleep Performance", "Sleep Efficiency": return "bed.double.fill"
-        case "Hours of Sleep": return "clock.fill"
+        case "Sleep Performance", "Sleep Efficiency", "Time in Bed": return "bed.double.fill"
+        case "Hours of Sleep", "Hours vs. Needed", "Hours vs. Needed %": return "clock.fill"
+        case "Restorative Sleep": return "sparkles"
+        case "Sleep Consistency": return "calendar"
+        case "Sleep Debt": return "moon.fill"
+        case "Sleep Stress": return "waveform.path"
         case "Recovery": return "heart.fill"
         case "Heart Rate Variability": return "waveform.path.ecg"
         case "Resting Heart Rate": return "heart.fill"
@@ -347,6 +382,21 @@ struct NativeScoreView: View {
     }
 
     @ViewBuilder private func weekCard(_ card: NativeWeek.Card) -> some View {
+        if kind == .sleep, card.title == "Hours vs. Needed", let detail = sleepDetail {
+            NativeSleepDualLineCard(
+                title: card.title,
+                slept: card.points,
+                needed: detail.hoursNeededWeek,
+                highlightKey: dayKey
+            )
+        } else if kind == .sleep, card.title == "Time in Bed" {
+            NativeSleepTimeInBedWeekCard(points: card.points, highlightKey: dayKey)
+        } else {
+            weekChartCard(card)
+        }
+    }
+
+    @ViewBuilder private func weekChartCard(_ card: NativeWeek.Card) -> some View {
         let tint = weekTint(card)
         let body = NativeChrome.panel {
             NativeCardHeader(
@@ -378,6 +428,40 @@ struct NativeScoreView: View {
         } else {
             body
         }
+    }
+
+    @ViewBuilder private var sleepDetailCards: some View {
+        if let need = sleepDetail?.need ?? hoursNeededFromPage,
+           need.percent != nil || need.hoursSleptMin != nil {
+            NativeSleepHoursVsNeededCard(model: need)
+        }
+        if let nights = sleepDetail?.consistencyNights, !nights.isEmpty {
+            NativeSleepConsistencyCard(
+                nights: nights,
+                percent: NativeScoreMath.percentValue(
+                    score.rows.first { $0.title == "Sleep Consistency" }?.value ?? ""
+                )
+            )
+        }
+        if let efficiency = sleepDetail?.efficiency {
+            NativeSleepEfficiencyCard(model: efficiency)
+        }
+        if let stress = sleepDetail?.stress {
+            NativeSleepStressCard(model: stress)
+        }
+    }
+
+    private var hoursNeededFromPage: NativeSleepNeed.Resolved? {
+        guard let needMinutes, needMinutes > 0 else { return nil }
+        return NativeSleepNeed.Resolved(
+            needMin: needMinutes,
+            hoursSleptMin: asleepMinutes,
+            percent: asleepMinutes.flatMap { needMinutes > 0 ? $0 / needMinutes * 100 : nil },
+            imported: true,
+            baselineMin: nil,
+            strainMin: nil,
+            debtMin: nil
+        )
     }
 
     private var asleepValue: Double? { asleepMinutes }

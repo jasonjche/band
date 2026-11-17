@@ -263,4 +263,17 @@ final class MigrationTests: XCTestCase {
             XCTAssertEqual(try Double.fetchOne(db, sql: "SELECT efficiency FROM dailyMetric WHERE day = '2026-01-02'"), 0.9)
         }
     }
+
+    /// v49 adds `idx_hrSample_ts` so unbounded MAX(ts) (analysisFingerprint) does not walk the
+    /// (deviceId, ts) PK. Additive: no columns, no rewrite, existing rows keep their values.
+    func testV49AddsHrSampleTsIndex() async throws {
+        let store = try await WhoopStore.inMemory()
+        let indexes = try await store.indexNamesForTest(table: "hrSample")
+        XCTAssertTrue(indexes.contains("idx_hrSample_ts"), "hrSample missing v49 ts index")
+        let pk = try await store.primaryKeyColumns("hrSample")
+        XCTAssertEqual(pk, ["deviceId", "ts"], "v49 must not change the primary key")
+        let cols = try await store.columnNamesForTest(table: "hrSample")
+        XCTAssertEqual(cols, ["deviceId", "ts", "bpm", "synced"],
+                       "v49 is index-only: no column added or reordered")
+    }
 }
