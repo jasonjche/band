@@ -412,7 +412,10 @@ enum NativeSleepStress {
         var highShare: Double
     }
 
-    static func make(hr: [HRSample], startTs: Int, endTs: Int) -> Model? {
+    /// With `baselines`, levels are `BandStress` (the same scale as the Stress Monitor and the
+    /// High Sleep Stress row). Without, the legacy night-relative squash.
+    static func make(hr: [HRSample], startTs: Int, endTs: Int,
+                     baselines: BandStress.Baselines? = nil) -> Model? {
         let window = SleepStressShare.windowSeconds
         guard endTs > startTs, window > 0, !hr.isEmpty else { return nil }
         var buckets: [Int: [Double]] = [:]
@@ -438,8 +441,13 @@ enum NativeSleepStress {
                 levels.append(nil)
                 continue
             }
-            let raw = sd > 0.0001 ? (mean - ref) / sd : 0
-            let level = min(max(3.0 / (1.0 + exp(-raw)), 0), 3)
+            let level: Double
+            if let baselines {
+                level = BandStress.score(bpm: mean, isAsleep: true, baselines: baselines)
+            } else {
+                let raw = sd > 0.0001 ? (mean - ref) / sd : 0
+                level = min(max(3.0 / (1.0 + exp(-raw)), 0), 3)
+            }
             levels.append(level)
             let time = Date(timeIntervalSince1970: TimeInterval(startTs + offset * window + window / 2))
             points.append(NativeHourPoint(time: time, value: level))

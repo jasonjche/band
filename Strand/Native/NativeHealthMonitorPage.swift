@@ -3,15 +3,24 @@ import StrandDesign
 import WhoopStore
 
 /// WHOOP Health Monitor: every vital for the selected day, judged by `NativeHealthRange.report`.
-/// Home's "N/M" header is that report's `summary`. Rows without data are hidden.
+/// Home's header is that report's `summary`. Rows without data are hidden.
 struct NativeHealthMonitorPage: View {
     @Environment(\.nativeNavigationPath) private var path
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
+    @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
+    @AppStorage(UnitPrefs.temperatureKey) private var temperatureRaw = ""
     @State private var repoHandle: Repository?
     @State private var refreshSeq = 0
     @State private var handlesReady = false
     @State private var report = NativeHealthRange.Report(vitals: [])
     @State private var firstDay: String?
+
+    private var temperature: TemperatureUnit {
+        UnitPrefs.resolveTemperature(
+            system: UnitSystem(rawValue: unitSystemRaw) ?? .metric,
+            override: temperatureRaw
+        )
+    }
 
     private var selectedDay: Date {
         get { NativeDaySelection.date(from: selectedDayKey) }
@@ -21,7 +30,7 @@ struct NativeHealthMonitorPage: View {
     private var dayKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
 
     private var taskID: String {
-        handlesReady ? "\(dayKey)|\(refreshSeq)" : "boot"
+        handlesReady ? "\(dayKey)|\(refreshSeq)|\(temperature.rawValue)" : "boot"
     }
 
     var body: some View {
@@ -44,7 +53,7 @@ struct NativeHealthMonitorPage: View {
         .task(id: taskID) {
             guard handlesReady, let repo = repoHandle else { return }
             firstDay = repo.days.first?.day
-            report = NativeHealthRange.report(days: repo.days, todayKey: dayKey)
+            report = NativeHealthRange.report(days: repo.days, todayKey: dayKey, temperature: temperature)
         }
     }
 
@@ -108,7 +117,17 @@ enum NativeHealthMonitorFormat {
     }
 
     static func accessibilityLabel(_ vital: NativeHealthRange.Vital) -> String {
-        let range = vital.inRange ? "In Range" : "Out of Range"
+        let range: String
+        if vital.building {
+            range = "Building baseline"
+        } else if vital.flagged {
+            range = "Outside your typical range"
+        } else {
+            range = "Within your typical range"
+        }
+        if vital.typicalText.isEmpty {
+            return "\(vital.title), \(vital.valueText), \(range)"
+        }
         return "\(vital.title), \(vital.valueText), Typical \(vital.typicalText), \(range)"
     }
 }
@@ -120,20 +139,23 @@ struct NativeHealthMonitorRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             row
-            NativeVitalRangeBar(
-                value: vital.value,
-                typical: vital.typical,
-                tint: vital.heartFamily ? NativePaint.heart(style) : NativePaint.respiratory(style)
-            )
-            .padding(.leading, 32)
-            .padding(.bottom, 6)
+            if let typical = vital.typical {
+                NativeVitalRangeBar(
+                    value: vital.value,
+                    typical: typical,
+                    tint: vital.flagged ? NativeTokens.recoveryLow
+                        : (vital.heartFamily ? NativePaint.heart(style) : NativePaint.respiratory(style))
+                )
+                .padding(.leading, 32)
+                .padding(.bottom, 6)
+            }
         }
     }
 
     private var row: some View {
         let tint = vital.heartFamily ? NativePaint.heart(style) : NativePaint.respiratory(style)
-        let valueTint = vital.inRange ? Color.primary : NativeTokens.recoveryLow
-        let prior = "Typical \(vital.typicalText) · \(vital.inRange ? "In Range" : "Out of Range")"
+        let valueTint = vital.flagged ? NativeTokens.recoveryLow : Color.primary
+        let prior = vital.building ? "Building baseline" : "Typical \(vital.typicalText)"
         return HStack(spacing: 10) {
             Image(systemName: vital.symbol)
                 .font(.body)
@@ -146,13 +168,16 @@ struct NativeHealthMonitorRow: View {
                 .layoutPriority(1)
             Spacer(minLength: 6)
             VStack(alignment: .trailing, spacing: 1) {
-                Text(NativeHealthMonitorFormat.trailingValue(vital))
-                    .font(style == .whoop
-                          ? NativeTokens.whoopNumber(17, weight: .semibold)
-                          : StrandFont.rounded(17, weight: .semibold))
-                    .foregroundStyle(style == .whoop ? Color.primary : valueTint)
-                    .lineLimit(1)
-                    .monospacedDigit()
+                HStack(spacing: 4) {
+                    Text(NativeHealthMonitorFormat.trailingValue(vital))
+                        .font(style == .whoop
+                              ? NativeTokens.whoopNumber(17, weight: .semibold)
+                              : StrandFont.rounded(17, weight: .semibold))
+                        .foregroundStyle(style == .whoop ? Color.primary : valueTint)
+                        .lineLimit(1)
+                        .monospacedDigit()
+                    NativeDelta(delta: vital.flagDelta)
+                }
                 Text(prior)
                     .font(style == .whoop ? NativeTokens.whoopNumber(12, weight: .regular) : .footnote)
                     .foregroundStyle(style == .whoop ? NativeTokens.whoopLabel : Color.secondary)

@@ -26,7 +26,7 @@ final class NativeHomeSnapshotRender: XCTestCase {
 
         let mapped = NativeHomeCharts.stressSeries(samples: [(ts: 1_000, bpm: 86)], stride: 1)
         XCTAssertEqual(mapped.count, 1)
-        XCTAssertEqual(mapped[0].value, 1.0, accuracy: 0.01)
+        XCTAssertEqual(mapped[0].value, NativeHomeCharts.stressValue(bpm: 86), accuracy: 0.01)
 
         XCTAssertNil(NativeHomeCharts.stressLevel(hours: [], days: [], todayKey: "2026-11-12"))
     }
@@ -77,7 +77,11 @@ final class NativeHomeSnapshotRender: XCTestCase {
         let page = NativeHomeCharts.stressSeries(samples: samples, stride: 1)
         XCTAssertEqual(home.map(\.value), page.map(\.value))
         XCTAssertEqual(home.map(\.time), page.map(\.time))
-        XCTAssertEqual(NativeHomeCharts.stressLevel(hours: home, days: [], todayKey: "2026-11-12") ?? -1, 2.0, accuracy: 0.01)
+        XCTAssertEqual(
+            NativeHomeCharts.stressLevel(hours: home, days: [], todayKey: "2026-11-12") ?? -1,
+            NativeHomeCharts.stressValue(bpm: 124),
+            accuracy: 0.01
+        )
         XCTAssertEqual(
             NativeStressResolver.level(hours: home, days: [], todayKey: "2026-11-12"),
             NativeHomeCharts.stressLevel(hours: home, days: [], todayKey: "2026-11-12")

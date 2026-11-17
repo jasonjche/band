@@ -1,5 +1,6 @@
 import XCTest
 import WhoopStore
+import StrandAnalytics
 @testable import Strand
 
 /// Home layout: WHOOP section order, one stress-level resolver, dashboard rows, journal glyphs.
@@ -14,7 +15,11 @@ final class NativeHomeLayoutTests: XCTestCase {
         let page = NativeStressResolver.level(hours: hours, days: [], todayKey: key)
         XCTAssertEqual(home, page)
         XCTAssertEqual(home ?? -1, NativeHomeCharts.stressLevel(hours: hours, days: [], todayKey: key) ?? -1, accuracy: 0.01)
-        XCTAssertEqual(home ?? -1, 2.0, accuracy: 0.01)
+        XCTAssertEqual(
+            home ?? -1,
+            NativeHomeCharts.stressValue(bpm: 124, baselines: .fallback),
+            accuracy: 0.01
+        )
 
         let day = DailyMetric(
             day: key,
@@ -136,7 +141,7 @@ final class NativeHomeLayoutTests: XCTestCase {
         let mean = (sleep.value + morning.value + last.value) / 3
         let level = NativeHomeCharts.stressLevel(hours: hours, days: [], todayKey: "2023-11-14")
         XCTAssertEqual(level ?? -1, last.value, accuracy: 0.01)
-        XCTAssertEqual(level ?? -1, 2.0, accuracy: 0.01)
+        XCTAssertEqual(level ?? -1, NativeHomeCharts.stressValue(bpm: 124), accuracy: 0.01)
         XCTAssertGreaterThan(abs((level ?? 0) - mean), 0.5)
         XCTAssertEqual(
             NativeStressResolver.level(hours: hours, days: [], todayKey: "2023-11-14"),
@@ -152,12 +157,12 @@ final class NativeHomeLayoutTests: XCTestCase {
         ]
         let hours = NativeHomeCharts.stressSeries(buckets: buckets)
         XCTAssertEqual(hours.count, 2)
-        XCTAssertEqual(hours[0].value, 1.0, accuracy: 0.01)
-        XCTAssertEqual(hours[1].value, 2.0, accuracy: 0.01)
+        XCTAssertEqual(hours[0].value, NativeHomeCharts.stressValue(bpm: 86), accuracy: 0.01)
+        XCTAssertEqual(hours[1].value, NativeHomeCharts.stressValue(bpm: 124), accuracy: 0.01)
         XCTAssertFalse(hours.contains { $0.value == 0 })
         XCTAssertEqual(
             NativeHomeCharts.stressLevel(hours: hours, days: [], todayKey: "2023-11-14") ?? -1,
-            2.0,
+            NativeHomeCharts.stressValue(bpm: 124),
             accuracy: 0.01
         )
     }
@@ -166,11 +171,62 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertNil(NativeHomeCharts.stressLevel(hours: [], days: [], todayKey: "2023-11-14"))
         XCTAssertTrue(NativeHomeCharts.stressSeries(buckets: []).isEmpty)
         XCTAssertTrue(NativeHomeCharts.stressSeries(samples: []).isEmpty)
-        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 48), 0, accuracy: 0.01)
-        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 86), 1, accuracy: 0.01)
-        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 124), 2, accuracy: 0.01)
-        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 162), 3, accuracy: 0.01)
+        // Relative to fallback RHR 60, 12 bpm/band. Old pins were absolute (bpm-48)/38.
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 60), 0, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 72), 1, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 84), 2, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 96), 3, accuracy: 0.01)
         XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 200), 3, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 48), 0, accuracy: 0.01)
+    }
+
+    func testWorkoutBucketsAreOmittedFromTheSeries() {
+        let t0 = 1_700_000_000
+        let buckets = [
+            HRBucket(ts: t0, bpm: 72, minBpm: 72, maxBpm: 72),
+            HRBucket(ts: t0 + 300, bpm: 150, minBpm: 150, maxBpm: 150),
+            HRBucket(ts: t0 + 600, bpm: 72, minBpm: 72, maxBpm: 72),
+        ]
+        let start = Date(timeIntervalSince1970: TimeInterval(t0 + 300))
+        let end = Date(timeIntervalSince1970: TimeInterval(t0 + 600))
+        let hours = NativeHomeCharts.stressSeries(
+            buckets: buckets,
+            baselines: .fallback,
+            workouts: [(start: start, end: end)]
+        )
+        XCTAssertEqual(hours.count, 2)
+        XCTAssertEqual(hours[0].time.timeIntervalSince1970, TimeInterval(t0), accuracy: 0.01)
+        XCTAssertEqual(hours[1].time.timeIntervalSince1970, TimeInterval(t0 + 600), accuracy: 0.01)
+        XCTAssertFalse(hours.contains { $0.value >= 2 })
+        XCTAssertEqual(
+            NativeHomeCharts.stressLevel(hours: hours, days: [], todayKey: "2023-11-14") ?? -1,
+            NativeHomeCharts.stressValue(bpm: 72),
+            accuracy: 0.01
+        )
+    }
+
+    func testStressBaselinesPreferTodayThenRecentMedian() {
+        let today = DailyMetric(
+            day: "2023-11-14",
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 58, avgHrv: 44, recovery: nil, strain: nil,
+            exerciseCount: nil
+        )
+        let prior = DailyMetric(
+            day: "2023-11-13",
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 64, avgHrv: 50, recovery: nil, strain: nil,
+            exerciseCount: nil
+        )
+        let withToday = NativeHomeCharts.stressBaselines(days: [prior, today], todayKey: today.day)
+        XCTAssertEqual(withToday.wakeRestingHR, 58, accuracy: 0.01)
+        XCTAssertEqual(withToday.sleepRestingHR, 58, accuracy: 0.01)
+        XCTAssertEqual(withToday.rmssd ?? -1, 44, accuracy: 0.01)
+        let withoutToday = NativeHomeCharts.stressBaselines(days: [prior], todayKey: today.day)
+        XCTAssertEqual(withoutToday.wakeRestingHR, 64, accuracy: 0.01)
+        let empty = NativeHomeCharts.stressBaselines(days: [], todayKey: today.day)
+        XCTAssertEqual(empty.wakeRestingHR, BandStress.defaultRestingHR, accuracy: 0.01)
+        XCTAssertNil(empty.rmssd)
     }
 
     func testTimeInHighDoesNotCountGapsAsHigh() {

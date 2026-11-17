@@ -88,32 +88,45 @@ struct NativeScopeTrend: Equatable {
     var maxDate: Date
 }
 
-/// Trailing personal typical band: `Baselines.rollingMeanSD` ± `VitalBands.sigmaK` σ.
-/// Hidden below `Baselines.minNightsTrust` (14) valid days. Same helper Health Monitor uses.
+/// Trailing personal typical band: `TypicalVitalRange` (median ± 2.5 MAD-sigma, 30 days, 14 nights).
+/// Same function Health Monitor uses, so the overlay and the flags cannot disagree.
 enum NativeTypicalRange {
-    static let minDays = Baselines.minNightsTrust
-    static let window = 30
+    static let minDays = TypicalVitalRange.minNights
+    static let window = TypicalVitalRange.windowDays
 
     static func cfg(for key: String) -> MetricCfg? {
         switch key {
         case "hrv": return Baselines.hrvCfg
         case "rhr", "resting_hr": return Baselines.restingHRCfg
         case "resp_rate": return Baselines.respCfg
+        case "skin_temp": return Baselines.metricCfg["skin_temp"]
         default: return nil
         }
     }
 
+    /// Previous `window` calendar days excluding `ending`. Nils are missing nights.
+    static func windowValues(
+        dates: [(date: Date, value: Double?)],
+        ending: Date,
+        calendar: Calendar
+    ) -> [Double?] {
+        let end = calendar.startOfDay(for: ending)
+        var byDay: [Date: Double] = [:]
+        for point in dates {
+            let day = calendar.startOfDay(for: point.date)
+            guard day < end, let value = point.value, value.isFinite else { continue }
+            byDay[day] = value
+        }
+        var out: [Double?] = []
+        for offset in (1...window).reversed() {
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: end) else { continue }
+            out.append(byDay[day])
+        }
+        return out
+    }
+
     static func band(values: [Double?], cfg: MetricCfg? = nil) -> ClosedRange<Double>? {
-        let used = cfg ?? MetricCfg(
-            minVal: -1e12, maxVal: 1e12, floorSpread: 1e-6, halfLifeB: 14, halfLifeS: 21
-        )
-        let state = Baselines.rollingMeanSD(values, cfg: used, window: window)
-        guard state.nValid >= minDays else { return nil }
-        let sig = Baselines.sigma(state)
-        let lo = state.baseline - VitalBands.sigmaK * sig
-        let hi = state.baseline + VitalBands.sigmaK * sig
-        guard lo.isFinite, hi.isFinite else { return nil }
-        return min(lo, hi)...max(lo, hi)
+        TypicalVitalRange.range(history: values, sigmaFloor: TypicalVitalRange.sigmaFloor(matching: cfg))
     }
 
     static func caption(range: ClosedRange<Double>, format: (Double) -> String, unit: String?) -> String {
@@ -169,8 +182,15 @@ struct NativeScopeSeries: Equatable {
         }.sorted { $0.date < $1.date }
 
         let finite = parsed.filter { $0.value.isFinite }
+        let today = calendar.startOfDay(for: now)
+        let last = calendar.startOfDay(for: ending ?? finite.last?.date ?? today)
+        let endDay = min(last, today)
         let typical = NativeTypicalRange.band(
-            values: parsed.map { $0.value.isFinite ? $0.value : nil },
+            values: NativeTypicalRange.windowValues(
+                dates: parsed.map { ($0.date, $0.value.isFinite ? $0.value : nil) },
+                ending: endDay,
+                calendar: calendar
+            ),
             cfg: cfg
         )
         guard let first = finite.first?.date else {
@@ -179,9 +199,6 @@ struct NativeScopeSeries: Equatable {
                 caption: caption(scope: scope, kind: kind), typical: typical
             )
         }
-        let today = calendar.startOfDay(for: now)
-        let last = calendar.startOfDay(for: ending ?? finite.last?.date ?? today)
-        let endDay = min(last, today)
 
         let buckets: [NativeScopeBucket]
         switch scope {

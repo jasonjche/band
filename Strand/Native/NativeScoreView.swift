@@ -33,6 +33,7 @@ struct NativeScorePage: View {
     @State private var weekCards: [NativeWeek.Card] = []
     @State private var sleepDetail: NativeSleepPageDetail?
     @State private var nightSession: CachedSleepSession?
+    @State private var strainTarget: BandStrainTarget.Result?
 
     private var selectedDay: Date {
         NativeDaySelection.date(from: selectedDayKey)
@@ -69,7 +70,8 @@ struct NativeScorePage: View {
                     needMinutes: NativeSleepNeed.needMinutes(sleepDetail?.need) ?? model.sleepNeedMin,
                     debtMinutes: model.sleepDebtMin,
                     sleepDetail: sleepDetail,
-                    onEditSleep: kind == .sleep && nightSession != nil ? { sleepEdit = nightSession.map(NativeSleepEditTarget.init) } : nil
+                    onEditSleep: kind == .sleep && nightSession != nil ? { sleepEdit = nightSession.map(NativeSleepEditTarget.init) } : nil,
+                    strainTarget: strainTarget
                 )
             } else {
                 NativeChrome.screen { ProgressView() }
@@ -134,8 +136,15 @@ struct NativeScorePage: View {
                 sleepStress = nil
                 return
             }
-            highSleepStress = SleepStressShare.percent(hr: overnightHR, startTs: from, endTs: to)
-            sleepStress = NativeSleepStress.make(hr: overnightHR, startTs: from, endTs: to)
+            let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: dayKey)
+            let stressModel = NativeSleepStress.make(
+                hr: overnightHR, startTs: from, endTs: to, baselines: baselines
+            )
+            sleepStress = stressModel
+            // One source: the row reads the chart's own share so the two cannot disagree.
+            highSleepStress = stressModel?.highShare ?? BandStress.overnightHighShare(
+                hr: overnightHR, startTs: from, endTs: to, baselines: baselines
+            )
         }
         .task(id: "hrv-sws-\(sleepBoundsID)") {
             guard handlesReady, kind == .recovery,
@@ -169,6 +178,16 @@ struct NativeScorePage: View {
         dayModel = buildModel(repo)
         weekCards = buildWeekCards(repo)
         sleepDetail = buildSleepDetail(repo)
+        strainTarget = kind == .strain
+            ? NativeStrainTarget.resolve(
+                viewingKey: dayKey,
+                todayKey: NativeDayLogic.logicalToday(),
+                days: repo.days,
+                sleeps: repo.sleeps,
+                workouts: workouts,
+                importedSleep: repo.importedSleep
+            )
+            : nil
     }
 
     private func buildModel(_ repo: Repository) -> NativeDay.Model {
@@ -223,6 +242,7 @@ struct NativeScoreView: View {
     var scrolls: Bool = true
     var sleepDetail: NativeSleepPageDetail? = nil
     var onEditSleep: (() -> Void)? = nil
+    var strainTarget: BandStrainTarget.Result? = nil
     @Environment(\.nativeNavigationPath) private var path
 
     private var visibleRows: [NativeScore.Row] {
@@ -296,7 +316,8 @@ struct NativeScoreView: View {
                 tint: ringTint,
                 value: score.value,
                 caption: ringCaption,
-                diameter: 184
+                diameter: 184,
+                targetFraction: kind == .strain ? strainTarget.map { NativeStrainTarget.ringFraction($0.range) } : nil
             )
             .id(dayKey ?? score.value)
             .frame(maxWidth: .infinity)
@@ -307,6 +328,15 @@ struct NativeScoreView: View {
                 date: dayKey.map { NativeChartDay.mediumDate($0) }
             )
             .padding(.vertical, 8)
+        }
+        if kind == .strain, let strainTarget {
+            Text(NativeStrainTarget.caption(result: strainTarget, strain21: score.fraction.map { $0 * 21 }))
+                .font(style == .whoop ? NativeTokens.whoopCaps(11) : .subheadline)
+                .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
+                .foregroundStyle(style == .whoop ? NativeTokens.whoopLabel : Color.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 8)
         }
 
         if !visibleRows.isEmpty {

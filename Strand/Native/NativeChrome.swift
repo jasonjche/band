@@ -484,6 +484,8 @@ struct NativeRing: View {
     /// Fractions around the ring, 0...1. Strain used these for the light / moderate / high marks.
     /// Deprecated: ticks are no longer drawn. Kept so existing call sites compile.
     var ticks: [Double] = []
+    /// Closed 0...1 segment on the track for today's strain target. Nil draws nothing.
+    var targetFraction: ClosedRange<Double>? = nil
 
     @Environment(\.nativeStyle) private var style
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -504,6 +506,15 @@ struct NativeRing: View {
                         whoop ? NativeTokens.whoopTrack : tint.opacity(NativeTokens.trackOpacity),
                         lineWidth: line
                     )
+                if let target = trimmedTarget {
+                    Circle()
+                        .trim(from: target.lowerBound, to: target.upperBound)
+                        .stroke(
+                            whoop ? NativeTokens.whoopLabel : tint.opacity(min(1, NativeTokens.trackOpacity * 2.5)),
+                            style: StrokeStyle(lineWidth: line, lineCap: .butt)
+                        )
+                        .rotationEffect(.degrees(-90))
+                }
                 Circle()
                     .trim(from: 0, to: drawn)
                     .stroke(tint, style: StrokeStyle(lineWidth: line, lineCap: .round))
@@ -540,7 +551,23 @@ struct NativeRing: View {
         .onAppear { reveal(fraction) }
         .onChangeCompat(of: fraction) { reveal($0) }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(caption.isEmpty ? "Score" : caption), \(value)")
+        .accessibilityLabel(ringAccessibilityLabel)
+    }
+
+    private var trimmedTarget: ClosedRange<Double>? {
+        guard let target = targetFraction else { return nil }
+        let lo = min(max(target.lowerBound, 0), 1)
+        let hi = min(max(target.upperBound, 0), 1)
+        guard hi > lo else { return nil }
+        return lo...hi
+    }
+
+    private var ringAccessibilityLabel: String {
+        let base = "\(caption.isEmpty ? "Score" : caption), \(value)"
+        guard let target = trimmedTarget else { return base }
+        let lo = String(format: "%.1f", target.lowerBound * 21)
+        let hi = String(format: "%.1f", target.upperBound * 21)
+        return "\(base), target \(lo) to \(hi)"
     }
 
     @ViewBuilder private var whoopInnerCaption: some View {
@@ -1740,6 +1767,24 @@ struct NativeStressMonitor: View {
         )
     }
 
+    /// Break the line at holes (including omitted workout buckets) so Charts does not
+    /// interpolate a spike through an excluded window.
+    private var hourSegments: [[NativeHourPoint]] {
+        var segments: [[NativeHourPoint]] = []
+        var current: [NativeHourPoint] = []
+        for point in hours {
+            if let last = current.last,
+               point.time.timeIntervalSince(last.time) > NativeStressHistory.highBucketMaxGap {
+                segments.append(current)
+                current = [point]
+            } else {
+                current.append(point)
+            }
+        }
+        if !current.isEmpty { segments.append(current) }
+        return segments
+    }
+
     @Binding var scrubValue: Double
     @Binding var scrubTime: Date?
     @State private var selectedTime: Date?
@@ -1784,17 +1829,29 @@ struct NativeStressMonitor: View {
                 .foregroundStyle(Color.primary.opacity(0.10))
                 .accessibilityHidden(true)
             }
-            ForEach(hours) { point in
-                AreaMark(x: .value("Time", point.time), y: .value("Stress", point.value))
-                    .foregroundStyle(NativeChrome.stressBandColor(point.value).opacity(0.22))
-                    .interpolationMethod(.linear)
-                    .accessibilityHidden(true)
-                LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
-                    .foregroundStyle(NativeChrome.stressBandColor(point.value))
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
-                    .accessibilityLabel(NativeScopeFormat.time(point.time))
-                    .accessibilityValue(String(format: "%.1f", point.value))
+            ForEach(Array(workouts.enumerated()), id: \.offset) { _, bout in
+                RectangleMark(
+                    xStart: .value("Activity start", bout.start),
+                    xEnd: .value("Activity end", bout.end),
+                    yStart: .value("Low", 0),
+                    yEnd: .value("High", 3)
+                )
+                .foregroundStyle(Color.secondary.opacity(0.18))
+                .accessibilityHidden(true)
+            }
+            ForEach(Array(hourSegments.enumerated()), id: \.offset) { _, segment in
+                ForEach(segment) { point in
+                    AreaMark(x: .value("Time", point.time), y: .value("Stress", point.value))
+                        .foregroundStyle(NativeChrome.stressBandColor(point.value).opacity(0.22))
+                        .interpolationMethod(.linear)
+                        .accessibilityHidden(true)
+                    LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
+                        .foregroundStyle(NativeChrome.stressBandColor(point.value))
+                        .interpolationMethod(.linear)
+                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
+                        .accessibilityLabel(NativeScopeFormat.time(point.time))
+                        .accessibilityValue(String(format: "%.1f", point.value))
+                }
             }
             if let selectedTime,
                let point = NativeChartScrubMath.nearestHour(

@@ -5,6 +5,7 @@ import WhoopStore
 /// Journal: inset grouped list of the day's real answers, plus an Apple Form to log them.
 struct NativeJournalView: View {
     var startsLogging: Bool = false
+    @Environment(\.nativeNavigationPath) private var path
     @StateObject private var catalog = JournalCatalogStore()
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @State private var repoHandle: Repository?
@@ -96,6 +97,9 @@ struct NativeJournalView: View {
             await reload()
             if logging { seedDraft() }
         }
+        .navigationDestination(for: NativeJournalImpactRoute.self) { _ in
+            NativeJournalImpactView()
+        }
     }
 
     @ViewBuilder private var journalBody: some View {
@@ -131,6 +135,9 @@ struct NativeJournalView: View {
                     }
                 }
             }
+            Section {
+                impactRow
+            }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -146,8 +153,40 @@ struct NativeJournalView: View {
             )
             .frame(maxWidth: .infinity)
             HomeJournalList(answers: answers, notes: notes)
+            Button {
+                path.wrappedValue.append(NativeJournalImpactRoute())
+            } label: {
+                NativeChrome.panel {
+                    NativeCardHeader(
+                        title: "Impact on Recovery",
+                        symbol: "chart.bar",
+                        tint: NativeChrome.recovery,
+                        chevron: true
+                    )
+                }
+            }
+            .buttonStyle(.plain)
         }
         #endif
+    }
+
+    private var impactRow: some View {
+        Button {
+            path.wrappedValue.append(NativeJournalImpactRoute())
+        } label: {
+            HStack {
+                Text("Impact on Recovery")
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.forward")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Impact on Recovery")
     }
 
     @State private var seededYes: [String: Bool] = [:]

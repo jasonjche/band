@@ -689,25 +689,26 @@ enum NativeActivity {
     }
 }
 
-/// Health Monitor "Within Range N of M": HRV, resting HR, respiratory rate, skin temp, SpO2
-/// whose latest value for the selected day sits in the user's typical band. Missing metrics
-/// are omitted from M. Reuses `VitalBands` (personal baseline when trusted, else population).
-/// Home's header and the Health Monitor page both read `report` — `summary` is that report's count.
+/// Health Monitor flags: HRV, resting HR, respiratory rate, skin temp, SpO2 judged by
+/// `TypicalVitalRange` (the same function as the metric-page typical band). Missing metrics
+/// are omitted. Home's header and the Health Monitor page both read `report`.
 enum NativeHealthRange {
     struct Summary: Equatable {
         var inRange: Int
         var measured: Int
+        var outside: Int
+        var judged: Int
 
         var caption: String? {
             guard measured > 0 else { return nil }
-            return "Within Range \(inRange) of \(measured)"
+            if judged == 0 { return "Building baseline" }
+            if outside == 0 { return "All within range" }
+            if outside == 1 { return "1 outside range" }
+            return "\(outside) outside range"
         }
 
-        /// Compact header form for the half-width Health Monitor card.
-        var headerTrailing: String? {
-            guard measured > 0 else { return nil }
-            return "\(inRange)/\(measured)"
-        }
+        /// Same wording as `caption` — the Home card header.
+        var headerTrailing: String? { caption }
     }
 
     struct Vital: Equatable, Identifiable {
@@ -716,48 +717,76 @@ enum NativeHealthRange {
         var symbol: String
         var value: Double
         var valueText: String
-        var typical: ClosedRange<Double>
+        var typical: ClosedRange<Double>?
         var typicalText: String
         var inRange: Bool
+        var flagged: Bool
+        var status: TypicalVitalRange.Status
         var unit: String
         var heartFamily: Bool
         var route: TabRoute
+
+        var building: Bool { status == .building && !flagged }
+
+        var flagDelta: NativeScore.Delta {
+            guard flagged else { return .none }
+            let name = "Outside your typical range"
+            if status == .above {
+                return NativeScore.Delta(symbol: "arrow.up", tint: NativeTokens.recoveryLow, name: name)
+            }
+            return NativeScore.Delta(symbol: "arrow.down", tint: NativeTokens.recoveryLow, name: name)
+        }
     }
 
     struct Report: Equatable {
         var vitals: [Vital]
 
         var summary: Summary {
-            Summary(inRange: vitals.filter(\.inRange).count, measured: vitals.count)
+            let outside = vitals.filter(\.flagged).count
+            let judged = vitals.filter { $0.status != .building || $0.flagged }.count
+            return Summary(
+                inRange: vitals.filter(\.inRange).count,
+                measured: vitals.count,
+                outside: outside,
+                judged: judged
+            )
         }
     }
 
-    static func summary(days: [DailyMetric], todayKey: String) -> Summary {
-        report(days: days, todayKey: todayKey).summary
+    static func summary(
+        days: [DailyMetric], todayKey: String, temperature: TemperatureUnit = .celsius
+    ) -> Summary {
+        report(days: days, todayKey: todayKey, temperature: temperature).summary
     }
 
-    static func report(days: [DailyMetric], todayKey: String) -> Report {
+    static func report(
+        days: [DailyMetric], todayKey: String, temperature: TemperatureUnit = .celsius
+    ) -> Report {
         let today = days.last { $0.day == todayKey }
-        let prior = days.filter { $0.day < todayKey }
+        let cutoff = Baselines.cutoffKey(todayKey: todayKey, carryDays: TypicalVitalRange.windowDays)
+        let prior = days.filter { $0.day < todayKey && $0.day >= cutoff }
         var vitals: [Vital] = []
 
         func append(
             id: String, title: String, symbol: String,
-            value: Double?, history: [Double?], range: ClosedRange<Double>,
-            cfg: MetricCfg?, unit: String, decimals: Int,
+            value: Double?, history: [Double?],
+            metric: TypicalVitalRange.Metric,
+            unit: String, decimals: Int,
             heartFamily: Bool, route: TabRoute
         ) {
-            guard let judged = judge(value: value, history: history, range: range, cfg: cfg),
-                  let value else { return }
+            guard let value else { return }
+            let judged = TypicalVitalRange.evaluate(history: history, today: value, metric: metric)
             vitals.append(Vital(
                 id: id,
                 title: title,
                 symbol: symbol,
                 value: value,
                 valueText: format(value, decimals: decimals, unit: unit),
-                typical: judged.typical,
-                typicalText: formatRange(judged.typical, decimals: decimals, unit: unit),
-                inRange: judged.result.band == .inRange,
+                typical: judged.range,
+                typicalText: judged.range.map { formatRange($0, decimals: decimals) } ?? "",
+                inRange: judged.status == .inRange,
+                flagged: judged.flagged,
+                status: judged.status,
                 unit: unit,
                 heartFamily: heartFamily,
                 route: route
@@ -767,67 +796,91 @@ enum NativeHealthRange {
         append(
             id: "hrv", title: "Heart Rate Variability", symbol: "waveform.path.ecg",
             value: today?.avgHrv,
-            history: VitalBands.calendarSeries(prior.map { ($0.day, $0.avgHrv) }),
-            range: 40...120, cfg: Baselines.hrvCfg, unit: "ms", decimals: 0,
+            history: prior.map(\.avgHrv),
+            metric: .hrv, unit: "ms", decimals: 0,
             heartFamily: true, route: .metric("hrv")
         )
         append(
             id: "rhr", title: "Resting Heart Rate", symbol: "heart.fill",
             value: today?.restingHr.map(Double.init),
-            history: VitalBands.calendarSeries(prior.map { ($0.day, $0.restingHr.map(Double.init)) }),
-            range: 40...60, cfg: Baselines.restingHRCfg, unit: "BPM", decimals: 0,
+            history: prior.map { $0.restingHr.map(Double.init) },
+            metric: .rhr, unit: "BPM", decimals: 0,
             heartFamily: true, route: .metric("rhr")
         )
         append(
             id: "resp", title: "Respiratory Rate", symbol: "lungs.fill",
             value: today?.respRateBpm,
-            history: VitalBands.calendarSeries(prior.map { ($0.day, $0.respRateBpm) }),
-            range: 12...20, cfg: Baselines.respCfg, unit: "breaths/min", decimals: 1,
+            history: prior.map(\.respRateBpm),
+            metric: .resp, unit: "breaths/min", decimals: 1,
             heartFamily: false, route: .metric("resp_rate")
         )
 
         let skinValue = today?.skinTempC ?? today?.skinTempDevC
-        let skinHistoryRaw = VitalBands.calendarSeries(prior.map { ($0.day, $0.skinTempC ?? $0.skinTempDevC) })
+        let skinHistoryRaw = prior.map { $0.skinTempC ?? $0.skinTempDevC }
         if let skinValue {
             let absolute = VitalBands.isAbsoluteSkinTemp(skinValue)
-            append(
-                id: "skin", title: "Skin Temperature", symbol: "thermometer.medium",
-                value: skinValue,
+            let judged = TypicalVitalRange.evaluate(
                 history: VitalBands.skinTempHistory(matching: skinValue, in: skinHistoryRaw),
-                range: absolute ? 33...36 : (-0.6)...0.6,
-                cfg: absolute ? Baselines.metricCfg["skin_temp"] : VitalBands.skinTempDeviationCfg,
-                unit: "°C", decimals: 1,
-                heartFamily: true, route: .metric("skin_temp")
+                today: skinValue,
+                metric: .skin
             )
+            let shown = displaySkin(skinValue, range: judged.range, absolute: absolute, temperature: temperature)
+            vitals.append(Vital(
+                id: "skin",
+                title: "Skin Temperature",
+                symbol: "thermometer.medium",
+                value: shown.value,
+                valueText: shown.valueText,
+                typical: shown.range,
+                typicalText: shown.range.map { formatRange($0, decimals: 1) } ?? "",
+                inRange: judged.status == .inRange,
+                flagged: judged.flagged,
+                status: judged.status,
+                unit: shown.unit,
+                heartFamily: true,
+                route: .metric("skin_temp")
+            ))
         }
 
         append(
             id: "spo2", title: "Blood Oxygen", symbol: "drop.fill",
             value: today?.spo2Pct,
-            history: VitalBands.calendarSeries(prior.map { ($0.day, $0.spo2Pct) }),
-            range: 95...100, cfg: nil, unit: "%", decimals: 0,
+            history: prior.map(\.spo2Pct),
+            metric: .spo2, unit: "%", decimals: 0,
             heartFamily: true, route: .metric("spo2")
         )
 
         return Report(vitals: vitals)
     }
 
-    /// Same `VitalBands.band` call the count uses. Personal typical is mean ± 2σ, matching |z| ≤ 2.
-    private static func judge(
-        value: Double?, history: [Double?], range: ClosedRange<Double>, cfg: MetricCfg?
-    ) -> (result: VitalBands.Result, typical: ClosedRange<Double>)? {
-        let result = VitalBands.band(value: value, history: history, populationRange: range, cfg: cfg)
-        guard result.band != .noData else { return nil }
-        if result.basis == .personal, let cfg {
-            let state = Baselines.foldHistory(history, cfg: cfg)
-            if state.trusted {
-                let sig = Baselines.sigma(state)
-                let lo = state.baseline - VitalBands.sigmaK * sig
-                let hi = state.baseline + VitalBands.sigmaK * sig
-                return (result, min(lo, hi)...max(lo, hi))
+    private static func displaySkin(
+        _ celsius: Double,
+        range: ClosedRange<Double>?,
+        absolute: Bool,
+        temperature: TemperatureUnit
+    ) -> (value: Double, range: ClosedRange<Double>?, valueText: String, unit: String) {
+        let value: Double
+        let shownRange: ClosedRange<Double>?
+        if absolute {
+            value = temperature == .fahrenheit ? UnitFormatter.celsiusToFahrenheit(celsius) : celsius
+            shownRange = range.map { lohi in
+                let lo = temperature == .fahrenheit ? UnitFormatter.celsiusToFahrenheit(lohi.lowerBound) : lohi.lowerBound
+                let hi = temperature == .fahrenheit ? UnitFormatter.celsiusToFahrenheit(lohi.upperBound) : lohi.upperBound
+                return min(lo, hi)...max(lo, hi)
+            }
+        } else {
+            value = temperature == .fahrenheit ? UnitFormatter.celsiusDeltaToFahrenheit(celsius) : celsius
+            shownRange = range.map { lohi in
+                let lo = temperature == .fahrenheit ? UnitFormatter.celsiusDeltaToFahrenheit(lohi.lowerBound) : lohi.lowerBound
+                let hi = temperature == .fahrenheit ? UnitFormatter.celsiusDeltaToFahrenheit(lohi.upperBound) : lohi.upperBound
+                return min(lo, hi)...max(lo, hi)
             }
         }
-        return (result, range)
+        let unit = temperature == .fahrenheit ? "°F" : "°C"
+        let valueText = absolute
+            ? UnitFormatter.temperatureFromCelsius(celsius, unit: temperature)
+            : UnitFormatter.temperatureDeltaFromCelsius(celsius, unit: temperature)
+        return (value, shownRange, valueText, unit)
     }
 
     private static func format(_ value: Double, decimals: Int, unit: String) -> String {
@@ -838,12 +891,11 @@ enum NativeHealthRange {
         return "\(number) \(unit)"
     }
 
-    private static func formatRange(_ range: ClosedRange<Double>, decimals: Int, unit: String) -> String {
+    private static func formatRange(_ range: ClosedRange<Double>, decimals: Int) -> String {
         func n(_ v: Double) -> String {
             decimals == 0 ? String(Int(v.rounded())) : String(format: "%.\(decimals)f", v)
         }
-        if unit == "%" { return "\(n(range.lowerBound))–\(n(range.upperBound))%" }
-        return "\(n(range.lowerBound))–\(n(range.upperBound)) \(unit)"
+        return "\(n(range.lowerBound))–\(n(range.upperBound))"
     }
 }
 

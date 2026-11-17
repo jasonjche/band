@@ -94,6 +94,28 @@ final class NativeActivityPageTests: XCTestCase {
         XCTAssertTrue(model.zones.isEmpty)
     }
 
+    func testHeartRateRecoveryRowUsesOneMinuteDropAndHidesWhenMissing() {
+        let workout = WorkoutRow(
+            startTs: 1_700_000_000, endTs: 1_700_001_800, sport: "Running", source: "whoop",
+            durationS: 1_800, energyKcal: nil, avgHr: 168, maxHr: 182, strain: 26,
+            distanceM: nil, zonesJSON: nil, notes: nil, steps: nil
+        )
+        let hidden = NativeActivityPageLogic.make(
+            workout, prior: [], scale: .whoop, zoneSet: nil, percents: nil
+        )
+        XCTAssertFalse(hidden.stats.contains { $0.title == "Heart Rate Recovery" })
+
+        let shown = NativeActivityPageLogic.make(
+            workout, prior: [], scale: .whoop, zoneSet: nil, percents: nil,
+            heartRateRecovery: 32, priorHeartRateRecovery: [28, 30, 34]
+        )
+        let row = shown.stats.first { $0.title == "Heart Rate Recovery" }
+        XCTAssertEqual(row?.value, "32 BPM")
+        XCTAssertEqual(row?.heartFamily, true)
+        XCTAssertEqual(row?.neutralDelta, true)
+        XCTAssertNotNil(row?.prior)
+    }
+
     func testBpmRangeUsesProfileZonesAndZoneZeroIsBelowZoneOne() {
         let set = HRZones.zones(maxHR: 190)
         XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 5, set: set), "171+ BPM")

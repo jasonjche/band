@@ -25,14 +25,16 @@ final class NativeScopeMathTests: XCTestCase {
         XCTAssertEqual(NativeTypicalRange.window, 30)
     }
 
-    func testTypicalRangeMatchesRollingMeanSD() {
+    func testTypicalRangeMatchesSharedMedianMadBand() {
         let values: [Double?] = (0..<30).map { Double(40 + $0) }
         let band = NativeTypicalRange.band(values: values, cfg: Baselines.hrvCfg)
-        let state = Baselines.rollingMeanSD(values, cfg: Baselines.hrvCfg, window: 30)
-        let sig = Baselines.sigma(state)
-        XCTAssertEqual(band?.lowerBound ?? .nan, state.baseline - 2 * sig, accuracy: 1e-9)
-        XCTAssertEqual(band?.upperBound ?? .nan, state.baseline + 2 * sig, accuracy: 1e-9)
-        XCTAssertEqual(VitalBands.sigmaK, 2.0, accuracy: 1e-9)
+        let shared = TypicalVitalRange.range(
+            history: values,
+            sigmaFloor: TypicalVitalRange.sigmaFloor(matching: Baselines.hrvCfg)
+        )
+        XCTAssertEqual(band?.lowerBound ?? .nan, shared?.lowerBound ?? .nan, accuracy: 1e-12)
+        XCTAssertEqual(band?.upperBound ?? .nan, shared?.upperBound ?? .nan, accuracy: 1e-12)
+        XCTAssertEqual(TypicalVitalRange.sigmaK, 3.0, accuracy: 1e-9)
     }
 
     func testSixMonthAggregatesByWeek() {

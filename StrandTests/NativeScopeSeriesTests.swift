@@ -272,19 +272,21 @@ final class NativeScopeSeriesTests: XCTestCase {
         XCTAssertNil(NativeTypicalRange.band(values: values))
     }
 
-    func testTypicalRangeIsTrailingMeanPlusMinusTwoSigma() {
+    func testTypicalRangeIsSharedMedianMadBand() {
         var values: [Double?] = Array(repeating: 40, count: 20)
         values += Array(repeating: 60, count: 10)
         let band = NativeTypicalRange.band(values: values, cfg: Baselines.hrvCfg)
-        let state = Baselines.rollingMeanSD(values, cfg: Baselines.hrvCfg, window: 30)
+        let shared = TypicalVitalRange.range(
+            history: values,
+            sigmaFloor: TypicalVitalRange.Metric.hrv.sigmaFloor
+        )
         XCTAssertNotNil(band)
-        XCTAssertEqual(state.nValid, 30)
-        let sig = Baselines.sigma(state)
-        XCTAssertEqual(band?.lowerBound ?? -1, state.baseline - VitalBands.sigmaK * sig, accuracy: 1e-9)
-        XCTAssertEqual(band?.upperBound ?? -1, state.baseline + VitalBands.sigmaK * sig, accuracy: 1e-9)
+        XCTAssertEqual(band?.lowerBound ?? -1, shared?.lowerBound ?? -1, accuracy: 1e-12)
+        XCTAssertEqual(band?.upperBound ?? -1, shared?.upperBound ?? -1, accuracy: 1e-12)
         XCTAssertEqual(NativeTypicalRange.cfg(for: "hrv"), Baselines.hrvCfg)
         XCTAssertEqual(NativeTypicalRange.cfg(for: "rhr"), Baselines.restingHRCfg)
         XCTAssertEqual(NativeTypicalRange.cfg(for: "resp_rate"), Baselines.respCfg)
+        XCTAssertEqual(NativeTypicalRange.cfg(for: "skin_temp"), Baselines.metricCfg["skin_temp"])
         XCTAssertNil(NativeTypicalRange.cfg(for: "steps"))
     }
 

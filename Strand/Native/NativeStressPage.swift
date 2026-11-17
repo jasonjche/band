@@ -1,6 +1,7 @@
 import SwiftUI
 import WhoopStore
 import StrandDesign
+import StrandAnalytics
 
 /// Stress Monitor. D/W/M/6M like Apple Health. Small gauge. No Sessions.
 struct NativeStressPage: View {
@@ -74,13 +75,7 @@ struct NativeStressPage: View {
         let start = calendar.startOfDay(for: ending)
         let from = Int(start.timeIntervalSince1970)
         let buckets = await repo.hrSamples(from: from, to: from + 86_400, bucketSeconds: 300)
-        sampleHours = NativeHomeCharts.stressSeries(buckets: buckets)
-        level = NativeStressResolver.level(hours: sampleHours, days: repo.days, todayKey: dayKey)
-        if let latest = level {
-            scrubValue = latest
-        }
-        scrubTime = nil
-        timeInHighMinutes = NativeStressHistory.timeInHighMinutes(sampleHours)
+        let rr = await repo.rrIntervals(from: from, to: from + 86_400, limit: 50_000)
         let sleep = repo.sleeps.last {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
         }
@@ -91,6 +86,21 @@ struct NativeStressPage: View {
             guard NativeDayLogic.sleepSessionDayKey(boutStart) == dayKey else { return nil }
             return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
         }
+        let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: dayKey)
+        sampleHours = NativeHomeCharts.stressSeries(
+            buckets: buckets,
+            baselines: baselines,
+            sleepStart: sleepStart,
+            sleepEnd: sleepEnd,
+            workouts: bouts,
+            rmssdByBucket: BandStress.rmssdByBucket(rr: rr.map { (ts: $0.ts, ms: Double($0.rrMs)) })
+        )
+        level = NativeStressResolver.level(hours: sampleHours, days: repo.days, todayKey: dayKey)
+        if let latest = level {
+            scrubValue = latest
+        }
+        scrubTime = nil
+        timeInHighMinutes = NativeStressHistory.timeInHighMinutes(sampleHours)
         let daily = NativeStressHistory.daily(days: repo.days, ending: dayKey)
         series = NativeScopeSeries.make(
             points: daily,

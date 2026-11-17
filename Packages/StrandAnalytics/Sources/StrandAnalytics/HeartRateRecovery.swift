@@ -4,7 +4,7 @@ import WhoopProtocol
 /// Heart-rate recovery after a sufficiently intense workout (#516).
 ///
 /// The engine deliberately works from the recorded HR stream rather than the workout's editable summary
-/// fields. It looks for sustained Zone-3-or-higher effort near the end of the session, takes the highest
+/// fields. It looks for sustained Zone-3-or-higher effort near the end of the session, takes the median
 /// recorded HR in the final 30 seconds as the cessation value, then compares it with robust median readings
 /// around 1, 2 and 5 minutes after the workout ended.
 ///
@@ -60,7 +60,7 @@ public enum HeartRateRecovery {
         let cessation = beforeEnd
             .filter { $0.ts >= workoutEnd - cessationWindowSeconds }
             .map(\.bpm)
-        guard cessation.count >= minimumSamplesPerReading, let endHR = cessation.max() else { return nil }
+        guard cessation.count >= minimumSamplesPerReading, let endHR = median(cessation) else { return nil }
 
         func recovery(at minutes: Int) -> Int? {
             let target = workoutEnd + minutes * 60

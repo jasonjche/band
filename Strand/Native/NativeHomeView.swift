@@ -87,13 +87,16 @@ struct NativeHomeView: View {
     @Environment(\.nativeNavigationPath) private var path
     @State private var showingCalendar = false
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
+    @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
+    @AppStorage(UnitPrefs.temperatureKey) private var temperatureRaw = ""
     @State private var workouts: [WorkoutRow] = []
     @State private var journalEntries: [JournalEntry] = []
     @State private var sampleHours: [NativeHourPoint] = []
     @State private var vo2max: Double?
     @State private var liveTodayStrain: Double?
     @State private var dayModel: NativeDay.Model?
-    @State private var healthSummary: NativeHealthRange.Summary?
+    @State private var strainTarget: BandStrainTarget.Result?
+    @State private var healthReport = NativeHealthRange.Report(vitals: [])
     @State private var tonight: NativeTonightSleep.Model?
     @State private var stressLevel: Double?
     @State private var stressSleepStart: Date?
@@ -268,7 +271,26 @@ struct NativeHomeView: View {
         let start = Calendar.current.startOfDay(for: selectedDay)
         let from = Int(start.timeIntervalSince1970)
         let buckets = await repo.hrSamples(from: from, to: from + 86_400, bucketSeconds: 300)
-        sampleHours = NativeHomeCharts.stressSeries(buckets: buckets)
+        let rr = await repo.rrIntervals(from: from, to: from + 86_400, limit: 50_000)
+        let sleep = repo.sleeps.last {
+            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == selectedKey
+        }
+        let sleepStartLocal = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
+        let sleepEndLocal = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
+        let boutsLocal: [(start: Date, end: Date)] = workouts.compactMap { row in
+            let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
+            guard NativeDayLogic.sleepSessionDayKey(boutStart) == selectedKey else { return nil }
+            return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
+        }
+        let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: selectedKey)
+        sampleHours = NativeHomeCharts.stressSeries(
+            buckets: buckets,
+            baselines: baselines,
+            sleepStart: sleepStartLocal,
+            sleepEnd: sleepEndLocal,
+            workouts: boutsLocal,
+            rmssdByBucket: BandStress.rmssdByBucket(rr: rr.map { (ts: $0.ts, ms: Double($0.rrMs)) })
+        )
         let vo2 = await repo.exploreSeries(key: "vo2max_est", source: "my-whoop")
         vo2max = vo2.last?.value
         await refreshLiveStrain(from: from, buckets: buckets)
@@ -295,7 +317,22 @@ struct NativeHomeView: View {
             liveStrain: liveTodayStrain
         )
         dayModel = model
-        healthSummary = NativeHealthRange.summary(days: repo.days, todayKey: selectedKey)
+        strainTarget = NativeStrainTarget.resolve(
+            viewingKey: selectedKey,
+            todayKey: NativeDayLogic.logicalToday(),
+            days: repo.days,
+            sleeps: repo.sleeps,
+            workouts: workouts,
+            importedSleep: repo.importedSleep
+        )
+        healthReport = NativeHealthRange.report(
+            days: repo.days,
+            todayKey: selectedKey,
+            temperature: UnitPrefs.resolveTemperature(
+                system: UnitSystem(rawValue: unitSystemRaw) ?? .metric,
+                override: temperatureRaw
+            )
+        )
         if selectedKey == NativeDayLogic.logicalToday() {
             tonight = NativeTonightSleep.make(
                 needMin: model.sleepNeedMin,
@@ -382,17 +419,13 @@ struct NativeHomeView: View {
             recovery: model.recovery,
             strain: model.strain,
             onOpen: { path.wrappedValue.append($0) },
-            dayKey: selectedKey
+            dayKey: selectedKey,
+            strainTargetFraction: strainTarget.map { NativeStrainTarget.ringFraction($0.range) }
         )
         Button {
             path.wrappedValue.append(TabRoute.healthMonitor)
         } label: {
-            HomeHealthMonitorCard(
-                hrv: HomeMonitorValue.from(model.dashboard, title: "Heart Rate Variability", unit: "ms"),
-                rhr: HomeMonitorValue.from(model.dashboard, title: "Resting Heart Rate", unit: "BPM"),
-                resp: HomeMonitorValue.from(model.dashboard, title: "Respiratory Rate", unit: "breaths/min"),
-                rangeCaption: healthSummary?.headerTrailing
-            )
+            HomeHealthMonitorCard(report: healthReport)
         }
         .buttonStyle(.plain)
         NativeChrome.section("My Day")
@@ -605,13 +638,14 @@ struct HomeRingsRow: View {
     var strain: NativeScore
     var onOpen: (TabRoute) -> Void
     var dayKey: String = ""
+    var strainTargetFraction: ClosedRange<Double>? = nil
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             ring(sleep, tint: NativePaint.sleep(style))
             ring(recovery, tint: recoveryTint)
-            ring(strain, tint: NativePaint.strain(style))
+            ring(strain, tint: NativePaint.strain(style), targetFraction: strainTargetFraction)
         }
         .padding(.top, 8)
         .id(dayKey)
@@ -624,7 +658,7 @@ struct HomeRingsRow: View {
         return NativePaint.recovery(style)
     }
 
-    private func ring(_ score: NativeScore, tint: Color) -> some View {
+    private func ring(_ score: NativeScore, tint: Color, targetFraction: ClosedRange<Double>? = nil) -> some View {
         Button {
             onOpen(score.route)
         } label: {
@@ -633,7 +667,8 @@ struct HomeRingsRow: View {
                 tint: tint,
                 value: score.value,
                 caption: score.name,
-                diameter: 96
+                diameter: 96,
+                targetFraction: targetFraction
             )
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
@@ -645,33 +680,14 @@ struct HomeRingsRow: View {
 
 // MARK: - Health + Stress monitors
 
-struct HomeMonitorValue {
-    var value: String
-    var unit: String
-    var typical: String?
-
-    static func from(_ rows: [NativeScore.Row], title: String, unit: String) -> HomeMonitorValue? {
-        guard let row = rows.first(where: { $0.title == title }), NativeScoreMath.hasValue(row.value) else {
-            return nil
-        }
-        let typical = NativeScoreMath.hasValue(row.prior) ? row.prior : nil
-        return HomeMonitorValue(value: row.value, unit: unit, typical: typical)
-    }
-}
-
 struct HomeHealthMonitorCard: View {
-    var hrv: HomeMonitorValue?
-    var rhr: HomeMonitorValue?
-    var resp: HomeMonitorValue? = nil
-    var rangeCaption: String? = nil
+    var report: NativeHealthRange.Report
     @Environment(\.nativeStyle) private var style
 
-    private var rows: [(id: String, symbol: String, title: String, value: HomeMonitorValue)] {
-        var result: [(id: String, symbol: String, title: String, value: HomeMonitorValue)] = []
-        if let hrv { result.append(("hrv", "waveform.path.ecg", "HRV", hrv)) }
-        if let rhr { result.append(("rhr", "heart.fill", "RHR", rhr)) }
-        if let resp { result.append(("resp", "lungs.fill", "RR", resp)) }
-        return result
+    private var rows: [NativeHealthRange.Vital] {
+        let preferred = ["hrv", "rhr", "resp"]
+        let picked = preferred.compactMap { id in report.vitals.first { $0.id == id } }
+        return picked.isEmpty ? report.vitals : picked
     }
 
     var body: some View {
@@ -680,23 +696,25 @@ struct HomeHealthMonitorCard: View {
                 title: "Health Monitor",
                 symbol: "heart.fill",
                 tint: NativePaint.heart(style),
-                trailing: rangeCaption,
+                trailing: report.summary.headerTrailing,
                 chevron: true
             )
             if rows.isEmpty {
                 NativeEmptyState(text: "No Data", symbol: "heart")
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, vital in
                         if index > 0 {
                             Divider().padding(.leading, 32)
                         }
                         NativeContributorRow(
-                            symbol: row.symbol,
-                            title: row.title,
-                            value: compact(row.value),
-                            prior: row.value.typical.map { compactValue($0, unit: row.value.unit) },
-                            tint: row.id == "resp" ? NativePaint.respiratory(style) : NativePaint.heart(style)
+                            symbol: vital.symbol,
+                            title: compactTitle(vital.id),
+                            value: compactValue(vital),
+                            prior: vital.building ? "Building baseline" : "Typical \(vital.typicalText)",
+                            delta: vital.flagDelta,
+                            tint: vital.id == "resp" ? NativePaint.respiratory(style) : NativePaint.heart(style),
+                            valueTint: vital.flagged ? NativeTokens.recoveryLow : .primary
                         )
                     }
                 }
@@ -704,25 +722,17 @@ struct HomeHealthMonitorCard: View {
         }
     }
 
-    private func labeled(_ value: String, _ unit: String) -> String {
-        if unit.isEmpty || value.localizedCaseInsensitiveContains(unit) { return value }
-        return "\(value) \(unit)"
+    private func compactTitle(_ id: String) -> String {
+        switch id {
+        case "hrv": return "HRV"
+        case "rhr": return "RHR"
+        case "resp": return "RR"
+        default: return report.vitals.first { $0.id == id }?.title ?? id
+        }
     }
 
-    private func compact(_ item: HomeMonitorValue) -> String {
-        if item.unit == "breaths/min" {
-            return compactValue(item.value, unit: item.unit)
-        }
-        return labeled(item.value, item.unit)
-    }
-
-    private func compactValue(_ value: String, unit: String) -> String {
-        var text = value
-        for token in ["breaths/min", "BPM", "ms", unit] where !token.isEmpty {
-            text = text.replacingOccurrences(of: "\u{00A0}\(token)", with: "")
-            text = text.replacingOccurrences(of: " \(token)", with: "")
-        }
-        return text.trimmingCharacters(in: .whitespaces)
+    private func compactValue(_ vital: NativeHealthRange.Vital) -> String {
+        NativeHealthMonitorFormat.trailingValue(vital)
     }
 }
 
@@ -1287,29 +1297,78 @@ enum NativeHomeCharts {
         }
     }
 
+    /// Personal overnight RHR / HRV, once per data load.
+    static func stressBaselines(days: [DailyMetric], todayKey: String) -> BandStress.Baselines {
+        let today = days.last { $0.day == todayKey }
+        let prior = Array(days.filter { $0.day < todayKey }.suffix(BandStress.recentBaselineDays))
+        return BandStress.Baselines.resolve(
+            dayRestingHR: today?.restingHr.map(Double.init),
+            recentRestingHRs: prior.compactMap { $0.restingHr.map(Double.init) },
+            dayRMSSD: today?.avgHrv,
+            recentRMSSDs: prior.compactMap(\.avgHrv)
+        )
+    }
+
     /// Maps HR samples onto the 0–3 series. Empty input → empty series. Never invents a curve.
-    static func stressSeries(samples: [(ts: Int, bpm: Int)], stride: Int = 3) -> [NativeHourPoint] {
+    static func stressSeries(samples: [(ts: Int, bpm: Int)], stride: Int = 3,
+                             baselines: BandStress.Baselines = .fallback,
+                             asleep: Bool = false) -> [NativeHourPoint] {
         samples.enumerated().compactMap { index, sample in
             guard stride <= 1 || index % stride == 0 else { return nil }
             return NativeHourPoint(
                 time: Date(timeIntervalSince1970: TimeInterval(sample.ts)),
-                value: stressValue(bpm: Double(sample.bpm))
+                value: stressValue(bpm: Double(sample.bpm), baselines: baselines, asleep: asleep)
             )
         }
     }
 
-    /// Chart-width buckets (300 s day sparkline / day chart). Stress level is the last bucket, matching the drawn series.
-    static func stressSeries(buckets: [HRBucket]) -> [NativeHourPoint] {
-        buckets.map { bucket in
-            NativeHourPoint(
-                time: Date(timeIntervalSince1970: TimeInterval(bucket.ts)),
-                value: stressValue(bpm: bucket.bpm)
-            )
+    /// Chart-width buckets (300 s). Workout buckets are omitted. Gaps stay omitted.
+    /// Level is the last scored bucket, matching the drawn series.
+    static func stressSeries(buckets: [HRBucket],
+                             baselines: BandStress.Baselines = .fallback,
+                             sleepStart: Date? = nil,
+                             sleepEnd: Date? = nil,
+                             workouts: [(start: Date, end: Date)] = [],
+                             rmssdByBucket: [Int: Double] = [:]) -> [NativeHourPoint] {
+        buckets.compactMap { bucket in
+            let asleep: Bool = {
+                guard let sleepStart, let sleepEnd else { return false }
+                return BandStress.overlaps(
+                    bucketTs: bucket.ts,
+                    start: Int(sleepStart.timeIntervalSince1970),
+                    end: Int(sleepEnd.timeIntervalSince1970)
+                )
+            }()
+            let workout = workouts.contains { bout in
+                BandStress.overlaps(
+                    bucketTs: bucket.ts,
+                    start: Int(bout.start.timeIntervalSince1970),
+                    end: Int(bout.end.timeIntervalSince1970)
+                )
+            }
+            switch BandStress.evaluate(
+                bpm: bucket.bpm,
+                rmssd: rmssdByBucket[bucket.ts],
+                isWorkout: workout,
+                isAsleep: asleep,
+                baselines: baselines
+            ) {
+            case .value(let value):
+                return NativeHourPoint(
+                    time: Date(timeIntervalSince1970: TimeInterval(bucket.ts)),
+                    value: value
+                )
+            case .excluded, .gap:
+                return nil
+            }
         }
     }
 
-    static func stressValue(bpm: Double) -> Double {
-        min(3, max(0, (bpm - 48) / 38))
+    static func stressValue(bpm: Double,
+                            baselines: BandStress.Baselines = .fallback,
+                            asleep: Bool = false,
+                            rmssd: Double? = nil) -> Double {
+        BandStress.score(bpm: bpm, rmssd: rmssd, isAsleep: asleep, baselines: baselines)
     }
 
     /// Last sample if the series exists, else the daily HRV/RHR score, else nil. Never 1.0 or 0 as a stand-in.
@@ -1788,7 +1847,7 @@ enum HomeSnapshot {
                 strain: strainOnlyModel.strain,
                 onOpen: { _ in }
             )
-            HomeHealthMonitorCard(hrv: nil, rhr: nil, resp: nil)
+            HomeHealthMonitorCard(report: NativeHealthRange.Report(vitals: []))
             NativeChrome.section("My Day")
             HomeActivitiesCard(
                 items: HomeActivityItem.make(from: strainOnlyModel),
@@ -1809,10 +1868,10 @@ enum HomeSnapshot {
         }
     }
 
-    static var healthRange: String? {
-        NativeHealthRange.summary(
+    static var healthReport: NativeHealthRange.Report {
+        NativeHealthRange.report(
             days: NativeGallerySnapshot.snapshotDays, todayKey: highlightKey
-        ).headerTrailing
+        )
     }
 
     static var tonightSleep: NativeTonightSleep.Model {
@@ -1824,12 +1883,7 @@ enum HomeSnapshot {
     }
 
     static var healthCard: some View {
-        HomeHealthMonitorCard(
-            hrv: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Heart Rate Variability", unit: "ms"),
-            rhr: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Resting Heart Rate", unit: "BPM"),
-            resp: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Respiratory Rate", unit: "breaths/min"),
-            rangeCaption: healthRange
-        )
+        HomeHealthMonitorCard(report: healthReport)
     }
 
     static var homeStressCard: some View {

@@ -67,7 +67,9 @@ enum NativeActivityPageLogic {
         prior: [WorkoutRow],
         scale: EffortScale,
         zoneSet: HRZoneSet?,
-        percents: [Double]?
+        percents: [Double]?,
+        heartRateRecovery: Int? = nil,
+        priorHeartRateRecovery: [Double] = []
     ) -> Model {
         let sameAll = sameSport(as: workout, in: prior, windowDays: nil)
         let sameWindow = sameSport(as: workout, in: prior, windowDays: statsWindowDays)
@@ -81,7 +83,12 @@ enum NativeActivityPageLogic {
             strainDelta: strainDelta(current: strain, prior: strainValues),
             duration: durationClock(workout),
             zones: zones(percents: percents, durationS: durationSeconds(workout), zoneSet: zoneSet),
-            stats: stats(workout, same: sameWindow),
+            stats: stats(
+                workout,
+                same: sameWindow,
+                heartRateRecovery: heartRateRecovery,
+                priorHeartRateRecovery: priorHeartRateRecovery
+            ),
             isManual: WorkoutSource.classify(workout.source) == .manual,
             hasStrain: strain != nil
         )
@@ -193,7 +200,12 @@ enum NativeActivityPageLogic {
         }
     }
 
-    private static func stats(_ workout: WorkoutRow, same: [WorkoutRow]) -> [Stat] {
+    private static func stats(
+        _ workout: WorkoutRow,
+        same: [WorkoutRow],
+        heartRateRecovery: Int?,
+        priorHeartRateRecovery: [Double]
+    ) -> [Stat] {
         var rows: [Stat] = []
         if let hr = workout.avgHr {
             rows.append(stat(
@@ -207,6 +219,13 @@ enum NativeActivityPageLogic {
                 "Max HR", "\(hr) BPM", Double(hr),
                 same.compactMap { $0.maxHr.map(Double.init) },
                 "heart", heart: true, unit: "BPM", neutralDelta: true
+            ))
+        }
+        if let recovery = heartRateRecovery {
+            rows.append(stat(
+                "Heart Rate Recovery", "\(recovery) BPM", Double(recovery),
+                priorHeartRateRecovery,
+                "heart.circle", heart: true, unit: "BPM", neutralDelta: true
             ))
         }
         if let kcal = workout.energyKcal {
@@ -275,6 +294,8 @@ struct NativeActivityView: View {
     @State private var percents: [Double]?
     @State private var hr: [NativeHourPoint] = []
     @State private var hrFromAppleHealth = false
+    @State private var heartRateRecoveryBpm: Int?
+    @State private var priorHeartRateRecovery: [Double] = []
     @State private var route: [RouteMath.LatLng] = []
     @State private var zoneSet: HRZoneSet?
     @State private var showEdit = false
@@ -292,7 +313,9 @@ struct NativeActivityView: View {
                     prior: prior,
                     scale: UnitPrefs.resolveEffortScale(effortScaleRaw),
                     zoneSet: zoneSet,
-                    percents: percents
+                    percents: percents,
+                    heartRateRecovery: heartRateRecoveryBpm,
+                    priorHeartRateRecovery: priorHeartRateRecovery
                 )
                 NativeActivityBody(
                     model: model,
@@ -366,6 +389,8 @@ struct NativeActivityView: View {
             hr = []
             percents = nil
             route = []
+            heartRateRecoveryBpm = nil
+            priorHeartRateRecovery = []
             return
         }
         percents = repo.parsedZones(for: workout) ?? WorkoutZones.percents(workout.zonesJSON)
@@ -379,6 +404,28 @@ struct NativeActivityView: View {
             series.samples.map { (ts: $0.ts, bpm: Double($0.bpm)) },
             seconds: NativeActivityPageLogic.hrBucketSeconds
         )
+        heartRateRecoveryBpm = nil
+        priorHeartRateRecovery = []
+        if series.origin == .strap, let maxHR = profileHandle?.effortHRmax, maxHR > 0 {
+            let recovered = await repo.workoutHeartRateRecovery(
+                from: workout.startTs, to: workout.endTs, maxHR: maxHR, source: workout.source
+            )
+            if let drop = recovered?.after1Minute {
+                heartRateRecoveryBpm = drop
+                let same = NativeActivityPageLogic.sameSport(
+                    as: workout, in: rows, windowDays: NativeActivityPageLogic.statsWindowDays
+                )
+                var priors: [Double] = []
+                for row in same {
+                    if let prior = await repo.workoutHeartRateRecovery(
+                        from: row.startTs, to: row.endTs, maxHR: maxHR, source: row.source
+                    ), let minute = prior.after1Minute {
+                        priors.append(Double(minute))
+                    }
+                }
+                priorHeartRateRecovery = priors
+            }
+        }
         if let stored = RouteStore.load(startTs: workout.startTs, sport: workout.sport) {
             let pts = RouteMath.decode(stored.polyline)
             route = pts.count >= 2 ? pts : []

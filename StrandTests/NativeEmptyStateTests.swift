@@ -3,7 +3,7 @@ import WhoopStore
 import StrandAnalytics
 @testable import Strand
 
-/// Pins the Native Home empty-store predicate and Health Monitor "Within Range N of M" count.
+/// Pins the Native Home empty-store predicate and Health Monitor range summary.
 @MainActor
 final class NativeEmptyStateTests: XCTestCase {
 
@@ -53,18 +53,19 @@ final class NativeEmptyStateTests: XCTestCase {
         )
         let summary = NativeHealthRange.summary(days: [today], todayKey: today.day)
         XCTAssertEqual(summary.measured, 5)
-        XCTAssertEqual(summary.inRange, 5)
-        XCTAssertEqual(summary.caption, "Within Range 5 of 5")
-        XCTAssertEqual(summary.headerTrailing, "5/5")
+        XCTAssertEqual(summary.judged, 0)
+        XCTAssertEqual(summary.outside, 0)
+        XCTAssertEqual(summary.caption, "Building baseline")
+        XCTAssertEqual(summary.headerTrailing, "Building baseline")
     }
 
-    func testWithinRangeOmitsMissingMetricsAndFlagsPopulationOutliers() {
+    func testWithinRangeOmitsMissingMetricsWhileBuilding() {
         let today = sampleMetric(day: "2026-11-16", hrv: 30, rhr: 51, resp: 14.7)
         let summary = NativeHealthRange.summary(days: [today], todayKey: today.day)
         XCTAssertEqual(summary.measured, 3, "skin temp and SpO2 have no value and must not count")
-        XCTAssertEqual(summary.inRange, 2, "HRV 30 ms is outside 40–120; RHR and resp are in range")
-        XCTAssertEqual(summary.caption, "Within Range 2 of 3")
-        XCTAssertEqual(summary.headerTrailing, "2/3")
+        XCTAssertEqual(summary.judged, 0)
+        XCTAssertEqual(summary.caption, "Building baseline")
+        XCTAssertEqual(summary.headerTrailing, "Building baseline")
     }
 
     func testWithinRangeIsNilWhenTheDayHasNoVitals() {
@@ -149,7 +150,10 @@ final class NativeEmptyStateTests: XCTestCase {
         let label = NativeHealthMonitorFormat.accessibilityLabel(resp)
         XCTAssertTrue(label.contains("Respiratory Rate"))
         XCTAssertTrue(label.contains("breaths/min"))
+        XCTAssertTrue(label.contains("Building baseline"))
         XCTAssertFalse(label.contains(" rpm"))
+        XCTAssertFalse(label.contains("Out of Range"))
+        XCTAssertFalse(label.contains("In Range"))
         let hrv = try XCTUnwrap(report.vitals.first { $0.id == "hrv" })
         XCTAssertEqual(NativeHealthMonitorFormat.trailingValue(hrv), hrv.valueText)
     }
