@@ -244,4 +244,14 @@ final class NativeHomeLayoutTests: XCTestCase {
         ]
         XCTAssertNil(NativeStressHistory.timeInHighMinutes(gapped))
     }
+
+    func testDateStepperChevronsFitBesideStrapOnIPhone15() {
+        let strapBudget: CGFloat = 96
+        XCTAssertEqual(HomeDateStepperLayout.chevronSize, 32, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(
+            HomeDateStepperLayout.compactWidth + HomeDateStepperLayout.strapGutter + strapBudget,
+            HomeDateStepperLayout.iphone15Width
+        )
+        XCTAssertEqual(NativeHomeLoadMetrics.publishedSnapshotsPerLoad, 1)
+    }
 }

@@ -1,5 +1,6 @@
 import XCTest
 import StrandAnalytics
+import WhoopStore
 @testable import Strand
 
 /// Which detected bouts the personal build logs without a prompt.
@@ -32,5 +33,40 @@ final class AutoSaveDetectedWorkoutsTests: XCTestCase {
             frontierTs: 10_000, settleSeconds: 600,
             autoDismissedTokens: ["5000:6000"], detectedDismissedTokens: ["1000:2000"])
         XCTAssertTrue(keep.isEmpty)
+    }
+
+    func testAutoSavedMarkerRequiresManualActivity() {
+        XCTAssertTrue(Repository.isAutoSavedActivity(
+            startTs: 1, endTs: 2, sport: "Activity", source: "manual",
+            tokens: ["1:2"], grandfather: false, scanFrom: 0))
+        XCTAssertFalse(Repository.isAutoSavedActivity(
+            startTs: 1, endTs: 2, sport: "Running", source: "manual",
+            tokens: ["1:2"], grandfather: false, scanFrom: 0))
+        XCTAssertFalse(Repository.isAutoSavedActivity(
+            startTs: 1, endTs: 2, sport: "Activity", source: "apple-health",
+            tokens: ["1:2"], grandfather: false, scanFrom: 0))
+        XCTAssertTrue(Repository.isAutoSavedActivity(
+            startTs: 100, endTs: 200, sport: "Activity", source: "manual",
+            tokens: [], grandfather: true, scanFrom: 50))
+        XCTAssertFalse(Repository.isAutoSavedActivity(
+            startTs: 10, endTs: 20, sport: "Activity", source: "manual",
+            tokens: [], grandfather: true, scanFrom: 50))
+        XCTAssertFalse(Repository.isAutoSavedActivity(
+            startTs: 100, endTs: 200, sport: "Activity", source: "manual",
+            tokens: [], grandfather: false, scanFrom: 50))
+    }
+
+    func testStaleAutoSavedRowsAreThoseThatNoLongerQualify() {
+        let bogus = WorkoutRow(
+            startTs: 1_000, endTs: 2_000, sport: "Activity", source: "manual",
+            durationS: 1_000, energyKcal: nil, avgHr: 92, maxHr: 121, strain: 4.9,
+            distanceM: nil, zonesJSON: nil, notes: nil, steps: nil)
+        let real = WorkoutRow(
+            startTs: 3_000, endTs: 4_000, sport: "Activity", source: "manual",
+            durationS: 1_000, energyKcal: nil, avgHr: 103, maxHr: 156, strain: 9.3,
+            distanceM: nil, zonesJSON: nil, notes: nil, steps: nil)
+        let keep = [bout(3_000, 4_000)]
+        let stale = Repository.staleAutoSavedWorkouts([bogus, real], qualifying: keep)
+        XCTAssertEqual(stale.map(\.startTs), [1_000])
     }
 }

@@ -140,6 +140,57 @@ final class NativeHomeLogicTests: XCTestCase {
         XCTAssertNil(off?.alarmLabel)
     }
 
+    func testVo2MaxRouteIsMeasuredAppleHealth() {
+        XCTAssertEqual(HomeDashboardMetric.vo2max.route, .metric("vo2max"))
+        XCTAssertEqual(HomeDashboardMetric.vo2max.unit, "ml/kg·min")
+        XCTAssertEqual(NativeVo2Max.sourceLabel, "From Apple Health")
+    }
+
+    func testVo2MaxUsesLatestAppleReadingAndHidesEstimates() {
+        func row(_ day: String, vo2: Double?) -> AppleDaily {
+            AppleDaily(day: day, steps: nil, activeKcal: nil, basalKcal: nil, vo2max: vo2,
+                       avgHr: nil, maxHr: nil, walkingHr: nil, weightKg: nil)
+        }
+        XCTAssertNil(NativeVo2Max.latest([]))
+        XCTAssertNil(NativeVo2Max.latest([row("2026-11-17", vo2: nil), row("2026-11-16", vo2: 0)]))
+        let reading = NativeVo2Max.latest([
+            row("2026-11-15", vo2: 48.2),
+            row("2026-11-16", vo2: nil),
+            row("2026-11-17", vo2: 49.1),
+        ])
+        XCTAssertEqual(reading?.day, "2026-11-17")
+        XCTAssertEqual(reading?.value ?? -1, 49.1, accuracy: 0.001)
+        XCTAssertEqual(NativeVo2Max.points([row("2026-11-15", vo2: 48.2), row("2026-11-16", vo2: nil)]).map(\.key),
+                       ["2026-11-15"])
+    }
+
+    func testStepHoursPreferAppleWhenAppleIsTheLargerDay() {
+        XCTAssertTrue(NativeResolvedSteps.preferAppleHours(appleSum: 4_000, appleDaily: 8_202, mergedDaily: 8_202))
+        XCTAssertFalse(NativeResolvedSteps.preferAppleHours(appleSum: 40, appleDaily: 40, mergedDaily: 9_000))
+        XCTAssertFalse(NativeResolvedSteps.preferAppleHours(appleSum: 0, appleDaily: nil, mergedDaily: 99))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = calendar.date(from: DateComponents(year: 2026, month: 11, day: 17))!
+        let ts = Int(start.timeIntervalSince1970) + 8 * 3600
+        let points = NativeResolvedSteps.hourPoints(
+            appleHours: [(ts: ts, steps: 1_200)],
+            dayStart: start,
+            calendar: calendar,
+            preferApple: true
+        )
+        XCTAssertEqual(points.count, 24)
+        XCTAssertEqual(points[8].value, 1_200, accuracy: 0.1)
+        XCTAssertEqual(points.filter { $0.value == 0 }.count, 23)
+        let empty = NativeResolvedSteps.hourPoints(
+            appleHours: [(ts: ts, steps: 1_200)],
+            dayStart: start,
+            calendar: calendar,
+            preferApple: false
+        )
+        XCTAssertEqual(empty.count, 24)
+        XCTAssertTrue(empty.allSatisfy { $0.value == 0 })
+    }
+
     func testChosenDashboardMetricWithNoValueIsHidden() {
         let empty = DailyMetric(
             day: "2026-11-12",

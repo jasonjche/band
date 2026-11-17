@@ -69,40 +69,48 @@ struct NativeStressPage: View {
 
     private func reload() async {
         guard let repo = repoHandle else { return }
-        workouts = await repo.workoutRows(days: 14)
+        let key = dayKey
+        let nextWorkouts = await repo.workoutRows(days: 14)
+        if Task.isCancelled { return }
         let calendar = Calendar.current
-        let ending = NativeScopeSeries.date(from: dayKey, calendar: calendar) ?? selectedDay
+        let ending = NativeScopeSeries.date(from: key, calendar: calendar) ?? selectedDay
         let start = calendar.startOfDay(for: ending)
         let from = Int(start.timeIntervalSince1970)
         let buckets = await repo.hrSamples(from: from, to: from + 86_400, bucketSeconds: 300)
+        if Task.isCancelled { return }
         let rr = await repo.rrIntervals(from: from, to: from + 86_400, limit: 50_000)
+        if Task.isCancelled { return }
+        guard key == dayKey else { return }
         let sleep = repo.sleeps.last {
-            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
+            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == key
         }
-        sleepStart = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
-        sleepEnd = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
-        bouts = workouts.compactMap { row in
+        let nextSleepStart = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
+        let nextSleepEnd = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
+        let nextBouts: [(start: Date, end: Date)] = nextWorkouts.compactMap { row in
             let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
-            guard NativeDayLogic.sleepSessionDayKey(boutStart) == dayKey else { return nil }
+            guard NativeDayLogic.sleepSessionDayKey(boutStart) == key else { return nil }
             return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
         }
-        let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: dayKey)
-        sampleHours = NativeHomeCharts.stressSeries(
+        let days = repo.days
+        let rrPairs = rr.map { (ts: $0.ts, ms: Double($0.rrMs)) }
+        let baselines = NativeHomeCharts.stressBaselines(days: days, todayKey: key)
+        let rmssd = await Task.detached(priority: .utility) {
+            BandStress.rmssdByBucket(rr: rrPairs)
+        }.value
+        if Task.isCancelled { return }
+        let nextHours = NativeHomeCharts.stressSeries(
             buckets: buckets,
             baselines: baselines,
-            sleepStart: sleepStart,
-            sleepEnd: sleepEnd,
-            workouts: bouts,
-            rmssdByBucket: BandStress.rmssdByBucket(rr: rr.map { (ts: $0.ts, ms: Double($0.rrMs)) })
+            sleepStart: nextSleepStart,
+            sleepEnd: nextSleepEnd,
+            workouts: nextBouts,
+            rmssdByBucket: rmssd
         )
-        level = NativeStressResolver.level(hours: sampleHours, days: repo.days, todayKey: dayKey)
-        if let latest = level {
-            scrubValue = latest
-        }
-        scrubTime = nil
-        timeInHighMinutes = NativeStressHistory.timeInHighMinutes(sampleHours)
-        let daily = NativeStressHistory.daily(days: repo.days, ending: dayKey)
-        series = NativeScopeSeries.make(
+        guard key == dayKey else { return }
+        let nextLevel = NativeStressResolver.level(hours: nextHours, days: days, todayKey: key)
+        let nextHigh = NativeStressHistory.timeInHighMinutes(nextHours)
+        let daily = NativeStressHistory.daily(days: days, ending: key)
+        let nextSeries = NativeScopeSeries.make(
             points: daily,
             scope: scope,
             kind: .rate,
@@ -110,6 +118,18 @@ struct NativeStressPage: View {
             now: ending,
             ending: ending
         )
+        workouts = nextWorkouts
+        sleepStart = nextSleepStart
+        sleepEnd = nextSleepEnd
+        bouts = nextBouts
+        sampleHours = nextHours
+        level = nextLevel
+        if let latest = nextLevel {
+            scrubValue = latest
+        }
+        scrubTime = nil
+        timeInHighMinutes = nextHigh
+        series = nextSeries
     }
 }
 
@@ -188,20 +208,30 @@ struct NativeStressChartPage: View {
             )
         }
 
-        if let minutes = timeInHighMinutes, minutes > 0, scrubTime == nil {
-            NativeChrome.panel {
-                NativeContributorRow(
-                    symbol: "gauge.with.dots.needle.67percent",
-                    title: "Time in High",
-                    value: NativeScoreMath.duration(minutes),
-                    tint: NativeTokens.stressHigh
-                )
-            }
+        NativeChrome.panel {
+            NativeContributorRow(
+                symbol: "gauge.with.dots.needle.67percent",
+                title: "Time in High",
+                value: timeInHighText,
+                tint: NativeTokens.stressHigh
+            )
         }
+        .opacity(showsTimeInHigh ? 1 : 0)
+        .accessibilityHidden(!showsTimeInHigh)
     }
 
     private var shownLevel: Double? {
         scrubTime == nil ? level : scrubValue
+    }
+
+    private var showsTimeInHigh: Bool {
+        guard let minutes = timeInHighMinutes, minutes > 0 else { return false }
+        return scrubTime == nil
+    }
+
+    private var timeInHighText: String {
+        guard let minutes = timeInHighMinutes, minutes > 0 else { return "—" }
+        return NativeScoreMath.duration(minutes)
     }
 
     private var gaugeCaption: String {

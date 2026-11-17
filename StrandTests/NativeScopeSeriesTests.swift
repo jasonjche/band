@@ -361,5 +361,26 @@ final class NativeScopeSeriesTests: XCTestCase {
         cal.locale = Locale(identifier: "en_US_POSIX")
         let date = cal.date(from: DateComponents(year: 2026, month: 11, day: 10, hour: 15, minute: 40))!
         XCTAssertEqual(NativeScopeFormat.time(date, calendar: cal), "3:40 PM")
+        let noon = cal.date(from: DateComponents(year: 2026, month: 11, day: 10, hour: 12))!
+        XCTAssertEqual(NativeScopeFormat.hourClock(noon, calendar: cal), "12 PM")
+    }
+
+    func testDayTotalsCaptionIsTotal() {
+        XCTAssertEqual(NativeScopeSeries.caption(scope: .day, kind: .total), "Total")
+        XCTAssertEqual(NativeScopeSeries.caption(scope: .week, kind: .total), "Average")
+        XCTAssertEqual(NativeScopeSeries.caption(scope: .day, kind: .rate), "Average")
+    }
+
+    func testCountTicksAreNiceThousands() {
+        XCTAssertEqual(NativeCountTicks.niceCeiling(8_202), 10_000, accuracy: 0.1)
+        XCTAssertEqual(NativeCountTicks.values(ceiling: 8_202), [0, 5_000, 10_000])
+        XCTAssertEqual(NativeCountFormat.compact(0), "0")
+        XCTAssertEqual(NativeCountFormat.compact(5_000), "5k")
+        XCTAssertEqual(NativeCountFormat.compact(10_000), "10k")
+        XCTAssertEqual(NativeCountFormat.integer(8_202), "8,202")
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = cal.date(from: DateComponents(year: 2026, month: 11, day: 17))!
+        XCTAssertEqual(NativeCountTicks.hourLabelDates(dayStart: start, calendar: cal).count, 4)
     }
 }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Journal editor chrome: Yes/No rows, follow-ups, and the Edit Questions list.
+/// Journal editor chrome: category cards, Yes/No capsules, follow-ups, and Edit Questions.
 struct NativeJournalEditor: View {
     var items: [JournalCatalogItem]
     var day: Date

@@ -208,7 +208,7 @@ enum HomeDashboardMetric: String, CaseIterable, Identifiable {
         case .steps: return .metric("steps")
         case .calories: return .metric("energy_kcal")
         case .sleepPerformance, .sleepHours, .sleepNeed, .sleepDebt: return .sleep
-        case .vo2max: return .metric("vo2max_est")
+        case .vo2max: return .metric("vo2max")
         case .hrZones13: return .metric("hr_zones13_min")
         case .hrZones45: return .metric("hr_zones45_min")
         case .strength: return .metric("strength_min")
@@ -223,7 +223,62 @@ enum HomeDashboardMetric: String, CaseIterable, Identifiable {
         case .respiratory: return "breaths/min"
         case .steps: return "steps"
         case .calories: return "cal"
+        case .vo2max: return "ml/kg·min"
         default: return nil
+        }
+    }
+}
+
+/// One day's steps. Home, the metric page, and `Repository.days` all go through
+/// `Repository.resolvedSteps` / `mergeAppleSteps` so two readouts cannot disagree.
+enum NativeResolvedSteps {
+    /// Prefer Apple Health's hourly series when that day Apple is the larger source.
+    static func preferAppleHours(appleSum: Int, appleDaily: Int?, mergedDaily: Int?) -> Bool {
+        let apple = max(appleSum, appleDaily ?? 0)
+        guard apple > 0 else { return false }
+        let merged = mergedDaily ?? 0
+        return merged <= apple
+    }
+
+    /// 24 hourly slots for a local day. Missing hours are 0 so the day chart is never empty.
+    static func hourPoints(
+        appleHours: [(ts: Int, steps: Int)],
+        dayStart: Date,
+        calendar: Calendar,
+        preferApple: Bool
+    ) -> [NativeHourPoint] {
+        let start = calendar.startOfDay(for: dayStart)
+        var byHour: [Int: Int] = [:]
+        if preferApple {
+            for row in appleHours where row.steps > 0 {
+                let hour = calendar.component(.hour, from: Date(timeIntervalSince1970: TimeInterval(row.ts)))
+                byHour[hour, default: 0] += row.steps
+            }
+        }
+        return (0..<24).map { hour in
+            let time = calendar.date(byAdding: .hour, value: hour, to: start) ?? start
+            return NativeHourPoint(time: time, value: Double(byHour[hour] ?? 0))
+        }
+    }
+}
+
+/// Measured VO₂ max from Apple Health. Never a RHR/age formula estimate.
+enum NativeVo2Max {
+    static let sourceLabel = "From Apple Health"
+
+    struct Reading: Equatable {
+        var day: String
+        var value: Double
+    }
+
+    static func latest(_ rows: [AppleDaily]) -> Reading? {
+        Repository.latestAppleVo2Max(rows).map { Reading(day: $0.day, value: $0.value) }
+    }
+
+    static func points(_ rows: [AppleDaily]) -> [NativeDayPoint] {
+        rows.compactMap { row in
+            guard let value = row.vo2max, value > 0 else { return nil }
+            return NativeDayPoint(key: row.day, value: value)
         }
     }
 }

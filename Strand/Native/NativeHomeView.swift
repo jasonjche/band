@@ -58,6 +58,14 @@ enum NativeHomeSync {
 }
 
 /// Survives a Home re-appear / remount so live strain is not rescored unless `refreshSeq` or the day changed.
+/// Counts coalesced Home applies so a day switch can be measured as one snapshot, not a cascade.
+enum NativeHomeLoadMetrics {
+    static var applyCount = 0
+    static var modelRebuilds = 0
+    /// One published snapshot per finished load: day switch or `refreshSeq`.
+    static let publishedSnapshotsPerLoad = 1
+}
+
 enum NativeLiveStrainMemo {
     private static var seq = -1
     private static var day = ""
@@ -120,6 +128,8 @@ struct NativeHomeView: View {
     @State private var firstDay: String?
     @State private var storeEmpty = false
     @State private var handlesReady = false
+    /// `refreshSeq` last used for workouts / journal / VO₂. Day steps reuse those rows.
+    @State private var sharedFetchSeq = -1
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @AppStorage("behavior.smartAlarmEnabled") private var smartAlarmEnabled = false
     @AppStorage("behavior.smartAlarmMinutes") private var smartAlarmMinutes = 7 * 60
@@ -136,31 +146,32 @@ struct NativeHomeView: View {
         ScrollView {
             NativeChrome.stack {
                 #if os(iOS)
-                HomeDateStepper(
-                    title: HomeDayTitle.text(for: selectedDay),
-                    canGoBack: canGoBack,
-                    canGoForward: canGoForward,
-                    onBack: { shiftDay(-1) },
-                    onForward: { shiftDay(1) },
-                    onTitleTap: { showingCalendar = true }
-                )
+                HStack(alignment: .center, spacing: 8) {
+                    HomeDateStepper(
+                        title: HomeDayTitle.text(for: selectedDay),
+                        canGoBack: canGoBack,
+                        canGoForward: canGoForward,
+                        onBack: { shiftDay(-1) },
+                        onForward: { shiftDay(1) },
+                        onTitleTap: { showingCalendar = true }
+                    )
+                    Spacer(minLength: 8)
+                    HomeStrapStatus()
+                }
                 .frame(maxWidth: .infinity)
                 .sheet(isPresented: $showingCalendar) {
                     HomeCalendarSheet(selected: selectedDay, range: calendarRange) { picked in
                         selectedDay = Calendar.current.startOfDay(for: picked)
                     }
                 }
-                .overlay(alignment: .trailing) { HomeStrapStatus() }
                 #endif
-                if !loaded {
-                    HomeLoadingSkeleton()
-                } else if storeEmpty {
+                if let model = dayModel, !storeEmpty {
+                    homeContent(model)
+                } else if loaded && storeEmpty {
                     NativeNoDataCard(
                         onImport: { path.wrappedValue.append(TabRoute.dataSources) },
                         onPair: { path.wrappedValue.append(NativePairRoute()) }
                     )
-                } else if let model = dayModel {
-                    homeContent(model)
                 } else {
                     HomeLoadingSkeleton()
                 }
@@ -266,34 +277,69 @@ struct NativeHomeView: View {
 
     private func reload() async {
         guard let repo = repoHandle else { return }
-        workouts = await repo.workoutRows(days: 120)
-        journalEntries = await repo.journalEntries(days: 40)
-        let start = Calendar.current.startOfDay(for: selectedDay)
+        let day = selectedKey
+        let seq = refreshSeq
+        let viewingDay = selectedDay
+
+        var nextWorkouts = workouts
+        var nextJournal = journalEntries
+        var nextVO2 = vo2max
+        if sharedFetchSeq != seq {
+            nextWorkouts = await repo.workoutRows(days: 120)
+            if Task.isCancelled { return }
+            nextJournal = await repo.journalEntries(days: 40)
+            if Task.isCancelled { return }
+            // Measured Apple Health VO2 max only (same resolver as the VO2 page); nil hides the tile.
+            let apple = await repo.appleDailyRows(days: 400)
+            if Task.isCancelled { return }
+            nextVO2 = NativeVo2Max.latest(apple)?.value
+        }
+
+        let start = Calendar.current.startOfDay(for: viewingDay)
         let from = Int(start.timeIntervalSince1970)
         let buckets = await repo.hrSamples(from: from, to: from + 86_400, bucketSeconds: 300)
+        if Task.isCancelled { return }
         let rr = await repo.rrIntervals(from: from, to: from + 86_400, limit: 50_000)
+        if Task.isCancelled { return }
+        guard day == selectedKey else { return }
+
         let sleep = repo.sleeps.last {
-            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == selectedKey
+            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == day
         }
         let sleepStartLocal = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
         let sleepEndLocal = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
-        let boutsLocal: [(start: Date, end: Date)] = workouts.compactMap { row in
+        let boutsLocal: [(start: Date, end: Date)] = nextWorkouts.compactMap { row in
             let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
-            guard NativeDayLogic.sleepSessionDayKey(boutStart) == selectedKey else { return nil }
+            guard NativeDayLogic.sleepSessionDayKey(boutStart) == day else { return nil }
             return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
         }
-        let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: selectedKey)
-        sampleHours = NativeHomeCharts.stressSeries(
+        let rrPairs = rr.map { (ts: $0.ts, ms: Double($0.rrMs)) }
+        let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: day)
+        let rmssd = await Task.detached(priority: .utility) {
+            BandStress.rmssdByBucket(rr: rrPairs)
+        }.value
+        if Task.isCancelled { return }
+        let series = NativeHomeCharts.stressSeries(
             buckets: buckets,
             baselines: baselines,
             sleepStart: sleepStartLocal,
             sleepEnd: sleepEndLocal,
             workouts: boutsLocal,
-            rmssdByBucket: BandStress.rmssdByBucket(rr: rr.map { (ts: $0.ts, ms: Double($0.rrMs)) })
+            rmssdByBucket: rmssd
         )
-        let vo2 = await repo.exploreSeries(key: "vo2max_est", source: "my-whoop")
-        vo2max = vo2.last?.value
-        await refreshLiveStrain(from: from, buckets: buckets)
+        guard day == selectedKey else { return }
+
+        let liveStrain = await liveStrainValue(buckets: buckets, day: day, seq: seq)
+        if Task.isCancelled { return }
+        guard day == selectedKey else { return }
+
+        workouts = nextWorkouts
+        journalEntries = nextJournal
+        vo2max = nextVO2
+        sampleHours = series
+        liveTodayStrain = liveStrain
+        sharedFetchSeq = seq
+        NativeHomeLoadMetrics.applyCount += 1
         rebuildModel()
     }
 
@@ -371,6 +417,7 @@ struct NativeHomeView: View {
             imported: repo.importedSleep,
             todayKey: NativeDayLogic.logicalToday()
         )
+        NativeHomeLoadMetrics.modelRebuilds += 1
         dashboardItems = HomeMetricItem.make(
             dashboard: model.dashboard,
             days: repo.days,
@@ -385,19 +432,15 @@ struct NativeHomeView: View {
     /// Live day strain via `BandStrain` on today's HR, then `NativeStrain.day` with the stored row.
     /// Uses the 300 s buckets already read for the stress chart (within 0.05 of per-sample on the
     /// golden vectors). Recomputes only when `refreshSeq` or the selected day changed.
-    private func refreshLiveStrain(from: Int, buckets: [HRBucket]) async {
-        guard let repo = repoHandle, let profile = profileHandle else { return }
-        let seq = repo.refreshSeq
-        let day = selectedKey
+    private func liveStrainValue(buckets: [HRBucket], day: String, seq: Int) async -> Double? {
         if let cached = NativeLiveStrainMemo.read(seq: seq, day: day) {
-            liveTodayStrain = cached
-            return
+            return cached
         }
         guard day == NativeDayLogic.logicalToday() else {
-            liveTodayStrain = nil
             NativeLiveStrainMemo.store(seq: seq, day: day, value: nil)
-            return
+            return nil
         }
+        guard let repo = repoHandle, let profile = profileHandle else { return liveTodayStrain }
         let maxHR = profile.effortHRmax
         let restHR = NativeStrain.restingHR(
             day: repo.days.last { $0.day == day },
@@ -409,8 +452,8 @@ struct NativeHomeView: View {
         let scored = await Task.detached(priority: .utility) {
             NativeStrain.score(times: times, hr: hr, maxHR: maxHR, restingHR: restHR)
         }.value
-        liveTodayStrain = scored
         NativeLiveStrainMemo.store(seq: seq, day: day, value: scored)
+        return scored
     }
 
     @ViewBuilder private func homeContent(_ model: NativeDay.Model) -> some View {
@@ -419,7 +462,6 @@ struct NativeHomeView: View {
             recovery: model.recovery,
             strain: model.strain,
             onOpen: { path.wrappedValue.append($0) },
-            dayKey: selectedKey,
             strainTargetFraction: strainTarget.map { NativeStrainTarget.ringFraction($0.range) }
         )
         Button {
@@ -526,6 +568,19 @@ enum HomeDayNav {
     }
 }
 
+/// Compact stepper: two circular chevrons plus a tappable title. Fits beside strap status on 393 pt.
+enum HomeDateStepperLayout {
+    static let chevronSize: CGFloat = 32
+    static let titleMinWidth: CGFloat = 96
+    static let spacing: CGFloat = 6
+    static let strapGutter: CGFloat = 8
+    /// Chevrons + title + gutters. Leaves room for strap status on iPhone 15 (393 pt).
+    static var compactWidth: CGFloat {
+        chevronSize + spacing + titleMinWidth + spacing + chevronSize
+    }
+    static let iphone15Width: CGFloat = 393
+}
+
 struct HomeDateStepper: View {
     var title: String
     var canGoBack: Bool
@@ -535,47 +590,46 @@ struct HomeDateStepper: View {
     var onTitleTap: (() -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 8) {
-            Button(action: onBack) {
-                Image(systemName: "chevron.left")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 32, height: 32)
-                    .contentShape(Rectangle())
-            }
-            .disabled(!canGoBack)
-            .opacity(canGoBack ? 1 : 0.35)
+        HStack(spacing: HomeDateStepperLayout.spacing) {
+            chevron(systemName: "chevron.left", enabled: canGoBack, action: onBack)
+                .accessibilityLabel("Previous day")
 
             Button { onTitleTap?() } label: {
                 Text(title)
                     .font(.headline)
                     .monospacedDigit()
-                    .frame(minWidth: 120, minHeight: 32)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .frame(minWidth: HomeDateStepperLayout.titleMinWidth, minHeight: HomeDateStepperLayout.chevronSize)
                     .contentShape(Rectangle())
             }
             .disabled(onTitleTap == nil)
-
-            Button(action: onForward) {
-                Image(systemName: "chevron.right")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 32, height: 32)
-                    .contentShape(Rectangle())
+            .accessibilityLabel(title)
+            .accessibilityHint(onTitleTap == nil ? "Steps through days" : "Shows the calendar")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: onForward()
+                case .decrement: onBack()
+                @unknown default: break
+                }
             }
-            .disabled(!canGoForward)
-            .opacity(canGoForward ? 1 : 0.35)
+
+            chevron(systemName: "chevron.right", enabled: canGoForward, action: onForward)
+                .accessibilityLabel("Next day")
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 4)
-        .homeStepperGlass()
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(title)
-        .accessibilityHint("Steps through days")
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: onForward()
-            case .decrement: onBack()
-            @unknown default: break
-            }
+    }
+
+    private func chevron(systemName: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.body.weight(.semibold))
+                .frame(width: HomeDateStepperLayout.chevronSize, height: HomeDateStepperLayout.chevronSize)
+                .contentShape(Circle())
         }
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.35)
+        .homeChevronGlass()
     }
 }
 
@@ -615,12 +669,11 @@ struct HomeCalendarSheet: View {
 }
 
 private extension View {
-    /// Trial: the day stepper as one Liquid Glass capsule on iOS 26. Older systems and macOS
-    /// keep the bare stepper.
-    @ViewBuilder func homeStepperGlass() -> some View {
+    /// Circular Liquid Glass on the day-stepper chevrons. Older systems and macOS stay bare.
+    @ViewBuilder func homeChevronGlass() -> some View {
         #if os(iOS)
         if #available(iOS 26.0, *) {
-            self.glassEffect(.regular.interactive(), in: Capsule())
+            self.glassEffect(.regular.interactive(), in: Circle())
         } else {
             self
         }
@@ -637,7 +690,6 @@ struct HomeRingsRow: View {
     var recovery: NativeScore
     var strain: NativeScore
     var onOpen: (TabRoute) -> Void
-    var dayKey: String = ""
     var strainTargetFraction: ClosedRange<Double>? = nil
     @Environment(\.nativeStyle) private var style
 
@@ -648,7 +700,6 @@ struct HomeRingsRow: View {
             ring(strain, tint: NativePaint.strain(style), targetFraction: strainTargetFraction)
         }
         .padding(.top, 8)
-        .id(dayKey)
     }
 
     private var recoveryTint: Color {
@@ -854,7 +905,8 @@ struct HomeActivityItem: Identifiable {
                 startTs: nil
             ))
         }
-        for activity in model.activities {
+        // Chronological: sleep first, then activities by start time.
+        for activity in model.activities.sorted(by: { $0.startTs < $1.startTs }) {
             items.append(HomeActivityItem(
                 id: "\(activity.startTs)",
                 symbol: activity.symbol,
@@ -1626,6 +1678,8 @@ struct HomeLoadingSkeleton: View {
                 }
             }
             .padding(.top, 8)
+            skeletonCard
+            skeletonCard
             skeletonCard
         }
         .redacted(reason: .placeholder)

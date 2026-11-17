@@ -373,6 +373,10 @@ final class HealthKitBridge: ObservableObject {
         // #1578: counted before any early return, so the ratio of wakes to syncs is honest. Coalescing
         // cuts the work per wake, not the wakes — this is what shows whether the wake itself is the cost.
         HealthSyncStats.recordWake()
+        if type == HKObjectType.workoutType()
+            || type.identifier == HKQuantityTypeIdentifier.heartRate.rawValue {
+            await importMissingAppleWorkoutHeartRate(days: 4)
+        }
         let (touched, newAnchor) = await fetchTouchedDayWindow(type: type)
         // No new samples since the last anchor (a spurious wake): nothing to ingest, so advancing the
         // anchor now loses nothing and skips a redundant re-query next wake.
@@ -496,6 +500,9 @@ final class HealthKitBridge: ObservableObject {
         // Before syncing: pick up any read or share type this version added (#949, #2644).
         // No-op once the stored signature matches, which is every sync after the first.
         await requestNewAuthorizationTypesIfNeeded()
+        // Workout HR is a cheap file-backed fetch. Run it before the ~15 aggregate queries so
+        // today's Apple Health run has a chart without waiting on the rest of the pass.
+        await importMissingAppleWorkoutHeartRate(days: 4)
         guard let store = await repo.storeHandle() else { return false }
 
         let cal = Calendar.current
@@ -1808,13 +1815,23 @@ final class HealthKitBridge: ObservableObject {
         }
     }
 
-    /// Fetch and persist time-range HR for Apple Health workouts in the last 30 days that have no
-    /// stored series yet. Incremental: a file (including an empty one) means "already fetched".
+    /// Apple Health workouts in the last `days` that still have no stored HR series.
+    /// Cheap enough for foreground and observer wakes: skips rows that already have a file.
+    func importMissingAppleWorkoutHeartRate(days: Int = 4) async {
+        guard auth == .authorized else { return }
+        let cutoff = Int(Date().timeIntervalSince1970) - days * 86_400
+        let rows = await repo.workoutRows().filter {
+            WorkoutSource.isAppleHealth($0.source) && $0.startTs >= cutoff
+        }
+        await importAppleWorkoutHeartRate(rows: rows)
+    }
+
+    /// Fetch and persist time-range HR for Apple Health workouts that have no stored series yet.
+    /// Incremental: a file (including an empty one) means "already fetched".
     /// Runs at utility priority off the main actor.
     private func importAppleWorkoutHeartRate(rows: [WorkoutRow]) async {
-        let cutoff = Int(Date().timeIntervalSince1970) - 30 * 86_400
         let needed = rows.filter {
-            $0.startTs >= cutoff && !AppleWorkoutHRStore.contains(startTs: $0.startTs, sport: $0.sport)
+            !AppleWorkoutHRStore.contains(startTs: $0.startTs, sport: $0.sport)
         }
         guard !needed.isEmpty else { return }
         let hkStore = store

@@ -3,6 +3,7 @@ import Charts
 import WhoopStore
 import StrandDesign
 import StrandAnalytics
+import WhoopProtocol
 
 // One score page, shared by Sleep, Recovery, and Strain.
 // Screenshot shape: back is the system bar, then the ring, four contributor
@@ -25,6 +26,7 @@ struct NativeScorePage: View {
     @State private var refreshSeq = 0
     @State private var handlesReady = false
     @State private var workouts: [WorkoutRow] = []
+    @State private var workoutsSeq = -1
     @State private var overnightHr: [NativeHourPoint] = []
     @State private var highSleepStress: Double?
     @State private var sleepStress: NativeSleepStress.Model?
@@ -74,7 +76,10 @@ struct NativeScorePage: View {
                     strainTarget: strainTarget
                 )
             } else {
-                NativeChrome.screen { ProgressView() }
+                NativeChrome.screen {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, minHeight: 200)
+                }
                     .navigationTitle(kind == .recovery ? "Recovery" : kind == .strain ? "Strain" : "Sleep")
                     .modifier(NativeInlineTitle())
             }
@@ -110,41 +115,51 @@ struct NativeScorePage: View {
         }
         .task(id: rebuildID) {
             guard handlesReady else { return }
-            rebuild()
-            workouts = await repoHandle?.workoutRows(days: 120) ?? workouts
-            rebuild()
+            if workoutsSeq != refreshSeq {
+                let rows = await repoHandle?.workoutRows(days: 120) ?? workouts
+                if Task.isCancelled { return }
+                workouts = rows
+                workoutsSeq = refreshSeq
+            }
+            rebuild(includingSleepDetail: kind != .sleep)
         }
-        .onChange(of: highSleepStress) { _ in rebuild() }
-        .onChange(of: sleepStress) { _ in rebuild() }
         .task(id: sleepBoundsID) {
             guard handlesReady else { return }
             guard let repo = repoHandle, let start = dayModel?.sleepStart, let end = dayModel?.sleepEnd else {
                 overnightHr = []
                 highSleepStress = nil
+                sleepStress = nil
+                rebuild(includingSleepDetail: true)
                 return
             }
             let from = Int(start.timeIntervalSince1970)
             let to = Int(end.timeIntervalSince1970)
             let limit = kind == .sleep ? 200_000 : 8_000
             let overnightHR = await repo.hrSamples(from: from, to: to, limit: limit)
-            overnightHr = overnightHR.prefix(8_000).enumerated().compactMap { i, sample in
-                guard i % 2 == 0 else { return nil }
-                return NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval(sample.ts)), value: Double(sample.bpm))
-            }
+            if Task.isCancelled { return }
+            let mapped = NativeOvernightHeart.points(from: overnightHR)
             guard kind == .sleep else {
+                overnightHr = mapped
                 highSleepStress = nil
                 sleepStress = nil
                 return
             }
+            let ticks = overnightHR.map { (ts: $0.ts, bpm: $0.bpm) }
             let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: dayKey)
-            let stressModel = NativeSleepStress.make(
-                hr: overnightHR, startTs: from, endTs: to, baselines: baselines
-            )
+            let stressModel = await Task.detached(priority: .utility) {
+                let samples = ticks.map { HRSample(ts: $0.ts, bpm: $0.bpm) }
+                return NativeSleepStress.make(
+                    hr: samples, startTs: from, endTs: to, baselines: baselines
+                )
+            }.value
+            if Task.isCancelled { return }
+            overnightHr = mapped
             sleepStress = stressModel
             // One source: the row reads the chart's own share so the two cannot disagree.
             highSleepStress = stressModel?.highShare ?? BandStress.overnightHighShare(
                 hr: overnightHR, startTs: from, endTs: to, baselines: baselines
             )
+            rebuild(includingSleepDetail: true)
         }
         .task(id: "hrv-sws-\(sleepBoundsID)") {
             guard handlesReady, kind == .recovery,
@@ -167,7 +182,8 @@ struct NativeScorePage: View {
     }
 
     /// Rings, week cards, sleep detail — once per data change, not per `body` pass.
-    private func rebuild() {
+    /// Sleep-page detail cards wait for overnight HR so they do not appear in a second layout pass.
+    private func rebuild(includingSleepDetail: Bool = true) {
         guard let repo = repoHandle else { return }
         nightSession = repo.sleeps
             .filter {
@@ -177,7 +193,9 @@ struct NativeScorePage: View {
             .first
         dayModel = buildModel(repo)
         weekCards = buildWeekCards(repo)
-        sleepDetail = buildSleepDetail(repo)
+        if includingSleepDetail {
+            sleepDetail = buildSleepDetail(repo)
+        }
         strainTarget = kind == .strain
             ? NativeStrainTarget.resolve(
                 viewingKey: dayKey,
@@ -310,25 +328,26 @@ struct NativeScoreView: View {
     @Environment(\.nativeStyle) private var style
 
     @ViewBuilder private var scoreBody: some View {
-        if score.known {
-            NativeRing(
-                fraction: score.fraction,
-                tint: ringTint,
-                value: score.value,
-                caption: ringCaption,
-                diameter: 184,
-                targetFraction: kind == .strain ? strainTarget.map { NativeStrainTarget.ringFraction($0.range) } : nil
-            )
-            .id(dayKey ?? score.value)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-        } else {
-            NativeHeroValue(
-                value: "No Data",
-                date: dayKey.map { NativeChartDay.mediumDate($0) }
-            )
-            .padding(.vertical, 8)
+        Group {
+            if score.known {
+                NativeRing(
+                    fraction: score.fraction,
+                    tint: ringTint,
+                    value: score.value,
+                    caption: ringCaption,
+                    diameter: 184,
+                    targetFraction: kind == .strain ? strainTarget.map { NativeStrainTarget.ringFraction($0.range) } : nil
+                )
+                .frame(maxWidth: .infinity)
+            } else {
+                NativeHeroValue(
+                    value: "No Data",
+                    date: dayKey.map { NativeChartDay.mediumDate($0) }
+                )
+            }
         }
+        .frame(minHeight: 200)
+        .padding(.vertical, 8)
         if kind == .strain, let strainTarget {
             Text(NativeStrainTarget.caption(result: strainTarget, strain21: score.fraction.map { $0 * 21 }))
                 .font(style == .whoop ? NativeTokens.whoopCaps(11) : .subheadline)
@@ -392,7 +411,7 @@ struct NativeScoreView: View {
                 onHypnogram: { path.wrappedValue.append(NativeSleepHypnogramRoute()) }
             )
         }
-        if kind == .sleep, !overnightHr.isEmpty {
+        if kind == .sleep {
             NativeOvernightHeartCard(
                 points: overnightHr,
                 onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "avg_hr")) }
@@ -925,13 +944,17 @@ struct NativeLastNightCard: View {
     }
 
     @ViewBuilder private var hypnogram: some View {
-        if !spans.isEmpty, let sleepStart, let sleepEnd, sleepEnd > sleepStart {
-            NativeSleepHypnogram(
-                spans: spans,
-                nightStart: sleepStart,
-                nightEnd: sleepEnd,
-                onOpen: onHypnogram
-            )
+        if let sleepStart, let sleepEnd, sleepEnd > sleepStart {
+            if !spans.isEmpty {
+                NativeSleepHypnogram(
+                    spans: spans,
+                    nightStart: sleepStart,
+                    nightEnd: sleepEnd,
+                    onOpen: onHypnogram
+                )
+            } else {
+                Color.clear.frame(height: 176)
+            }
         }
     }
 
@@ -978,6 +1001,19 @@ struct NativeLastNightCard: View {
     }
 }
 
+enum NativeOvernightHeart {
+    /// Downsample for the Sleep HR chart. Stats still use the raw samples.
+    static func points(from samples: [HRSample], every: Int = 2, cap: Int = 8_000) -> [NativeHourPoint] {
+        samples.prefix(cap).enumerated().compactMap { index, sample in
+            guard every <= 1 || index % every == 0 else { return nil }
+            return NativeHourPoint(
+                time: Date(timeIntervalSince1970: TimeInterval(sample.ts)),
+                value: Double(sample.bpm)
+            )
+        }
+    }
+}
+
 struct NativeOvernightHeartCard: View {
     var points: [NativeHourPoint]
     var onOpen: (() -> Void)? = nil
@@ -1020,13 +1056,14 @@ struct NativeOvernightHeartCard: View {
                 )
             } else if let average {
                 NativeHeroValue(caption: "Average", value: "\(Int(average.rounded()))", unit: "BPM")
+            } else {
+                NativeHeroValue(caption: "Average", value: "—", unit: "BPM")
             }
             NativeOvernightLine(
                 points: points,
                 tint: NativePaint.heart(style),
                 selectedTime: $selectedTime
             )
-            .frame(height: 160)
             .onTapGesture { onOpen?() }
         }
     }

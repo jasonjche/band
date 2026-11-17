@@ -51,4 +51,20 @@ final class AppleStepsMergeTests: XCTestCase {
             ["2026-11-16": 2_717, "2026-11-17": 8_202, "2026-11-18": 40])
         XCTAssertEqual(merged.map(\.steps), [9_000, 8_202, 40])
     }
+
+    func testInsertsAppleOnlyDaysAndCollapsesDuplicateStrapRows() {
+        let merged = Repository.mergeAppleSteps(
+            into: [day("2026-11-17", steps: 99), day("2026-11-17", steps: nil)],
+            ["2026-11-17": 8_202, "2026-11-13": 10_146])
+        XCTAssertEqual(merged.map(\.day), ["2026-11-13", "2026-11-17"])
+        XCTAssertEqual(merged.map(\.steps), [10_146, 8_202])
+    }
+
+    func testResolvedStepsIsTheSingleDailyFunnel() {
+        XCTAssertEqual(Repository.resolvedSteps(strap: 99, apple: 8_202), 8_202)
+        XCTAssertEqual(Repository.resolvedSteps(strap: 9_000, apple: 2_717), 9_000)
+        XCTAssertEqual(Repository.resolvedSteps(strap: nil, apple: 40), 40)
+        XCTAssertNil(Repository.resolvedSteps(strap: 0, apple: nil))
+        XCTAssertNil(Repository.resolvedSteps(strap: nil, apple: nil))
+    }
 }

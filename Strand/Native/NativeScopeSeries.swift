@@ -223,8 +223,12 @@ struct NativeScopeSeries: Equatable {
     }
 
     static func caption(scope: NativeMetricScope, kind: NativeScopeKind) -> String {
-        if kind == .total && (scope == .sixMonths || scope == .year) {
-            return "Daily Average"
+        if kind == .total {
+            switch scope {
+            case .day: return "Total"
+            case .sixMonths, .year: return "Daily Average"
+            case .week, .month: return "Average"
+            }
         }
         return "Average"
     }
@@ -514,6 +518,13 @@ enum NativeScopeFormat {
         return formatter
     }()
 
+    private static let hourFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = posix
+        formatter.dateFormat = "h a"
+        return formatter
+    }()
+
     private static func aligned(_ formatter: DateFormatter, calendar: Calendar) {
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
@@ -537,6 +548,11 @@ enum NativeScopeFormat {
     static func time(_ date: Date, calendar: Calendar = .current) -> String {
         aligned(timeFormatter, calendar: calendar)
         return timeFormatter.string(from: date)
+    }
+
+    static func hourClock(_ date: Date, calendar: Calendar) -> String {
+        aligned(hourFormatter, calendar: calendar)
+        return hourFormatter.string(from: date)
     }
 
     static func weekRange(from start: Date, to end: Date, calendar: Calendar) -> String {
@@ -589,10 +605,53 @@ enum NativeCountFormat {
         formatter.numberStyle = .decimal
         formatter.maximumFractionDigits = 0
         formatter.roundingMode = .halfUp
+        formatter.usesGroupingSeparator = true
+        formatter.groupingSeparator = ","
         return formatter
     }()
 
     static func integer(_ value: Double) -> String {
         grouped.string(from: NSNumber(value: value.rounded())) ?? "\(Int(value.rounded()))"
+    }
+
+    /// Axis labels: 0, 5k, 10k. Hero values keep `integer`.
+    static func compact(_ value: Double) -> String {
+        let rounded = value.rounded()
+        let magnitude = abs(rounded)
+        if magnitude >= 1000 {
+            let k = rounded / 1000
+            if abs(k - k.rounded()) < 0.05 {
+                return "\(Int(k.rounded()))k"
+            }
+            return String(format: "%.1fk", k)
+        }
+        return integer(rounded)
+    }
+}
+
+/// 0-based nice ticks for step/calorie bars (0 / 5k / 10k).
+enum NativeCountTicks {
+    static func niceCeiling(_ value: Double) -> Double {
+        let v = max(value, 1)
+        let exp = floor(log10(v))
+        let mag = pow(10, exp)
+        let n = v / mag
+        let nice: Double
+        if n <= 1 { nice = 1 }
+        else if n <= 2 { nice = 2 }
+        else if n <= 2.5 { nice = 2.5 }
+        else if n <= 5 { nice = 5 }
+        else { nice = 10 }
+        return nice * mag
+    }
+
+    static func values(ceiling: Double) -> [Double] {
+        let top = niceCeiling(ceiling)
+        if top <= 1 { return [0, top] }
+        return [0, top / 2, top]
+    }
+
+    static func hourLabelDates(dayStart: Date, calendar: Calendar) -> [Date] {
+        [0, 6, 12, 18].compactMap { calendar.date(byAdding: .hour, value: $0, to: calendar.startOfDay(for: dayStart)) }
     }
 }

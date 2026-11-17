@@ -6,15 +6,21 @@ struct NativeJournalQuestionsView: View {
     var imported: [String]
 
     var body: some View {
-        Form {
+        NativeChrome.screen {
             ForEach(JournalGroup.displayOrder, id: \.self) { group in
                 let items = grouped(group)
                 if !items.isEmpty {
-                    Section(group.title) {
+                    NativeChrome.panel {
+                        NativeCardHeader(
+                            title: group.title,
+                            symbol: "checklist",
+                            tint: NativeChrome.recovery
+                        )
                         ForEach(items) { item in
                             Toggle(isOn: visibilityBinding(item)) {
                                 Text(verbatim: item.display)
                             }
+                            .frame(minHeight: 44)
                         }
                     }
                 }

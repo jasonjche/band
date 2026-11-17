@@ -15,11 +15,11 @@ import WhoopProtocol
 // remains frozen while the duration alternatives collect local shadow evidence.
 //
 // The published thresholds here are intentionally CONSERVATIVE (low sensitivity): a sustained ≥ 12-min
-// elevation of HR ≥ resting + 30 bpm, brief (≤ 90 s) dips tolerated, near windows merged. Tuned
-// to avoid false positives from stress / caffeine / a brief flight of stairs, at the cost of
-// missing the odd short or gentle session — exactly right for a SUGGESTION you can decline. An
-// OPTIONAL continuous motion signal, when one is readily available, is required as confirmation;
-// with no motion series it runs HR-only.
+// elevation of HR ≥ resting + 30 bpm, brief (≤ 90 s) dips tolerated, near windows merged, plus a
+// cooldown after any saved workout. When step-class or gravity samples cover the window, motion must
+// corroborate (walk/run share or median gravity-delta). With no motion series it falls back to a
+// stricter mean %HRR gate. Tuned to avoid false positives from stress / caffeine / post-workout
+// wandering, at the cost of missing the odd short or gentle session.
 //
 // The 10- and 15-minute alternatives are SHADOW policies only. Test Centre may run them beside the
 // published 12-minute result to compare against labelled workouts, but they must not drive the Today
@@ -73,10 +73,24 @@ public enum AutoWorkoutDetector {
     public static let maxDipS = 90
     /// Two detected windows whose gap is strictly less than this are merged into one (5 min).
     public static let mergeGapS = 5 * 60
-    /// When an OPTIONAL continuous motion series is supplied, a window must ALSO show elevated motion
-    /// to qualify (confirmation). "Elevated motion" = the window's mean per-second motion intensity
-    /// (L2 gravity-delta) is at least this. Ignored entirely in HR-only mode. Matches the Kotlin twin.
+    /// Legacy mean-gravity confirm used only when a caller still passes gravity without steps.
+    /// New detection uses `minMedianMotion` because a few large deltas inflate the mean.
     public static let motionConfirmMean = 0.05
+    /// Walk+run share of classed step ticks that confirms locomotion (0 still / 1 walk / 2 run).
+    /// Post-run wandering is ~2%; a real session is ~15–27%.
+    public static let minNonStillShare = 0.05
+    /// Median L2 gravity-delta that confirms motion when steps are mostly still (strength).
+    /// Post-run wandering median is ~0.02; a real session median is ~0.10.
+    public static let minMedianMotion = 0.05
+    /// Samples needed in the window before a motion series is trusted.
+    public static let minMotionSamples = 30
+    /// Mean Karvonen %HRR required when the window has no motion series. HRmax defaults to 197.
+    /// Recovery at ~92 bpm / RHR 60 is ~23%; a 74-min session at ~103 bpm is ~31%.
+    public static let hrOnlyMinMeanHRR = 0.28
+    /// Default HRmax for the HR-only %HRR gate when the caller does not pass one.
+    public static let defaultMaxHR = 197
+    /// Seconds appended to each saved workout's end so a cooldown is not a new session.
+    public static let cooldownAfterSavedS = 10 * 60
     /// Resting-HR fallback when the caller has no nightly RHR for the day.
     public static let defaultRestingHR = 60
 
@@ -93,6 +107,23 @@ public enum AutoWorkoutDetector {
             self.ts = ts
             self.intensity = intensity
         }
+    }
+
+    /// One strap step tick with its gait class (0 still / 1 walk / 2 run).
+    public struct StepTick: Equatable, Sendable {
+        public let ts: Int
+        public let activityClass: Int
+        public init(ts: Int, activityClass: Int) {
+            self.ts = ts
+            self.activityClass = activityClass
+        }
+    }
+
+    /// Whether a window has motion evidence, and whether that evidence confirms a workout.
+    public enum MotionVerdict: Equatable, Sendable {
+        case confirmed
+        case rejected
+        case missing
     }
 
     /// Per-second motion intensity = L2 magnitude of the gravity change vs the previous record.
@@ -133,23 +164,29 @@ public enum AutoWorkoutDetector {
     ///     first/last ELEVATED sample timestamps.
     ///  3. Keep a span only when it lasts >= `minimumSustainedMinutes` (applied per-span, BEFORE merge).
     ///  4. Merge two kept spans when the gap between them is strictly < `mergeGapS`.
-    ///  5. If a motion series is supplied, drop a window unless its mean motion intensity over the
-    ///     window is >= `motionConfirmMean` (confirmation). With no motion series, HR-only — keep it.
-    ///  6. Drop a window that OVERLAPS any saved span (touching endpoints count) — never re-suggest one.
+    ///  5. Drop a window that OVERLAPS any saved span, including `cooldownAfterSavedS` after each
+    ///     saved end (touching endpoints count) — never re-suggest a cooldown as a new session.
+    ///  6. Motion corroboration when step-class or gravity samples cover the window: keep it only
+    ///     when walk+run share >= `minNonStillShare` OR median gravity-delta >= `minMedianMotion`.
+    ///     With no motion series, require mean %HRR >= `hrOnlyMinMeanHRR`.
     ///  7. Emit a `DetectedWorkout` per surviving window (avg/peak bpm + whole-minute duration).
     ///
     /// - Parameters:
     ///   - hr: the day's (or last day or two's) HR samples `[(ts, bpm)]`; any order; empty → [].
     ///   - restingBpm: the nightly resting HR for the day; nil → `defaultRestingHR` (60).
-    ///   - motion: OPTIONAL continuous motion series for confirmation; nil/empty → HR-only.
-    ///   - savedSpans: already-saved workout windows to exclude by overlap.
+    ///   - motion: OPTIONAL gravity-delta series; nil/empty with no steps → HR-only fallback.
+    ///   - steps: OPTIONAL gait-class ticks (0 still / 1 walk / 2 run).
+    ///   - savedSpans: already-saved workout windows to exclude by overlap (plus cooldown).
     ///   - minimumSustainedMinutes: duration policy. The default is the published 12-minute policy;
     ///     callers may pass values from `shadowSustainedMinutes` only for local shadow diagnostics.
+    ///   - maxHeartRate: HRmax for the HR-only %HRR gate; default `defaultMaxHR` (197).
     public static func detect(hr: [(ts: Int, bpm: Int)],
                               restingBpm: Int?,
                               motion: [MotionPoint]? = nil,
+                              steps: [StepTick]? = nil,
                               savedSpans: [SavedWorkoutSpan] = [],
-                              minimumSustainedMinutes: Double = minSustainedMin) -> [DetectedWorkout] {
+                              minimumSustainedMinutes: Double = minSustainedMin,
+                              maxHeartRate: Int = defaultMaxHR) -> [DetectedWorkout] {
         let seg = hr.sorted { $0.ts < $1.ts }
         if seg.isEmpty { return [] }
 
@@ -204,30 +241,74 @@ public enum AutoWorkoutDetector {
         merged.append((curStart, curEnd))
 
         // --- 5 + 6 + 7 ---
-        let motionSeries = (motion?.isEmpty ?? true) ? nil : motion
+        let gravity = (motion?.isEmpty ?? true) ? nil : motion
+        let stepTicks = (steps?.isEmpty ?? true) ? nil : steps
         var results: [DetectedWorkout] = []
         for (start, end) in merged {
-            // 6: never re-suggest a window overlapping an already-saved workout.
-            if savedSpans.contains(where: { overlaps(start, end, $0.startSec, $0.endSec) }) { continue }
+            if savedSpans.contains(where: {
+                overlaps(start, end, $0.startSec, $0.endSec + cooldownAfterSavedS)
+            }) { continue }
 
             let window = seg.filter { $0.ts >= start && $0.ts <= end }
             if window.isEmpty { continue }
 
-            // 5: motion confirmation, only when a continuous motion series was supplied.
-            if let motionSeries = motionSeries {
-                let inWin = motionSeries.filter { $0.ts >= start && $0.ts <= end }.map { $0.intensity }
-                let meanMotion = inWin.isEmpty ? 0.0 : inWin.reduce(0.0, +) / Double(inWin.count)
-                if meanMotion < motionConfirmMean { continue }
-            }
-
             let bpms = window.map { $0.bpm }
             let avg = Int((Double(bpms.reduce(0, +)) / Double(bpms.count)).rounded())
             let peak = bpms.max() ?? avg
+
+            switch motionVerdict(start: start, end: end, gravity: gravity, steps: stepTicks) {
+            case .rejected:
+                continue
+            case .confirmed:
+                break
+            case .missing:
+                if !hrOnlyQualifies(avgBpm: avg, restingBpm: restingBpm, maxHeartRate: maxHeartRate) {
+                    continue
+                }
+            }
+
             let durMin = (end - start) / 60
             results.append(DetectedWorkout(startSec: start, endSec: end,
                                            avgBpm: avg, peakBpm: peak, durationMin: durMin))
         }
         return results
+    }
+
+    /// Motion corroboration for one window. Steps and gravity are independent: locomotion
+    /// share OR median gravity-delta is enough, so a strength session with still ticks can
+    /// still qualify. Mean gravity is not used — a few large deltas inflate it.
+    public static func motionVerdict(start: Int, end: Int,
+                                     gravity: [MotionPoint]?,
+                                     steps: [StepTick]?) -> MotionVerdict {
+        let gravIn = (gravity ?? []).filter { $0.ts >= start && $0.ts <= end }
+        let stepIn = (steps ?? []).filter { $0.ts >= start && $0.ts <= end }
+        let hasSteps = stepIn.count >= minMotionSamples
+        let hasGrav = gravIn.count >= minMotionSamples
+        if !hasSteps && !hasGrav { return .missing }
+
+        var nonStill = 0.0
+        if hasSteps {
+            let classed = stepIn.filter { $0.activityClass >= 0 }
+            if !classed.isEmpty {
+                nonStill = Double(classed.filter { $0.activityClass >= 1 }.count) / Double(classed.count)
+            }
+        }
+        var medianMotion = 0.0
+        if hasGrav {
+            let vals = gravIn.map(\.intensity).sorted()
+            medianMotion = vals[vals.count / 2]
+        }
+        if nonStill >= minNonStillShare || medianMotion >= minMedianMotion {
+            return .confirmed
+        }
+        return .rejected
+    }
+
+    /// Stricter HR-only bar when the window has no motion series.
+    public static func hrOnlyQualifies(avgBpm: Int, restingBpm: Int?, maxHeartRate: Int) -> Bool {
+        let rhr = restingBpm ?? defaultRestingHR
+        let reserve = max(1, maxHeartRate - rhr)
+        return Double(avgBpm - rhr) / Double(reserve) >= hrOnlyMinMeanHRR
     }
 
     /// Two closed [aStart, aEnd] / [bStart, bEnd] intervals overlap (touching endpoints count).

@@ -108,6 +108,26 @@ enum NativeAddActivityChartLogic {
         return "Avg \(stats.average) BPM · Max \(stats.max) BPM"
     }
 
+    /// Display-only smoothing. Avg/max readout still uses the raw `samples`.
+    static let displaySmoothWindow: TimeInterval = 180
+
+    static func smoothed(_ samples: [Sample], window: TimeInterval = displaySmoothWindow) -> [Sample] {
+        let points = samples.map {
+            NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval($0.ts)), value: $0.bpm)
+        }
+        let smoothed = NativeHRSmoothing.smooth(points, window: window)
+        guard !smoothed.isEmpty else { return samples }
+        var byTs: [Int: Double] = [:]
+        for point in smoothed {
+            byTs[Int(point.time.timeIntervalSince1970)] = point.value
+        }
+        return samples.map { sample in
+            var copy = sample
+            if let value = byTs[sample.ts] { copy.bpm = value }
+            return copy
+        }
+    }
+
     /// Consecutive 60 s buckets stay in one series; a hole larger than `bucketSeconds`
     /// starts a new segment so LineMark does not interpolate across it.
     static func segments(
@@ -165,7 +185,7 @@ struct NativeAddActivityDayChart: View {
     @Environment(\.nativeStyle) private var style
 
     private var points: [NativeAddActivityChartLogic.SegmentPoint] {
-        NativeAddActivityChartLogic.segments(samples: samples)
+        NativeAddActivityChartLogic.segments(samples: NativeAddActivityChartLogic.smoothed(samples))
     }
 
     private var yDomain: ClosedRange<Double> {

@@ -475,6 +475,16 @@ extension View {
     }
 }
 
+/// Ring fill and number motion. Identity of `NativeRing` stays stable across days
+/// so `drawn` interpolates the delta instead of revealing from 0 again.
+enum NativeRingMotion {
+    static let spring = Animation.spring(response: 0.42, dampingFraction: 0.86)
+
+    static func clamped(_ fraction: Double?) -> Double {
+        fraction.map { min(1, max(0, $0)) } ?? 0
+    }
+}
+
 struct NativeRing: View {
     var fraction: Double?
     var tint: Color
@@ -490,6 +500,7 @@ struct NativeRing: View {
     @Environment(\.nativeStyle) private var style
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drawn: Double = 0
+    @State private var revealed = false
 
     var body: some View {
         // Stroke is centered on the path, so it is inset by half the line width
@@ -525,6 +536,8 @@ struct NativeRing: View {
                             .font(NativePaint.number(numberSize, style: style))
                             .minimumScaleFactor(0.5)
                             .lineLimit(1)
+                            .nativeNumericText(reduceMotion: reduceMotion)
+                            .animation(reduceMotion ? nil : NativeRingMotion.spring, value: numericText)
                         if showsPercent {
                             Text("%")
                                 .font(NativePaint.number(percentSize, weight: .bold, style: style))
@@ -548,8 +561,8 @@ struct NativeRing: View {
                     .lineLimit(1)
             }
         }
-        .onAppear { reveal(fraction) }
-        .onChangeCompat(of: fraction) { reveal($0) }
+        .onAppear { reveal(fraction, fromZero: !revealed) }
+        .onChangeCompat(of: fraction) { reveal($0, fromZero: false) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(ringAccessibilityLabel)
     }
@@ -591,15 +604,32 @@ struct NativeRing: View {
         return showsPercent ? String(attached.dropLast()) : attached
     }
 
-    private func reveal(_ fraction: Double?) {
-        let target = fraction.map { min(1, max(0, $0)) } ?? 0
+    private func reveal(_ fraction: Double?, fromZero: Bool) {
+        let target = NativeRingMotion.clamped(fraction)
+        revealed = true
         if reduceMotion {
             var transaction = Transaction(animation: nil)
             withTransaction(transaction) { drawn = target }
             return
         }
-        withAnimation(.spring(response: 0.8, dampingFraction: 0.86)) {
+        if fromZero, drawn != 0 {
+            var transaction = Transaction(animation: nil)
+            withTransaction(transaction) { drawn = 0 }
+        }
+        withAnimation(NativeRingMotion.spring) {
             drawn = target
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder func nativeNumericText(reduceMotion: Bool) -> some View {
+        if reduceMotion {
+            self
+        } else if #available(iOS 17.0, macOS 14.0, *) {
+            self.contentTransition(.numericText())
+        } else {
+            self
         }
     }
 }
@@ -1670,16 +1700,24 @@ private struct NativeOptionalDaySelect: ViewModifier {
 }
 
 /// Overnight heart-rate polyline. Dense samples: line only, y-axis on the right.
+/// Plot height is reserved empty or full so the Sleep page does not jump when samples land.
 struct NativeOvernightLine: View {
     var points: [NativeHourPoint]
     var tint: Color = NativeTokens.heart
     var selectedTime: Binding<Date?>? = nil
     var previewSelected: Date? = nil
 
+    static let height: CGFloat = 160
+
     @State private var localSelected: Date?
 
+    /// Display polyline. Stats and scrub stay on `points`.
+    private var plotPoints: [NativeHourPoint] {
+        NativeHRDisplay.line(points)
+    }
+
     private var yDomain: ClosedRange<Double> {
-        NativeChartDay.fittedDomain(points.map(\.value), fallback: 40...90)
+        NativeChartDay.fittedDomain(plotPoints.map(\.value), fallback: 40...90)
     }
 
     private var selection: Binding<Date?> {
@@ -1687,57 +1725,60 @@ struct NativeOvernightLine: View {
     }
 
     var body: some View {
-        if points.isEmpty {
-            NativeEmptyState(text: "No Data")
-        } else {
-            Chart {
-                ForEach(points) { point in
-                    LineMark(x: .value("Time", point.time), y: .value("HR", point.value))
-                        .foregroundStyle(tint)
-                        .interpolationMethod(.linear)
-                        .lineStyle(StrokeStyle(lineWidth: 2))
-                        .accessibilityLabel(NativeScopeFormat.time(point.time))
-                        .accessibilityValue("\(Int(point.value.rounded()))")
+        Group {
+            if points.isEmpty {
+                NativeEmptyState(text: "No Data")
+            } else {
+                Chart {
+                    ForEach(plotPoints) { point in
+                        LineMark(x: .value("Time", point.time), y: .value("HR", point.value))
+                            .foregroundStyle(tint)
+                            .interpolationMethod(.linear)
+                            .lineStyle(StrokeStyle(lineWidth: 2))
+                            .accessibilityLabel(NativeScopeFormat.time(point.time))
+                            .accessibilityValue("\(Int(point.value.rounded()))")
+                    }
+                    if let selected = selection.wrappedValue,
+                       let point = NativeChartScrubMath.nearestHour(
+                        to: selected,
+                        in: points,
+                        maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+                       ) {
+                        PointMark(x: .value("Scrub", point.time), y: .value("HR", point.value))
+                            .foregroundStyle(tint)
+                            .symbol { NativeSelectedVertex(tint: tint) }
+                            .accessibilityHidden(true)
+                    }
                 }
-                if let selected = selection.wrappedValue,
-                   let point = NativeChartScrubMath.nearestHour(
-                    to: selected,
-                    in: points,
-                    maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
-                   ) {
-                    PointMark(x: .value("Scrub", point.time), y: .value("HR", point.value))
-                        .foregroundStyle(tint)
-                        .symbol { NativeSelectedVertex(tint: tint) }
-                        .accessibilityHidden(true)
+                .chartYScale(domain: yDomain)
+                .chartYAxis {
+                    AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
+                        AxisGridLine(stroke: NativeChrome.gridStroke)
+                            .foregroundStyle(NativeChrome.hairline)
+                        AxisValueLabel()
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                    }
                 }
-            }
-            .chartYScale(domain: yDomain)
-            .chartYAxis {
-                AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
-                    AxisGridLine(stroke: NativeChrome.gridStroke)
-                        .foregroundStyle(NativeChrome.hairline)
-                    AxisValueLabel()
-                        .font(.caption2)
-                        .foregroundStyle(Color.secondary)
-                }
-            }
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 4)) { value in
-                    AxisGridLine(stroke: NativeChrome.gridStroke)
-                        .foregroundStyle(NativeChrome.hairline)
-                    AxisValueLabel {
-                        if let date = value.as(Date.self) {
-                            Text(NativeScopeFormat.time(date))
-                                .font(.caption2)
-                                .foregroundStyle(Color.secondary)
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                        AxisGridLine(stroke: NativeChrome.gridStroke)
+                            .foregroundStyle(NativeChrome.hairline)
+                        AxisValueLabel {
+                            if let date = value.as(Date.self) {
+                                Text(NativeScopeFormat.time(date))
+                                    .font(.caption2)
+                                    .foregroundStyle(Color.secondary)
+                            }
                         }
                     }
                 }
+                .modifier(NativeTimeSelect(selected: selection, onChange: { _ in }))
+                .onAppear { if selection.wrappedValue == nil { selection.wrappedValue = previewSelected } }
+                .modifier(NativeSelectionFeedback(trigger: selection.wrappedValue ?? .distantPast))
             }
-            .modifier(NativeTimeSelect(selected: selection, onChange: { _ in }))
-            .onAppear { if selection.wrappedValue == nil { selection.wrappedValue = previewSelected } }
-            .modifier(NativeSelectionFeedback(trigger: selection.wrappedValue ?? .distantPast))
         }
+        .frame(maxWidth: .infinity, minHeight: NativeOvernightLine.height, maxHeight: NativeOvernightLine.height)
     }
 }
 

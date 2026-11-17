@@ -104,8 +104,8 @@ struct NativeLiveHeartRate: View {
 
     private var spark: some View {
         Group {
-            if samples.count >= 2 {
-                Chart(samples) { sample in
+            if plotSamples.count >= 2 {
+                Chart(plotSamples) { sample in
                     LineMark(
                         x: .value("Time", sample.time),
                         y: .value("BPM", sample.bpm)
@@ -130,10 +130,18 @@ struct NativeLiveHeartRate: View {
                     }
                 }
                 .chartYScale(domain: yDomain)
-                .frame(height: 120)
                 .accessibilityLabel("Heart rate, last 60 seconds")
+            } else {
+                NativeEmptyState(text: "No Data", symbol: "heart")
             }
         }
+        .frame(height: 120)
+    }
+
+    /// Smoothed polyline. Hero BPM stays on the latest raw sample.
+    private var plotSamples: [Sample] {
+        let hours = samples.map { NativeHourPoint(time: $0.time, value: Double($0.bpm)) }
+        return NativeHRSmoothing.smooth(hours).map { Sample(time: $0.time, bpm: Int($0.value.rounded())) }
     }
 
     private func zoneLabel(_ zone: Int) -> String {
@@ -148,7 +156,7 @@ struct NativeLiveHeartRate: View {
     }
 
     private var yDomain: ClosedRange<Double> {
-        let values = samples.map { Double($0.bpm) }
+        let values = plotSamples.map { Double($0.bpm) }
         guard let lo = values.min(), let hi = values.max() else { return 40...180 }
         let pad = max(2, (hi - lo) / 8)
         return (lo - pad)...(hi + pad)

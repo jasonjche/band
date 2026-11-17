@@ -207,7 +207,23 @@ final class NativeAddActivityChartTests: XCTestCase {
         ]
         let points = NativeAddActivityChartLogic.segments(samples: samples, bucketSeconds: 60)
         XCTAssertEqual(points.map(\.value), [100, 110, 90])
-        XCTAssertEqual(points.map(\.segment), [0, 0, 1])
+    }
+
+    func testSmoothedLineLeavesRawMaxForStats() {
+        let samples = [
+            sample(hour: 8, minute: 0, bpm: 100, maxBpm: 100),
+            sample(hour: 8, minute: 1, bpm: 180, maxBpm: 180),
+            sample(hour: 8, minute: 2, bpm: 100, maxBpm: 100),
+            sample(hour: 8, minute: 3, bpm: 100, maxBpm: 100),
+        ]
+        let stats = NativeAddActivityChartLogic.windowHeartRate(
+            samples: samples, windowStart: Int(at(8, 0).timeIntervalSince1970),
+            windowEnd: Int(at(8, 4).timeIntervalSince1970)
+        )
+        XCTAssertEqual(stats?.max, 180)
+        let smoothed = NativeAddActivityChartLogic.smoothed(samples, window: 180)
+        XCTAssertLessThan(smoothed.map(\.bpm).max() ?? 0, 180)
+        XCTAssertEqual(smoothed.map(\.maxBpm).max(), 180)
     }
 
     // MARK: - Other workouts

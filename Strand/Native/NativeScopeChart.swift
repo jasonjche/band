@@ -30,6 +30,7 @@ struct NativeScopeChart: View {
     @State private var scrollDate: Date?
 
     private var usesHours: Bool { series.scope == .day && !hourPoints.isEmpty }
+    private var hourBars: Bool { usesHours && bars }
 
     private var visible: [NativeScopeBucket] {
         if usesHours { return series.latestWindow() }
@@ -66,6 +67,7 @@ struct NativeScopeChart: View {
                 plotHeight: plotHeight,
                 scrolls: scrolls,
                 usesHours: usesHours,
+                hourBars: hourBars,
                 previewTime: previewTime,
                 scrub: scrub,
                 scrollDate: $scrollDate
@@ -195,13 +197,16 @@ private struct NativeScopeHeroView: View {
         if let bucket = selectedBucket, let value = bucket.value {
             return format(value)
         }
+        if series.kind == .total, let total = series.aggregate(of: visible) {
+            return format(total)
+        }
         if usesHours, let average = NativeScoreMath.mean(hourPoints.map(\.value)) {
             return format(average)
         }
         if let average = series.aggregate(of: visible) {
             return format(average)
         }
-        return "No Data"
+        return "—"
     }
 
     private var dateText: String? {
@@ -242,13 +247,23 @@ private struct NativeScopePlotHost: View {
     var plotHeight: CGFloat
     var scrolls: Bool
     var usesHours: Bool
+    var hourBars: Bool
     var previewTime: Date?
     var scrub: NativeScopeScrub
     @Binding var scrollDate: Date?
 
     var body: some View {
         Group {
-            if usesHours {
+            if hourBars {
+                NativeHourBarChart(
+                    points: hourPoints,
+                    tint: tint,
+                    format: format,
+                    calendar: calendar,
+                    previewTime: previewTime,
+                    scrub: scrub
+                )
+            } else if usesHours {
                 NativeOvernightLine(
                     points: hourPoints,
                     tint: tint,
@@ -256,7 +271,7 @@ private struct NativeScopePlotHost: View {
                     previewSelected: previewTime
                 )
             } else if series.known.isEmpty {
-                NativeEmptyState(text: "No Data")
+                NativeScopeEmptyChart(bars: bars, tint: tint, format: format)
             } else {
                 scopedChart
             }
@@ -391,6 +406,7 @@ private struct NativeScopeStaticChart: View {
         let visibleKnown = visible.filter { $0.value != nil }
         let values = visibleKnown.compactMap(\.value)
         let barCeiling = max(values.max() ?? known.compactMap(\.value).max() ?? 1, 1)
+        let barTop = NativeCountTicks.niceCeiling(barCeiling)
         let domainValues: [Double] = {
             var list = values
             if let typical = series.typical {
@@ -400,7 +416,10 @@ private struct NativeScopeStaticChart: View {
             return list
         }()
         let lineDomain = NativeChartDay.fittedDomain(domainValues, fallback: 0...1)
-        let yDomain: ClosedRange<Double> = bars ? 0...(barCeiling * 1.22) : lineDomain
+        let yDomain: ClosedRange<Double> = bars ? 0...barTop : lineDomain
+        let yTicks = bars
+            ? NativeCountTicks.values(ceiling: barCeiling)
+            : NativeChartTicks.values(in: lineDomain, maxCount: 3)
         let segments = lineSegments(plotBuckets)
         let visibleKeys = Set(visibleKnown.map(\.key))
         let showVertices = series.scope == .week || series.scope == .day
@@ -481,12 +500,12 @@ private struct NativeScopeStaticChart: View {
         }
         .chartYScale(domain: yDomain)
         .chartYAxis {
-            AxisMarks(position: .trailing, values: NativeChartTicks.values(in: bars ? 0...barCeiling : lineDomain, maxCount: 3)) { value in
+            AxisMarks(position: .trailing, values: yTicks) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeTokens.separator)
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
-                        Text(format(raw))
+                        Text(bars ? NativeCountFormat.compact(raw) : format(raw))
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                             .monospacedDigit()
@@ -557,6 +576,112 @@ private struct NativeScopeStaticChart: View {
         case .sixMonths, .year:
             return NativeScopeFormat.month(date, calendar: calendar)
         }
+    }
+}
+
+/// Day-scope step/calorie bars. 24 slots, no vertical rule, scrub via `chartXSelection`.
+private struct NativeHourBarChart: View {
+    var points: [NativeHourPoint]
+    var tint: Color
+    var format: (Double) -> String
+    var calendar: Calendar
+    var previewTime: Date?
+    var scrub: NativeScopeScrub
+
+    private var timeBinding: Binding<Date?> {
+        Binding(
+            get: { scrub.time },
+            set: { time in
+                scrub.time = time
+                scrub.key = nil
+            }
+        )
+    }
+
+    var body: some View {
+        let ceiling = max(points.map(\.value).max() ?? 0, 1)
+        let top = NativeCountTicks.niceCeiling(ceiling)
+        let labels = NativeCountTicks.hourLabelDates(
+            dayStart: points.first?.time ?? Date(), calendar: calendar
+        )
+        Chart {
+            ForEach(points) { point in
+                BarMark(
+                    x: .value("Hour", point.time, unit: .hour),
+                    y: .value("Value", point.value),
+                    width: .ratio(0.72)
+                )
+                .foregroundStyle(tint)
+                .cornerRadius(3)
+                .accessibilityLabel(NativeScopeFormat.hourClock(point.time, calendar: calendar))
+                .accessibilityValue(format(point.value))
+            }
+        }
+        .chartYScale(domain: 0...top)
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: NativeCountTicks.values(ceiling: ceiling)) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativeTokens.separator)
+                AxisValueLabel {
+                    if let raw = value.as(Double.self) {
+                        Text(NativeCountFormat.compact(raw))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: labels) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativeTokens.separator)
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(NativeScopeFormat.hourClock(date, calendar: calendar))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                    }
+                }
+            }
+        }
+        .modifier(NativeTimeSelect(selected: timeBinding, onChange: { _ in }))
+        .onAppear { if scrub.time == nil { scrub.time = previewTime } }
+    }
+}
+
+/// Axes with no samples so a missing day is a blank plot, not a broken empty-state card.
+private struct NativeScopeEmptyChart: View {
+    var bars: Bool
+    var tint: Color
+    var format: (Double) -> String
+
+    var body: some View {
+        let top = bars ? NativeCountTicks.niceCeiling(1) : 1.0
+        Chart {
+            if bars {
+                BarMark(x: .value("Day", Date()), y: .value("Value", 0))
+                    .foregroundStyle(tint.opacity(0.001))
+                    .accessibilityHidden(true)
+            }
+        }
+        .chartYScale(domain: 0...top)
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: bars ? NativeCountTicks.values(ceiling: 1) : [0, 1]) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativeTokens.separator)
+                AxisValueLabel {
+                    if let raw = value.as(Double.self) {
+                        Text(bars ? NativeCountFormat.compact(raw) : format(raw))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .chartXAxis(.hidden)
+        .accessibilityLabel("No data")
     }
 }
 
@@ -638,6 +763,7 @@ struct NativeMetricChartPage: View {
     var calendar: Calendar = .current
     var color: ((Double) -> Color)? = nil
     var scrolls: Bool = true
+    var sourceCaption: String? = nil
 
     var body: some View {
         NativeChrome.screen {
@@ -673,6 +799,13 @@ struct NativeMetricChartPage: View {
                 )
             } else {
                 NativeLatestCapsule(label: "Latest", value: "Unavailable")
+            }
+            if let sourceCaption {
+                Text(sourceCaption)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(sourceCaption)
             }
         }
         .navigationTitle(title)

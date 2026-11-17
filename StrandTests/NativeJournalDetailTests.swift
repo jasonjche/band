@@ -46,7 +46,7 @@ final class NativeJournalDetailTests: XCTestCase {
             notes: nil
         )
         let answers = HomeJournalAnswer.make(entries: [entry], day: "2026-11-12")
-        XCTAssertEqual(answers, [HomeJournalAnswer(question: "Did you feel stressed?", value: "Yes")])
+        XCTAssertEqual(answers, [HomeJournalAnswer(question: "Stress", value: "Yes")])
     }
 
     func testOldNumericEntryKeepsQuantityAndIgnoresLegacyNote() {
@@ -67,7 +67,7 @@ final class NativeJournalDetailTests: XCTestCase {
         let notes = NativeJournalNotes.encode(timeMinutes: 21 * 60 + 30, note: nil)
         let entry = JournalEntry(
             day: "2026-11-12",
-            question: "Did you have caffeine late in the day?",
+            question: "Did you have caffeine?",
             answeredYes: true,
             notes: notes,
             numericValue: 2
@@ -83,7 +83,7 @@ final class NativeJournalDetailTests: XCTestCase {
             .quantityAndTime(unit: "drinks")
         )
         XCTAssertEqual(
-            NativeJournalFollowUp.forQuestion("Did you have caffeine late in the day?", kind: .bool),
+            NativeJournalFollowUp.forQuestion("Did you have caffeine?", kind: .bool),
             .quantityAndTime(unit: "servings")
         )
         XCTAssertEqual(
@@ -102,5 +102,59 @@ final class NativeJournalDetailTests: XCTestCase {
             NativeJournalFollowUp.forQuestion("Did you take magnesium?", kind: .numeric(unitLabel: "mg")),
             .quantity(unit: "mg")
         )
+        XCTAssertEqual(
+            NativeJournalFollowUp.forQuestion("Consumed caffeine?", kind: .bool),
+            .quantityAndTime(unit: "servings")
+        )
+        XCTAssertEqual(
+            NativeJournalFollowUp.forQuestion("Have any alcoholic drinks?", kind: .bool),
+            .quantityAndTime(unit: "drinks")
+        )
+        XCTAssertEqual(
+            NativeJournalFollowUp.forQuestion("Ate food close to bedtime?", kind: .bool),
+            .time
+        )
+        XCTAssertEqual(
+            NativeJournalFollowUp.forQuestion("e-close", kind: .bool),
+            .time
+        )
+    }
+
+    func testWinningEntriesPreferCatalogueIdAndKeepImportedReadable() {
+        let imported = JournalEntry(
+            day: "2026-11-12",
+            question: "Consumed caffeine?",
+            answeredYes: true,
+            notes: nil
+        )
+        let native = JournalEntry(
+            day: "2026-11-12",
+            question: "Did you have caffeine?",
+            answeredYes: false,
+            notes: nil
+        )
+        let folded = NativeJournalIdentity.winningEntries([imported, native])
+        XCTAssertEqual(folded.count, 1)
+        XCTAssertEqual(folded[0].question, "Did you have caffeine?")
+        XCTAssertFalse(folded[0].answeredYes)
+        XCTAssertEqual(
+            NativeJournalIdentity.lookup(
+                ["Consumed caffeine?": true],
+                canonical: "Did you have caffeine?"
+            ),
+            true
+        )
+    }
+
+    func testDayListMergesDuplicateQuestionsOntoOneRow() {
+        let entries = [
+            JournalEntry(day: "2026-11-12", question: "Consumed caffeine?", answeredYes: true, notes: nil),
+            JournalEntry(day: "2026-11-12", question: "Did you have caffeine?", answeredYes: false, notes: nil),
+            JournalEntry(day: "2026-11-12", question: "Shared your bed?", answeredYes: true, notes: nil),
+        ]
+        let answers = HomeJournalAnswer.make(entries: entries, day: "2026-11-12")
+        XCTAssertEqual(answers.count, 2)
+        XCTAssertEqual(answers.first { $0.question == "Caffeine" }?.value, "No")
+        XCTAssertEqual(answers.first { $0.question == "Shared bed" }?.value, "Yes")
     }
 }

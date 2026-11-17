@@ -1,5 +1,6 @@
 import XCTest
 import CoreGraphics
+import WhoopProtocol
 @testable import Strand
 
 final class NativeChartScrubTests: XCTestCase {
@@ -77,6 +78,37 @@ final class NativeChartScrubTests: XCTestCase {
         XCTAssertFalse(NativeChartScrubMath.isHorizontalScrub(translation: CGSize(width: 4, height: 2)))
         XCTAssertTrue(NativeChartScrubMath.isTap(translation: CGSize(width: 2, height: 2)))
         XCTAssertFalse(NativeChartScrubMath.isTap(translation: CGSize(width: 20, height: 0)))
+    }
+
+    func testHRDisplaySmoothsTheLineAndLeavesRawStats() {
+        let raw = (0..<24).map { index in
+            NativeHourPoint(
+                time: Date(timeIntervalSince1970: Double(index) * 10),
+                value: index.isMultiple(of: 2) ? 60 : 120
+            )
+        }
+        let line = NativeHRDisplay.line(raw)
+        let rawMean = NativeScoreMath.mean(raw.map(\.value)) ?? -1
+        XCTAssertEqual(rawMean, 90, accuracy: 1e-9)
+        XCTAssertEqual(line.count, raw.count)
+        XCTAssertNotEqual(line.map(\.value), raw.map(\.value))
+        XCTAssertEqual(
+            NativeScoreMath.mean(raw.map(\.value)) ?? -1,
+            rawMean,
+            accuracy: 1e-9,
+            "stats stay on the unsmoothed series"
+        )
+    }
+
+    func testOvernightHeartPointsKeepEvenSamplesForTheChart() {
+        let samples = (0..<6).map { HRSample(ts: $0 * 10, bpm: 50 + $0) }
+        let points = NativeOvernightHeart.points(from: samples, every: 2, cap: 8_000)
+        XCTAssertEqual(points.map(\.value), [50, 52, 54])
+        XCTAssertEqual(
+            NativeScoreMath.mean(points.map(\.value)) ?? -1,
+            52,
+            accuracy: 1e-9
+        )
     }
 
     func testHypnogramSpanOpacityHighlightsSelection() {

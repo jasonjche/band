@@ -1,9 +1,9 @@
 import Foundation
 
-/// The user's custom journal questions plus the starter behaviour catalog. Question strings are
-/// opaque exact-match labels to BehaviorInsights, so imported question strings (merged in at load
-/// time, ahead of these) always take precedence, adopting the export's exact wording is what
-/// joins a logged day and an imported day into one behaviour. UserDefaults-backed (single user).
+/// The user's custom journal questions plus the starter behaviour catalog. Imported WHOOP titles
+/// and ids are mapped onto catalogue ids (punctuation-insensitive title match plus an alias table)
+/// so each behaviour shows once. Stored journal rows are never rewritten; reads accept either id.
+/// UserDefaults-backed (single user).
 ///
 /// v2 (#322 / task #53): a journal item can now be renamed (display-only, the stored key stays put
 /// so imported WHOOP history still lines up), typed as numeric (a value + unit, not just yes/no),
@@ -30,7 +30,7 @@ final class JournalCatalogStore: ObservableObject {
     /// never be localised (a translated key would start a new, disconnected behaviour).
     nonisolated static let starterQuestions: [String] = [
         "Did you drink any alcohol?",
-        "Did you have caffeine late in the day?",
+        "Did you have caffeine?",
         "Did you view a screen in bed?",
         "Did you eat close to bedtime?",
         "Did you feel stressed?",
@@ -41,19 +41,50 @@ final class JournalCatalogStore: ObservableObject {
         "Did you read before bed?",
     ]
 
-    /// The default group for each starter question (canonical → group). Mirrors Android
-    /// STARTER_JOURNAL_GROUPS value-for-value. Anything not listed falls to `.other`.
+    /// The default group for each starter question (canonical → group). Sleep-related
+    /// behaviours sit under Sleep; sauna and stress under Recovery. Caffeine is Nutrition.
     nonisolated static let starterGroups: [String: JournalGroup] = [
         "Did you drink any alcohol?": .nutrition,
-        "Did you have caffeine late in the day?": .nutrition,
+        "Did you have caffeine?": .nutrition,
         "Did you eat close to bedtime?": .nutrition,
         "Did you take magnesium?": .supplements,
-        "Did you view a screen in bed?": .lifestyle,
-        "Did you use a sauna?": .lifestyle,
-        "Did you share your bed?": .lifestyle,
-        "Did you read before bed?": .lifestyle,
+        "Did you view a screen in bed?": .sleep,
+        "Did you use a sauna?": .recovery,
+        "Did you share your bed?": .sleep,
+        "Did you read before bed?": .sleep,
         "Did you feel sick or ill?": .health,
-        "Did you feel stressed?": .behaviour,
+        "Did you feel stressed?": .recovery,
+    ]
+
+    /// Short labels for the form and the day's answer list. Display only; the stored key stays
+    /// the full question string.
+    nonisolated static let shortTitles: [String: String] = [
+        "Did you drink any alcohol?": "Alcohol",
+        "Did you have caffeine?": "Caffeine",
+        "Did you view a screen in bed?": "Screen in bed",
+        "Did you eat close to bedtime?": "Late meal",
+        "Did you feel stressed?": "Stress",
+        "Did you use a sauna?": "Sauna",
+        "Did you share your bed?": "Shared bed",
+        "Did you feel sick or ill?": "Felt sick",
+        "Did you take magnesium?": "Magnesium",
+        "Did you read before bed?": "Read in bed",
+        "Engaged in sexual activity?": "Sexual activity",
+        "Masturbated?": "Masturbation",
+    ]
+
+    /// WHOOP export titles (and a few short ids) that mean the same behaviour as a starter.
+    /// Keys are `titleKey` forms; values are starter canonicals. Stored rows are never rewritten.
+    nonisolated static let aliasTitles: [(imported: String, canonical: String)] = [
+        ("Consumed caffeine?", "Did you have caffeine?"),
+        // Earlier Band starter wording; same behaviour as WHOOP's "Consumed caffeine?".
+        ("Did you have caffeine late in the day?", "Did you have caffeine?"),
+        ("Have any alcoholic drinks?", "Did you drink any alcohol?"),
+        ("Ate food close to bedtime?", "Did you eat close to bedtime?"),
+        ("Shared your bed?", "Did you share your bed?"),
+        ("Read (non-screened device) while in bed?", "Did you read before bed?"),
+        ("e-close", "Did you eat close to bedtime?"),
+        ("eat close to bedtime", "Did you eat close to bedtime?"),
     ]
 
     /// The v2 catalog: one item per journal question the user has customised (renamed, retyped,
@@ -165,36 +196,123 @@ final class JournalCatalogStore: ObservableObject {
             .lowercased()
     }
 
+    /// Case- and punctuation-insensitive match key. "Shared your bed?" and "shared your bed"
+    /// collapse to the same token; "Did you share your bed?" does not, so that pair needs an alias.
+    nonisolated static func titleKey(_ s: String) -> String {
+        let folded = norm(s).unicodeScalars.map { scalar -> Character in
+            CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : " "
+        }
+        return String(folded)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    /// Map an imported title or id onto the catalogue canonical, if one exists.
+    /// Stored journal rows are never rewritten; this is display and read-side identity only.
+    nonisolated static func canonicalId(for raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+        let key = titleKey(trimmed)
+        if let starter = starterByTitleKey[key] { return starter }
+        if let mapped = aliasByTitleKey[key] { return mapped }
+        return trimmed
+    }
+
+    /// Every question string that should be treated as `canonical` when reading answers:
+    /// the catalogue id plus every known imported title/id that aliases onto it.
+    nonisolated static func answerIds(for canonical: String) -> [String] {
+        let id = canonicalId(for: canonical)
+        var seen = Set<String>()
+        var out: [String] = []
+        for candidate in [id, canonical] + aliasTitles.compactMap({ titleKey($0.canonical) == titleKey(id) ? $0.imported : nil }) {
+            let t = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty, seen.insert(norm(t)).inserted else { continue }
+            out.append(t)
+        }
+        return out
+    }
+
+    /// Short form used by the journal UI. Falls back to the verbatim question.
+    nonisolated static func shortTitle(for raw: String) -> String {
+        let id = canonicalId(for: raw)
+        if let title = shortTitles[id] { return title }
+        if let title = shortTitles[raw] { return title }
+        if raw.hasSuffix("?") { return String(raw.dropLast()) }
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Group for a question with no saved catalog item. Starters use `starterGroups`;
+    /// leftover WHOOP imports get a WHOOP-like bucket so caffeine never lands in Other.
+    nonisolated static func defaultGroup(for raw: String) -> JournalGroup {
+        let id = canonicalId(for: raw)
+        if let group = starterGroups[id] { return group }
+        let key = titleKey(id)
+        if key.contains("caffeine") || key.contains("alcohol") || key.contains("food")
+            || key.contains("eat") || key.contains("meal") {
+            return .nutrition
+        }
+        if key.contains("bed") || key.contains("sleep") || key.contains("screen") || key.contains("read") {
+            return .sleep
+        }
+        if key.contains("sauna") || key.contains("stress") || key.contains("ice") {
+            return .recovery
+        }
+        if key.contains("sick") || key.contains("ill") {
+            return .health
+        }
+        if key.contains("sexual") || key.contains("masturbat") {
+            return .lifestyle
+        }
+        return .other
+    }
+
+    private nonisolated static let starterByTitleKey: [String: String] = {
+        Dictionary(uniqueKeysWithValues: starterQuestions.map { (titleKey($0), $0) })
+    }()
+
+    private nonisolated static let aliasByTitleKey: [String: String] = {
+        Dictionary(uniqueKeysWithValues: aliasTitles.map { (titleKey($0.imported), $0.canonical) })
+    }()
+
     /// The merged catalog resolved into full v2 items, grouped and ordered for display. Imported +
     /// starter + custom questions are folded onto one canonical key (norm dedupe, #224); each carries
     /// the user's saved displayName / kind / group / sortIndex (a starter with no saved item gets its
     /// default group and `.bool`). Hidden items are dropped unless `includeHidden`. The `custom` flag
     /// is preserved so the edit UI can offer "Delete" vs "Hide".
     ///
-    /// `canonical` is always the verbatim key the engine joins on; `displayName ?? canonical` is what the UI renders (rename is display-only).
+    /// Resolved `canonical` is the catalogue id. Stored journal rows keep their original question
+    /// strings; `display` is the rename, else a short title.
     func resolvedItems(imported: [String], includeHidden: Bool = false) -> [JournalCatalogItem] {
-        var byKey: [String: JournalCatalogItem] = [:]
-        for it in items { byKey[Self.norm(it.canonical)] = it }
+        var byCanon: [String: JournalCatalogItem] = [:]
+        for it in items {
+            let id = Self.canonicalId(for: it.canonical)
+            if byCanon[Self.norm(id)] == nil { byCanon[Self.norm(id)] = it }
+        }
 
         var out: [JournalCatalogItem] = []
         var seen = Set<String>()
         var fallbackIndex = (items.map(\.sortIndex).max() ?? -1) + 1
         for q in imported + Self.starterQuestions {
             let t = q.trimmingCharacters(in: .whitespacesAndNewlines)
-            let key = Self.norm(q)
-            guard !t.isEmpty, seen.insert(key).inserted else { continue }
-            if let saved = byKey[key] {
+            guard !t.isEmpty else { continue }
+            let canon = Self.canonicalId(for: t)
+            let seenKey = Self.norm(canon)
+            guard seen.insert(seenKey).inserted else { continue }
+            if var saved = byCanon[seenKey] {
+                saved.canonical = canon
                 out.append(saved)
             } else {
-                out.append(JournalCatalogItem(canonical: t, displayName: nil, kind: .bool,
-                                              group: Self.starterGroups[t] ?? .other,
-                                              sortIndex: fallbackIndex, hidden: false, custom: false))
-                fallbackIndex += 1
+                let starterIdx = Self.starterQuestions.firstIndex(of: canon)
+                out.append(JournalCatalogItem(
+                    canonical: canon, displayName: nil, kind: .bool,
+                    group: Self.starterGroups[canon] ?? Self.defaultGroup(for: canon),
+                    sortIndex: starterIdx ?? fallbackIndex, hidden: false, custom: false))
+                if starterIdx == nil { fallbackIndex += 1 }
             }
         }
-        // Custom items (present only in `items`, never in imported/starter) come after the merge.
-        for it in items where it.custom && !seen.contains(Self.norm(it.canonical)) {
-            seen.insert(Self.norm(it.canonical))
+        for it in items where it.custom && !seen.contains(Self.norm(Self.canonicalId(for: it.canonical))) {
+            seen.insert(Self.norm(Self.canonicalId(for: it.canonical)))
             out.append(it)
         }
         if !includeHidden { out.removeAll { $0.hidden } }
@@ -205,21 +323,21 @@ final class JournalCatalogStore: ObservableObject {
 
     /// The saved item for a canonical key, if the user has customised it.
     func item(for canonical: String) -> JournalCatalogItem? {
-        let key = Self.norm(canonical)
-        return items.first { Self.norm($0.canonical) == key }
+        let key = Self.norm(Self.canonicalId(for: canonical))
+        return items.first { Self.norm(Self.canonicalId(for: $0.canonical)) == key }
     }
 
     /// Upsert the saved item for `canonical`, applying `mutate` to a fresh-or-existing item. Used by
     /// rename / retype / regroup / reorder so a starter question the user touches gets materialised
     /// into `items` with its defaults, then edited. NEVER changes `canonical`.
     private func edit(_ canonical: String, mutate: (inout JournalCatalogItem) -> Void) {
-        let key = Self.norm(canonical)
-        if let idx = items.firstIndex(where: { Self.norm($0.canonical) == key }) {
+        let key = Self.norm(Self.canonicalId(for: canonical))
+        if let idx = items.firstIndex(where: { Self.norm(Self.canonicalId(for: $0.canonical)) == key }) {
             mutate(&items[idx])
         } else {
-            let t = canonical.trimmingCharacters(in: .whitespacesAndNewlines)
+            let t = Self.canonicalId(for: canonical)
             var fresh = JournalCatalogItem(canonical: t, displayName: nil, kind: .bool,
-                                           group: Self.starterGroups[t] ?? .other,
+                                           group: Self.starterGroups[t] ?? Self.defaultGroup(for: t),
                                            sortIndex: nextSortIndex(), hidden: false, custom: false)
             mutate(&fresh)
             items.append(fresh)
@@ -253,8 +371,8 @@ final class JournalCatalogStore: ObservableObject {
 
     /// True when `q` is a user-added custom question (not a starter/imported one).
     func isCustom(_ q: String) -> Bool {
-        let key = Self.norm(q)
-        return items.contains { Self.norm($0.canonical) == key && $0.custom }
+        let key = Self.norm(Self.canonicalId(for: q))
+        return items.contains { Self.norm(Self.canonicalId(for: $0.canonical)) == key && $0.custom }
     }
 
     /// Add a custom question of the given type and group (defaults: yes/no, Other).
@@ -271,18 +389,18 @@ final class JournalCatalogStore: ObservableObject {
     /// Remove `q` from the journal: a custom question is deleted outright; a starter/imported one is
     /// hidden (restorable). Either way it leaves the merged catalog.
     func remove(_ q: String) {
-        let key = Self.norm(q)
+        let key = Self.norm(Self.canonicalId(for: q))
         if isCustom(q) {
-            items.removeAll { Self.norm($0.canonical) == key }
+            items.removeAll { Self.norm(Self.canonicalId(for: $0.canonical)) == key }
         } else {
-            edit(q) { $0.hidden = true }
+            edit(Self.canonicalId(for: q)) { $0.hidden = true }
         }
     }
 
     /// Un-hide a previously hidden starter/imported question.
     func restore(_ q: String) {
-        let key = Self.norm(q)
-        if let idx = items.firstIndex(where: { Self.norm($0.canonical) == key }) {
+        let key = Self.norm(Self.canonicalId(for: q))
+        if let idx = items.firstIndex(where: { Self.norm(Self.canonicalId(for: $0.canonical)) == key }) {
             items[idx].hidden = false
         }
     }
@@ -303,19 +421,25 @@ enum JournalKind: Equatable, Codable {
 enum JournalGroup: String, CaseIterable, Codable {
     case supplements
     case nutrition
+    case sleep
     case lifestyle
+    case recovery
     case health
     case behaviour
     case other
 
-    /// Fixed display order (matches Android). Groups render in this order; empty ones hide outside edit.
-    static let displayOrder: [JournalGroup] = [.nutrition, .supplements, .lifestyle, .health, .behaviour, .other]
+    /// WHOOP-like order. Empty groups hide outside edit. Legacy `.behaviour` stays last of the named buckets.
+    static let displayOrder: [JournalGroup] = [
+        .nutrition, .sleep, .lifestyle, .recovery, .health, .supplements, .behaviour, .other
+    ]
 
     var title: String {
         switch self {
         case .supplements: return String(localized: "Supplements")
         case .nutrition:   return String(localized: "Nutrition")
+        case .sleep:       return String(localized: "Sleep")
         case .lifestyle:   return String(localized: "Lifestyle")
+        case .recovery:    return String(localized: "Recovery")
         case .health:      return String(localized: "Health")
         case .behaviour:   return String(localized: "Behaviour")
         case .other:       return String(localized: "Other")
@@ -341,9 +465,9 @@ struct JournalCatalogItem: Equatable, Codable, Identifiable {
 
     var id: String { canonical }
 
-    /// What the UI renders: the rename if present, else the verbatim canonical.
+    /// What the UI renders: the rename if present, else a short catalogue title, else the key.
     var display: String {
-        displayName ?? canonical
+        displayName ?? JournalCatalogStore.shortTitle(for: canonical)
     }
 
     init(canonical: String, displayName: String?, kind: JournalKind, group: JournalGroup,

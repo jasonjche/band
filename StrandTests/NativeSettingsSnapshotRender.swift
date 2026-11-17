@@ -35,7 +35,7 @@ final class NativeSettingsSnapshotRender: XCTestCase {
             group: .nutrition, sortIndex: 0, hidden: false, custom: false
         )
         let caffeine = JournalCatalogItem(
-            canonical: "Did you have caffeine late in the day?", displayName: nil, kind: .bool,
+            canonical: "Did you have caffeine?", displayName: nil, kind: .bool,
             group: .nutrition, sortIndex: 1, hidden: false, custom: false
         )
         let screen = JournalCatalogItem(
@@ -52,17 +52,17 @@ final class NativeSettingsSnapshotRender: XCTestCase {
                 items: [alcohol, caffeine, screen, stressed],
                 answers: [
                     "Did you drink any alcohol?": true,
-                    "Did you have caffeine late in the day?": true,
+                    "Did you have caffeine?": true,
                     "Did you view a screen in bed?": false,
                     "Did you feel stressed?": false,
                 ],
                 numeric: [
                     "Did you drink any alcohol?": 2,
-                    "Did you have caffeine late in the day?": 1,
+                    "Did you have caffeine?": 1,
                 ],
                 times: [
                     "Did you drink any alcohol?": lastDrink,
-                    "Did you have caffeine late in the day?": lastDrink,
+                    "Did you have caffeine?": lastDrink,
                 ],
                 day: day,
                 onToggle: { _, _ in },

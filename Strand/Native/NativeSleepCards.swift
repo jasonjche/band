@@ -24,15 +24,15 @@ struct NativeSleepHoursVsNeededCard: View {
             } else {
                 header
             }
-            if let percent = model.percent {
-                NativeHeroValue(
-                    caption: "Last night",
-                    value: "\(Int(percent.rounded()))",
-                    unit: "%"
-                )
-            }
+            NativeHeroValue(
+                caption: "Last night",
+                value: model.percent.map { "\(Int($0.rounded()))" } ?? "—",
+                unit: "%"
+            )
             if let slept = model.hoursSleptMin, model.needMin > 0 {
                 NativeSleepNeedBars(slept: slept, needed: model.needMin, tint: NativePaint.sleep(style))
+            } else {
+                Color.clear.frame(height: 56)
             }
             if model.hasBreakdown {
                 VStack(spacing: 0) {

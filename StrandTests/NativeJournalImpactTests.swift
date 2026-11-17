@@ -1,5 +1,6 @@
 import XCTest
 import StrandAnalytics
+import WhoopStore
 @testable import Strand
 
 final class NativeJournalImpactTests: XCTestCase {
@@ -8,7 +9,7 @@ final class NativeJournalImpactTests: XCTestCase {
         XCTAssertEqual(NativeJournalImpactCopy.title(for: "Have any alcoholic drinks?"), "Alcohol")
         XCTAssertEqual(NativeJournalImpactCopy.title(for: "Did you drink any alcohol?"), "Alcohol")
         XCTAssertEqual(NativeJournalImpactCopy.title(for: "Consumed caffeine?"), "Caffeine")
-        XCTAssertEqual(NativeJournalImpactCopy.title(for: "Did you have caffeine late in the day?"), "Caffeine")
+        XCTAssertEqual(NativeJournalImpactCopy.title(for: "Did you have caffeine?"), "Caffeine")
         XCTAssertEqual(NativeJournalImpactCopy.title(for: "Did you view a screen in bed?"), "Screen in bed")
         XCTAssertEqual(NativeJournalImpactCopy.title(for: "Ate food close to bedtime?"), "Late meal")
         XCTAssertEqual(NativeJournalImpactCopy.title(for: "Custom stretch?"), "Custom stretch")
@@ -118,5 +119,21 @@ final class NativeJournalImpactTests: XCTestCase {
         XCTAssertEqual(model.unclear.map(\.title), ["Caffeine"])
         XCTAssertEqual(model.insufficient.map(\.title), ["Sauna"])
         XCTAssertNil(model.unclear.first?.effectText)
+    }
+
+    func testWinningEntriesGroupImportedAndCatalogueIds() {
+        let imported = JournalEntry(
+            day: "2026-01-01", question: "Have any alcoholic drinks?", answeredYes: true, notes: nil
+        )
+        let native = JournalEntry(
+            day: "2026-01-02", question: "Did you drink any alcohol?", answeredYes: false, notes: nil
+        )
+        let answers = NativeJournalIdentity.winningEntries([imported, native]).map {
+            JournalImpact.Answer(day: $0.day, behaviorId: $0.question, yes: $0.answeredYes)
+        }
+        XCTAssertEqual(Set(answers.map(\.behaviorId)), ["Did you drink any alcohol?"])
+        XCTAssertEqual(answers.count, 2)
+        XCTAssertEqual(NativeJournalImpactCopy.title(for: "Have any alcoholic drinks?"), "Alcohol")
+        XCTAssertEqual(NativeJournalImpactCopy.title(for: "Did you drink any alcohol?"), "Alcohol")
     }
 }

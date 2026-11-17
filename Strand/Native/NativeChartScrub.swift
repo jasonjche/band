@@ -8,6 +8,13 @@ final class NativeScopeScrub: ObservableObject {
     @Published var time: Date?
 }
 
+/// Display-only HR polyline. Stats and scrub keep the raw samples.
+enum NativeHRDisplay {
+    static func line(_ points: [NativeHourPoint]) -> [NativeHourPoint] {
+        NativeHRSmoothing.smooth(points)
+    }
+}
+
 /// Nearest-point snapping and selection chrome. Pure; views never fold this in `body`.
 enum NativeChartScrubMath {
     /// Nearest finite hour sample. Nil when the series is empty or the nearest

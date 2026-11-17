@@ -186,6 +186,10 @@ struct StrandiOSApp: App {
         model.healthWriteBack = { [weak bridge] in
             _ = await bridge?.writeBackAfterNewData()
         }
+        // Apple Health workouts without a stored HR series get one on foreground / observer wakes.
+        model.importAppleWorkoutHeartRate = { [weak bridge] in
+            await bridge?.importMissingAppleWorkoutHeartRate(days: 4)
+        }
     }
 
     /// The Shortcut-import alert's presentation binding, hoisted OUT of the `.alert` chain.

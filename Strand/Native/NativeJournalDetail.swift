@@ -1,4 +1,5 @@
 import Foundation
+import WhoopStore
 
 /// Follow-up shown under a Yes answer: quantity, a clock time, or both.
 enum NativeJournalFollowUp: Equatable {
@@ -36,7 +37,7 @@ enum NativeJournalFollowUp: Equatable {
     }
 
     static func forQuestion(_ question: String, kind: JournalKind) -> NativeJournalFollowUp {
-        let key = JournalCatalogStore.norm(question)
+        let key = JournalCatalogStore.titleKey(JournalCatalogStore.canonicalId(for: question))
         let time = needsTime(key)
         let catalogUnit = kind.unitLabel.flatMap { $0.isEmpty ? nil : $0 }
         let mappedUnit = defaultUnit(key)
@@ -156,5 +157,50 @@ enum NativeJournalNotes {
         guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
               (0...23).contains(hour), (0...59).contains(minute) else { return nil }
         return hour * 60 + minute
+    }
+}
+
+/// Read-side merge of imported WHOOP titles onto catalogue ids. Never rewrites stored rows.
+enum NativeJournalIdentity {
+    static func canonicalQuestion(_ question: String) -> String {
+        JournalCatalogStore.canonicalId(for: question)
+    }
+
+    /// One winning row per (day, canonical id). A row already stored under the catalogue id
+    /// beats an imported alias for the same day.
+    static func winningEntries(_ entries: [JournalEntry]) -> [JournalEntry] {
+        var best: [String: JournalEntry] = [:]
+        for entry in entries.sorted(by: { ($0.day, $0.question) < ($1.day, $1.question) }) {
+            let id = JournalCatalogStore.canonicalId(for: entry.question)
+            let key = entry.day + "\u{1F}" + id
+            if let existing = best[key] {
+                let entryIsCanon = JournalCatalogStore.norm(entry.question) == JournalCatalogStore.norm(id)
+                let existingIsCanon = JournalCatalogStore.norm(existing.question) == JournalCatalogStore.norm(id)
+                if entryIsCanon && !existingIsCanon {
+                    best[key] = entry
+                }
+            } else {
+                best[key] = entry
+            }
+        }
+        return best.values
+            .map { entry in
+                JournalEntry(
+                    day: entry.day,
+                    question: JournalCatalogStore.canonicalId(for: entry.question),
+                    answeredYes: entry.answeredYes,
+                    notes: entry.notes,
+                    numericValue: entry.numericValue
+                )
+            }
+            .sorted { ($0.day, $0.question) < ($1.day, $1.question) }
+    }
+
+    static func lookup<Value>(_ map: [String: Value], canonical: String) -> Value? {
+        if let value = map[canonical] { return value }
+        for id in JournalCatalogStore.answerIds(for: canonical) {
+            if let value = map[id] { return value }
+        }
+        return nil
     }
 }

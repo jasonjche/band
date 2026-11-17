@@ -162,4 +162,74 @@ final class AutoWorkoutDetectorTests: XCTestCase {
         XCTAssertEqual(AutoWorkoutDetector.detect(
             hr: exact, restingBpm: 60, minimumSustainedMinutes: 15.0).count, 1)
     }
+
+    func testStillStepsRejectPostWorkoutRecoveryHR() {
+        // ~80 min at 92 bpm with ~2% walk ticks, matching the bogus post-run window.
+        let start = 12_000_000
+        let durS = 80 * 60
+        let hr = block(start, durS, 92)
+        let steps = (0..<durS).map { i in
+            AutoWorkoutDetector.StepTick(ts: start + i, activityClass: i % 50 == 0 ? 1 : 0)
+        }
+        XCTAssertTrue(AutoWorkoutDetector.detect(hr: hr, restingBpm: 60, steps: steps).isEmpty)
+    }
+
+    func testWalkShareConfirmsARealSession() {
+        // 74 min at 103 bpm with 27% walk ticks, matching last night's workout.
+        let start = 13_000_000
+        let durS = 74 * 60
+        let hr = block(start, durS, 103)
+        let steps = (0..<durS).map { i in
+            AutoWorkoutDetector.StepTick(ts: start + i, activityClass: i % 100 < 27 ? 1 : 0)
+        }
+        XCTAssertEqual(AutoWorkoutDetector.detect(hr: hr, restingBpm: 60, steps: steps).count, 1)
+    }
+
+    func testMedianGravityConfirmsWhenStepsAreStill() {
+        // Strength: still gait class, but median gravity-delta above 0.05.
+        let start = 14_000_000
+        let durS = 20 * 60
+        let hr = block(start, durS, 110)
+        let steps = (0..<durS).map { AutoWorkoutDetector.StepTick(ts: start + $0, activityClass: 0) }
+        let moving = (start..<(start + durS)).map { grav($0, Double(($0 - start) % 2) * 0.2) }
+        XCTAssertEqual(AutoWorkoutDetector.detect(
+            hr: hr, restingBpm: 60,
+            motion: AutoWorkoutDetector.motionPoints(moving),
+            steps: steps).count, 1)
+        let still = (start..<(start + durS)).map { grav($0, 0.0) }
+        XCTAssertTrue(AutoWorkoutDetector.detect(
+            hr: hr, restingBpm: 60,
+            motion: AutoWorkoutDetector.motionPoints(still),
+            steps: steps).isEmpty)
+    }
+
+    func testHrOnlyRejectsRecoveryAndKeepsAHarderSession() {
+        let start = 15_000_000
+        XCTAssertTrue(AutoWorkoutDetector.detect(
+            hr: block(start, 20 * 60, 92), restingBpm: 60).isEmpty)
+        XCTAssertEqual(AutoWorkoutDetector.detect(
+            hr: block(start, 20 * 60, 103), restingBpm: 60).count, 1)
+        XCTAssertEqual(AutoWorkoutDetector.hrOnlyMinMeanHRR, 0.28, accuracy: 1e-9)
+        XCTAssertEqual(AutoWorkoutDetector.defaultMaxHR, 197)
+    }
+
+    func testCooldownAfterSavedWorkoutSuppressesTheNextWindow() {
+        let runStart = 16_000_000
+        let runEnd = runStart + 40 * 60
+        let saved = [SavedWorkoutSpan(startSec: runStart, endSec: runEnd)]
+        let recovery = runEnd + 4 * 60
+        let hr = block(recovery, 20 * 60, 120)
+        let steps = (recovery..<(recovery + 20 * 60)).map {
+            AutoWorkoutDetector.StepTick(ts: $0, activityClass: 1)
+        }
+        XCTAssertTrue(AutoWorkoutDetector.detect(
+            hr: hr, restingBpm: 60, steps: steps, savedSpans: saved).isEmpty)
+        let later = runEnd + 15 * 60
+        let laterHR = block(later, 20 * 60, 120)
+        let laterSteps = (later..<(later + 20 * 60)).map {
+            AutoWorkoutDetector.StepTick(ts: $0, activityClass: 1)
+        }
+        XCTAssertEqual(AutoWorkoutDetector.detect(
+            hr: laterHR, restingBpm: 60, steps: laterSteps, savedSpans: saved).count, 1)
+    }
 }

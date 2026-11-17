@@ -214,7 +214,7 @@ enum AppleDemoSeeder {
             // --- journal answers for the recent 40 days (real catalog strings → Insights light up) ---
             if i >= DAYS - 40 {
                 journal.append(JournalEntry(day: day, question: "Did you drink any alcohol?", answeredYes: rng.nextDouble() < 0.18, notes: nil))
-                journal.append(JournalEntry(day: day, question: "Did you have caffeine late in the day?", answeredYes: rng.nextDouble() < 0.30, notes: nil))
+                journal.append(JournalEntry(day: day, question: "Did you have caffeine?", answeredYes: rng.nextDouble() < 0.30, notes: nil))
                 journal.append(JournalEntry(day: day, question: "Did you feel stressed?", answeredYes: rng.nextDouble() < 0.28, notes: nil))
             }
         }

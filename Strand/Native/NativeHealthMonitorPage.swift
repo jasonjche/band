@@ -83,12 +83,11 @@ struct NativeHealthMonitorBody: View {
                 onForward: onForward
             )
             .frame(maxWidth: .infinity)
-            if let caption = report.summary.caption {
-                Text(caption)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            Text(report.summary.caption ?? " ")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 18, alignment: .leading)
+                .opacity(report.summary.caption == nil ? 0 : 1)
             NativeChrome.panel {
                 if report.vitals.isEmpty {
                     NativeEmptyState(text: "No Data", symbol: "heart")

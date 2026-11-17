@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import StrandDesign
 import WhoopStore
 
 /// Journal: inset grouped list of the day's real answers, plus an Apple Form to log them.
@@ -103,46 +104,6 @@ struct NativeJournalView: View {
     }
 
     @ViewBuilder private var journalBody: some View {
-        #if os(iOS)
-        List {
-            Section {
-                HomeDateStepper(
-                    title: HomeDayTitle.text(for: selectedDay),
-                    canGoBack: HomeDayNav.canGoBack(selectedKey: dayKey, firstDay: firstDay),
-                    canGoForward: HomeDayNav.canGoForward(selectedKey: dayKey),
-                    onBack: { shiftDay(-1) },
-                    onForward: { shiftDay(1) }
-                )
-                .frame(maxWidth: .infinity)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-            }
-            if answers.isEmpty {
-                Section {
-                    NativeEmptyState(text: "No journal entry", symbol: "book.closed")
-                        .listRowBackground(Color.clear)
-                }
-            } else {
-                Section {
-                    ForEach(answers) { answer in
-                        HomeJournalRow(answer: answer)
-                    }
-                }
-                if let notes, !notes.isEmpty {
-                    Section("Notes") {
-                        Text(notes)
-                            .font(.body)
-                    }
-                }
-            }
-            Section {
-                impactRow
-            }
-        }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(NativePageFill())
-        #else
         NativeChrome.screen {
             HomeDateStepper(
                 title: HomeDayTitle.text(for: selectedDay),
@@ -166,27 +127,8 @@ struct NativeJournalView: View {
                 }
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Impact on Recovery")
         }
-        #endif
-    }
-
-    private var impactRow: some View {
-        Button {
-            path.wrappedValue.append(NativeJournalImpactRoute())
-        } label: {
-            HStack {
-                Text("Impact on Recovery")
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.forward")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Impact on Recovery")
     }
 
     @State private var seededYes: [String: Bool] = [:]
@@ -207,18 +149,18 @@ struct NativeJournalView: View {
         var yes: [String: Bool] = [:]
         var qty: [String: Double] = [:]
         var time: [String: Date] = [:]
-        for entry in entries where entry.day == dayKey {
+        for entry in NativeJournalIdentity.winningEntries(entries) where entry.day == dayKey {
             yes[entry.question] = entry.answeredYes
             if let value = entry.numericValue { qty[entry.question] = value }
             if let minutes = NativeJournalNotes.decode(entry.notes).timeMinutes {
                 time[entry.question] = NativeJournalNotes.date(minutes: minutes, on: selectedDay)
             }
         }
-        for (question, value) in nativeAnswers where yes[question] == nil {
-            yes[question] = value
+        for (question, value) in nativeAnswers {
+            yes[JournalCatalogStore.canonicalId(for: question)] = value
         }
-        for (question, value) in nativeNumeric where qty[question] == nil {
-            qty[question] = value
+        for (question, value) in nativeNumeric {
+            qty[JournalCatalogStore.canonicalId(for: question)] = value
         }
         draftYes = yes
         draftNumeric = qty
@@ -286,7 +228,7 @@ private struct NativeJournalRepoSink: View {
     }
 }
 
-/// Native Form of the user's tracked behaviours. Yes/no as Toggle, quantity as Stepper.
+/// One card per category, Yes/No capsules, progress, and a short done state.
 struct NativeJournalLogForm: View {
     var items: [JournalCatalogItem]
     var answers: [String: Bool]
@@ -300,19 +242,40 @@ struct NativeJournalLogForm: View {
     var onNumeric: (String, Double) -> Void
     var onTime: (String, Date) -> Void = { _, _ in }
 
+    @Environment(\.nativeStyle) private var style
+    @State private var hapticTick = 0
+
+    private var answeredCount: Int {
+        items.reduce(0) { $0 + (answers[$1.canonical] == nil ? 0 : 1) }
+    }
+
+    private var allAnswered: Bool {
+        !items.isEmpty && answeredCount == items.count
+    }
+
     var body: some View {
-        Form {
+        NativeChrome.screen {
             if items.isEmpty {
-                Section {
+                NativeChrome.panel {
                     NativeEmptyState(text: "No behaviours to log", symbol: "book.closed")
                 }
             } else {
+                progressCard
+                if allAnswered { completionCard }
                 ForEach(JournalGroup.displayOrder, id: \.self) { group in
                     let groupItems = items.filter { $0.group == group }
                         .sorted { ($0.sortIndex, $0.display) < ($1.sortIndex, $1.display) }
                     if !groupItems.isEmpty {
-                        Section(group.title) {
-                            ForEach(groupItems) { item in
+                        NativeChrome.panel {
+                            NativeCardHeader(
+                                title: group.title,
+                                symbol: Self.symbol(for: group),
+                                tint: Self.tint(for: group, style: style)
+                            )
+                            ForEach(Array(groupItems.enumerated()), id: \.element.id) { index, item in
+                                if index > 0 {
+                                    Divider()
+                                }
                                 row(item)
                             }
                         }
@@ -320,30 +283,79 @@ struct NativeJournalLogForm: View {
                 }
             }
             if showsQuestionEditor, let catalog {
-                Section {
-                    NavigationLink("Edit Questions") {
-                        NativeJournalQuestionsView(catalog: catalog, imported: imported)
+                NavigationLink {
+                    NativeJournalQuestionsView(catalog: catalog, imported: imported)
+                } label: {
+                    NativeChrome.panel {
+                        NativeCardHeader(
+                            title: "Edit Questions",
+                            symbol: "list.bullet",
+                            tint: Color.secondary,
+                            chevron: true
+                        )
                     }
                 }
+                .buttonStyle(.plain)
             }
         }
+        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: allAnswered)
         #if os(iOS)
-        .scrollContentBackground(.hidden)
-        .background(NativePageFill())
+        .sensoryFeedback(.impact(weight: .light), trigger: hapticTick)
         #endif
+    }
+
+    private var progressCard: some View {
+        NativeChrome.panel {
+            Text("\(answeredCount) of \(items.count) answered")
+                .font(StrandFont.subhead.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ProgressView(value: Double(answeredCount), total: Double(max(items.count, 1)))
+                .progressViewStyle(.linear)
+                .tint(NativePaint.recovery(style))
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(answeredCount) of \(items.count) answered")
+    }
+
+    private var completionCard: some View {
+        NativeChrome.panel {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(NativePaint.recovery(style))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("All logged")
+                        .font(StrandFont.headline)
+                    Text("Save to keep this day")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .transition(.scale(scale: 0.96).combined(with: .opacity))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("All logged. Save to keep this day")
     }
 
     @ViewBuilder private func row(_ item: JournalCatalogItem) -> some View {
         let follow = NativeJournalFollowUp.forItem(item)
-        let yes = answers[item.canonical] ?? false
-        Group {
-            Toggle(isOn: boolBinding(item)) {
+        let yes = answers[item.canonical] == true
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
                 Text(verbatim: item.display)
+                    .font(StrandFont.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                yesNo(item)
             }
+            .frame(minHeight: 44)
             if yes, follow.hasQuantity {
                 Stepper(value: numericBinding(item), in: 0...99, step: 1) {
                     LabeledContent("Amount", value: numericLabel(item, follow: follow))
                 }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
             if yes, follow.hasTime {
                 DatePicker(
@@ -354,15 +366,48 @@ struct NativeJournalLogForm: View {
                 #if os(macOS)
                 .datePickerStyle(.compact)
                 #endif
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: answers[item.canonical])
+        .accessibilityElement(children: .contain)
     }
 
-    private func boolBinding(_ item: JournalCatalogItem) -> Binding<Bool> {
-        Binding(
-            get: { answers[item.canonical] ?? false },
-            set: { onToggle(item.canonical, $0) }
-        )
+    private func yesNo(_ item: JournalCatalogItem) -> some View {
+        let selected = answers[item.canonical]
+        return HStack(spacing: 8) {
+            choice("No", selected: selected == false) { setAnswer(item, false) }
+            choice("Yes", selected: selected == true) { setAnswer(item, true) }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(item.display)
+        .accessibilityValue(selected == true ? "Yes" : selected == false ? "No" : "Not answered")
+    }
+
+    private func choice(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(StrandFont.body.weight(.semibold))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .frame(minWidth: 64)
+                .foregroundStyle(selected ? NativePaint.page(style) : Color.primary)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(selected
+                              ? Color.primary
+                              : (style == .whoop ? NativeTokens.whoopHighlight : NativeTokens.highlight))
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private func setAnswer(_ item: JournalCatalogItem, _ yes: Bool) {
+        hapticTick += 1
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
+            onToggle(item.canonical, yes)
+        }
     }
 
     private func numericBinding(_ item: JournalCatalogItem) -> Binding<Double> {
@@ -387,6 +432,32 @@ struct NativeJournalLogForm: View {
         }
         return number
     }
+
+    private static func symbol(for group: JournalGroup) -> String {
+        switch group {
+        case .nutrition: return "fork.knife"
+        case .sleep: return "bed.double"
+        case .lifestyle: return "figure.walk"
+        case .recovery: return "heart"
+        case .health: return "cross.case"
+        case .supplements: return "pills"
+        case .behaviour: return "person"
+        case .other: return "square.grid.2x2"
+        }
+    }
+
+    private static func tint(for group: JournalGroup, style: NativeStyle) -> Color {
+        switch group {
+        case .nutrition: return NativePaint.activity(style)
+        case .sleep: return NativePaint.sleep(style)
+        case .lifestyle: return NativePaint.strain(style)
+        case .recovery: return NativePaint.recovery(style)
+        case .health: return NativePaint.heart(style)
+        case .supplements: return NativePaint.respiratory(style)
+        case .behaviour: return NativeChrome.stressMid
+        case .other: return Color.secondary
+        }
+    }
 }
 
 struct HomeJournalAnswer: Identifiable, Equatable {
@@ -395,7 +466,7 @@ struct HomeJournalAnswer: Identifiable, Equatable {
     var id: String { question }
 
     static func make(entries: [JournalEntry], day: String) -> [HomeJournalAnswer] {
-        entries
+        NativeJournalIdentity.winningEntries(entries)
             .filter { $0.day == day }
             .map { entry in
                 let detail = NativeJournalNotes.decode(entry.notes)
@@ -405,13 +476,14 @@ struct HomeJournalAnswer: Identifiable, Equatable {
                 } else {
                     value = entry.answeredYes ? "Yes" : "No"
                 }
+                let title = JournalCatalogStore.shortTitle(for: entry.question)
                 if entry.answeredYes, let minutes = detail.timeMinutes {
                     return HomeJournalAnswer(
-                        question: entry.question,
+                        question: title,
                         value: "\(value) · \(NativeJournalNotes.formatTime(minutes))"
                     )
                 }
-                return HomeJournalAnswer(question: entry.question, value: value)
+                return HomeJournalAnswer(question: title, value: value)
             }
     }
 

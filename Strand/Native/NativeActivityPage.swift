@@ -2,6 +2,7 @@ import SwiftUI
 import Charts
 import MapKit
 import WhoopStore
+import WhoopProtocol
 import StrandDesign
 import StrandAnalytics
 
@@ -113,6 +114,15 @@ enum NativeActivityPageLogic {
                 && row.startTs < workout.startTs
                 && (lo == nil || row.startTs >= lo!)
         }
+    }
+
+    /// Z1…Z5 percentages from samples using the same %HRmax bands as the rest of the app.
+    static func zonePercents(from samples: [HRSample], zoneSet: HRZoneSet) -> [Double]? {
+        guard !samples.isEmpty else { return nil }
+        let tiz = HRZones.timeInZone(samples, zoneSet: zoneSet)
+        let total = tiz.total
+        guard total > 0 else { return nil }
+        return tiz.seconds.map { $0 / total * 100 }
     }
 
     /// Z1…Z5 percents of duration; remainder is zone 0. Empty when the row has no zone split.
@@ -400,10 +410,16 @@ struct NativeActivityView: View {
             sport: workout.sport, source: workout.source
         )
         hrFromAppleHealth = series.origin == .appleHealth
-        hr = NativeActivityPageLogic.bucketed(
+        let rawPoints = NativeActivityPageLogic.bucketed(
             series.samples.map { (ts: $0.ts, bpm: Double($0.bpm)) },
             seconds: NativeActivityPageLogic.hrBucketSeconds
         )
+        hr = NativeHRSmoothing.smooth(rawPoints)
+        let zones = zoneSet ?? HRZones.zones(maxHR: profileHandle?.effortHRmax ?? 197)
+        if percents == nil, !series.samples.isEmpty {
+            percents = NativeActivityPageLogic.zonePercents(from: series.samples, zoneSet: zones)
+            if zoneSet == nil { zoneSet = zones }
+        }
         heartRateRecoveryBpm = nil
         priorHeartRateRecovery = []
         if series.origin == .strap, let maxHR = profileHandle?.effortHRmax, maxHR > 0 {

@@ -722,6 +722,10 @@ final class AppModel: ObservableObject {
     /// A closure rather than a direct reference because `HealthKitBridge` owns iOS-only HealthKit state
     /// while this type is shared with macOS, and the bridge is a `@StateObject` the app scene owns.
     var healthWriteBack: (() async -> Void)?
+    /// Fetch Apple Health workout HR that has not been stored yet. Set by `StrandiOSApp` beside
+    /// `healthWriteBack`. The HealthKit bridge also runs this at the start of `sync`, after
+    /// collecting workouts, and on heart-rate / workout observer wakes.
+    var importAppleWorkoutHeartRate: (() async -> Void)?
     #endif
 
     /// Settle a re-score that is owed (#1538) — one an earlier attempt started and was killed partway
@@ -1331,6 +1335,7 @@ final class AppModel: ObservableObject {
         await wireSourceCoordinator()
         guard let registry = deviceRegistry, let store = await repo.storeHandle() else {
             await repo.refresh()
+            await importAppleWorkoutHeartRate?()
             return
         }
 
@@ -1349,6 +1354,7 @@ final class AppModel: ObservableObject {
             registry: registry, store: store, authorized: authorized, now: now)
         guard registry.devices.contains(where: { $0.id == AppleWatchDevice.deviceId }) else {
             await repo.refresh()
+            await importAppleWorkoutHeartRate?()
             return
         }
 
@@ -1363,6 +1369,7 @@ final class AppModel: ObservableObject {
         } else {
             await repo.refresh()
         }
+        await importAppleWorkoutHeartRate?()
     }
     #endif
 

@@ -1,5 +1,6 @@
 import XCTest
 import WhoopStore
+import WhoopProtocol
 import StrandAnalytics
 @testable import Strand
 
@@ -114,6 +115,18 @@ final class NativeActivityPageTests: XCTestCase {
         XCTAssertEqual(row?.heartFamily, true)
         XCTAssertEqual(row?.neutralDelta, true)
         XCTAssertNotNil(row?.prior)
+    }
+
+    func testZonePercentsComeFromSamplesAndHideWhenEmpty() {
+        let set = HRZones.zones(maxHR: 190)
+        XCTAssertNil(NativeActivityPageLogic.zonePercents(from: [], zoneSet: set))
+        let samples = (0..<600).map { HRSample(ts: 1_700_000_000 + $0, bpm: 100) }
+        let percents = NativeActivityPageLogic.zonePercents(from: samples, zoneSet: set)
+        XCTAssertEqual(percents?.count, 5)
+        XCTAssertEqual(percents?[0] ?? 0, 100, accuracy: 0.01)
+        let rows = NativeActivityPageLogic.zoneTimes(percents: percents, durationS: 600)
+        XCTAssertFalse(rows.isEmpty)
+        XCTAssertEqual(rows.first { $0.number == 1 }?.percent ?? 0, 100, accuracy: 0.01)
     }
 
     func testBpmRangeUsesProfileZonesAndZoneZeroIsBelowZoneOne() {

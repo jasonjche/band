@@ -1111,24 +1111,49 @@ final class Repository: ObservableObject {
         return byDay.values.sorted { $0.day < $1.day }
     }
 
+    /// One day's steps: the larger of the strap count and Apple Health. Nil when neither
+    /// source has a positive reading. Home, the steps metric page, and `self.days` all
+    /// read this — two readouts of one fact must not disagree.
+    nonisolated static func resolvedSteps(strap: Int?, apple: Int?) -> Int? {
+        [strap, apple].compactMap { $0 }.filter { $0 > 0 }.max()
+    }
+
     /// Personal build: a day's steps are the larger of the strap's count and Apple Health's.
     /// The strap count only covers the history this app managed to pull, so when another app
     /// took records off the strap first it reads far too low (98 against 8,202 on the day this
     /// was written). Step counts only grow, so the larger figure is the more complete one.
+    /// Apple-only days (no strap row) are inserted so a phone-only day still has a value.
+    /// Duplicate `base` rows for one day collapse to the larger strap count before overlay.
     nonisolated static func mergeAppleSteps(into base: [DailyMetric],
                                             _ appleSteps: [String: Int]) -> [DailyMetric] {
-        guard !appleSteps.isEmpty else { return base }
-        return base.map { d in
-            guard let apple = appleSteps[d.day], apple > (d.steps ?? 0) else { return d }
-            return DailyMetric(
-                day: d.day, totalSleepMin: d.totalSleepMin, efficiency: d.efficiency, deepMin: d.deepMin,
-                remMin: d.remMin, lightMin: d.lightMin, disturbances: d.disturbances, restingHr: d.restingHr,
-                avgHrv: d.avgHrv, recovery: d.recovery, strain: d.strain, exerciseCount: d.exerciseCount,
-                spo2Pct: d.spo2Pct, skinTempDevC: d.skinTempDevC, respRateBpm: d.respRateBpm,
-                steps: apple, activeKcalEst: d.activeKcalEst,
-                spo2Red: d.spo2Red, spo2Ir: d.spo2Ir, avgSdnn: d.avgSdnn, skinTempC: d.skinTempC,
-                sleepHrOnly: d.sleepHrOnly)
+        var byDay = Dictionary(base.map { ($0.day, $0) }, uniquingKeysWith: { a, b in
+            (a.steps ?? -1) >= (b.steps ?? -1) ? a : b
+        })
+        for (day, apple) in appleSteps {
+            guard let resolved = resolvedSteps(strap: byDay[day]?.steps, apple: apple) else { continue }
+            if let existing = byDay[day] {
+                if existing.steps != resolved {
+                    byDay[day] = replacingSteps(existing, resolved)
+                }
+            } else {
+                byDay[day] = DailyMetric(
+                    day: day, totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil,
+                    lightMin: nil, disturbances: nil, restingHr: nil, avgHrv: nil, recovery: nil,
+                    strain: nil, exerciseCount: nil, steps: resolved)
+            }
         }
+        return byDay.values.sorted { $0.day < $1.day }
+    }
+
+    nonisolated private static func replacingSteps(_ d: DailyMetric, _ steps: Int) -> DailyMetric {
+        DailyMetric(
+            day: d.day, totalSleepMin: d.totalSleepMin, efficiency: d.efficiency, deepMin: d.deepMin,
+            remMin: d.remMin, lightMin: d.lightMin, disturbances: d.disturbances, restingHr: d.restingHr,
+            avgHrv: d.avgHrv, recovery: d.recovery, strain: d.strain, exerciseCount: d.exerciseCount,
+            spo2Pct: d.spo2Pct, skinTempDevC: d.skinTempDevC, respRateBpm: d.respRateBpm,
+            steps: steps, activeKcalEst: d.activeKcalEst,
+            spo2Red: d.spo2Red, spo2Ir: d.spo2Ir, avgSdnn: d.avgSdnn, skinTempC: d.skinTempC,
+            sleepHrOnly: d.sleepHrOnly)
     }
 
     nonisolated static func mergeActivityFileSteps(into base: [DailyMetric],
@@ -3255,6 +3280,14 @@ final class Repository: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: Self.autoDetectDismissedKey) }
     }
 
+    /// Tokens of rows this detector saved (`startTs:endTs`). nil means the key has never been
+    /// written, so the next pass grandfathers unmarked Activity/manual rows in the scan window.
+    private static let autoSavedKey = "workouts.autoSaved"
+    private var autoSavedTokens: [String]? {
+        get { UserDefaults.standard.stringArray(forKey: Self.autoSavedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.autoSavedKey) }
+    }
+
     /// Token for one auto-detect span (matches the detector's integer seconds).
     nonisolated private static func autoDetectToken(_ w: DetectedWorkout) -> String {
         "\(w.startSec):\(w.endSec)"
@@ -3333,6 +3366,9 @@ final class Repository: ObservableObject {
         // Exclude every already-saved workout window (any source , strap, manual, imported, detected).
         let saved = await workoutRows()
         let savedSpans = saved.map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
+        let gravity = await gravitySamplesUnion(from: from, to: now)
+        let motion = AutoWorkoutDetector.motionPoints(gravity)
+        let steps = await autoDetectStepTicks(from: from, to: now)
 
         // Workouts & GPS test mode: the published 12-minute result remains byte-identical. Aggregate,
         // local-only comparisons include that 12-minute baseline plus the 10- and 15-minute alternatives.
@@ -3341,7 +3377,7 @@ final class Repository: ObservableObject {
         let candidates: [DetectedWorkout]
         if TestCentre.active(.workouts), workoutsLog != nil {
             let (results, trace) = AutoWorkoutDetector.detectTrace(
-                hr: hr, restingBpm: restingBpm, motion: nil, savedSpans: savedSpans,
+                hr: hr, restingBpm: restingBpm, motion: motion, steps: steps, savedSpans: savedSpans,
                 minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin,
                 path: "autoDetect")
             for line in trace { emitWorkouts(line) }
@@ -3355,14 +3391,17 @@ final class Repository: ObservableObject {
                 }
                 .map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
             for line in AutoWorkoutDetector.shadowComparisonLines(
-                hr: hr, restingBpm: restingBpm, motion: nil, savedSpans: labelledSpans) {
+                hr: hr, restingBpm: restingBpm, motion: motion, savedSpans: labelledSpans) {
                 emitWorkouts(line)
             }
             candidates = results
         } else {
-            candidates = AutoWorkoutDetector.detect(hr: hr, restingBpm: restingBpm,
-                                                    motion: nil, savedSpans: savedSpans,
-                                                    minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin)
+            candidates = AutoWorkoutDetector.detect(
+                hr: hr, restingBpm: restingBpm,
+                motion: motion,
+                steps: steps,
+                savedSpans: savedSpans,
+                minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin)
         }
         return Self.selectAutoDetectCandidate(
             candidates,
@@ -3386,37 +3425,97 @@ final class Repository: ObservableObject {
     }
 
     /// Personal build: save every finished detected bout as an "Activity" with no prompt, the way
-    /// WHOOP logs a workout nobody started by hand. Returns how many were saved. A bout whose end is
-    /// within `settleSeconds` of the newest stored HR sample is left for the next pass, because it may
-    /// still be in progress and a saved span blocks the detector from ever extending it. Rows are
-    /// manual-style, so the Activity page can re-label or delete them; a delete leaves a tombstone
-    /// (see `deleteWorkout`) so the same bout is not saved again.
+    /// WHOOP logs a workout nobody started by hand. Returns how many rows changed (saved or removed).
+    /// A bout whose end is within `settleSeconds` of the newest stored HR sample is left for the next
+    /// pass, because it may still be in progress and a saved span blocks the detector from ever
+    /// extending it. Auto-saved rows are marked in UserDefaults (`workouts.autoSaved`) as
+    /// `startTs:endTs` — source "manual" + sport "Activity" is not unique (a user can type that), so
+    /// the token list is the marker, with a one-time grandfather of unmarked Activity/manual rows in
+    /// this scan window. A delete leaves a tombstone (see `deleteWorkout`) so the same bout is not
+    /// saved again; pruning a row that no longer qualifies does not tombstone it.
     @discardableResult
     func autoSaveDetectedWorkouts(daysBack: Int = 2, settleSeconds: Int = 600) async -> Int {
         guard AppBrand.isPersonalBuild else { return 0 }
         let now = Int(Date().timeIntervalSince1970)
-        let samples = await hrSamples(from: now - daysBack * 86_400, to: now, limit: 200_000)
+        let from = now - daysBack * 86_400
+        let samples = await hrSamples(from: from, to: now, limit: 200_000)
         guard samples.count >= 2, let frontier = samples.map(\.ts).max() else { return 0 }
         let restingBpm = days.last(where: { $0.restingHr != nil })?.restingHr
-        let savedSpans = await workoutRows().map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
+        let allRows = await workoutRows()
+        let storedTokens = autoSavedTokens
+        let tokenSet = Set(storedTokens ?? [])
+        let grandfather = storedTokens == nil
+        let autoSaved = allRows.filter {
+            Self.isAutoSavedActivity(startTs: $0.startTs, endTs: $0.endTs, sport: $0.sport,
+                                     source: $0.source, tokens: tokenSet,
+                                     grandfather: grandfather, scanFrom: from)
+        }
+        let autoKeys = Set(autoSaved.map { Self.autoSavedToken(startTs: $0.startTs, endTs: $0.endTs) })
+        let savedSpans = allRows
+            .filter { !autoKeys.contains(Self.autoSavedToken(startTs: $0.startTs, endTs: $0.endTs)) }
+            .map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
+        let gravity = await gravitySamplesUnion(from: from, to: now)
+        let steps = await autoDetectStepTicks(from: from, to: now)
         let candidates = AutoWorkoutDetector.detect(
             hr: samples.map { (ts: $0.ts, bpm: $0.bpm) }, restingBpm: restingBpm,
-            motion: nil, savedSpans: savedSpans,
+            motion: AutoWorkoutDetector.motionPoints(gravity),
+            steps: steps,
+            savedSpans: savedSpans,
             minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin)
         let keep = Self.autoSavableWorkouts(
             candidates, frontierTs: frontier, settleSeconds: settleSeconds,
             autoDismissedTokens: autoDetectDismissedSpans,
             detectedDismissedTokens: dismissedDetectedSpans)
-        var saved = 0
+        let stale = Self.staleAutoSavedWorkouts(autoSaved, qualifying: keep)
+        var changed = 0
+        if !stale.isEmpty, let store = await ensureStore() {
+            let ids = Self.deletableWorkoutNamespaces(rawIds: rawPhysiologyReadIds(store: store))
+            for row in stale {
+                for id in ids {
+                    if let n = try? await store.deleteWorkouts(deviceId: id, sport: row.sport,
+                                                               from: row.startTs, to: row.startTs),
+                       n > 0 {
+                        changed += 1
+                    }
+                }
+            }
+        }
+        let keptAuto = autoSaved.filter { row in
+            !stale.contains { $0.startTs == row.startTs && $0.endTs == row.endTs }
+        }
+        var tokens = Set(keptAuto.map { Self.autoSavedToken(startTs: $0.startTs, endTs: $0.endTs) })
         for w in keep {
+            let token = Self.autoDetectToken(w)
+            if tokens.contains(token) { continue }
+            if keptAuto.contains(where: { $0.startTs == w.startSec && $0.endTs == w.endSec }) {
+                tokens.insert(token)
+                continue
+            }
             let start = Date(timeIntervalSince1970: TimeInterval(w.startSec))
             guard let row = WorkoutSource.buildManualRow(start: start, durationMin: max(1, w.durationMin),
                                                          sport: "Activity", avgHr: w.avgBpm,
                                                          energyKcal: nil) else { continue }
             await saveManualWorkout(row)
-            saved += 1
+            tokens.insert(token)
+            changed += 1
         }
-        return saved
+        autoSavedTokens = Array(tokens)
+        return changed
+    }
+
+    /// Strap gait-class ticks for the detector, active strap first so it wins a timestamp tie.
+    private func autoDetectStepTicks(from: Int, to: Int) async -> [AutoWorkoutDetector.StepTick] {
+        guard let store = await ensureStore() else { return [] }
+        var seen = Set<Int>()
+        var out: [AutoWorkoutDetector.StepTick] = []
+        for id in importedReadIds {
+            let samples = (try? await store.stepSamples(deviceId: id, from: from, to: to, limit: 200_000)) ?? []
+            for sample in samples {
+                guard let cls = sample.activityClass, seen.insert(sample.ts).inserted else { continue }
+                out.append(AutoWorkoutDetector.StepTick(ts: sample.ts, activityClass: cls))
+            }
+        }
+        return out.sorted { $0.ts < $1.ts }
     }
 
     /// Finished, never-dismissed candidates, oldest first. Pure so the rule is testable.
@@ -3436,6 +3535,32 @@ final class Repository: ObservableObject {
                     && !tombstones.contains { c.startSec < $0.end && $0.start < c.endSec }
             }
             .sorted { $0.startSec < $1.startSec }
+    }
+
+    nonisolated static func autoSavedToken(startTs: Int, endTs: Int) -> String {
+        "\(startTs):\(endTs)"
+    }
+
+    /// Auto-saved rows are source `manual` + sport `Activity` AND either a stored token or a
+    /// one-time grandfather in the scan window. User-entered rows of other sports are never marked.
+    nonisolated static func isAutoSavedActivity(startTs: Int, endTs: Int, sport: String, source: String,
+                                                tokens: Set<String>, grandfather: Bool,
+                                                scanFrom: Int) -> Bool {
+        guard source == "manual", sport == "Activity" else { return false }
+        if tokens.contains(autoSavedToken(startTs: startTs, endTs: endTs)) { return true }
+        return grandfather && startTs >= scanFrom
+    }
+
+    /// Auto-saved rows that no longer overlap a qualifying candidate. Pure so the prune is testable.
+    nonisolated static func staleAutoSavedWorkouts(
+        _ rows: [WorkoutRow],
+        qualifying: [DetectedWorkout]
+    ) -> [WorkoutRow] {
+        rows.filter { row in
+            !qualifying.contains { candidate in
+                candidate.startSec <= row.endTs && row.startTs <= candidate.endSec
+            }
+        }
     }
 
     /// DISMISS a suggested window: record its span durably so it never re-prompts. Idempotent.
@@ -3539,6 +3664,21 @@ final class Repository: ObservableObject {
             deviceId: "apple-health",
             from: Self.dayString(now.addingTimeInterval(-Double(days) * 86_400)),
             to: Self.dayString(now.addingTimeInterval(86_400)))) ?? []
+    }
+
+    /// Hourly Apple Health step counts over `[from, to]` inclusive, oldest hour first.
+    func appleStepHours(from: Int, to: Int) async -> [(ts: Int, steps: Int)] {
+        guard let store = await ensureStore() else { return [] }
+        return (try? await store.appleStepHours(
+            deviceId: Self.appleHealthSource, fromTs: from, toTs: to)) ?? []
+    }
+
+    /// Latest measured Apple Health VO₂ max (ml/kg/min) and the day it was recorded.
+    /// Nil when `appleDaily` has no positive reading — never a formula estimate.
+    nonisolated static func latestAppleVo2Max(_ rows: [AppleDaily]) -> (day: String, value: Double)? {
+        rows.filter { ($0.vo2max ?? 0) > 0 }
+            .max(by: { $0.day < $1.day })
+            .flatMap { row in row.vo2max.map { (row.day, $0) } }
     }
 
     /// #833/v7.7.2 (Apple Health per-source freeze): the SHARED heavy-load seam behind `AppleHealthView.load()`.

@@ -9,26 +9,7 @@ struct NativeJournalImpactRoute: Hashable {}
 /// Short labels and association copy for journal impact rows.
 enum NativeJournalImpactCopy {
     static func title(for behaviorId: String) -> String {
-        let key = behaviorId.lowercased()
-        if key.contains("alcohol") { return "Alcohol" }
-        if key.contains("caffeine") { return "Caffeine" }
-        if key.contains("screen") { return "Screen in bed" }
-        if key.contains("late meal") || key.contains("late food") || key.contains("eat close")
-            || key.contains("ate food close") || key.contains("bedtime") || key.contains("close to bed") {
-            return "Late meal"
-        }
-        if key.contains("stressed") { return "Stress" }
-        if key.contains("sauna") { return "Sauna" }
-        if key.contains("share") && key.contains("bed") { return "Shared bed" }
-        if key.contains("sick") || key.contains("ill") { return "Felt sick" }
-        if key.contains("magnesium") { return "Magnesium" }
-        if key.contains("read") { return "Read in bed" }
-        if key.contains("sexual") { return "Sexual activity" }
-        if key.contains("masturbat") { return "Masturbation" }
-        if behaviorId.hasSuffix("?") {
-            return String(behaviorId.dropLast())
-        }
-        return behaviorId
+        JournalCatalogStore.shortTitle(for: behaviorId)
     }
 
     static func effectText(_ effect: Double) -> String {
@@ -107,51 +88,45 @@ struct NativeJournalImpactView: View {
     }
 
     @ViewBuilder private func impactList(_ model: NativeJournalImpactModel) -> some View {
-        List {
+        NativeChrome.screen {
             if model.isEmpty {
-                Section {
+                NativeChrome.panel {
                     NativeEmptyState(
                         text: "Log yes and no answers to see how recovery differs after each behaviour",
                         symbol: "book.closed"
                     )
-                    .listRowBackground(Color.clear)
                 }
             }
             if !model.clear.isEmpty {
-                Section {
-                    ForEach(model.clear) { row in
+                NativeChrome.panel {
+                    ForEach(Array(model.clear.enumerated()), id: \.element.id) { index, row in
+                        if index > 0 { Divider() }
                         NativeJournalImpactRow(row: row)
                     }
                 }
             }
             if !model.unclear.isEmpty {
-                Section("No clear effect yet") {
-                    ForEach(model.unclear) { row in
+                NativeChrome.section("No clear effect yet")
+                NativeChrome.panel {
+                    ForEach(Array(model.unclear.enumerated()), id: \.element.id) { index, row in
+                        if index > 0 { Divider() }
                         NativeJournalImpactRow(row: row)
                     }
                 }
             }
             if !model.insufficient.isEmpty {
-                Section("Not enough data yet") {
-                    ForEach(model.insufficient) { row in
+                NativeChrome.section("Not enough data yet")
+                NativeChrome.panel {
+                    ForEach(Array(model.insufficient.enumerated()), id: \.element.id) { index, row in
+                        if index > 0 { Divider() }
                         NativeJournalImpactRow(row: row)
                     }
                 }
             }
             if !model.isEmpty {
-                Section {
-                    Text("Compared with days you answered no.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .listRowBackground(Color.clear)
-                }
+                NativeChrome.footnote("Compared with days you answered no.")
             }
         }
-        #if os(iOS)
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(NativePageFill())
-        #endif
         .navigationTitle("Journal Impact")
         .modifier(NativeInlineTitle())
     }
@@ -175,7 +150,7 @@ struct NativeJournalImpactView: View {
             if let value = scored.recovery { recovery[day] = value }
             if let value = scored.sleepPerformance { sleep[day] = value }
         }
-        let answers = entries.map {
+        let answers = NativeJournalIdentity.winningEntries(entries).map {
             JournalImpact.Answer(day: $0.day, behaviorId: $0.question, yes: $0.answeredYes)
         }
         let insights = await Task.detached(priority: .userInitiated) {
