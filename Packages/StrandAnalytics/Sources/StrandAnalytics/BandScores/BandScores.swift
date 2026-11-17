@@ -117,6 +117,8 @@ public enum BandScores {
         public var zTemp: Double?
         public var zSpo2: Double?
         public var recovery: Double?
+        /// Round-5 ms-EWMA logistic. Nil during the current source's warm-up.
+        public var recoveryV3: Double?
     }
 
     /// Causal pipeline: load → ledger → SRI → sleep performance → baselines → recovery.
@@ -185,6 +187,10 @@ public enum BandScores {
             zHrv: hrvB.z, zRhr: rhrB.z, zRr: rrB.z, zTemp: tempB.z, zSpo2: spo2B.z,
             perf: perf, params: params.recovery
         )
+        let hrvMs = days.map { nan($0.hrvMs) }
+        let recoveryV3 = BandRecoveryV3.run(
+            hrv: hrvMs, sleepPct: perf, sources: days.map(\.source), params: params.recoveryV3
+        )
 
         return (0..<n).map { t in
             DayOutput(
@@ -203,7 +209,8 @@ public enum BandScores {
                 zRr: finite(rrB.z[t]),
                 zTemp: finite(tempB.z[t]),
                 zSpo2: finite(spo2B.z[t]),
-                recovery: finite(recovery[t])
+                recovery: finite(recovery[t]),
+                recoveryV3: finite(recoveryV3.recovery[t])
             )
         }
     }

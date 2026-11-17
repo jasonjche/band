@@ -256,14 +256,12 @@ struct TestCentreView: View {
                 }
             } header: {
                 Text("Tests")
-            } footer: {
-                Text("Turn on a test, wear the strap, then report.")
             }
 
             nativeDiagnosticSection
             if is5MG { nativeRawCollectorSection }
             if is5MG { nativeFiveMGSection }
-            if ouraPaired { nativeOuraSections }
+            if ouraPaired && !AppBrand.isPersonalBuild { nativeOuraSections }
             nativeExportSection
             nativeExperimentalAlgorithmsSection
         }
@@ -381,7 +379,7 @@ struct TestCentreView: View {
             Button("Copy Environment Dump") {
                 PlatformPasteboard.copy(live.exportableLogText())
             }
-            if let identity = polarIdentity {
+            if !AppBrand.isPersonalBuild, let identity = polarIdentity {
                 Toggle("Polar Debug Logging", isOn: $polarDebugLogging)
                 Text(identity).foregroundStyle(.secondary)
             }
@@ -404,8 +402,10 @@ struct TestCentreView: View {
     private var nativeFiveMGSection: some View {
         Section {
             Toggle("Protocol Probes", isOn: $puffinExperiments)
-            Toggle("Broadcast Heart Rate from Strap", isOn: $broadcastHrEnabled)
-                .onChangeCompat(of: broadcastHrEnabled) { model.ble.setBroadcastHr($0) }
+            if !AppBrand.isPersonalBuild {
+                Toggle("Broadcast Heart Rate from Strap", isOn: $broadcastHrEnabled)
+                    .onChangeCompat(of: broadcastHrEnabled) { model.ble.setBroadcastHr($0) }
+            }
             Toggle("Legacy R22 Experiment", isOn: $deepDataEnabled)
             if deepDataEnabled {
                 Button("Send R22 Enable Sequence") { model.ble.enableWhoop5DeepData() }
@@ -1129,6 +1129,7 @@ private struct TestModeRow: View {
     @EnvironmentObject var live: LiveState
     @EnvironmentObject var model: AppModel
     @State private var on: Bool = false
+    @Environment(\.appleSettingsStyle) private var appleSettingsStyle
 
     private var elapsed: Double? {
         TestCentre.startedAt(mode.domain).map { Date().timeIntervalSince($0) }
@@ -1148,6 +1149,15 @@ private struct TestModeRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if appleSettingsStyle {
+                Toggle(mode.title, isOn: $on)
+                    .onChangeCompat(of: on) { isOn in
+                        if isOn { TestCentre.activate(mode.domain) } else { TestCentre.deactivate(mode.domain) }
+                        if mode.domain == .display {
+                            if isOn { startDisplayMonitor() } else { DisplayPerformanceMonitor.shared.stop() }
+                        }
+                    }
+            } else {
             HStack(spacing: 12) {
                 Image(systemName: mode.icon)
                     .foregroundStyle(StrandPalette.accent).frame(width: 24)
@@ -1175,6 +1185,7 @@ private struct TestModeRow: View {
             Text(mode.blurb)
                 .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
+            }
             // Live readout (Group E/F): the per-mode panel binding the registry's liveReadout ids. Shown
             // only while the mode is on, so an inactive row stays compact.
             if on, mode.domain == .sleep {

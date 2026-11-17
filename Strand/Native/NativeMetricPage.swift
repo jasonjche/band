@@ -2,13 +2,16 @@ import SwiftUI
 import WhoopStore
 import StrandDesign
 
-/// Apple Health chart page: time scope, AVERAGE hero, chart, Latest capsule.
+/// Apple Health chart page: D/W/M/6M aggregation, AVERAGE hero, chart, Latest capsule, Trend.
 struct NativeMetricPage: View {
     var key: String
     @EnvironmentObject private var repo: Repository
     @AppStorage(NativeDaySelection.storageKey) private var nativeDayKey = ""
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @State private var scope: NativeMetricScope = .week
+    @State private var series: NativeScopeSeries = .empty
+    @State private var hourPoints: [NativeHourPoint] = []
+    @State private var latest: NativeDayPoint?
 
     private var selectedDay: Date {
         NativeDaySelection.date(from: nativeDayKey)
@@ -24,115 +27,89 @@ struct NativeMetricPage: View {
         metric?.title ?? key.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
-    private var series: [NativeDayPoint] {
-        let limit: Int
-        switch scope {
-        case .week: limit = 7
-        case .month: limit = 30
-        case .sixMonths: limit = 180
-        }
-        let scores = NativeBandScores.resolve(
-            days: repo.days, sleeps: repo.sleeps, importedSleep: repo.importedSleep
-        )
-        return repo.days.filter { $0.day <= dayKey }.suffix(limit).compactMap { day in
-            displayValue(resolvedValue(key: key, day: day, scores: scores)).map {
-                NativeDayPoint(key: day.day, value: $0)
-            }
-        }
-    }
-
-    private var availableScopes: [NativeMetricScope] {
-        let scores = NativeBandScores.resolve(
-            days: repo.days, sleeps: repo.sleeps, importedSleep: repo.importedSleep
-        )
-        let count = repo.days.filter {
-            $0.day <= dayKey && displayValue(resolvedValue(key: key, day: $0, scores: scores)) != nil
-        }.count
-        var scopes: [NativeMetricScope] = [.week, .month]
-        if count > 35 { scopes.append(.sixMonths) }
-        return scopes
-    }
-
-    private var latestPoint: NativeDayPoint? { series.last }
+    private var taskID: String { "\(key)|\(scope.rawValue)|\(dayKey)|\(repo.days.count)" }
 
     var body: some View {
-        NativeChrome.screen {
-            if availableScopes.count > 1 {
-                Picker("Range", selection: $scope) {
-                    ForEach(availableScopes) { item in
-                        Text(item.label).tag(item)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityLabel("Time range")
-            }
-
-            NativeChartBlock(
-                points: paddedSeries,
-                bars: usesBars,
-                tint: tint,
-                format: format,
-                unit: displayUnit,
-                maxY: usesBars ? max(paddedSeries.compactMap { $0.value.isFinite ? $0.value : nil }.max() ?? 0, 1) : 1,
-                highlightKey: dayKey,
-                plotHeight: 280,
-                accessibilityName: title
-            )
-
-            if let latestPoint {
-                NativeLatestCapsule(
-                    label: "Latest: \(NativeChartDay.mediumDate(latestPoint.key))",
-                    value: "\(format(latestPoint.value))\(displayUnit.map { " \($0)" } ?? "")"
-                )
-            } else {
-                NativeLatestCapsule(label: "Latest", value: "Unavailable")
-            }
-        }
-        .navigationTitle(title)
-        .modifier(NativeInlineTitle())
-        .onAppear {
-            if !availableScopes.contains(scope) {
-                scope = availableScopes.first ?? .week
-            }
-        }
-    }
-
-    /// Week charts keep a slot for every day so a missing day is a gap, not a shifted bar.
-    private var paddedSeries: [NativeDayPoint] {
-        guard scope == .week else { return series }
-        let byKey = Dictionary(uniqueKeysWithValues: series.map { ($0.key, $0) })
-        return NativeWeek.lastSevenKeys(ending: dayKey).map { key in
-            byKey[key] ?? NativeDayPoint(key: key, value: .nan)
-        }
+        NativeMetricChartPage(
+            title: title,
+            scope: scope,
+            onScope: { scope = $0 },
+            series: series,
+            hourPoints: hourPoints,
+            bars: usesBars,
+            tint: tint,
+            format: format,
+            unit: displayUnit,
+            highlightKey: dayKey,
+            higherIsBetter: NativeMetricDirection.higherIsBetter(key),
+            latest: latest,
+            color: bandColor
+        )
+        .task(id: taskID) { await reload() }
     }
 
     private var usesBars: Bool {
-        switch key {
-        case "steps", "energy_kcal", "active_kcal", "strain": return true
-        default: return false
-        }
+        NativeScopeKindMap.kind(for: key) == .total
     }
 
     private var tint: Color {
         switch key {
-        case "hrv", "rhr", "resting_hr": return NativeTokens.heart
+        case "hrv", "rhr", "resting_hr", "avg_hr", "max_hr": return NativeTokens.heart
         case "resp_rate": return NativeTokens.respiratory
         case "steps", "energy_kcal", "active_kcal": return NativeTokens.activity
         case "strain": return NativeTokens.strain
+        case "recovery": return NativeTokens.recoveryHigh
         default: return NativeTokens.sleep
         }
+    }
+
+    private var bandColor: ((Double) -> Color)? {
+        if key == "recovery" { return { NativeTokens.recoveryBand($0) } }
+        if key == "sleep_performance" || key == "sleep_efficiency" { return { NativeTokens.sleepBand($0) } }
+        return nil
     }
 
     private var displayUnit: String? {
         switch key {
         case "hrv": return "ms"
-        case "rhr", "resting_hr": return "BPM"
+        case "rhr", "resting_hr", "avg_hr", "max_hr": return "BPM"
         case "resp_rate": return "breaths/min"
         case "steps": return "steps"
         case "energy_kcal", "active_kcal": return "cal"
         default:
             let unit = metric?.unit ?? ""
             return unit.isEmpty ? nil : unit
+        }
+    }
+
+    private func reload() async {
+        let scores = NativeBandScores.resolve(
+            days: repo.days, sleeps: repo.sleeps, importedSleep: repo.importedSleep
+        )
+        let points: [NativeDayPoint] = repo.days.filter { $0.day <= dayKey }.compactMap { day in
+            displayValue(resolvedValue(key: key, day: day, scores: scores)).map {
+                NativeDayPoint(key: day.day, value: $0)
+            }
+        }
+        let calendar = Calendar.current
+        let ending = NativeScopeSeries.date(from: dayKey, calendar: calendar) ?? selectedDay
+        series = NativeScopeSeries.make(
+            points: points,
+            scope: scope,
+            kind: NativeScopeKindMap.kind(for: key),
+            calendar: calendar,
+            now: ending,
+            ending: ending
+        )
+        latest = points.last
+        hourPoints = []
+        if scope == .day, key == "avg_hr" || key == "max_hr" {
+            let start = calendar.startOfDay(for: ending)
+            let from = Int(start.timeIntervalSince1970)
+            let raw = await repo.hrSamples(from: from, to: from + 86_400, limit: 12_000)
+            hourPoints = raw.map {
+                NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval($0.ts)), value: Double($0.bpm))
+            }
         }
     }
 
@@ -166,27 +143,8 @@ struct NativeMetricPage: View {
         }
         if key == "resp_rate" { return String(format: "%.1f", value) }
         if key == "steps" || key == "energy_kcal" || key == "active_kcal" {
-            let formatter = NumberFormatter()
-            formatter.numberStyle = .decimal
-            formatter.maximumFractionDigits = 0
-            return formatter.string(from: NSNumber(value: value.rounded())) ?? "\(Int(value.rounded()))"
+            return NativeCountFormat.integer(value)
         }
         return "\(Int(value.rounded()))"
-    }
-}
-
-enum NativeMetricScope: String, CaseIterable, Identifiable, Hashable {
-    case week
-    case month
-    case sixMonths
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .week: return "W"
-        case .month: return "M"
-        case .sixMonths: return "6M"
-        }
     }
 }

@@ -1,0 +1,275 @@
+import XCTest
+import SwiftUI
+import StrandDesign
+@testable import Strand
+
+final class NativeScopeSeriesTests: XCTestCase {
+
+    private func calendar(firstWeekday: Int) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        calendar.firstWeekday = firstWeekday
+        return calendar
+    }
+
+    private func point(_ key: String, _ value: Double?) -> NativeDayPoint {
+        NativeDayPoint(key: key, value: value ?? .nan)
+    }
+
+    func testWeekStartsOnCalendarFirstWeekdaySunday() {
+        let cal = calendar(firstWeekday: 1)
+        // 2026-11-11 is Wednesday. Sunday-start week is Nov 8–14.
+        let points = [
+            point("2026-11-08", 10),
+            point("2026-11-09", 20),
+            point("2026-11-10", 30),
+            point("2026-11-11", 40),
+            point("2026-11-12", 50),
+            point("2026-11-13", 60),
+            point("2026-11-14", 70),
+        ]
+        let now = NativeScopeSeries.date(from: "2026-11-14", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .sixMonths, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(series.buckets.count, 1)
+        XCTAssertEqual(series.buckets[0].key, "2026-11-08")
+        XCTAssertEqual(series.buckets[0].value ?? -1, 40, accuracy: 1e-9)
+        XCTAssertFalse(series.buckets[0].isPartial)
+    }
+
+    func testWeekStartsOnCalendarFirstWeekdayMonday() {
+        let cal = calendar(firstWeekday: 2)
+        // Monday-start week containing Nov 11 is Nov 9–15.
+        let points = (9...15).map { point(String(format: "2026-11-%02d", $0), Double($0)) }
+        let now = NativeScopeSeries.date(from: "2026-11-15", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .sixMonths, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(series.buckets.count, 1)
+        XCTAssertEqual(series.buckets[0].key, "2026-11-09")
+        XCTAssertEqual(series.buckets[0].value ?? -1, 12, accuracy: 1e-9)
+        XCTAssertFalse(series.buckets[0].isPartial)
+    }
+
+    func testMissingDaysAreSkippedNotZero() {
+        let cal = calendar(firstWeekday: 1)
+        let points = [
+            point("2026-11-08", 10),
+            point("2026-11-09", nil),
+            point("2026-11-10", 30),
+            point("2026-11-11", nil),
+            point("2026-11-12", 50),
+        ]
+        let now = NativeScopeSeries.date(from: "2026-11-14", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .sixMonths, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(series.buckets[0].sampleCount, 3)
+        XCTAssertEqual(series.buckets[0].value ?? -1, 30, accuracy: 1e-9)
+        XCTAssertEqual(series.aggregate ?? -1, 30, accuracy: 1e-9)
+    }
+
+    func testPartialCurrentWeekIsIncludedAndFlagged() {
+        let cal = calendar(firstWeekday: 1)
+        let points = [
+            point("2026-11-08", 10),
+            point("2026-11-09", 20),
+            point("2026-11-10", 30),
+        ]
+        let now = NativeScopeSeries.date(from: "2026-11-10", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .sixMonths, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(series.buckets.count, 1)
+        XCTAssertTrue(series.buckets[0].isPartial)
+        XCTAssertEqual(series.buckets[0].value ?? -1, 20, accuracy: 1e-9)
+    }
+
+    func testSixMonthRatesUseMeanAndAverageCaption() {
+        let cal = calendar(firstWeekday: 1)
+        var points: [NativeDayPoint] = []
+        for day in 1...14 {
+            points.append(point(String(format: "2026-11-%02d", day), Double(day)))
+        }
+        let now = NativeScopeSeries.date(from: "2026-11-14", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .sixMonths, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(series.caption, "Average")
+        XCTAssertEqual(series.buckets.count, 2)
+        XCTAssertEqual(series.kind, .rate)
+    }
+
+    func testSixMonthTotalsCaptionIsDailyAverage() {
+        let cal = calendar(firstWeekday: 1)
+        let points = (8...14).map { point(String(format: "2026-11-%02d", $0), 100) }
+        let now = NativeScopeSeries.date(from: "2026-11-14", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .sixMonths, kind: .total, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(series.caption, "Daily Average")
+        XCTAssertEqual(series.buckets[0].value ?? -1, 100, accuracy: 1e-9)
+    }
+
+    func testWeekScopeKeepsDailySlotsIncludingGaps() {
+        let cal = calendar(firstWeekday: 1)
+        let points = [
+            point("2026-11-09", 66),
+            point("2026-11-11", 70),
+            point("2026-11-15", 58),
+        ]
+        let now = NativeScopeSeries.date(from: "2026-11-15", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .week, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(series.buckets.map(\.key), [
+            "2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12",
+            "2026-11-13", "2026-11-14", "2026-11-15",
+        ])
+        XCTAssertNil(series.buckets[1].value)
+        XCTAssertEqual(series.aggregate ?? -1, (66 + 70 + 58) / 3, accuracy: 1e-9)
+        XCTAssertEqual(
+            series.heroDateText(of: series.buckets, calendar: cal),
+            "Nov 9–15, 2026"
+        )
+    }
+
+    func testMonthHeroUsesSpacedDashAcrossMonths() {
+        let cal = calendar(firstWeekday: 1)
+        let points = [
+            point("2026-10-17", 10),
+            point("2026-11-15", 20),
+        ]
+        let now = NativeScopeSeries.date(from: "2026-11-15", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .month, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(series.buckets.count, 30)
+        XCTAssertEqual(
+            series.heroDateText(of: series.buckets, calendar: cal),
+            "Oct 17 – Nov 15, 2026"
+        )
+    }
+
+    func testSixMonthHeroIsMonthRange() {
+        let cal = calendar(firstWeekday: 1)
+        var points: [NativeDayPoint] = []
+        var cursor = NativeScopeSeries.date(from: "2026-05-10", calendar: cal)!
+        let end = NativeScopeSeries.date(from: "2026-11-15", calendar: cal)!
+        while cursor <= end {
+            points.append(point(NativeScopeSeries.key(from: cursor, calendar: cal), 50))
+            cursor = cal.date(byAdding: .day, value: 7, to: cursor) ?? cursor
+        }
+        let series = NativeScopeSeries.make(
+            points: points, scope: .sixMonths, kind: .rate, calendar: cal, now: end, ending: end
+        )
+        let window = series.latestWindow()
+        XCTAssertEqual(window.count, 26)
+        XCTAssertEqual(
+            series.heroDateText(of: window, calendar: cal),
+            "May – Nov 2026"
+        )
+    }
+
+    func testYearScopeUsesMonthlyAggregates() {
+        let cal = calendar(firstWeekday: 1)
+        let points = [
+            point("2026-01-02", 10),
+            point("2026-01-20", 20),
+            point("2026-02-10", 40),
+        ]
+        let now = NativeScopeSeries.date(from: "2026-02-10", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .year, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(series.buckets.count, 2)
+        XCTAssertEqual(series.buckets[0].value ?? -1, 15, accuracy: 1e-9)
+        XCTAssertEqual(series.buckets[1].value ?? -1, 40, accuracy: 1e-9)
+    }
+
+    func testTrendRequiresThreeValuesEachSide() {
+        let cal = calendar(firstWeekday: 1)
+        let points = (1...10).map { point(String(format: "2026-11-%02d", $0), Double($0 * 10)) }
+        let now = NativeScopeSeries.date(from: "2026-11-10", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .week, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        let visible = Array(series.buckets.suffix(7))
+        let trend = series.trend(visible: visible, higherIsBetter: true)
+        XCTAssertNotNil(trend)
+        XCTAssertEqual(trend?.maxValue ?? -1, 100, accuracy: 1e-9)
+        XCTAssertEqual(trend?.minValue ?? -1, 40, accuracy: 1e-9)
+
+        let short = Array(series.buckets.suffix(2))
+        XCTAssertNil(series.trend(visible: short, higherIsBetter: true))
+    }
+
+    func testTrendHidesWhenPreviousPeriodIsSparse() {
+        let cal = calendar(firstWeekday: 1)
+        let points = [
+            point("2026-11-01", 10),
+            point("2026-11-08", 20),
+            point("2026-11-09", 30),
+            point("2026-11-10", 40),
+        ]
+        let now = NativeScopeSeries.date(from: "2026-11-10", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .week, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        XCTAssertNil(series.trend(visible: Array(series.buckets.suffix(7)), higherIsBetter: true))
+    }
+
+    func testHigherIsBetterTable() {
+        XCTAssertEqual(NativeMetricDirection.higherIsBetter("hrv"), true)
+        XCTAssertEqual(NativeMetricDirection.higherIsBetter("recovery"), true)
+        XCTAssertEqual(NativeMetricDirection.higherIsBetter("steps"), true)
+        XCTAssertEqual(NativeMetricDirection.higherIsBetter("rhr"), false)
+        XCTAssertEqual(NativeMetricDirection.higherIsBetter("resting_hr"), false)
+        XCTAssertEqual(NativeMetricDirection.higherIsBetter("stress"), false)
+        XCTAssertNil(NativeMetricDirection.higherIsBetter("resp_rate"))
+        XCTAssertNil(NativeMetricDirection.higherIsBetter("strain"))
+        XCTAssertNil(NativeMetricDirection.higherIsBetter("energy_kcal"))
+        XCTAssertEqual(NativeScopeKindMap.kind(for: "steps"), .total)
+        XCTAssertEqual(NativeScopeKindMap.kind(for: "hrv"), .rate)
+        XCTAssertEqual(NativeScopeKindMap.kind(for: "strain"), .total)
+    }
+
+    func testDeltaArrowUsesHigherIsBetterTint() {
+        let hrvUp = NativeMetricDirection.delta(current: 70, previous: 60, higherIsBetter: true)
+        XCTAssertEqual(hrvUp.symbol, "arrow.up")
+        XCTAssertEqual(hrvUp.tint, NativeTokens.positiveDelta)
+
+        let rhrUp = NativeMetricDirection.delta(current: 58, previous: 50, higherIsBetter: false)
+        XCTAssertEqual(rhrUp.symbol, "arrow.up")
+        XCTAssertEqual(rhrUp.tint, NativeTokens.negativeDelta)
+
+        let rhrDown = NativeMetricDirection.delta(current: 48, previous: 52, higherIsBetter: false)
+        XCTAssertEqual(rhrDown.symbol, "arrow.down")
+        XCTAssertEqual(rhrDown.tint, NativeTokens.positiveDelta)
+
+        let flat = NativeMetricDirection.delta(current: 50, previous: 50.5, higherIsBetter: true)
+        XCTAssertEqual(flat, .flat)
+    }
+
+    func testSelectionDateForWeeklyBucket() {
+        let cal = calendar(firstWeekday: 1)
+        let start = NativeScopeSeries.date(from: "2026-10-26", calendar: cal)!
+        let end = NativeScopeSeries.date(from: "2026-11-02", calendar: cal)!
+        let bucket = NativeScopeBucket(
+            start: start, end: end, value: 12, low: nil, high: nil,
+            isPartial: false, sampleCount: 7, key: "2026-10-26"
+        )
+        let series = NativeScopeSeries(scope: .sixMonths, kind: .rate, buckets: [bucket], caption: "Average")
+        XCTAssertEqual(series.selectionDateText(for: bucket, calendar: cal), "Oct 26 – Nov 1")
+    }
+
+    func testIntradayTimeFormat() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        cal.locale = Locale(identifier: "en_US_POSIX")
+        let date = cal.date(from: DateComponents(year: 2026, month: 11, day: 10, hour: 15, minute: 40))!
+        XCTAssertEqual(NativeScopeFormat.time(date, calendar: cal), "3:40 PM")
+    }
+}

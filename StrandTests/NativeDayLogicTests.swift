@@ -1,5 +1,6 @@
 import XCTest
 import WhoopStore
+import StrandAnalytics
 @testable import Strand
 
 /// Pins the Native shell data-correctness funnel: selected day, strain scale, sleep day key, journal ticks.
@@ -79,6 +80,48 @@ final class NativeDayLogicTests: XCTestCase {
         XCTAssertEqual(NativeDayLogic.strainText(stored, scale: .hundred), "34")
         XCTAssertEqual(NativeDayLogic.strainMaxY(.whoop), 21, accuracy: 1e-9)
         XCTAssertEqual(NativeDayLogic.strainMaxY(.hundred), 100, accuracy: 1e-9)
+    }
+
+    func testEffectiveStrainIsTheSameFunnelTodayUses() {
+        XCTAssertEqual(NativeDayLogic.effectiveStrain(live: 12, stored: 8), 12)
+        XCTAssertEqual(NativeDayLogic.effectiveStrain(live: 3, stored: 18), 18)
+        XCTAssertEqual(NativeDayLogic.effectiveStrain(live: nil, stored: 18), 18)
+        XCTAssertEqual(NativeDayLogic.effectiveStrain(live: 7, stored: nil), 7)
+        XCTAssertNil(NativeDayLogic.effectiveStrain(live: nil, stored: nil))
+        XCTAssertEqual(
+            NativeDayLogic.effectiveStrain(live: 12, stored: 8),
+            StrainScorer.effectiveEffort(live: 12, stored: 8)
+        )
+    }
+
+    func testLiveStrainFillsTodayWhenTheStoredRowIsNil() {
+        let today = "2026-11-16"
+        let day = DailyMetric(
+            day: today,
+            totalSleepMin: 431, efficiency: 0.87, deepMin: 70, remMin: 90, lightMin: 250,
+            disturbances: 2, restingHr: 51, avgHrv: 66, recovery: 49, strain: nil,
+            exerciseCount: 1
+        )
+        let now = localDate(year: 2026, month: 11, day: 16, hour: 16, minute: 0)
+        let storedOnly = NativeDay.make(
+            days: [day], sleeps: [], workouts: [],
+            todayKey: today, connected: true, effortScale: .whoop, now: now
+        )
+        XCTAssertFalse(storedOnly.strain.known)
+        let live = NativeDay.make(
+            days: [day], sleeps: [], workouts: [],
+            todayKey: today, connected: true, effortScale: .whoop, now: now,
+            liveStrain: 22
+        )
+        XCTAssertTrue(live.strain.known)
+        XCTAssertEqual(live.strain.value, NativeDayLogic.strainText(22, scale: .whoop))
+        let yesterday = NativeDay.make(
+            days: [day], sleeps: [], workouts: [],
+            todayKey: today, connected: true, effortScale: .whoop,
+            now: localDate(year: 2026, month: 11, day: 17, hour: 10, minute: 0),
+            liveStrain: 22
+        )
+        XCTAssertFalse(yesterday.strain.known, "live strain is only for the logical today")
     }
 
     func testSleepSessionEnding0350LandsOnTheLogicalDayTheRingsUse() {

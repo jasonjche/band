@@ -1,19 +1,56 @@
 import SwiftUI
+import Combine
 import Charts
 import StrandDesign
+import StrandAnalytics
 import WhoopStore
 
 // Native Home: WHOOP order, Apple Health chrome.
 // Sections take plain value models so snapshots can render without Repository.
 
+/// Pull-to-refresh on Home: kick the #334 user-initiated strap sync (`BLEManager.syncNow`),
+/// hold the system spinner until that offload ends or 20 s, then re-read. Disconnected → reload only.
+enum NativeHomeSync {
+    static let timeout: TimeInterval = 20
+
+    @MainActor
+    static func pull(ble: BLEManager, repo: Repository, reload: () async -> Void) async {
+        if ble.state.historyReady {
+            ble.syncNow()
+            await waitForBackfill(ble)
+            await repo.refresh()
+        }
+        await reload()
+    }
+
+    @MainActor
+    static func waitForBackfill(_ ble: BLEManager, timeout: TimeInterval = timeout) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        var saw = ble.state.backfilling
+        if !saw {
+            for _ in 0..<15 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                if ble.state.backfilling { saw = true; break }
+            }
+        }
+        guard saw else { return }
+        while ble.state.backfilling, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+}
+
 struct NativeHomeView: View {
     @EnvironmentObject private var repo: Repository
+    @EnvironmentObject private var ble: BLEManager
+    @EnvironmentObject private var profile: ProfileStore
     @Environment(\.nativeNavigationPath) private var path
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @State private var workouts: [WorkoutRow] = []
     @State private var journalEntries: [JournalEntry] = []
     @State private var sampleHours: [NativeHourPoint] = []
     @State private var vo2max: Double?
+    @State private var liveTodayStrain: Double?
     @State private var addingActivity = false
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @AppStorage("behavior.smartAlarmEnabled") private var smartAlarmEnabled = false
@@ -35,7 +72,8 @@ struct NativeHomeView: View {
             connected: false,
             effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
             journalEntries: journalEntries,
-            importedSleep: repo.importedSleep
+            importedSleep: repo.importedSleep,
+            liveStrain: liveTodayStrain
         )
     }
 
@@ -89,7 +127,7 @@ struct NativeHomeView: View {
         .navigationTitle("Home")
         .environment(\.nativeSelectedDay, selectedDay)
         .nativeStyleBridge()
-        .refreshable { await reload() }
+        .refreshable { await NativeHomeSync.pull(ble: ble, repo: repo, reload: reload) }
         .task(id: "\(repo.refreshSeq)-\(selectedKey)") { await reload() }
         .navigationDestination(for: NativePairRoute.self) { _ in
             DevicesView()
@@ -135,6 +173,25 @@ struct NativeHomeView: View {
         sampleHours = NativeHomeCharts.stressSeries(samples: raw.map { (ts: $0.ts, bpm: $0.bpm) })
         let vo2 = await repo.exploreSeries(key: "vo2max_est", source: "my-whoop")
         vo2max = vo2.last?.value
+        await refreshLiveStrain(from: from)
+    }
+
+    /// Same live Effort the classic Today ring reads: `StrainScorer.strain` over today's HR,
+    /// then `NativeDayLogic.effectiveStrain` with the stored row. Past days stay stored-only.
+    private func refreshLiveStrain(from: Int) async {
+        guard selectedKey == NativeDayLogic.logicalToday() else {
+            liveTodayStrain = nil
+            return
+        }
+        let todayHr = await repo.hrSamples(from: from, to: from + 86_400, limit: 200_000)
+        let maxHR = profile.effortHRmax
+        let restHR = repo.days.last { $0.day == selectedKey }?.restingHr.map(Double.init)
+            ?? StrainScorer.defaultRestingHR
+        let method = PuffinExperiment.effortMethod
+        let sex = profile.sex
+        liveTodayStrain = await Task.detached(priority: .utility) {
+            StrainScorer.strain(todayHr, maxHR: maxHR, restingHR: restHR, method: method, sex: sex)
+        }.value
     }
 
     @ViewBuilder private var homeContent: some View {
@@ -145,9 +202,6 @@ struct NativeHomeView: View {
             onOpen: { path.wrappedValue.append($0) },
             dayKey: selectedKey
         )
-        if let tonightSleep {
-            HomeTonightSleepCard(model: tonightSleep)
-        }
         HomeMonitorPair(
             hrv: HomeMonitorValue.from(model.dashboard, title: "Heart Rate Variability", unit: "ms"),
             rhr: HomeMonitorValue.from(model.dashboard, title: "Resting Heart Rate", unit: "BPM"),
@@ -155,7 +209,7 @@ struct NativeHomeView: View {
             stressLevel: stressLevel,
             stressHours: sampleHours,
             rangeCaption: healthRange.headerTrailing,
-            onHealth: { path.wrappedValue.append(TabRoute.metric("hrv")) },
+            onHealth: { path.wrappedValue.append(TabRoute.healthMonitor) },
             onStress: { path.wrappedValue.append(TabRoute.stress) }
         )
         if let vo2max {
@@ -168,9 +222,14 @@ struct NativeHomeView: View {
             onActivity: { path.wrappedValue.append(NativeActivityRoute(startTs: $0)) },
             onAdd: { addingActivity = true }
         )
+        if let tonightSleep {
+            HomeTonightSleepCard(model: tonightSleep)
+        }
         HomeJournalCard(
             dots: NativeHomeCharts.journalDots(filled: model.journalDays, todayKey: selectedKey),
-            onOpen: { path.wrappedValue.append(TabRoute.journal) }
+            hasEntry: model.journalDays.last == true,
+            onOpen: { path.wrappedValue.append(TabRoute.journal) },
+            onLog: { path.wrappedValue.append(TabRoute.journalLog) }
         )
         HomeWeekCard(
             recovery: NativeWeek.points(
@@ -624,26 +683,23 @@ private struct HomeJournalDayDot: View {
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
-        let fill = style == .whoop ? NativeTokens.whoopRecoveryHigh : NativeChrome.sleep
+        let fill = NativePaint.sleep(style)
         VStack(spacing: 6) {
             Text(NativeChartDay.weekday(dot.key).uppercased())
                 .font(style == .whoop ? NativeTokens.whoopCaps(9) : .caption2)
                 .foregroundStyle(.secondary)
-            if style == .whoop {
-                if dot.filled {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.body)
-                        .foregroundStyle(fill)
-                } else {
-                    Circle()
-                        .strokeBorder(NativeTokens.whoopTrack, lineWidth: 1.5)
-                        .frame(width: 16, height: 16)
-                }
+            if dot.filled {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.body)
+                    .foregroundStyle(fill)
+            } else if style == .whoop {
+                Circle()
+                    .strokeBorder(NativeTokens.whoopTrack, lineWidth: 1.5)
+                    .frame(width: 16, height: 16)
             } else {
                 Circle()
-                    .strokeBorder(dot.filled ? fill : Color.secondary.opacity(0.45), lineWidth: 1.5)
-                    .background(Circle().fill(dot.filled ? fill : Color.clear))
-                    .frame(width: 10, height: 10)
+                    .strokeBorder(Color.secondary.opacity(0.45), lineWidth: 1.5)
+                    .frame(width: 16, height: 16)
             }
         }
         .frame(maxWidth: .infinity)
@@ -652,17 +708,30 @@ private struct HomeJournalDayDot: View {
 
 struct HomeJournalCard: View {
     var dots: [HomeJournalDot]
+    var hasEntry: Bool = false
     var onOpen: () -> Void
+    var onLog: (() -> Void)? = nil
 
     var body: some View {
-        Button(action: onOpen) {
-            NativeChrome.panel {
-                NativeCardHeader(
-                    title: "Journal",
-                    symbol: "book.closed.fill",
-                    tint: NativeChrome.sleep,
-                    chevron: true
-                )
+        NativeChrome.panel {
+            HStack(alignment: .firstTextBaseline) {
+                Button(action: onOpen) {
+                    NativeCardHeader(
+                        title: "Journal",
+                        symbol: "book.closed.fill",
+                        tint: NativeChrome.sleep,
+                        chevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+                if let onLog {
+                    Button(hasEntry ? "Edit" : "Log", action: onLog)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(NativeChrome.sleep)
+                        .buttonStyle(.plain)
+                }
+            }
+            Button(action: onOpen) {
                 HStack(spacing: 0) {
                     ForEach(dots) { dot in
                         HomeJournalDayDot(dot: dot)
@@ -670,8 +739,8 @@ struct HomeJournalCard: View {
                 }
                 .padding(.top, 4)
             }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
         .accessibilityLabel("Journal")
     }
 }
@@ -682,6 +751,7 @@ struct HomeWeekCard: View {
     var recovery: [NativeDayPoint]
     var strain: [NativeDayPoint]
     var highlightKey: String
+    var previewSelected: String? = nil
 
     var body: some View {
         NativeChrome.panel {
@@ -694,9 +764,9 @@ struct HomeWeekCard: View {
                     recovery: recovery,
                     strain: strain,
                     highlightKey: highlightKey,
-                    showsHero: true
+                    showsHero: true,
+                    previewSelected: previewSelected
                 )
-                .frame(height: 220)
             }
         }
     }
@@ -961,21 +1031,26 @@ struct NativeActivityRoute: Hashable {
 struct NativePairRoute: Hashable {}
 
 /// Strap battery and a sync spinner beside the date stepper.
-/// The only Home view that observes `LiveState`, so live heart-rate ticks do not redraw the page.
-/// The spinner appears only when an offload has run for three seconds; routine catch-ups stay silent.
+/// Observes only battery %, charging, connected and backfilling via `.onReceive` of those
+/// publishers (removeDuplicates into `@State`), not the whole `LiveState` object, so live
+/// heart-rate ticks do not redraw Home. The spinner appears only when an offload has run
+/// for three seconds; routine catch-ups stay silent.
 struct HomeStrapStatus: View {
-    @EnvironmentObject private var live: LiveState
+    @State private var connected = false
+    @State private var batteryPct: Double?
+    @State private var charging: Bool?
+    @State private var backfilling = false
     @State private var showSync = false
 
     private var percent: Int? {
-        guard live.connected else { return nil }
+        guard connected else { return nil }
         return LiveConsoleReadout.batteryPercent(
-            activeIsWhoop: true, whoopPct: live.batteryPct, ringPct: live.ouraBatteryPct
+            activeIsWhoop: true, whoopPct: batteryPct, ringPct: nil
         )
     }
 
     private func symbol(_ pct: Int) -> String {
-        if live.charging == true { return "battery.100percent.bolt" }
+        if charging == true { return "battery.100percent.bolt" }
         switch pct {
         case ..<13: return "battery.0percent"
         case ..<38: return "battery.25percent"
@@ -1005,13 +1080,35 @@ struct HomeStrapStatus: View {
                 .accessibilityLabel("Strap battery \(percent) percent")
             }
         }
-        .task(id: live.backfilling) {
-            guard live.backfilling else {
+        .background { Sink(connected: $connected, batteryPct: $batteryPct,
+                           charging: $charging, backfilling: $backfilling) }
+        .task(id: backfilling) {
+            guard backfilling else {
                 showSync = false
                 return
             }
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             if !Task.isCancelled { showSync = true }
+        }
+    }
+
+    /// Holds `@EnvironmentObject LiveState` so HomeStrapStatus itself does not. Forwards only
+    /// the four strap-status publishers.
+    private struct Sink: View {
+        @EnvironmentObject private var live: LiveState
+        @Binding var connected: Bool
+        @Binding var batteryPct: Double?
+        @Binding var charging: Bool?
+        @Binding var backfilling: Bool
+
+        var body: some View {
+            Color.clear
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+                .onReceive(live.$connected.removeDuplicates()) { connected = $0 }
+                .onReceive(live.$batteryPct.removeDuplicates()) { batteryPct = $0 }
+                .onReceive(live.$charging.removeDuplicates()) { charging = $0 }
+                .onReceive(live.$backfilling.removeDuplicates()) { backfilling = $0 }
         }
     }
 }
@@ -1296,7 +1393,6 @@ enum HomeSnapshot {
             HomeRingsRow(
                 sleep: sleepScore, recovery: recoveryScore, strain: strainScore, onOpen: { _ in }
             )
-            HomeTonightSleepCard(model: tonightSleep)
             HomeMonitorPair(
                 hrv: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Heart Rate Variability", unit: "ms"),
                 rhr: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Resting Heart Rate", unit: "BPM"),
@@ -1310,7 +1406,8 @@ enum HomeSnapshot {
             HomeVO2Card(value: 48.2)
             NativeChrome.section("My Day")
             HomeActivitiesCard(items: activities, onSleep: {}, onActivity: { _ in })
-            HomeJournalCard(dots: journalDots, onOpen: {})
+            HomeTonightSleepCard(model: tonightSleep)
+            HomeJournalCard(dots: journalDots, hasEntry: true, onOpen: {}, onLog: {})
             HomeWeekCard(
                 recovery: NativeGallerySnapshot.recoveryBars,
                 strain: NativeGallerySnapshot.strainBars,
@@ -1361,7 +1458,8 @@ enum HomeSnapshot {
                     onStress: {}
                 )
                 HomeActivitiesCard(items: activities, onSleep: {}, onActivity: { _ in })
-                HomeJournalCard(dots: journalDots, onOpen: {})
+                HomeTonightSleepCard(model: tonightSleep)
+                HomeJournalCard(dots: journalDots, hasEntry: true, onOpen: {}, onLog: {})
             })),
             Section(name: "monitors", view: AnyView(HomeMonitorPair(
                 hrv: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Heart Rate Variability", unit: "ms"),
@@ -1376,11 +1474,17 @@ enum HomeSnapshot {
             Section(name: "activities", view: AnyView(HomeActivitiesCard(
                 items: activities, onSleep: {}, onActivity: { _ in }
             ))),
-            Section(name: "journal", view: AnyView(HomeJournalCard(dots: journalDots, onOpen: {}))),
+            Section(name: "journal", view: AnyView(HomeJournalCard(dots: journalDots, hasEntry: true, onOpen: {}, onLog: {}))),
             Section(name: "week", view: AnyView(HomeWeekCard(
                 recovery: NativeGallerySnapshot.recoveryBars,
                 strain: NativeGallerySnapshot.strainBars,
                 highlightKey: highlightKey
+            ))),
+            Section(name: "week-selected", view: AnyView(HomeWeekCard(
+                recovery: NativeGallerySnapshot.recoveryBars,
+                strain: NativeGallerySnapshot.strainBars,
+                highlightKey: highlightKey,
+                previewSelected: highlightKey
             ))),
             Section(name: "metrics", view: AnyView(VStack(spacing: 10) {
                 HomeMetricCard(item: hrvMetric, highlightKey: highlightKey)
@@ -1415,7 +1519,49 @@ enum HomeSnapshot {
                 notes: "Late dinner after the run."
             ))),
             Section(name: "journal-empty", view: AnyView(HomeJournalList(answers: [], notes: nil))),
+            Section(name: "health-monitor", padded: false, view: AnyView(
+                NativeChrome.stack {
+                    NativeHealthMonitorBody(
+                        report: NativeHealthRange.report(
+                            days: NativeGallerySnapshot.snapshotDays, todayKey: highlightKey
+                        ),
+                        selectedDay: NativeGallerySnapshot.sleepEnd,
+                        firstDay: NativeGallerySnapshot.weekKeys.first,
+                        onBack: {},
+                        onForward: {},
+                        onSelect: { _ in }
+                    )
+                }
+            )),
+            Section(name: "journal-log", padded: false, view: AnyView(
+                NativeJournalLogForm(
+                    items: journalLogItems,
+                    answers: [
+                        "Did you drink any alcohol?": false,
+                        "Did you feel stressed?": true,
+                    ],
+                    numeric: ["Caffeine (mg)": 120],
+                    onToggle: { _, _ in },
+                    onNumeric: { _, _ in }
+                )
+            )),
         ]
+    }
+
+    static var journalLogItems: [JournalCatalogItem] {
+        let starters = JournalCatalogStore.starterQuestions.prefix(6).enumerated().map { i, q in
+            JournalCatalogItem(
+                canonical: q, displayName: nil, kind: .bool,
+                group: JournalCatalogStore.starterGroups[q] ?? .other,
+                sortIndex: i, hidden: false, custom: false
+            )
+        }
+        let caffeine = JournalCatalogItem(
+            canonical: "Caffeine (mg)", displayName: nil,
+            kind: .numeric(unitLabel: "mg"), group: .nutrition,
+            sortIndex: 99, hidden: false, custom: true
+        )
+        return starters + [caffeine]
     }
 }
 #endif

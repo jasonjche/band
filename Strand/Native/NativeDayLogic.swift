@@ -1,4 +1,5 @@
 import Foundation
+import StrandAnalytics
 import WhoopStore
 
 /// One funnel for the Native shell's selected day, strain scale, sleep day key, and journal ticks.
@@ -40,6 +41,13 @@ enum NativeDayLogic {
     static func date(forStored stored: String, now: Date = Date(), launchId: String = NativeDayLogic.launchId) -> Date {
         startOfLocalDay(resolvedDayKey(stored: stored, now: now, launchId: launchId))
             ?? Calendar.current.startOfDay(for: now.addingTimeInterval(-Double(Repository.logicalDayRolloverHour) * 3_600))
+    }
+
+    /// The one Effort figure Home and Today must show (#1001).
+    /// `live` is today's in-progress TRIMP over the raw HR stream; `stored` is the daily row
+    /// `analyzeRecent` writes. Same max-of-the-two rule `StrainScorer.effectiveEffort` uses.
+    static func effectiveStrain(live: Double?, stored: Double?) -> Double? {
+        StrainScorer.effectiveEffort(live: live, stored: stored)
     }
 
     /// Stored 0–100 strain mapped onto the EffortScale the user picked.

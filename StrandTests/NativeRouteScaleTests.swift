@@ -54,6 +54,14 @@ final class NativeRouteScaleTests: XCTestCase {
             NativeRouteResolver.presentation(for: .journal, nativeLayout: true),
             .journal
         )
+        XCTAssertEqual(
+            NativeRouteResolver.presentation(for: .journalLog, nativeLayout: true),
+            .journalLog
+        )
+        XCTAssertEqual(
+            NativeRouteResolver.presentation(for: .healthMonitor, nativeLayout: true),
+            .healthMonitor
+        )
     }
 
     func testSleepWeekIsPerformanceScaleNotMinutes() {

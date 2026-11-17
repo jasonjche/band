@@ -589,9 +589,6 @@ struct RootTabView: View {
             }
         }
         let personal = AppBrand.isPersonalBuild
-        // Band never lists the experimental Mi Band import. Not reading AppModel here keeps the tab
-        // shell from rebuilding every time the model publishes.
-        let showMiBand = !personal
         return List {
             Section {
                 row("Live", "waveform.path.ecg", .red, .live)
@@ -609,15 +606,15 @@ struct RootTabView: View {
                 Text("Body")
             }
 
-            Section {
-                row("Apple Health", "heart.fill", .red, .appleHealth)
-                row("Data Sources", "square.and.arrow.down.fill", .blue, .dataSources)
-                row("Backup & Sync", "externaldrive.fill.badge.icloud", .cyan, .backupSync)
-                if showMiBand {
+            if !personal {
+                Section {
+                    row("Apple Health", "heart.fill", .red, .appleHealth)
+                    row("Data Sources", "square.and.arrow.down.fill", .blue, .dataSources)
+                    row("Backup & Sync", "externaldrive.fill.badge.icloud", .cyan, .backupSync)
                     row("Mi Band", "figure.walk.motion", .orange, .miBand)
+                } header: {
+                    Text("Data")
                 }
-            } header: {
-                Text("Data")
             }
 
             Section {

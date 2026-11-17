@@ -11,6 +11,8 @@ final class BandScoresOracleTests: XCTestCase {
         XCTAssertEqual(params.baselines.hrvLn.halfLife, 10, accuracy: 0)
         XCTAssertEqual(params.baselines.rhr.halfLife, 7, accuracy: 0)
         XCTAssertEqual(params.consistency.nNights, 5)
+        XCTAssertEqual(params.recoveryV3.schemaVersion, 5)
+        XCTAssertEqual(params.recoveryV3.variant, "head_perf_ours_train")
     }
 
     func testSyntheticOracleMatchesTo1e9() throws {

@@ -147,15 +147,19 @@ struct DataSourcesView: View {
         Form {
             nativeWhoopSection
             nativeAppleHealthSection
-            nativeXiaomiSection
+            if !AppBrand.isPersonalBuild {
+                nativeXiaomiSection
+            }
             nativeNutritionSection
             nativeLiftingSection
             nativeActivityFileSection
-            nativeWearableSection
-            #if OURA_CLOUD_IMPORT
-            nativeOuraCloudSection
-            #endif
-            nativeBroadcastSection
+            if !AppBrand.isPersonalBuild {
+                nativeWearableSection
+                #if OURA_CLOUD_IMPORT
+                nativeOuraCloudSection
+                #endif
+                nativeBroadcastSection
+            }
             nativeLiveStrapSection
         }
         .appleSettingsChrome("Data Sources")

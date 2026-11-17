@@ -102,14 +102,10 @@ enum NativeBandScores {
                 hours = nil
             }
             let day = Day(
-                // WHOOP's figure on imported days. Strap days use the Band logistic once it has a
-                // value (after warmup); NOOP's DailyMetric.recovery is the fallback while Band has none.
-                // Missing-signal rule (port_spec.md §5 + BandRecovery): recovery is published only when
-                // z_hrv, z_rhr, z_rr, z_temp, z_spo2, and sleep performance are all finite. A missing
-                // z is left missing (IEEE NaN through the logistic); there is no zero-fill. Missing
-                // energy on a cycle uses the train median of log_energy; missing Edwards / z45 fill 0.
-                // A missing night decays sleep debt and does not append a shortfall.
-                recovery: imported ? d.recovery : (strapRecovery(b) ?? d.recovery),
+                // Imported days keep WHOOP's DailyMetric.recovery. Strap days prefer round-5
+                // recoveryV3 once it has passed the current-source warm-up; else round-2
+                // strapRecovery (tolerates missing temp/SpO2); else DailyMetric.recovery.
+                recovery: imported ? d.recovery : (b?.recoveryV3 ?? strapRecovery(b) ?? d.recovery),
                 sleepPerformance: imported ? (fig?.performancePct ?? b?.perf) : b?.perf,
                 sleepNeed: need,
                 sleepDebt: imported ? (fig?.debtMin ?? b?.debt) : b?.debt,

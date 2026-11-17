@@ -32,6 +32,8 @@ enum TabRoute: Hashable {
     case dataSources
     case stress
     case journal
+    case journalLog
+    case healthMonitor
     case sleep
     case health
     case hydration
@@ -45,6 +47,8 @@ enum TabRoute: Hashable {
 enum NativeRoutePresentation: Equatable {
     case score(NativeScoreKind)
     case journal
+    case journalLog
+    case healthMonitor
     case stressPage
     case metricPage(String)
     case metricDetail
@@ -67,6 +71,10 @@ enum NativeRouteResolver {
             return .score(.sleep)
         case .journal:
             return .journal
+        case .journalLog:
+            return .journalLog
+        case .healthMonitor:
+            return .healthMonitor
         case .stress:
             return .stressPage
         case .metric(let key):
@@ -117,6 +125,10 @@ private struct TabRouteDestination: View {
             NativeScorePage(kind: kind)
         case .journal:
             NativeJournalView()
+        case .journalLog:
+            NativeJournalView(startsLogging: true)
+        case .healthMonitor:
+            NativeHealthMonitorPage()
         case .stressPage:
             NativeStressPage()
         case .metricPage(let key):
@@ -161,6 +173,8 @@ private struct TabRouteDestination: View {
             case .dataSources: DataSourcesView()
             case .stress: StressView()
             case .journal: NativeJournalView()
+            case .journalLog: NativeJournalView(startsLogging: true)
+            case .healthMonitor: NativeHealthMonitorPage()
             case .sleep: SleepView()
             case .health: HealthView()
         case .hydration: HydrationView()

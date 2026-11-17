@@ -17,16 +17,31 @@ final class NativeBandScoresTests: XCTestCase {
         XCTAssertEqual(inputs.first?.source, .imported)
     }
 
-    func testStrapDayWithBandOutputUsesBand() throws {
-        let built = strapHistory(days: 12, lastNoopRecovery: 11)
+    func testStrapDayPicksRecoveryV3() throws {
+        let built = strapHistory(days: 40, lastNoopRecovery: 11)
         let snap = NativeBandScores.resolve(days: built.days, sleeps: built.sleeps, importedSleep: [:])
         let params = try XCTUnwrap(NativeBandScores.params())
         let inputs = NativeBandScores.dayInputs(days: built.days, sleeps: built.sleeps, workouts: [], importedSleep: [:])
         XCTAssertTrue(inputs.allSatisfy { $0.source == .strap })
         let band = BandScores.evaluate(days: inputs, params: params)
         let last = try XCTUnwrap(built.days.last?.day)
-        let bandRec = try XCTUnwrap(band.last?.recovery)
-        XCTAssertEqual(snap.byDay[last]?.recovery, bandRec)
+        let v3 = try XCTUnwrap(band.last?.recoveryV3)
+        XCTAssertEqual(snap.byDay[last]?.recovery, v3)
+        XCTAssertNotEqual(snap.byDay[last]?.recovery, 11)
+        XCTAssertNotEqual(snap.byDay[last]?.recovery, band.last?.recovery)
+        XCTAssertEqual(snap.byDay[last]?.source, .band)
+    }
+
+    func testStrapDayV3WarmupFallsBackToRound2() throws {
+        let built = strapHistory(days: 12, lastNoopRecovery: 11)
+        let snap = NativeBandScores.resolve(days: built.days, sleeps: built.sleeps, importedSleep: [:])
+        let params = try XCTUnwrap(NativeBandScores.params())
+        let inputs = NativeBandScores.dayInputs(days: built.days, sleeps: built.sleeps, workouts: [], importedSleep: [:])
+        let band = BandScores.evaluate(days: inputs, params: params)
+        let last = try XCTUnwrap(built.days.last?.day)
+        XCTAssertNil(band.last?.recoveryV3)
+        let round2 = try XCTUnwrap(band.last?.recovery)
+        XCTAssertEqual(snap.byDay[last]?.recovery, round2)
         XCTAssertNotEqual(snap.byDay[last]?.recovery, 11)
         XCTAssertEqual(snap.byDay[last]?.source, .band)
     }
@@ -90,12 +105,20 @@ final class NativeBandScoresTests: XCTestCase {
     -> (days: [DailyMetric], sleeps: [CachedSleepSession]) {
         var days: [DailyMetric] = []
         var sleeps: [CachedSleepSession] = []
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = .current
+        var date = cal.date(from: DateComponents(year: 2026, month: 9, day: 1, hour: 7, minute: 0))!
+        let fmt = DateFormatter()
+        fmt.calendar = cal
+        fmt.timeZone = cal.timeZone
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd"
         for i in 0..<n {
-            let day = String(format: "2026-10-%02d", i + 1)
+            let key = fmt.string(from: date)
             let rec = i == n - 1 ? lastNoopRecovery : 50.0
-            days.append(metric(day: day, recovery: rec, hrv: 58 + Double(i % 5)))
-            let end = localDate(year: 2026, month: 10, day: i + 1, hour: 7, minute: 0)
-            sleeps.append(session(ending: end))
+            days.append(metric(day: key, recovery: rec, hrv: 58 + Double(i % 5)))
+            sleeps.append(session(ending: date))
+            date = cal.date(byAdding: .day, value: 1, to: date)!
         }
         return (days, sleeps)
     }

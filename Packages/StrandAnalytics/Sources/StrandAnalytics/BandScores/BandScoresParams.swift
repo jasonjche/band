@@ -10,6 +10,7 @@ extension BandScores {
         public var consistency: BandConsistency.Params
         public var sleepPerformance: BandSleepPerformance.Params
         public var recovery: BandRecovery.Params
+        public var recoveryV3: BandRecoveryV3.Params
         public var baselinesMinP: Int
         public var schemaVersion: Int
         /// Frozen local-level Kalman for HRV at a source change. Default EWMA is unchanged.
@@ -27,6 +28,27 @@ extension BandScores {
 
         public static func decode(_ data: Data) throws -> Params {
             let raw = try JSONDecoder().decode(File.self, from: data)
+            let v3 = raw.recoveryV3
+            guard v3.schemaVersion == BandRecoveryV3.expectedSchemaVersion else {
+                throw ParamsError.unsupportedRecoveryV3Schema(v3.schemaVersion)
+            }
+            let recoveryV3 = BandRecoveryV3.Params(
+                schemaVersion: v3.schemaVersion,
+                variant: v3.variant,
+                halfLifeDays: v3.halfLifeDays,
+                zScale: v3.zScale,
+                zFloor: v3.zFloor,
+                warmupNights: v3.warmupNights,
+                b0: v3.params.b0,
+                wHrv: v3.params.wHrv,
+                wSleep: v3.params.wSleep,
+                sleepCenter: v3.sleepCenter,
+                sleepScale: v3.sleepScale,
+                zClip: v3.zClip,
+                etaClip: v3.etaClip,
+                recLo: v3.recClip[0],
+                recHi: v3.recClip[1]
+            )
             return Params(
                 loadIndex: BandLoadIndex.Params(
                     intercept: raw.loadIndex.coef.intercept,
@@ -87,6 +109,7 @@ extension BandScores {
                     tempDeadzone: raw.recovery.params.tempDeadzone,
                     spo2Deadzone: raw.recovery.params.spo2Deadzone
                 ),
+                recoveryV3: recoveryV3,
                 baselinesMinP: raw.baselinesMinP,
                 schemaVersion: raw.schemaVersion,
                 hrvKalman: .bundled,
@@ -94,7 +117,10 @@ extension BandScores {
             )
         }
 
-        public enum ParamsError: Error { case missingResource }
+        public enum ParamsError: Error {
+            case missingResource
+            case unsupportedRecoveryV3Schema(Int)
+        }
     }
 }
 
@@ -106,6 +132,7 @@ private struct File: Decodable {
     var consistency: Consistency
     var sleepPerformance: SleepPerf
     var recovery: Recovery
+    var recoveryV3: RecoveryV3
     var baselinesMinP: Int
 
     enum CodingKeys: String, CodingKey {
@@ -115,6 +142,7 @@ private struct File: Decodable {
         case baselines, consistency
         case sleepPerformance = "sleep_performance"
         case recovery
+        case recoveryV3 = "recovery_v3"
         case baselinesMinP = "baselines_min_p"
     }
 
@@ -235,6 +263,42 @@ private struct File: Decodable {
                 case wSleep = "w_sleep"
                 case tempDeadzone = "temp_deadzone"
                 case spo2Deadzone = "spo2_deadzone"
+            }
+        }
+    }
+
+    struct RecoveryV3: Decodable {
+        var schemaVersion: Int
+        var variant: String
+        var halfLifeDays: Double
+        var zScale: Double
+        var zFloor: Double
+        var warmupNights: Int
+        var sleepCenter: Double
+        var sleepScale: Double
+        var zClip: Double
+        var etaClip: Double
+        var recClip: [Double]
+        var params: P
+        enum CodingKeys: String, CodingKey {
+            case variant, params
+            case schemaVersion = "schema_version"
+            case halfLifeDays = "half_life_days"
+            case zScale = "z_scale"
+            case zFloor = "z_floor"
+            case warmupNights = "warmup_nights"
+            case sleepCenter = "sleep_center"
+            case sleepScale = "sleep_scale"
+            case zClip = "z_clip"
+            case etaClip = "eta_clip"
+            case recClip = "rec_clip"
+        }
+        struct P: Decodable {
+            var b0, wHrv, wSleep: Double
+            enum CodingKeys: String, CodingKey {
+                case b0
+                case wHrv = "w_hrv"
+                case wSleep = "w_sleep"
             }
         }
     }

@@ -1,9 +1,11 @@
 import SwiftUI
 import WhoopStore
 
-/// Journal: inset grouped list of the day's real answers. Empty → "No journal entry".
+/// Journal: inset grouped list of the day's real answers, plus an Apple Form to log them.
 struct NativeJournalView: View {
+    var startsLogging: Bool = false
     @EnvironmentObject private var repo: Repository
+    @StateObject private var catalog = JournalCatalogStore()
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
 
     private var selectedDay: Date {
@@ -12,6 +14,15 @@ struct NativeJournalView: View {
     }
 
     @State private var entries: [JournalEntry] = []
+    @State private var importedQuestions: [String] = []
+    @State private var nativeAnswers: [String: Bool] = [:]
+    @State private var nativeNumeric: [String: Double] = [:]
+    @State private var logging: Bool
+
+    init(startsLogging: Bool = false) {
+        self.startsLogging = startsLogging
+        _logging = State(initialValue: startsLogging)
+    }
 
     private var dayKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
 
@@ -23,12 +34,47 @@ struct NativeJournalView: View {
         entries.first { $0.day == dayKey && $0.notes != nil && !($0.notes?.isEmpty ?? true) }?.notes
     }
 
+    private var items: [JournalCatalogItem] {
+        catalog.resolvedItems(imported: importedQuestions)
+    }
+
+    private var hasEntry: Bool { !answers.isEmpty }
+
     var body: some View {
-        journalBody
-            .navigationTitle("Journal")
-            .modifier(NativeInlineTitle())
-            .nativeDateSubtitle(selectedDay)
-            .task(id: dayKey) { await reload() }
+        Group {
+            if logging {
+                NativeJournalLogForm(
+                    items: items,
+                    answers: nativeAnswers,
+                    numeric: nativeNumeric,
+                    onToggle: { question, yes in
+                        Task {
+                            await repo.saveJournalAnswer(day: dayKey, question: question, answeredYes: yes)
+                            await reload()
+                        }
+                    },
+                    onNumeric: { question, value in
+                        Task {
+                            await repo.saveJournalNumeric(day: dayKey, question: question, value: value)
+                            await reload()
+                        }
+                    }
+                )
+            } else {
+                journalBody
+            }
+        }
+        .navigationTitle("Journal")
+        .modifier(NativeInlineTitle())
+        .nativeDateSubtitle(selectedDay)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(logging ? "Done" : (hasEntry ? "Edit" : "Log")) {
+                    logging.toggle()
+                }
+            }
+        }
+        .task(id: dayKey) { await reload() }
     }
 
     @ViewBuilder private var journalBody: some View {
@@ -90,6 +136,92 @@ struct NativeJournalView: View {
 
     private func reload() async {
         entries = await repo.journalEntries(days: 40)
+        let imported = await repo.importedJournalEntries(days: 400)
+        importedQuestions = Array(Set(imported.map(\.question))).sorted()
+        nativeAnswers = await repo.nativeJournalAnswers(day: dayKey)
+        nativeNumeric = await repo.nativeJournalNumeric(day: dayKey)
+    }
+}
+
+/// Native Form of the user's tracked behaviours. Yes/no as Toggle, quantity as Stepper.
+struct NativeJournalLogForm: View {
+    var items: [JournalCatalogItem]
+    var answers: [String: Bool]
+    var numeric: [String: Double]
+    var onToggle: (String, Bool) -> Void
+    var onNumeric: (String, Double) -> Void
+
+    var body: some View {
+        Form {
+            if items.isEmpty {
+                Section {
+                    NativeEmptyState(text: "No behaviours to log", symbol: "book.closed")
+                }
+            } else {
+                ForEach(JournalGroup.displayOrder, id: \.self) { group in
+                    let groupItems = items.filter { $0.group == group }
+                        .sorted { ($0.sortIndex, $0.display) < ($1.sortIndex, $1.display) }
+                    if !groupItems.isEmpty {
+                        Section(group.title) {
+                            ForEach(groupItems) { item in
+                                row(item)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        #if os(iOS)
+        .scrollContentBackground(.hidden)
+        .background(NativePageFill())
+        #endif
+    }
+
+    @ViewBuilder private func row(_ item: JournalCatalogItem) -> some View {
+        if item.kind.isNumeric {
+            HStack {
+                Text(verbatim: item.display)
+                Spacer()
+                Button {
+                    onNumeric(item.canonical, max(0, (numeric[item.canonical] ?? 0) - 1))
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Decrease")
+                Text(numericLabel(item))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .frame(minWidth: 44, alignment: .trailing)
+                Button {
+                    onNumeric(item.canonical, (numeric[item.canonical] ?? 0) + 1)
+                } label: {
+                    Image(systemName: "plus.circle")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Increase")
+            }
+        } else {
+            Toggle(isOn: boolBinding(item)) {
+                Text(verbatim: item.display)
+            }
+        }
+    }
+
+    private func boolBinding(_ item: JournalCatalogItem) -> Binding<Bool> {
+        Binding(
+            get: { answers[item.canonical] ?? false },
+            set: { onToggle(item.canonical, $0) }
+        )
+    }
+
+    private func numericLabel(_ item: JournalCatalogItem) -> String {
+        let value = numeric[item.canonical]
+        let number = value.map { $0.rounded() == $0 ? String(Int($0.rounded())) : String(format: "%g", $0) } ?? "0"
+        if let unit = item.kind.unitLabel, !unit.isEmpty {
+            return "\(number) \(unit)"
+        }
+        return number
     }
 }
 

@@ -148,6 +148,9 @@ struct AddDeviceWizard: View {
         if let startAt {
             _type = State(initialValue: startAt.type)
             _step = State(initialValue: startAt.step)
+        } else if AppBrand.isPersonalBuild {
+            _type = State(initialValue: .whoop5mg)
+            _step = State(initialValue: .prep)
         }
         // Route each throwaway scanner's diagnostics into the SAME exported strap log the active source
         // path uses (issue #421 parity), so a tester's wizard scan, including the Oura discovery scan and
@@ -282,6 +285,7 @@ struct AddDeviceWizard: View {
     /// Adopting progress (no back while a key install is in flight). Parity with the Android `showBack`.
     private var showBack: Bool {
         if type == .oura { return ouraStep != .adopting }
+        if AppBrand.isPersonalBuild { return step != .prep && step != .type }
         return step != .type
     }
 
@@ -314,8 +318,8 @@ struct AddDeviceWizard: View {
             }
         }
         switch step {
-        case .type:    return "What are you adding?"
-        case .prep:    return "Get it ready, then scan."
+        case .type:    return AppBrand.isPersonalBuild ? nil : "What are you adding?"
+        case .prep:    return AppBrand.isPersonalBuild ? nil : "Get it ready, then scan."
         case .pick:    return "Tap the one that's yours."
         case .confirm: return nil
         }
@@ -328,34 +332,36 @@ struct AddDeviceWizard: View {
             typeRow(.whoop5mg, icon: "applewatch.side.right",
                     title: "WHOOP 5.0 / MG",
                     subtitle: String(localized: "Newer WHOOP band with live data and history sync"))
-            typeRow(.whoop4, icon: "applewatch.side.right",
-                    title: "WHOOP 4.0",
-                    subtitle: String(localized: "NOOP's primary, fully-supported band"))
-            typeRow(.hrStrap, icon: "heart.circle",
-                    title: String(localized: "Heart-rate strap"),
-                    subtitle: String(localized: "Polar, Wahoo, Coospo, Garmin HRM, Amazfit Helio broadcast"))
-            typeRow(.gymEquipment, icon: "figure.run.treadmill",
-                    title: String(localized: "Gym equipment"),
-                    subtitle: String(localized: "Treadmill, indoor bike, rower or cross-trainer (Bluetooth FTMS)"))
+            if !AppBrand.isPersonalBuild {
+                typeRow(.whoop4, icon: "applewatch.side.right",
+                        title: "WHOOP 4.0",
+                        subtitle: String(localized: "NOOP's primary, fully-supported band"))
+                typeRow(.hrStrap, icon: "heart.circle",
+                        title: String(localized: "Heart-rate strap"),
+                        subtitle: String(localized: "Polar, Wahoo, Coospo, Garmin HRM, Amazfit Helio broadcast"))
+                typeRow(.gymEquipment, icon: "figure.run.treadmill",
+                        title: String(localized: "Gym equipment"),
+                        subtitle: String(localized: "Treadmill, indoor bike, rower or cross-trainer (Bluetooth FTMS)"))
 
-            // EXPERIMENTAL tier — clearly labelled, opt-in, best-effort. Each is honest about what it can
-            // actually read; none fabricates data.
-            Text("Experimental").strandOverline().padding(.top, 8)
-            experimentalTierNote
-            typeRow(.oura, icon: "circle.circle",
-                    title: String(localized: "Oura ring"),
-                    subtitle: String(localized: "Take over your ring locally. Beta. This replaces the Oura app."))
-            typeRow(.amazfit, icon: "waveform.path.ecg.rectangle",
-                    title: "Amazfit / Zepp",
-                    subtitle: String(localized: "Incl. Helio. Live heart rate where the band exposes it. Help us test."))
-            typeRow(.miBand, icon: "waveform.path.ecg",
-                    title: "Xiaomi Mi Band",
-                    subtitle: String(localized: "Live heart rate on bands that don't need pairing. Help us test."))
-            typeRow(.garmin, icon: "applewatch",
-                    title: String(localized: "Garmin watch"),
-                    subtitle: String(localized: "Uses the watch's Broadcast Heart Rate. We'll show you how."))
+                // EXPERIMENTAL tier — clearly labelled, opt-in, best-effort. Each is honest about what it can
+                // actually read; none fabricates data.
+                Text("Experimental").strandOverline().padding(.top, 8)
+                experimentalTierNote
+                typeRow(.oura, icon: "circle.circle",
+                        title: String(localized: "Oura ring"),
+                        subtitle: String(localized: "Take over your ring locally. Beta. This replaces the Oura app."))
+                typeRow(.amazfit, icon: "waveform.path.ecg.rectangle",
+                        title: "Amazfit / Zepp",
+                        subtitle: String(localized: "Incl. Helio. Live heart rate where the band exposes it. Help us test."))
+                typeRow(.miBand, icon: "waveform.path.ecg",
+                        title: "Xiaomi Mi Band",
+                        subtitle: String(localized: "Live heart rate on bands that don't need pairing. Help us test."))
+                typeRow(.garmin, icon: "applewatch",
+                        title: String(localized: "Garmin watch"),
+                        subtitle: String(localized: "Uses the watch's Broadcast Heart Rate. We'll show you how."))
 
-            whoopFirstNote
+                whoopFirstNote
+            }
         }
     }
 
@@ -408,47 +414,51 @@ struct AddDeviceWizard: View {
     @ViewBuilder private var prepStep: some View {
         if let type, type != .oura {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 14) {
-                    Image(systemName: typeIcon(type))
-                        .font(.system(size: 30))
-                        .foregroundStyle(StrandPalette.accent)
-                        .accessibilityHidden(true)
-                    Text(typeTitle(type)).font(StrandFont.title2)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                    Spacer()
-                }
+                if !AppBrand.isPersonalBuild {
+                    HStack(spacing: 14) {
+                        Image(systemName: typeIcon(type))
+                            .font(.system(size: 30))
+                            .foregroundStyle(StrandPalette.accent)
+                            .accessibilityHidden(true)
+                        Text(typeTitle(type)).font(StrandFont.title2)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Spacer()
+                    }
 
-                if type == .whoop5mg {
-                    experimentalNote
-                } else if type.isExperimental {
-                    experimentalTierNote
+                    if type == .whoop5mg {
+                        experimentalNote
+                    } else if type.isExperimental {
+                        experimentalTierNote
+                    }
                 }
 
                 // A6 , the one-phone-at-a-time WHOOP warning, surfaced as an amber card BEFORE the user
                 // scans so the most common pairing failure (the official app still holding the link) is
                 // pre-empted, not discovered after a failed scan. WHOOP-only: the single-link constraint
                 // is specific to the WHOOP band's bonding, not the generic HR / FTMS paths.
-                if type.isWhoop {
+                if type.isWhoop && !AppBrand.isPersonalBuild {
                     singleConnectionWarning
                 }
 
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(prepInstructions(type).enumerated()), id: \.offset) { _, line in
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(StrandFont.subhead)
-                                .foregroundStyle(StrandPalette.accent)
-                                .accessibilityHidden(true)
-                            Text(line)
-                                .font(StrandFont.body)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                if !AppBrand.isPersonalBuild {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(Array(prepInstructions(type).enumerated()), id: \.offset) { _, line in
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(StrandFont.subhead)
+                                    .foregroundStyle(StrandPalette.accent)
+                                    .accessibilityHidden(true)
+                                Text(line)
+                                    .font(StrandFont.body)
+                                    .foregroundStyle(StrandPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frostedCardSurface(cornerRadius: 14)
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frostedCardSurface(cornerRadius: 14)
 
                 Button {
                     startScan(for: type)
@@ -462,6 +472,11 @@ struct AddDeviceWizard: View {
                 .buttonStyle(.borderedProminent)
                 .tint(StrandPalette.accent)
                 .accessibilityLabel("Scan for \(typeTitle(type))")
+                if AppBrand.isPersonalBuild {
+                    Text("Unpair from the WHOOP app first. The strap bonds to one phone.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
             }
         }
     }
@@ -1186,7 +1201,8 @@ struct AddDeviceWizard: View {
         }
         switch step {
         case .type:    break
-        case .prep:    step = .type
+        case .prep:
+            if AppBrand.isPersonalBuild { stopAllScans(); onClose() } else { step = .type }
         case .pick:    stopAllScans(); step = .prep
         case .confirm:
             // Re-enter the pick step and restart its scan so the user can choose a different device.

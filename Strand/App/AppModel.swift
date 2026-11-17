@@ -532,7 +532,17 @@ final class AppModel: ObservableObject {
                                                      log: { [live = self.live] line in
                                                          live.append(log: line)
                                                      }) {
-                    await self.intelligence.analyzeRecent(force: false)
+                    let pass = AnalysisGating.pass(policyEnabled: BandPowerPolicy.enabled(),
+                                                   kind: .idleTick,
+                                                   storedNewRecords: false)
+                    switch pass {
+                    case .skip:
+                        break
+                    case .todayOnly:
+                        await self.intelligence.analyzeRecent(maxDays: 1, force: false)
+                    case .fullWindow:
+                        await self.intelligence.analyzeRecent(force: false)
+                    }
                 }
                 // v5: recompute the skin-temp suite snapshots (cycle phase + body clock) from the
                 // freshly-scored history so the Health hub cards read a ready result.
@@ -767,9 +777,23 @@ final class AppModel: ObservableObject {
         // the #1538 report while never producing a score. Decide first whether this pass can finish here,
         // and hand it to a background-processing task when it cannot. A no-op on macOS, and on iOS a
         // foreground pass is never deferred.
-        await RescoreBackgroundScheduler.run(passInProgress: intelligence.computing,
-                                             log: { [live] line in live.append(log: line) }) {
-            await intelligence.analyzeRecent(skipIfUnchanged: true)
+        let banked = live.lastOffloadBankedRows
+        live.lastOffloadBankedRows = false
+        let pass = AnalysisGating.pass(policyEnabled: BandPowerPolicy.enabled(),
+                                       kind: .offload,
+                                       storedNewRecords: banked)
+        if pass != .skip {
+            await RescoreBackgroundScheduler.run(passInProgress: intelligence.computing,
+                                                 log: { [live] line in live.append(log: line) }) {
+                switch pass {
+                case .skip:
+                    break
+                case .todayOnly:
+                    await intelligence.analyzeRecent(maxDays: 1, skipIfUnchanged: true)
+                case .fullWindow:
+                    await intelligence.analyzeRecent(skipIfUnchanged: true)
+                }
+            }
         }
         await refreshV5Signals()
         #if os(iOS)
@@ -779,12 +803,15 @@ final class AppModel: ObservableObject {
         // never rewrite the shared App-Group snapshot or call WidgetCenter.reloadAllTimelines — the
         // widget kept showing yesterday's numbers. Publishing here, on the real "new data landed"
         // signal, pushes the fresh snapshot to the home-screen widget without needing a foreground.
-        await WidgetSnapshot.publish(from: self)
-        // #1021: same reasoning as the widget publish above, for Apple Health. The only automatic
-        // write-back ran on scenePhase == .active, in the same block that KICKS this offload - so it
-        // raced the data it was meant to publish and last night's sleep reached Health an app-open late.
-        // Set by StrandiOSApp; nil on macOS and in tests, where there is no bridge.
-        await healthWriteBack?()
+        if WidgetReloadPolicy.shouldReload(policyEnabled: BandPowerPolicy.enabled(),
+                                           storedNewData: banked) {
+            await WidgetSnapshot.publish(from: self)
+            // #1021: same reasoning as the widget publish above, for Apple Health. The only automatic
+            // write-back ran on scenePhase == .active, in the same block that KICKS this offload - so it
+            // raced the data it was meant to publish and last night's sleep reached Health an app-open late.
+            // Set by StrandiOSApp; nil on macOS and in tests, where there is no bridge.
+            await healthWriteBack?()
+        }
         #endif
     }
 

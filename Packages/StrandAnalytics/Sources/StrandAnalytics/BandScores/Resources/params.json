@@ -529,5 +529,33 @@
   "z_clip": [
     -6.0,
     6.0
-  ]
+  ],
+  "recovery_v3": {
+    "schema_version": 5,
+    "variant": "head_perf_ours_train",
+    "numeric": "float64",
+    "half_life_days": 10.0,
+    "alpha": 0.06696700846319259,
+    "outlier_k": null,
+    "z_scale": 8.6076235845313,
+    "z_floor": 1.0,
+    "warmup_nights": 30,
+    "sleep_center": 75.0,
+    "sleep_scale": 15.0,
+    "z_clip": 6.0,
+    "eta_clip": 20.0,
+    "rec_clip": [1.0, 99.0],
+    "params": {
+      "b0": 0.5831048802710344,
+      "w_hrv": 0.8125248327804836,
+      "w_sleep": 0.15955536837785575
+    },
+    "measured": {
+      "roll_mae": 6.50,
+      "roll_zone": 84.4,
+      "transfer_our_to_69_mae": 6.07,
+      "transfer_69_to_our_mae": 5.94
+    },
+    "note": "Recursive causal EWMA on raw HRV ms + round-2 perf_ours sleep term. RHR/RR/temp/SpO2 omitted. Publish after warmup_nights finite-z observations on the current source; restart EWMA and MAD at a source change."
+  }
 }

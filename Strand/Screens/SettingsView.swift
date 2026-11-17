@@ -352,16 +352,8 @@ struct SettingsView: View {
                     profileCard
                 }
             }
-        }
-
-        Section {
             appleSettingsNav("Devices", "badge.plus.radiowaves.right", .blue) {
                 DevicesView()
-            }
-            appleSettingsNav("Strap", "antenna.radiowaves.left.and.right", .green) {
-                appleSettingsPage("Strap") {
-                    strapCard
-                }
             }
         }
 
@@ -377,34 +369,19 @@ struct SettingsView: View {
                     backupCard
                 }
             }
-        } header: {
-            Text("Health & Data")
         }
 
         Section {
-            appleSettingsNav("Notifications", "bell.badge.fill", .red) {
-                appleSettingsPage("Notifications") {
+            appleSettingsNav("Notifications & Alarms", "bell.badge.fill", .red) {
+                appleSettingsPage("Notifications & Alarms") {
                     personalNotificationsCard
+                    Section {
+                        NavigationLink("Alarms") {
+                            SmartAlarmView()
+                        }
+                    }
                 }
             }
-        }
-
-        Section {
-            appleSettingsNav("Test Centre", "testtube.2", .gray) {
-                TestCentreView()
-            }
-            appleSettingsNav("Experimental", "flask.fill", .orange) {
-                appleSettingsPage("Experimental") {
-                    personalExperimentalPages
-                }
-            }
-            appleSettingsNav("Style", "paintbrush.fill", .teal) {
-                appleSettingsPage("Style") {
-                    personalStyleCard
-                }
-            }
-        } header: {
-            Text("Developer")
         }
 
         Section {
@@ -542,44 +519,6 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder private var personalStyleCard: some View {
-        if appleSettingsStyle {
-            Section {
-                Picker("Style", selection: $nativeStyleRaw) {
-                    ForEach(NativeStyle.allCases) { option in
-                        Text(option.label).tag(option.rawValue)
-                    }
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
-            } footer: {
-                Text("Apple is Health chrome with WHOOP rings. WHOOP is the dark drawing.")
-            }
-        } else {
-        SettingsSection(
-            icon: "paintbrush.fill",
-            title: "Style",
-            blurb: "Apple is Health chrome with WHOOP rings. WHOOP is the dark drawing."
-        ) {
-            VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
-                Picker("Style", selection: $nativeStyleRaw) {
-                    ForEach(NativeStyle.allCases) { option in
-                        Text(option.label).tag(option.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityLabel("Style")
-            }
-        }
-        }
-    }
-
-    /// Experimental probes kept for Band, plus Recovery (no Advanced group in the personal list).
-    @ViewBuilder private var personalExperimentalPages: some View {
-        experimentalAdvancedPages
-        recoveryCard
-    }
-
     private var appleStreakRow: some View {
         let days = model.repo.days
         let today = AnalyticsEngine.dayString(Int(Date().timeIntervalSince1970),
@@ -631,8 +570,10 @@ struct SettingsView: View {
     /// Experimental probes minus Layout (own page) and Sleep (own page).
     @ViewBuilder private var experimentalAdvancedPages: some View {
         liveSessionsCard
-        if showFiveMGControls || model.repo.activeDeviceIsOura { spo2CandidateCard }
-        if model.repo.activeDeviceIsOura { ouraAllDayLiveHRCard }
+        if showFiveMGControls || (!AppBrand.isPersonalBuild && model.repo.activeDeviceIsOura) {
+            spo2CandidateCard
+        }
+        if !AppBrand.isPersonalBuild && model.repo.activeDeviceIsOura { ouraAllDayLiveHRCard }
         rawSensorDiagnosticsCard
     }
     #endif
@@ -975,8 +916,6 @@ struct SettingsView: View {
             }
         } header: {
             Text("Health Details")
-        } footer: {
-            Text("Used for heart-rate zones, calories, and Charge.")
         }
 
         if !AppBrand.isPersonalBuild {
@@ -1009,11 +948,15 @@ struct SettingsView: View {
                     .accessibilityLabel("Step calibration, \(String(format: "%.1f", profile.stepTicksPerStep)) counter ticks per step")
                 }
             }
-            Button("Steps Estimate") { showStepsCalibration = true }
+            if !AppBrand.isPersonalBuild {
+                Button("Steps Estimate") { showStepsCalibration = true }
+            }
         } header: {
             Text("Steps")
         } footer: {
-            Text("Calibration for strap step counts and the WHOOP 4.0 estimate.")
+            Text(AppBrand.isPersonalBuild
+                 ? "Counter ticks per step."
+                 : "Calibration for strap step counts and the WHOOP 4.0 estimate.")
         }
     }
 
@@ -2122,8 +2065,6 @@ struct SettingsView: View {
             if let fw = live.strapFirmware, !fw.isEmpty {
                 LabeledContent("Firmware", value: fw)
             }
-        } header: {
-            Text("Strap")
         } footer: {
             Text(strapStatusDetail)
         }
@@ -2149,7 +2090,8 @@ struct SettingsView: View {
             Text("Attach this when you report a bug.")
         }
 
-        if live.connected && selectedWhoopModelRaw == WhoopModel.whoop4.rawValue {
+        if !AppBrand.isPersonalBuild,
+           live.connected && selectedWhoopModelRaw == WhoopModel.whoop4.rawValue {
             Section {
                 LabeledContent("Current", value: live.advertisingName ?? "—")
                 TextField("New name", text: $strapNameDraft)
@@ -3177,8 +3119,6 @@ struct SettingsView: View {
             if backupBusy {
                 ProgressView("Working…")
             }
-        } header: {
-            Text("Backup")
         } footer: {
             Text("Importing replaces all data on this device. Backups are unencrypted ZIP files.")
         }
@@ -3598,40 +3538,20 @@ struct SettingsView: View {
 
     @ViewBuilder private var nativeAboutSections: some View {
         Section {
-            HStack(spacing: 14) {
-                aboutAppIcon
-                    .frame(width: 60, height: 60)
-                    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(AppBrand.name)
-                        .font(.headline)
-                    Text("Version \(bundleVersionString) (\(bundleBuildString))")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.vertical, 4)
-        }
-
-        Section {
+            LabeledContent("Version", value: "\(bundleVersionString) (\(bundleBuildString))")
             NavigationLink("Licenses") { LicensesView() }
-            Button("What's New") { showWhatsNew = true }
-            Button("How \(AppBrand.name) Works") { showHowNoopWorks = true }
-            Button("How Your Scores Work") { showScoringGuide = true }
-            NavigationLink("Apple Watch") {
-                AppleWatchAboutView(onStartSetup: { showAppleWatchSetup = true })
-            }
             NavigationLink("Storage") { StorageView() }
-            #if os(iOS)
-            Button("Diagnostics") { showDiagnostics = true }
-            #endif
-        }
-
-        Section {
-            EmptyView()
-        } footer: {
-            Text("\(AppBrand.name) is not a medical device. It is for personal insight only.")
+            if !AppBrand.isPersonalBuild {
+                Button("What's New") { showWhatsNew = true }
+                Button("How \(AppBrand.name) Works") { showHowNoopWorks = true }
+                Button("How Your Scores Work") { showScoringGuide = true }
+                NavigationLink("Apple Watch") {
+                    AppleWatchAboutView(onStartSetup: { showAppleWatchSetup = true })
+                }
+                #if os(iOS)
+                Button("Diagnostics") { showDiagnostics = true }
+                #endif
+            }
         }
     }
 

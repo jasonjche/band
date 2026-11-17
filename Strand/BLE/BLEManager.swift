@@ -2882,6 +2882,7 @@ public final class BLEManager: NSObject, ObservableObject {
         // never a fresh `backfiller.sessionRowsPersisted` re-read that a re-kicked session / trailing frames
         // could have mutated across the offload boundary.
         let persistedSensorRows = (backfiller?.sessionRowsPersisted ?? 0) > 0
+        if persistedSensorRows { state.lastOffloadBankedRows = true }
         if persistedSensorRows { consecutiveEmptyOffloads = 0 }
         else if consecutiveAutoContinues == 0 { consecutiveEmptyOffloads += 1 }
         if reason == "HISTORY_COMPLETE" {
@@ -3076,7 +3077,8 @@ public final class BLEManager: NSObject, ObservableObject {
             // Snapshotting `> 0` = the auto-continue can't disagree with the empty verdict, and a dup-only
             // re-offload (0 new rows) stops instead of spinning on already-synced data.
             maybeAutoContinueBackfill(trimAdvanced: trimAdvanced,
-                                      persistedSensorRows: persistedSensorRows)
+                                      persistedSensorRows: persistedSensorRows,
+                                      endedOnSliceCap: reason == "timeout")
         }
     }
 
@@ -3091,7 +3093,8 @@ public final class BLEManager: NSObject, ObservableObject {
     /// `trimAdvanced` is the spin-detector signal computed in exitBackfilling (did this session move the
     /// trim cursor vs the previous one) — passed in because exitBackfilling has already advanced
     /// `lastSessionEndTrim` past the comparison point by the time this Task runs.
-    private func maybeAutoContinueBackfill(trimAdvanced: Bool, persistedSensorRows: Bool) {
+    private func maybeAutoContinueBackfill(trimAdvanced: Bool, persistedSensorRows: Bool,
+                                           endedOnSliceCap: Bool) {
         // Cheap pre-checks first (no Task if we already know we won't continue): still connected, under
         // the cap, and the trim moved. The frontier read only happens when those already hold.
         guard state.connected, state.bonded else { return }
@@ -3133,7 +3136,9 @@ public final class BLEManager: NSObject, ObservableObject {
                 state.historyPendingSync = pending
             }
             let stillConnected = state.connected && state.bonded
-            guard BackfillContinuation.shouldAutoContinue(
+            guard OffloadContinuePolicy.shouldAutoContinue(
+                policyEnabled: BandPowerPolicy.enabled(),
+                endedOnSliceCap: endedOnSliceCap,
                 stillConnected: stillConnected,
                 strapNewestTs: newest,
                 ourFrontierTs: frontier,
@@ -3400,6 +3405,7 @@ public final class BLEManager: NSObject, ObservableObject {
     public func setPauseCaptureOnPowerSave(_ enabled: Bool, thresholdPct: Int) {
         pauseCaptureBatteryPct = enabled ? thresholdPct : 0
         reconcileRealtime()
+        reconcileStandardHRNotify(reason: "power-save HRV pause")
     }
 
 
@@ -5015,6 +5021,8 @@ public final class BLEManager: NSObject, ObservableObject {
     /// gate AND the BackfillPolicy rate-limiter for the trigger. On a go: records the attempt time
     /// (persisted) and starts the offload.
     func requestSync(_ trigger: BackfillTrigger) {
+        guard OffloadTriggerPolicy.shouldRequest(trigger: trigger,
+                                                 policyEnabled: BandPowerPolicy.enabled()) else { return }
         guard BLEManager.shouldRunPeriodicBackfill(
             connected: state.connected, bonded: state.bonded, backfilling: backfilling) else { return }
         let now = Date().timeIntervalSince1970
@@ -5251,6 +5259,7 @@ public final class BLEManager: NSObject, ObservableObject {
         for c in chars where !c.isNotifying || restoreNeedsResubscribe {
             requestNotify(c, on: p, reason: reason)
         }
+        reconcileStandardHRNotify(reason: reason)
         // #490: a 5/MG's 0x2A19 battery READ is refused pre-bond (it fires in didDiscoverCharacteristicsFor,
         // before the link is encrypted) and is never retried, so `batteryPct` stays nil from connect — and
         // the 5/MG sends NO unsolicited battery notification (so the notify subscription above never fills
@@ -5787,10 +5796,12 @@ public final class BLEManager: NSObject, ObservableObject {
             state.noteReadableHeartRate()
             if state.heartRate != m.hr { state.heartRate = m.hr }
         }
-        // Record it continuously — independent of the realtime stream or the open screen.
-        collector?.ingestStandardHR(hr: m.hr, rr: rr, contact: m.contact,
-                                    family: router.family,
-                                    at: Int(Date().timeIntervalSince1970))
+        // Persist only while 0x2A37 is demanded (live surface, Continuous HRV, or policy off).
+        if standardHRNotifyWanted() {
+            collector?.ingestStandardHR(hr: m.hr, rr: rr, contact: m.contact,
+                                        family: router.family,
+                                        at: Int(Date().timeIntervalSince1970))
+        }
     }
 }
 
@@ -7138,7 +7149,7 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         startKeepAlive()       // always-ping: re-arm realtime, poll battery, watchdog the link
         // WHOOP 4's broadcast mode is link/runtime state, so restore an opted-in mode after reconnect.
         if PuffinExperiment.broadcastHrEnabled { setBroadcastHr(true) }
-        enableLiveNotifications(reason: "post-bond")   // includes 0x2A37 standard HR — the fallback path
+        enableLiveNotifications(reason: "post-bond")   // cmd/event/data/battery; 0x2A37 follows LiveHRDemand
         // #927: RE-DERIVE the want at arm time (same reasoning as the 5/MG branch above): a reconnect
         // outside the overnight window must not arm the flood from a stale precomputed `wantsRealtime`
         // (up to a keep-alive tick stale); the keep-alive would then hold it armed for another 30 s.

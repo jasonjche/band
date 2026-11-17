@@ -74,10 +74,10 @@ struct LicensesView: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent("WHOOP 4.0 protocol", value: "johnmiddleton12/my-whoop")
                 LabeledContent("WHOOP 5.0 protocol", value: "b-nnett/goose")
-            } footer: {
-                Text("Open-source BLE reverse-engineering. Thank you.")
+                if !AppBrand.isPersonalBuild {
+                    LabeledContent("WHOOP 4.0 protocol", value: "johnmiddleton12/my-whoop")
+                }
             }
         }
         .appleSettingsChrome("Licenses")

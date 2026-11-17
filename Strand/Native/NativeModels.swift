@@ -228,12 +228,13 @@ enum NativeDay {
                      todayKey: String, connected: Bool, effortScale: EffortScale, now: Date = Date(),
                      journalEntries: [JournalEntry] = [],
                      importedSleep: [String: ImportedSleepFigures] = [:],
-                     highSleepStress: Double? = nil) -> Model {
+                     highSleepStress: Double? = nil,
+                     liveStrain: Double? = nil) -> Model {
         let sleepSession = sleeps.last {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == todayKey
         }
         let today = days.last { $0.day == todayKey }
-        let viewingToday = todayKey == Repository.localDayKey(now)
+        let viewingToday = todayKey == NativeDayLogic.logicalToday(now: now)
         let scores = NativeBandScores.resolve(
             days: days, sleeps: sleeps, workouts: workouts, importedSleep: importedSleep
         )
@@ -248,7 +249,10 @@ enum NativeDay {
         let prior = Array(days.filter { $0.day < todayKey }.suffix(30))
         let source = days.last { $0.day == recoveryKey } ?? hrvDay ?? sleepDay
         let recovery = recoveryKey.flatMap { scores.byDay[$0]?.recovery }
-        let strain = today?.strain
+        let strain = NativeDayLogic.effectiveStrain(
+            live: viewingToday ? liveStrain : nil,
+            stored: today?.strain
+        )
         let sleepScore = sleepScoreRow?.sleepPerformance
         let sleepStart = sleepSession.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
         let sleepEnd = sleepSession.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
@@ -670,6 +674,7 @@ enum NativeActivity {
 /// Health Monitor "Within Range N of M": HRV, resting HR, respiratory rate, skin temp, SpO2
 /// whose latest value for the selected day sits in the user's typical band. Missing metrics
 /// are omitted from M. Reuses `VitalBands` (personal baseline when trusted, else population).
+/// Home's header and the Health Monitor page both read `report` — `summary` is that report's count.
 enum NativeHealthRange {
     struct Summary: Equatable {
         var inRange: Int
@@ -687,58 +692,140 @@ enum NativeHealthRange {
         }
     }
 
+    struct Vital: Equatable, Identifiable {
+        var id: String
+        var title: String
+        var symbol: String
+        var value: Double
+        var valueText: String
+        var typical: ClosedRange<Double>
+        var typicalText: String
+        var inRange: Bool
+        var unit: String
+        var heartFamily: Bool
+        var route: TabRoute
+    }
+
+    struct Report: Equatable {
+        var vitals: [Vital]
+
+        var summary: Summary {
+            Summary(inRange: vitals.filter(\.inRange).count, measured: vitals.count)
+        }
+    }
+
     static func summary(days: [DailyMetric], todayKey: String) -> Summary {
+        report(days: days, todayKey: todayKey).summary
+    }
+
+    static func report(days: [DailyMetric], todayKey: String) -> Report {
         let today = days.last { $0.day == todayKey }
         let prior = days.filter { $0.day < todayKey }
-        var inRange = 0
-        var measured = 0
+        var vitals: [Vital] = []
 
-        func count(value: Double?, history: [Double?], range: ClosedRange<Double>, cfg: MetricCfg?) {
-            let result = VitalBands.band(value: value, history: history, populationRange: range, cfg: cfg)
-            guard result.band != .noData else { return }
-            measured += 1
-            if result.band == .inRange { inRange += 1 }
+        func append(
+            id: String, title: String, symbol: String,
+            value: Double?, history: [Double?], range: ClosedRange<Double>,
+            cfg: MetricCfg?, unit: String, decimals: Int,
+            heartFamily: Bool, route: TabRoute
+        ) {
+            guard let judged = judge(value: value, history: history, range: range, cfg: cfg),
+                  let value else { return }
+            vitals.append(Vital(
+                id: id,
+                title: title,
+                symbol: symbol,
+                value: value,
+                valueText: format(value, decimals: decimals, unit: unit),
+                typical: judged.typical,
+                typicalText: formatRange(judged.typical, decimals: decimals, unit: unit),
+                inRange: judged.result.band == .inRange,
+                unit: unit,
+                heartFamily: heartFamily,
+                route: route
+            ))
         }
 
-        count(
+        append(
+            id: "hrv", title: "Heart Rate Variability", symbol: "waveform.path.ecg",
             value: today?.avgHrv,
             history: VitalBands.calendarSeries(prior.map { ($0.day, $0.avgHrv) }),
-            range: 40...120,
-            cfg: Baselines.hrvCfg
+            range: 40...120, cfg: Baselines.hrvCfg, unit: "ms", decimals: 0,
+            heartFamily: true, route: .metric("hrv")
         )
-        count(
+        append(
+            id: "rhr", title: "Resting Heart Rate", symbol: "heart.fill",
             value: today?.restingHr.map(Double.init),
             history: VitalBands.calendarSeries(prior.map { ($0.day, $0.restingHr.map(Double.init)) }),
-            range: 40...60,
-            cfg: Baselines.restingHRCfg
+            range: 40...60, cfg: Baselines.restingHRCfg, unit: "BPM", decimals: 0,
+            heartFamily: true, route: .metric("rhr")
         )
-        count(
+        append(
+            id: "resp", title: "Respiratory Rate", symbol: "lungs.fill",
             value: today?.respRateBpm,
             history: VitalBands.calendarSeries(prior.map { ($0.day, $0.respRateBpm) }),
-            range: 12...20,
-            cfg: Baselines.respCfg
+            range: 12...20, cfg: Baselines.respCfg, unit: "breaths/min", decimals: 1,
+            heartFamily: false, route: .metric("resp_rate")
         )
 
         let skinValue = today?.skinTempC ?? today?.skinTempDevC
         let skinHistoryRaw = VitalBands.calendarSeries(prior.map { ($0.day, $0.skinTempC ?? $0.skinTempDevC) })
         if let skinValue {
             let absolute = VitalBands.isAbsoluteSkinTemp(skinValue)
-            count(
+            append(
+                id: "skin", title: "Skin Temperature", symbol: "thermometer.medium",
                 value: skinValue,
                 history: VitalBands.skinTempHistory(matching: skinValue, in: skinHistoryRaw),
                 range: absolute ? 33...36 : (-0.6)...0.6,
-                cfg: absolute ? Baselines.metricCfg["skin_temp"] : VitalBands.skinTempDeviationCfg
+                cfg: absolute ? Baselines.metricCfg["skin_temp"] : VitalBands.skinTempDeviationCfg,
+                unit: "°C", decimals: 1,
+                heartFamily: true, route: .metric("skin_temp")
             )
         }
 
-        count(
+        append(
+            id: "spo2", title: "Blood Oxygen", symbol: "drop.fill",
             value: today?.spo2Pct,
             history: VitalBands.calendarSeries(prior.map { ($0.day, $0.spo2Pct) }),
-            range: 95...100,
-            cfg: nil
+            range: 95...100, cfg: nil, unit: "%", decimals: 0,
+            heartFamily: true, route: .metric("spo2")
         )
 
-        return Summary(inRange: inRange, measured: measured)
+        return Report(vitals: vitals)
+    }
+
+    /// Same `VitalBands.band` call the count uses. Personal typical is mean ± 2σ, matching |z| ≤ 2.
+    private static func judge(
+        value: Double?, history: [Double?], range: ClosedRange<Double>, cfg: MetricCfg?
+    ) -> (result: VitalBands.Result, typical: ClosedRange<Double>)? {
+        let result = VitalBands.band(value: value, history: history, populationRange: range, cfg: cfg)
+        guard result.band != .noData else { return nil }
+        if result.basis == .personal, let cfg {
+            let state = Baselines.foldHistory(history, cfg: cfg)
+            if state.trusted {
+                let sig = Baselines.sigma(state)
+                let lo = state.baseline - VitalBands.sigmaK * sig
+                let hi = state.baseline + VitalBands.sigmaK * sig
+                return (result, min(lo, hi)...max(lo, hi))
+            }
+        }
+        return (result, range)
+    }
+
+    private static func format(_ value: Double, decimals: Int, unit: String) -> String {
+        let number = decimals == 0
+            ? String(Int(value.rounded()))
+            : String(format: "%.\(decimals)f", value)
+        if unit == "%" { return "\(number)%" }
+        return "\(number) \(unit)"
+    }
+
+    private static func formatRange(_ range: ClosedRange<Double>, decimals: Int, unit: String) -> String {
+        func n(_ v: Double) -> String {
+            decimals == 0 ? String(Int(v.rounded())) : String(format: "%.\(decimals)f", v)
+        }
+        if unit == "%" { return "\(n(range.lowerBound))–\(n(range.upperBound))%" }
+        return "\(n(range.lowerBound))–\(n(range.upperBound)) \(unit)"
     }
 }
 

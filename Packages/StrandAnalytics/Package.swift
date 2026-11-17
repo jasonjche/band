@@ -24,6 +24,8 @@ let package = Package(
             resources: [
                 .copy("BandScores/Fixtures/golden_synthetic.json"),
                 .copy("BandScores/Fixtures/golden_anonymised.json"),
+                .copy("BandScores/Fixtures/golden_recovery_v3.json"),
+                .copy("BandScores/Fixtures/golden_recovery_v3_perf_ours.json"),
             ]
         ),
     ]

@@ -76,6 +76,29 @@ final class NativeEmptyStateTests: XCTestCase {
         XCTAssertNil(summary.headerTrailing)
     }
 
+    func testHealthMonitorReportAndSummaryAreTheSameCount() {
+        let today = sampleMetric(
+            day: "2026-11-16",
+            hrv: 66, rhr: 51, resp: 14.7, spo2: 98, skin: 34.5
+        )
+        let report = NativeHealthRange.report(days: [today], todayKey: today.day)
+        let summary = NativeHealthRange.summary(days: [today], todayKey: today.day)
+        XCTAssertEqual(report.summary, summary)
+        XCTAssertEqual(report.vitals.count, summary.measured)
+        XCTAssertEqual(report.vitals.filter(\.inRange).count, summary.inRange)
+        XCTAssertEqual(Set(report.vitals.map(\.id)), ["hrv", "rhr", "resp", "skin", "spo2"])
+        XCTAssertEqual(report.vitals.map(\.route), [
+            .metric("hrv"), .metric("rhr"), .metric("resp_rate"), .metric("skin_temp"), .metric("spo2"),
+        ])
+    }
+
+    func testHealthMonitorHidesRowsWithoutData() {
+        let today = sampleMetric(day: "2026-11-16", hrv: 66, rhr: 51)
+        let report = NativeHealthRange.report(days: [today], todayKey: today.day)
+        XCTAssertEqual(report.vitals.map(\.id), ["hrv", "rhr"])
+        XCTAssertEqual(report.summary, NativeHealthRange.summary(days: [today], todayKey: today.day))
+    }
+
     func testTonightSleepHidesWithoutNeedOrAlarm() {
         XCTAssertNil(NativeTonightSleep.make(needMin: nil, alarmEnabled: false, alarmMinutes: 7 * 60))
         XCTAssertNil(NativeTonightSleep.make(needMin: 0, alarmEnabled: false, alarmMinutes: 7 * 60))

@@ -91,7 +91,7 @@ struct SmartAlarmView: View {
                     Text("WHOOP 5/MG alarms need Protocol probes in Test Centre.")
                         .foregroundStyle(.secondary)
                 }
-                if !model.whoop5Detected {
+                if !model.whoop5Detected && !AppBrand.isPersonalBuild {
                     Button("Check What the Strap Has Stored") { model.ble.getStrapAlarm() }
                 }
             }

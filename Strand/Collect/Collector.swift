@@ -107,8 +107,8 @@ final class Collector {
     private var lastStdInsertFailureLogMs: Int64 = 0
     private var lastRealtimeInsertFailureLogMs: Int64 = 0
 
-    /// Standard 0x2A37 HR/RR/contact buffer — the reliable, always-on stream, recorded continuously
-    /// (independent of the custom realtime stream or which screen is open).
+    /// Standard 0x2A37 HR/RR/contact buffer. BLEManager only feeds this while LiveHRDemand wants
+    /// notify (a live surface, Continuous HRV, or the Band power-policy flag off).
     private var stdHR: [HRSample] = []
     private var stdRR: [RRInterval] = []
     private var stdContact: [WhoopEvent] = []

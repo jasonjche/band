@@ -64,8 +64,6 @@ struct AppleHealthSettingsView: View {
                 LabeledContent("Error", value: err)
                     .foregroundStyle(.red)
             }
-        } header: {
-            Text("Apple Health")
         } footer: {
             Text(statusFooter)
         }
@@ -89,8 +87,6 @@ struct AppleHealthSettingsView: View {
             LabeledContent("Caffeine", value: "Read")
         } header: {
             Text("Data Types")
-        } footer: {
-            Text("Strap data is written back when iOS allows it.")
         }
     }
 
@@ -109,8 +105,6 @@ struct AppleHealthSettingsView: View {
             if let v = latest["lean_mass"] { LabeledContent("Lean Mass", value: v) }
         } header: {
             Text("Recent")
-        } footer: {
-            Text("Latest imported Apple Health values.")
         }
     }
 
