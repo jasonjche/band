@@ -232,6 +232,16 @@ enum PuffinExperiment {
             : UserDefaults.standard.bool(forKey: experimentalSleepV2Key)
     }
 
+    /// Learned sleep stager (reNOOP boosted-tree pair). Stages a detected window when HR and motion
+    /// cover at least 80 % of it; otherwise falls back to V1/V2. **Default ON**. The library parameter
+    /// defaults false so tests stay on the recipe; this preference is what the live call site threads.
+    static let learnedSleepStagerKey = "noopLearnedSleepStager"
+    static var learnedSleepStagerEnabled: Bool {
+        UserDefaults.standard.object(forKey: learnedSleepStagerKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: learnedSleepStagerKey)
+    }
+
     /// Opt-in "HR-from-PPG sub-lag interpolation" (default off): the v26 optical-PPG gap-fill HR estimator
     /// (`PpgHr`) refines its integer autocorrelation lag with a parabolic (Variant A) interpolation of the
     /// ACF peak, removing the ~±8 bpm lag-quantization near a high HR. Pure opt-in research variant: default

@@ -480,6 +480,12 @@ public enum AnalyticsEngine {
                                   // `PuffinExperiment.experimentalSleepV2Enabled`, which is default ON
                                   // (#277/#351), so the shipped app stages with V2. (7.0.0)
                                   useSleepStagerV2: Bool = false,
+                                  // Learned boosted-tree stager (reNOOP trees). Default false keeps
+                                  // pure-function callers/tests on V1/V2; IntelligenceEngine threads
+                                  // `PuffinExperiment.learnedSleepStagerEnabled`, which is default ON.
+                                  // A night whose HR or motion cover under 80 % of the window falls back
+                                  // to V1/V2 as `useSleepStagerV2` says.
+                                  useSleepStageLearned: Bool = false,
                                   // Opt-in motion-aware wake refinement (#364 "Proposal 2" follow-up; density
                                   // gate precedent #345). When true, `WakeMotionRefinement` re-derives each
                                   // detected session's stages, reclassifying a hot-but-still WAKE segment to
@@ -559,6 +565,7 @@ public enum AnalyticsEngine {
                                                   tzOffsetSeconds: tzOffsetSeconds, wristOff: wristOff,
                                                   bandSleepState: bandSleepState,
                                                   useSleepStagerV2: useSleepStagerV2,
+                                                  useSleepStageLearned: useSleepStageLearned,
                                                   traceSink: traceSink)
         // Motion-aware wake refinement (#364 follow-up) runs AFTER V1/V2 staging, over every detected
         // session (naps included — the same eligibility gates apply). `steps` is the SAME calendar-day/
@@ -708,10 +715,13 @@ public enum AnalyticsEngine {
             // #319: the motion-coverage + staging context behind the Rest number, so a high score on a poor
             // night can be explained from an export (WHOOP 4.0 banks motion coarsely → sparse=true → most
             // epochs default to sleep → over-counted duration → high Rest). `stager` says whether V1/V2 ran.
+            // With the learned model on, `stager` names only the recipe it falls back to.
+            let learned = useSleepStageLearned ? (SleepStageLearned.resolved(useBundled: true)?.version ?? "") : ""
             traceSink(AnalyticsEngine.sleepMotionLine(
                 day: day, grav: gravity.count, hr: hr.count,
                 sparse: gravitySparse,
-                useSleepStagerV2: useSleepStagerV2, family: skinTempFamily))
+                useSleepStagerV2: useSleepStagerV2, family: skinTempFamily)
+                + (learned.isEmpty ? "" : " learned=\(learned) (stages dense nights; stager= is its fallback)"))
             // CAPTURE-C (#799): append the sleep PROVENANCE so an imported row winning the merge is visible
             // (not silently swapped for the measured night). hoursAsleep = the scored night's tst in minutes;
             // sourceRowId = the main-night's start ts for the measured path (stable per night), else the

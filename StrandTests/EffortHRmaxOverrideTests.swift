@@ -41,7 +41,7 @@ final class EffortHRmaxOverrideTests: XCTestCase {
     @MainActor
     func testNoOverrideIsUnroundedTanakaAndNotTheRoundedHrMax() {
         withProfile(age: 41, hrMaxOverride: 0) { p in
-            XCTAssertEqual(p.effortHRmax ?? -1, StrainScorer.tanakaHRmax(age: Double(p.age)), accuracy: 1e-9)
+            XCTAssertEqual(p.effortHRmax ?? -1, HRZones.gellishMaxHR(age: Double(p.age)), accuracy: 1e-9)
             XCTAssertNotEqual(p.effortHRmax ?? -1, Double(p.hrMax))
         }
     }
@@ -61,7 +61,7 @@ final class EffortHRmaxOverrideTests: XCTestCase {
     @MainActor
     func testObservedAboveTanakaBeatsTheFormula() {
         withProfile(age: 30, hrMaxOverride: 0, hrMaxObserved: 198) { p in
-            let tanaka = StrainScorer.tanakaHRmax(age: Double(p.age))
+            let tanaka = HRZones.gellishMaxHR(age: Double(p.age))
             XCTAssertGreaterThan(198, tanaka)
             XCTAssertEqual(p.effortHRmax ?? -1, 198.0, accuracy: 1e-9)
             XCTAssertEqual(p.resolvedMaxHROverride ?? -1, 198.0, accuracy: 1e-9)
@@ -74,11 +74,11 @@ final class EffortHRmaxOverrideTests: XCTestCase {
     @MainActor
     func testObservedBelowTanakaLeavesTheFormula() {
         withProfile(age: 30, hrMaxOverride: 0, hrMaxObserved: 180) { p in
-            let tanaka = StrainScorer.tanakaHRmax(age: Double(p.age))
+            let tanaka = HRZones.gellishMaxHR(age: Double(p.age))
             XCTAssertEqual(p.effortHRmax ?? -1, tanaka, accuracy: 1e-9)
             XCTAssertNil(p.resolvedMaxHROverride)
             XCTAssertEqual(p.hrMax, Int(tanaka.rounded()))
-            XCTAssertEqual(p.hrMaxSource, "tanaka")
+            XCTAssertEqual(p.hrMaxSource, "gellish")
         }
     }
 

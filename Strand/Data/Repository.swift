@@ -1875,10 +1875,13 @@ final class Repository: ObservableObject {
         // which engine runs over the already-detected window — detection is identical either way.
         // (V7 Pillar 3b)
         let useV2 = PuffinExperiment.experimentalSleepV2Enabled
+        let useLearned = PuffinExperiment.learnedSleepStagerEnabled
         let segs = await Task.detached(priority: .utility) {
-            let staged = useV2
+            let staged = SleepStageLearned.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr,
+                                                        useBundled: useLearned)
+                ?? (useV2
                 ? SleepStagerV2.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr, resp: resp)
-                : SleepStager.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr, resp: resp)
+                : SleepStager.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr, resp: resp))
             // #364 follow-up: motion-aware wake refinement post-pass, same toggle-shaped no-op when off
             // as every other Experimental switch here.
             return WakeMotionRefinement.apply(staged, grav: grav, steps: steps, enabled: useMotionAwareWake)

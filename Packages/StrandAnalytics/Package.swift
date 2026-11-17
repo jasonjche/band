@@ -13,7 +13,10 @@ let package = Package(
         .target(
             name: "StrandAnalytics",
             dependencies: ["WhoopProtocol", "WhoopStore"],
-            resources: [.copy("BandScores/Resources/params.json")]
+            resources: [
+                .copy("BandScores/Resources/params.json"),
+                .copy("SleepModel"),
+            ]
         ),
         // WhoopStore is declared on the TEST target as well as the library: the Oura respiration
         // scoring-exclusion tests assert on `OuraRespScale` (the seam that keeps the ring's 0x6A rows
@@ -26,6 +29,7 @@ let package = Package(
                 .copy("BandScores/Fixtures/golden_anonymised.json"),
                 .copy("BandScores/Fixtures/golden_recovery_v3.json"),
                 .copy("BandScores/Fixtures/golden_recovery_v3_perf_ours.json"),
+                .copy("sleep_stage_oracle.json"),
             ]
         ),
     ]

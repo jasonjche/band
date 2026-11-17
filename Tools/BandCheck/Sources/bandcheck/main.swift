@@ -180,6 +180,12 @@ let stressGate = stressGateCheck(
     workouts: workouts, rhrByDay: rhrByDay, cfg: cfg)
 invariants.append(stressGate.result)
 
+let rhrDef = rhrDefinitionCheck(whoopDays: whoopDays, sleeps: sleeps,
+                                hrByDay: hrByDay, cfg: cfg)
+let illnessRates = illnessRateReports(daily: daily, whoopDays: whoopDays,
+                                      importedDevice: args.importedDevice,
+                                      computedDevice: args.computedDevice)
+
 let thresholds: Thresholds
 if FileManager.default.fileExists(atPath: args.thresholds) {
     thresholds = try Thresholds.load(path: args.thresholds)
@@ -253,6 +259,28 @@ for r in invariants {
     print("  \(mark)  \(label)  fail \(r.failCount) / checked \(r.checked)  \(r.note)")
 }
 print("  stress gate  \(stressGate.latest)")
+
+print("""
+
+D. RHR DEFINITION A/B  (export RHR vs replayed sleep-window HR; not a gate)
+--------------------------------------------------------------------------------
+check                              n      MAE     bias   within tol
+""")
+for a in [rhrDef.floorAll, rhrDef.meanAll, rhrDef.floorHoldout, rhrDef.meanHoldout] {
+    let name = a.name.padding(toLength: 32, withPad: " ", startingAt: 0)
+    print("\(name) \(String(format: "%4d", a.n)) \(fmt(a.mae)) \(fmt(a.bias)) \(pct(a.withinTol))")
+}
+print("  ship mean−2.2  \(rhrDef.shipMeanMinus ? "yes (holdout MAE lower)" : "no (floor wins or n<5)")")
+
+print("""
+
+E. ILLNESS SIGNAL  (BandIllnessSignal lagged median baseline; episodes / 60 days)
+--------------------------------------------------------------------------------
+""")
+for r in illnessRates {
+    let src = r.source.padding(toLength: 14, withPad: " ", startingAt: 0)
+    print("  \(src)  nights \(r.nights)  span \(r.spanDays)  episodes \(r.episodes)  watch-nights \(r.watchNights)  per-60-days \(String(format: "%.3f", r.per60))")
+}
 
 print("""
 

@@ -165,6 +165,16 @@ final class ThresholdTests: XCTestCase {
         XCTAssertEqual(fails.first?.check, "steps_undercount")
     }
 
+    func testHeldOutCThresholdIsLoaded() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("thresholds.json")
+        let t = try Thresholds.load(path: url.path)
+        XCTAssertEqual(t.agreement["eval.strain_c_heldout"]!.maxMae, 1.1, accuracy: 1e-12)
+        XCTAssertNil(t.agreement["eval.strain_a_heldout"])
+        XCTAssertNil(t.agreement["eval.strain_b_heldout"])
+    }
+
     func testZoneMinutesPutsRemainderInSedentaryBin() {
         let start = Date(timeIntervalSince1970: 0)
         let w = WhoopWorkout(start: start, end: start.addingTimeInterval(3600),
@@ -176,5 +186,72 @@ final class ThresholdTests: XCTestCase {
         XCTAssertEqual(m[1], 24, accuracy: 1e-9)
         XCTAssertEqual(m[2], 24, accuracy: 1e-9)
         XCTAssertEqual(m[3] + m[4] + m[5], 0, accuracy: 1e-9)
+    }
+}
+
+final class StrainEvalTests: XCTestCase {
+    func testAI32WeightAtZone1MidpointIsOne() {
+        XCTAssertEqual(StrainEval.ai32Weight(pctHRR: 55), 0.9999914251, accuracy: 1e-9)
+        XCTAssertEqual(StrainEval.ai32Weight(pctHRR: 15), 0.0166046142, accuracy: 1e-9)
+        XCTAssertEqual(StrainEval.ai32Weight(pctHRR: 95), 9.5677684838, accuracy: 1e-9)
+    }
+
+    func testAI32SoftCapOnHourZone1() {
+        let load = 60 * StrainEval.ai32Weight(pctHRR: 55)
+        XCTAssertEqual(StrainEval.ai32Strain(load: load), 9.6946605014, accuracy: 1e-9)
+    }
+
+    func testPatentWeightSteps() {
+        XCTAssertEqual(StrainEval.patentWeight(v: 0, t1: 0.5, t2: 0.8), 0)
+        XCTAssertEqual(StrainEval.patentWeight(v: 0.4, t1: 0.5, t2: 0.8), 1)
+        XCTAssertEqual(StrainEval.patentWeight(v: 0.5, t1: 0.5, t2: 0.8), 1)
+        XCTAssertEqual(StrainEval.patentWeight(v: 0.7, t1: 0.5, t2: 0.8), 18)
+        XCTAssertEqual(StrainEval.patentWeight(v: 0.9, t1: 0.5, t2: 0.8), 42)
+    }
+
+    func testSplitIsTimeOrderedSeventyThirty() {
+        let items = Array(0..<10)
+        let (train, test) = StrainEval.splitTrainTest(items)
+        XCTAssertEqual(train, [0, 1, 2, 3, 4, 5, 6])
+        XCTAssertEqual(test, [7, 8, 9])
+    }
+
+    func testHeldOutCMatchesBandStrainOnSyntheticZoneMinutes() {
+        // 20 identical 60 min zone-1 bouts. WHOOP label = production BandStrain on those
+        // minutes (golden 7.9857940949). Held-out C must replay that map, not a private row.
+        let t0: TimeInterval = 1_735_689_600 // 2025-01-01 UTC, after the 2024-11 zone switch
+        var workouts: [WhoopWorkout] = []
+        for i in 0..<20 {
+            let start = Date(timeIntervalSince1970: t0 + Double(i) * 3600)
+            workouts.append(WhoopWorkout(
+                start: start, end: start.addingTimeInterval(3600),
+                startTs: Int(start.timeIntervalSince1970),
+                endTs: Int(start.timeIntervalSince1970) + 3600,
+                day: "2025-01-01", strain: 7.985794094921714, durationMin: 60,
+                z1: 100, z2: 0, z3: 0, z4: 0, z5: 0, activity: "Run",
+                energyKcal: nil, avgHR: 130, maxHR: 160))
+        }
+        let got = StrainEval.heldOutAgreements(
+            workouts: workouts, rhrByDay: ["2025-01-01": 63], hrMax: 198)
+        XCTAssertEqual(got.map(\.name), [
+            "eval.strain_a_heldout", "eval.strain_b_heldout", "eval.strain_c_heldout",
+        ])
+        let c = got.first { $0.name == "eval.strain_c_heldout" }!
+        XCTAssertEqual(c.n, 6) // 20 * 0.30
+        XCTAssertEqual(c.mae, 0, accuracy: 1e-6)
+        XCTAssertEqual(c.bias, 0, accuracy: 1e-6)
+        XCTAssertEqual(c.withinTol, 1, accuracy: 1e-12)
+        let empty = StrainEval.heldOutAgreements(workouts: [], rhrByDay: [:], hrMax: 198)
+        XCTAssertEqual(empty.map(\.n), [0, 0, 0])
+    }
+}
+
+final class RhrDefinitionTests: XCTestCase {
+    func testHoldoutTakesLastThirtyPercent() {
+        let pairs = (1...10).map {
+            Pair(day: String(format: "2026-01-%02d", $0), band: Double($0), whoop: Double($0))
+        }
+        let held = holdout(pairs)
+        XCTAssertEqual(held.map(\.day), ["2026-01-08", "2026-01-09", "2026-01-10"])
     }
 }

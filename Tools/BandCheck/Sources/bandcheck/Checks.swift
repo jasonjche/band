@@ -139,6 +139,15 @@ func agreementChecks(whoopDays: [WhoopDay], whoopWorkouts: [WhoopWorkout],
     out.append(agree("replay.workout_strain_zones", zonePairs, tolerance: 1.5))
     if cfg.verbose { print("  replay.workout_strain_zones"); printPairs(zonePairs, verbose: true) }
 
+    // Held-out A/B/C workout-strain curves (70/30 time split). Production stays on C.
+    let held = StrainEval.heldOutAgreements(
+        workouts: whoopWorkouts, rhrByDay: rhrByDayFromWhoop(whoopDays),
+        hrMax: cfg.hrMax, strainParams: cfg.strainParams)
+    out.append(contentsOf: held)
+    if cfg.verbose {
+        for a in held { print("  \(a.name) n=\(a.n) mae=\(a.mae) bias=\(a.bias)") }
+    }
+
     // Stored workout strain (imported whoop rows) vs WHOOP activity strain, matched by time.
     let storedWO = workouts.filter { $0.source.lowercased().contains("whoop") && !$0.isDetected }
     var woPairs: [Pair] = []

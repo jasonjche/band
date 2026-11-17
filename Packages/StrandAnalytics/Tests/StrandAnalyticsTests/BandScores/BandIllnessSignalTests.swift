@@ -117,6 +117,28 @@ final class BandIllnessSignalTests: XCTestCase {
         XCTAssertEqual(last?.copy, "Overnight signals look like your usual range.")
     }
 
+    /// Nights 21…7 before today form the baseline. A week of incubation-like nights must not
+    /// pull the median up, so the z on the first strained night equals the z on the seventh.
+    func testLaggedBaselineIgnoresRecentIncubation() {
+        var nights = baseline()
+        for i in 0..<7 {
+            nights.append(strained(day: BandDayKey.addDays("2024-01-29", i)!))
+        }
+        let eval = BandIllnessSignal.evaluate(nights: nights)
+        let first = eval.first { $0.day == "2024-01-29" }
+        let seventh = eval.first { $0.day == "2024-02-04" }
+        XCTAssertEqual(first?.zRhr, seventh?.zRhr)
+        XCTAssertEqual(first?.zHrv, seventh?.zHrv)
+        XCTAssertGreaterThan(first?.zRhr ?? 0, BandIllnessSignal.zThreshold)
+    }
+
+    func testMedianBasedZIgnoresOutliersThatWouldInflateSD() {
+        var hist = [Double](repeating: 60, count: 13)
+        hist.append(90)
+        let z = BandIllnessSignal.illnessZ(78, history: hist, floor: 1, invert: false)
+        XCTAssertGreaterThan(z ?? 0, BandIllnessSignal.zThreshold)
+    }
+
     private func baseline() -> [BandIllnessSignal.Night] {
         (0..<28).map { usual(day: BandDayKey.addDays(start, $0)!) }
     }

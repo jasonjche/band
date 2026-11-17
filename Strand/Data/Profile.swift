@@ -190,50 +190,50 @@ final class ProfileStore: ObservableObject {
     }
 
     /// Value to pass as `AnalyticsEngine.maxHROverride`: manual override, else observed when it
-    /// exceeds Tanaka, else nil so the engine uses Tanaka (or its default).
+    /// exceeds Gellish, else nil so the engine uses Gellish (or its default).
     ///
-    /// Precedence: override > max(observed, Tanaka) > Tanaka > existing default.
+    /// Precedence: override > max(observed, Gellish) > Gellish > existing default.
     var resolvedMaxHROverride: Double? {
         if hrMaxOverride > 0 { return Double(hrMaxOverride) }
         guard hrMaxObserved > 0 else { return nil }
         if age > 0 {
-            return Double(hrMaxObserved) > StrainScorer.tanakaHRmax(age: Double(age))
+            return Double(hrMaxObserved) > HRZones.gellishMaxHR(age: Double(age))
                 ? Double(hrMaxObserved) : nil
         }
         return Double(hrMaxObserved)
     }
 
-    /// `"override"` | `"observed"` | `"tanaka"` | `"default"` — same branch the engine logs.
+    /// `"override"` | `"observed"` | `"gellish"` | `"default"` — same branch the engine logs.
     var hrMaxSource: String {
         if hrMaxOverride > 0 { return "override" }
         if resolvedMaxHROverride != nil { return "observed" }
-        return age > 0 ? "tanaka" : "default"
+        return age > 0 ? "gellish" : "default"
     }
 
     /// The effective HRmax an EFFORT score is computed against, resolved exactly as `AnalyticsEngine`
-    /// resolves it: `resolvedMaxHROverride` when set, else Tanaka from age, else nil.
+    /// resolves it: `resolvedMaxHROverride` when set, else Gellish from age, else nil.
     ///
     /// Deliberately not `hrMax` below, which answers a different question and differs from this one in
-    /// two ways: it rounds Tanaka to an Int, and for an age-less profile it returns 208 rather than nil.
+    /// two ways: it rounds Gellish to an Int, and for an age-less profile it returns 207 rather than nil.
     /// A day scored through it would not match the day the engine stored either.
     ///
     /// #2460: today's live Effort is computed in the Today views rather than read from the scored day,
-    /// and both of them passed Tanaka here with no reference to the override. Because the ring shows
-    /// `StrainScorer.effectiveEffort(live:stored:)`, which is `max(live, stored)`, and an override is
-    /// normally set BECAUSE the real maximum is above the formula, the Tanaka value was not merely
+    /// and both of them passed the age formula here with no reference to the override. Because the ring
+    /// shows `StrainScorer.effectiveEffort(live:stored:)`, which is `max(live, stored)`, and an override
+    /// is normally set BECAUSE the real maximum is above the formula, the formula value was not merely
     /// different, it was always the larger of the two and so always the one displayed. The setting
     /// therefore did nothing until the day stopped being today. Both views now read this, so the live
     /// value and the stored day are scored against one number.
     var effortHRmax: Double? {
         if let resolved = resolvedMaxHROverride { return resolved }
-        return age > 0 ? StrainScorer.tanakaHRmax(age: Double(age)) : nil
+        return age > 0 ? HRZones.gellishMaxHR(age: Double(age)) : nil
     }
 
-    /// Override, else max(observed, Tanaka), else Tanaka (rounded). Age-less with no observed → 208.
+    /// Override, else max(observed, Gellish), else Gellish (rounded). Age-less with no observed → 207.
     var hrMax: Int {
         if hrMaxOverride > 0 { return hrMaxOverride }
-        let tanaka = Int((208 - 0.7 * Double(age)).rounded())
-        return hrMaxObserved > 0 ? max(hrMaxObserved, tanaka) : tanaka
+        let gellish = Int(HRZones.gellishMaxHR(age: Double(age)).rounded())
+        return hrMaxObserved > 0 ? max(hrMaxObserved, gellish) : gellish
     }
 
     /// Recompute `hrMaxObserved` from every stored workout peak. Writes only when the value changed.

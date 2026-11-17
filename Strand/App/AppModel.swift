@@ -2056,30 +2056,36 @@ final class AppModel: ObservableObject {
         let previous = healthAlert
         let recent = Array(days.suffix(2))
         let latest = days[days.count - 1]
-        let base = Array(days.suffix(31).dropLast(3))    // ~28 days ending 3 days ago
+        let base = days.filter { IllnessSignalEngine.isLaggedBaselineDay(candidate: $0.day, today: latest.day) }
         func mean(_ vals: [Double]) -> Double? { vals.isEmpty ? nil : vals.reduce(0, +) / Double(vals.count) }
         func rm(_ kp: (DailyMetric) -> Double?) -> Double? { mean(recent.compactMap(kp)) }
 
-        // Build each signal's illness-ward z against the personal baseline (Baselines.deviation). The
-        // baseline is folded over the full pre-recent history; a trusted baseline (≥14 nights) is the
+        // Build each signal's illness-ward z against the lagged median baseline (nights 21…7
+        // before today, Mishra 2020 / PLOS ONE 0243693). A trusted baseline (≥14 nights) is the
         // engine's gate for actually raising. Skin-temp is already a stored DEVIATION (°C), so it's
         // z-scored against a zero-centred personal spread; the others z-score the raw column.
-        func signal(_ kp: (DailyMetric) -> Double?, cfgKey: String, illnessUp: Bool) -> (IllnessSignalEngine.SignalReading, Bool)? {
-            guard let cfg = Baselines.metricCfg[cfgKey], let recentMean = rm(kp),
-                  let latestValue = kp(latest) else { return nil }
-            let state = Baselines.foldHistory(base.map(kp), cfg: cfg)
-            guard state.usable else { return (IllnessSignalEngine.SignalReading(zIllnessward: 0, present: false), false) }
-            let dev = Baselines.deviation(recentMean, state: state)
-            let latestDev = Baselines.deviation(latestValue, state: state)
+        func signal(_ kp: (DailyMetric) -> Double?, floor: Double, illnessUp: Bool) -> (IllnessSignalEngine.SignalReading, Bool)? {
+            guard let recentMean = rm(kp), let latestValue = kp(latest) else { return nil }
+            var byDay: [String: Double] = [:]
+            for d in days { if let v = kp(d) { byDay[d.day] = v } }
+            let hist = IllnessSignalEngine.laggedHistory(today: latest.day, byDay: byDay)
+            let trusted = hist.count >= IllnessSignalEngine.minLaggedBaselineNights
+            guard let zLatest = IllnessSignalEngine.medianBasedZ(value: latestValue, history: hist,
+                                                                  floor: floor, invert: !illnessUp),
+                  let zRecent = IllnessSignalEngine.medianBasedZ(value: recentMean, history: hist,
+                                                                 floor: floor, invert: !illnessUp)
+            else {
+                return (IllnessSignalEngine.SignalReading(zIllnessward: 0, present: false), false)
+            }
             // Keep the two-night smoothing, but only count a signal while the newest night
             // independently clears the same illness-ward threshold (#2533).
-            let z = illnessUp ? min(dev.z, latestDev.z) : min(-dev.z, -latestDev.z)
-            return (IllnessSignalEngine.SignalReading(zIllnessward: z), state.trusted)
+            let z = min(zLatest, zRecent)
+            return (IllnessSignalEngine.SignalReading(zIllnessward: z), trusted)
         }
 
-        let rhr = signal({ $0.restingHr.map(Double.init) }, cfgKey: "resting_hr", illnessUp: true)
-        let hrv = signal({ $0.avgHrv }, cfgKey: "hrv", illnessUp: false)
-        let resp = signal({ $0.respRateBpm }, cfgKey: "resp", illnessUp: true)
+        let rhr = signal({ $0.restingHr.map(Double.init) }, floor: BandIllnessSignal.rhrSigmaFloor, illnessUp: true)
+        let hrv = signal({ $0.avgHrv }, floor: BandIllnessSignal.hrvSigmaFloor, illnessUp: false)
+        let resp = signal({ $0.respRateBpm }, floor: BandIllnessSignal.respSigmaFloor, illnessUp: true)
         // Skin-temp deviation: a stored °C delta. Build a small zero-centred state from its own recent
         // spread so a +0.6 °C reads as a meaningful z without needing a separate baseline column.
         var skin: (IllnessSignalEngine.SignalReading, Bool)? = nil

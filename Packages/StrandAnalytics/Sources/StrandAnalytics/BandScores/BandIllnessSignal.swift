@@ -29,30 +29,34 @@ import Foundation
 ///
 /// Rules
 /// -----
-///   • Each night is z-scored against the prior 28 calendar days (missing
-///     nights skipped, never zero-filled). Minimum 14 valid nights per
-///     signal, matching `Baselines.minNightsTrust` / `TypicalVitalRange`.
-///   • A signal “fires” when its illness-ward z reaches `zThreshold` (1.5).
+///   • Each night is z-scored against nights 21 to 7 before today (Mishra
+///     2020 / PLOS ONE 0243693; WHOOP illness patent), so an incubation rise
+///     cannot contaminate the baseline. Missing nights are skipped, never
+///     zero-filled. Minimum 14 valid nights per signal, matching
+///     `Baselines.minNightsTrust` / `TypicalVitalRange`.
+///   • z is median-based: (value − median) / max(1.4826·MAD, floor).
+///   • A signal “fires” when its illness-ward z reaches `zThreshold` (2.0).
 ///     Illness-ward: RHR ↑, HRV ↓, respiratory rate ↑, skin temperature ↑.
 ///   • A night corroborates when ≥2 signals fire.
 ///   • The surface raises only when *this* night and the *previous calendar
 ///     night* both corroborate. A gap resets the count.
-///   • z = 1.5 plus the consecutive-night gate was the combination that
-///     stayed at about one episode per 60 days on this wearer's history
-///     (see the implementation report). `IllnessSignalEngine`'s z = 2.0
-///     without a consecutive gate over-fired; z = 2.0 *with* the gate was
-///     nearly silent.
+///   • z = 2.0 plus the consecutive-night gate is the fire rule. The lagged
+///     median baseline is the Mishra/WHOOP window. Its MAD is tighter than the
+///     old mean/SD, so z = 1.5 fired 1.43 episodes per 60 days on this wearer's
+///     WHOOP history; z = 2.0 restores the old rate (0.91). BandCheck section E
+///     reports it.
 ///   • Alcohol / journal tags are recorded for sanity-check counts. They
 ///     do not suppress the level and they never send a notification.
 ///
 /// Wellness copy only. Approximate. Not a diagnosis. No notifications.
 public enum BandIllnessSignal {
 
-    public static let baselineWindowDays = 28
-    public static let minBaselineNights = 14
+    public static let baselineLookbackDays = IllnessSignalEngine.baselineLookbackDays
+    public static let baselineLagDays = IllnessSignalEngine.baselineLagDays
+    public static let minBaselineNights = IllnessSignalEngine.minLaggedBaselineNights
     /// Calibrated on this wearer's history with the consecutive-night gate
     /// so the episode rate stays around one per 60 days.
-    public static let zThreshold = 1.5
+    public static let zThreshold = 2.0
     public static let minCorroboratingSignals = 2
     public static let consecutiveNights = 2
 
@@ -222,7 +226,7 @@ public enum BandIllnessSignal {
         var hrvHist: [Double] = []
         var respHist: [Double] = []
         var skinHist: [Double] = []
-        for offset in 1...baselineWindowDays {
+        for offset in baselineLagDays...baselineLookbackDays {
             guard let key = BandDayKey.addDays(night.day, -offset), let prev = byDay[key] else { continue }
             if let v = finitePositive(prev.rhr) { rhrHist.append(v) }
             if let v = finitePositive(prev.hrvMs) { hrvHist.append(v) }
@@ -239,12 +243,8 @@ public enum BandIllnessSignal {
     }
 
     static func illnessZ(_ value: Double?, history: [Double], floor: Double, invert: Bool) -> Double? {
-        guard let value, history.count >= minBaselineNights else { return nil }
-        guard let mu = mean(history), let sd = sampleSD(history) else { return nil }
-        let scale = max(sd, floor)
-        guard scale > 0 else { return nil }
-        let z = (value - mu) / scale
-        return invert ? -z : z
+        IllnessSignalEngine.medianBasedZ(value: value, history: history, floor: floor,
+                                         invert: invert, minN: minBaselineNights)
     }
 
     private static func copy(level: Level, fired: [SignalKey]) -> String {
@@ -282,18 +282,5 @@ public enum BandIllnessSignal {
     private static func finitePositive(_ value: Double?) -> Double? {
         guard let value, value.isFinite, value > 0 else { return nil }
         return value
-    }
-
-    private static func mean(_ values: [Double]) -> Double? {
-        guard !values.isEmpty else { return nil }
-        return values.reduce(0, +) / Double(values.count)
-    }
-
-    private static func sampleSD(_ values: [Double]) -> Double? {
-        let n = values.count
-        guard n >= 2, let mu = mean(values) else { return nil }
-        var ss = 0.0
-        for v in values { let d = v - mu; ss += d * d }
-        return sqrt(ss / Double(n - 1))
     }
 }

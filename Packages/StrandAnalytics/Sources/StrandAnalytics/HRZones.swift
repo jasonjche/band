@@ -3,8 +3,8 @@ import WhoopProtocol
 
 // HRZones.swift — HR-max + 5 heart-rate zones and time-in-zone from an HR stream.
 //
-// HR-max uses Tanaka et al. (2001): HRmax = 208 − 0.7 × age (gender-independent),
-// with an optional manual override. Display zones default to Karvonen heart-rate
+// HR-max uses the Gellish formula WHOOP falls back to: HRmax = 207 − 0.7 × age
+// (Gellish et al. 2007, linear). Display zones default to Karvonen heart-rate
 // reserve (WHOOP): zone n starts at RHR + {0.40, 0.60, 0.70, 0.80, 0.90} ×
 // (max − RHR), with Zone 0 below zone 1. The conventional %HRmax bands
 // (50/60/70/80/90) remain available via `zones(maxHR:)` / `zones(age:)`.
@@ -41,8 +41,8 @@ public struct HRZoneSet: Equatable, Sendable {
     public let zones: [HRZone]
     /// Max HR (bpm) the zones were built from.
     public let maxHR: Double
-    /// "tanaka" (age formula), "manual" (caller override), "hrr" (Karvonen display zones),
-    /// or "custom" (personalized boundaries).
+    /// "gellish" (age formula), "tanaka" (legacy 208 − 0.7×age), "manual" (caller override),
+    /// "hrr" (Karvonen display zones), or "custom" (personalized boundaries).
     public let source: String
 
     public init(zones: [HRZone], maxHR: Double, source: String) {
@@ -104,11 +104,25 @@ public enum HRZones {
     public static let customBPMRange: ClosedRange<Int> = 30...250
 
     /// Tanaka (2001) age-predicted max HR: 208 − 0.7 × age (gender-independent).
+    /// Kept as the published formula; Band's age fallback is `gellishMaxHR`.
     public static func tanakaMaxHR(age: Double) -> Double {
         208.0 - 0.7 * age
     }
 
-    /// Build the 5-zone set from age (Tanaka) or a manual `maxHROverride`.
+    /// Gellish et al. (2007) linear: HRmax = 207 − 0.7 × age. WHOOP's published age fallback
+    /// (https://www.whoop.com/us/en/thelocker/calculating-max-heart-rate/). The same paper's
+    /// non-linear variant is 192 − 0.007 × age²; WHOOP's locker names Gellish and uses this
+    /// linear 207 − 0.7 × age form as the starting estimate.
+    public static func gellishMaxHR(age: Double) -> Double {
+        207.0 - 0.7 * age
+    }
+
+    /// Gellish 2007 non-linear: HRmax = 192 − 0.007 × age². Not the Band fallback.
+    public static func gellishNonlinearMaxHR(age: Double) -> Double {
+        192.0 - 0.007 * age * age
+    }
+
+    /// Build the 5-zone set from age (Gellish) or a manual `maxHROverride`.
     ///
     /// - Parameters:
     ///   - age: age in years (used only when `maxHROverride` is nil).
@@ -122,8 +136,8 @@ public enum HRZones {
             maxHR = override
             source = "manual"
         } else {
-            maxHR = tanakaMaxHR(age: age)
-            source = "tanaka"
+            maxHR = gellishMaxHR(age: age)
+            source = "gellish"
         }
         return zones(maxHR: maxHR, source: source, customLowerBounds: customLowerBounds)
     }

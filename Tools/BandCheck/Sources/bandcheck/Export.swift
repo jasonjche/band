@@ -44,9 +44,9 @@ struct WhoopWorkout {
     var z4: Double
     var z5: Double
     var activity: String
-    var energyKcal: Double?
-    var avgHR: Double?
-    var maxHR: Double?
+    var energyKcal: Double? = nil
+    var avgHR: Double? = nil
+    var maxHR: Double? = nil
 }
 
 struct WhoopSleep {

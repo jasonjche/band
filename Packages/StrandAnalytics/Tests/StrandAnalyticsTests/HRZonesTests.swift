@@ -9,14 +9,20 @@ final class HRZonesTests: XCTestCase {
         XCTAssertEqual(HRZones.tanakaMaxHR(age: 40), 180.0, accuracy: 1e-9)
     }
 
+    func testGellishMaxHR() {
+        XCTAssertEqual(HRZones.gellishMaxHR(age: 30), 186.0, accuracy: 1e-9)
+        XCTAssertEqual(HRZones.gellishMaxHR(age: 40), 179.0, accuracy: 1e-9)
+        XCTAssertEqual(HRZones.gellishNonlinearMaxHR(age: 30), 192.0 - 0.007 * 900, accuracy: 1e-9)
+    }
+
     func testZonesFromAge() {
         let zs = HRZones.zones(age: 30)
-        XCTAssertEqual(zs.source, "tanaka")
-        XCTAssertEqual(zs.maxHR, 187.0, accuracy: 1e-9)
+        XCTAssertEqual(zs.source, "gellish")
+        XCTAssertEqual(zs.maxHR, 186.0, accuracy: 1e-9)
         XCTAssertEqual(zs.zones.count, 5)
-        // Zone 1 lower = 50% of 187 = 93.5; Zone 5 upper = 187.
-        XCTAssertEqual(zs.zones[0].lower, 93.5, accuracy: 1e-9)
-        XCTAssertEqual(zs.zones[4].upper, 187.0, accuracy: 1e-9)
+        // Zone 1 lower = 50% of 186 = 93; Zone 5 upper = 186.
+        XCTAssertEqual(zs.zones[0].lower, 93.0, accuracy: 1e-9)
+        XCTAssertEqual(zs.zones[4].upper, 186.0, accuracy: 1e-9)
     }
 
     func testManualOverride() {

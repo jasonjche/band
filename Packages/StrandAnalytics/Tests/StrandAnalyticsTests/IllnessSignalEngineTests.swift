@@ -148,4 +148,26 @@ final class IllnessSignalEngineTests: XCTestCase {
         let expectedSkin = IllnessSignalEngine.kZToScore * (2.5 - IllnessSignalEngine.signalZThreshold)
         XCTAssertEqual(r.score, IllnessSignalEngine.perSignalCap + expectedSkin, accuracy: 1e-9)
     }
+
+    func testLaggedHistorySkipsTheMostRecentWeek() {
+        var byDay: [String: Double] = [:]
+        for i in 0..<28 {
+            byDay[IllnessSignalEngine.addDays("2024-01-28", -i)!] = Double(i)
+        }
+        let hist = IllnessSignalEngine.laggedHistory(today: "2024-01-28", byDay: byDay)
+        XCTAssertEqual(hist.count, 15) // offsets 7...21 inclusive
+        XCTAssertFalse(IllnessSignalEngine.isLaggedBaselineDay(candidate: "2024-01-27", today: "2024-01-28"))
+        XCTAssertTrue(IllnessSignalEngine.isLaggedBaselineDay(candidate: "2024-01-21", today: "2024-01-28"))
+        XCTAssertTrue(IllnessSignalEngine.isLaggedBaselineDay(candidate: "2024-01-07", today: "2024-01-28"))
+        XCTAssertFalse(IllnessSignalEngine.isLaggedBaselineDay(candidate: "2024-01-06", today: "2024-01-28"))
+    }
+
+    func testMedianBasedZUsesMedianNotMean() {
+        var hist = [Double](repeating: 60, count: 13)
+        hist.append(120)
+        let z = IllnessSignalEngine.medianBasedZ(value: 78, history: hist, floor: 1)
+        XCTAssertGreaterThan(z ?? 0, 2)
+        let inverted = IllnessSignalEngine.medianBasedZ(value: 30, history: hist, floor: 3, invert: true)
+        XCTAssertGreaterThan(inverted ?? 0, 2)
+    }
 }

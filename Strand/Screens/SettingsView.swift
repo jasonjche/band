@@ -668,7 +668,7 @@ struct SettingsView: View {
                         hrMaxField
                         Text(profile.hrMaxOverride > 0
                              ? "Manual override"
-                             : "Auto · \(profile.hrMax) bpm (Tanaka)")
+                             : "Auto · \(profile.hrMax) bpm (Gellish)")
                             .font(StrandFont.footnote)
                             .foregroundStyle(profile.hrMaxOverride > 0
                                              ? StrandPalette.accent

@@ -108,6 +108,7 @@ struct Night {
     let truth: [String]?          // the wearer's manual restage, when this night was edited
     let v1: [String]
     let v2: [String]
+    let learned: [String]?
     let v1Veto: [String]
     let v2Veto: [String]
     let band: [Int]               // per-epoch band sleep_state, [] when the strap banked none
@@ -131,6 +132,9 @@ for r in rows {
                                                         sleepState: st.band)
     let l1 = epochLabels(v1, start: r.startTs, end: r.endTs)
     let l2 = epochLabels(v2, start: r.startTs, end: r.endTs)
+    let learnedSegs = SleepStageLearned.stageSession(start: r.startTs, end: r.endTs, grav: st.grav,
+                                                     hr: st.hr, rr: st.rr, useBundled: true)
+    let learned = learnedSegs.map { epochLabels($0, start: r.startTs, end: r.endTs) }
     let truth = r.userEdited ? epochLabels(r.stages, start: r.startTs, end: r.endTs) : nil
     let hrS = try db.hrStats(device: a.streamDevice, from: r.startTs, to: r.endTs)
     // The stale `efficiency` column is the machine's own pre-edit verdict on an edited night.
@@ -138,7 +142,7 @@ for r in rows {
 
     nights.append(Night(
         row: r, night: nightLabel(r.startTs), truth: truth,
-        v1: l1, v2: l2,
+        v1: l1, v2: l2, learned: learned,
         v1Veto: bandVetoMirror(l1, bandEpochs: bandEpochs),
         v2Veto: bandVetoMirror(l2, bandEpochs: bandEpochs),
         band: bandEpochs.count == n ? bandEpochs : [],
@@ -542,6 +546,29 @@ for nt in calRef {
     print("  \(nt.night) \(f(nt.row.durMin, 6, 0)) \(isHealthy(nt) ? "      Y" : "      -") \(f(h ?? .nan, 7, 1)) \(f(p ?? .nan, 7, 1)) \(f(err, 7, 1))")
 }
 print("  signed error (V2 - human), nights where BOTH reach REM: n=\(latErr.count)  median \(f(median(latErr), 6, 1))  mean \(f(mean(latErr), 6, 1))  MAE \(f(mae(latErr), 6, 1))")
+
+// MARK: - Learned vs V2 stage shares (aggregates only)
+
+print("""
+
+================================================================================
+LEARNED vs V2 STAGE SHARES
+================================================================================
+Pooled over nights the learned model covered (≥ 80 % HR and motion). Shares divide by all epochs
+of those nights, wake included. Deltas are learned − V2, in percentage points of the night.
+""")
+let learnedNights = nights.filter { $0.learned != nil }
+var v2All: [String] = [], learnedAll: [String] = []
+for nt in learnedNights {
+    v2All.append(contentsOf: nt.v2)
+    learnedAll.append(contentsOf: nt.learned!)
+}
+let v2Pct = stagePercentages(v2All), lnPct = stagePercentages(learnedAll)
+print("nights covered by learned \(learnedNights.count)/\(nights.count)   epochs \(learnedAll.count)")
+print("stage         V2 %    learned %     delta pp")
+for s in stageOrder {
+    print("  \(s.padding(toLength: 10, withPad: " ", startingAt: 0))\(f(v2Pct[s] ?? 0, 8, 2))\(f(lnPct[s] ?? 0, 12, 2))\(f((lnPct[s] ?? 0) - (v2Pct[s] ?? 0), 12, 2))")
+}
 
 // MARK: - G. Machine cohort split — did anything change mid-history?
 
