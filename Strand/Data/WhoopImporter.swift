@@ -37,7 +37,11 @@ enum WhoopImporter {
                 exerciseCount: nil,
                 spo2Pct: c.bloodOxygenPct,
                 skinTempDevC: c.skinTempCelsius,   // NOTE: Whoop export gives absolute °C, not a baseline deviation
-                respRateBpm: c.respiratoryRate))
+                respRateBpm: c.respiratoryRate,
+                // Whole-cycle energy and absolute skin temperature, the units the Band sleep-need
+                // and baseline models were fitted on.
+                activeKcalEst: c.energyKcal,
+                skinTempC: c.skinTempCelsius))
         }
 
         // sleeps → CachedSleepSession (stage durations encoded as JSON; export has no per-epoch timeline)

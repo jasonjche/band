@@ -966,11 +966,7 @@ struct NativeLabeledLine: View {
                     .foregroundStyle(tint)
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2.5))
-                    PointMark(
-                        x: .value("Day", point.key),
-                        y: .value("Value", point.value),
-                        series: .value("Segment", point.segment)
-                    )
+                    PointMark(x: .value("Day", point.key), y: .value("Value", point.value))
                     .foregroundStyle(tint)
                     .symbol { NativeHollowVertex(tint: tint) }
                     .annotation(position: .top, spacing: 4) {
@@ -1066,11 +1062,7 @@ struct NativeStrainRecoveryChart: View {
                     .foregroundStyle(by: .value("Metric", point.series))
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2.5))
-                    PointMark(
-                        x: .value("Day", point.day),
-                        y: .value("Value", point.value),
-                        series: .value("Metric", "\(point.series)-\(point.segment)")
-                    )
+                    PointMark(x: .value("Day", point.day), y: .value("Value", point.value))
                     .foregroundStyle(by: .value("Metric", point.series))
                     .symbol { NativeHollowVertex(tint: point.tint) }
                 }
@@ -1284,9 +1276,6 @@ struct NativeStackedWeekBars: View {
     private var ceiling: Double { max(maxY, 1) }
     private var whoop: Bool { style == .whoop }
     private var plotCeiling: Double { ceiling * 1.22 }
-    private var scale: [String: Color] {
-        Dictionary(uniqueKeysWithValues: stacks.map { ($0.title, $0.tint) })
-    }
 
     var body: some View {
         if slices.isEmpty {
@@ -1294,6 +1283,13 @@ struct NativeStackedWeekBars: View {
         } else {
             Chart {
                 ForEach(keys, id: \.self) { key in
+                    BarMark(
+                        x: .value("Day", key),
+                        y: .value("Slot", 0),
+                        width: .ratio(whoop ? 0.42 : 0.5)
+                    )
+                    .foregroundStyle(Color.clear)
+                    .accessibilityHidden(true)
                     if key == highlightKey {
                         RectangleMark(
                             x: .value("Day", key),
@@ -1315,7 +1311,13 @@ struct NativeStackedWeekBars: View {
                     .cornerRadius(whoop ? 3 : 4)
                 }
             }
-            .chartForegroundStyleScale(scale)
+            .chartForegroundStyleScale([
+                "Zone 1": NativeTokens.hrZone1,
+                "Zone 2": NativeTokens.hrZone2,
+                "Zone 3": NativeTokens.hrZone3,
+                "Zone 4": NativeTokens.hrZone4,
+                "Zone 5": NativeTokens.hrZone5,
+            ])
             .chartLegend(.hidden)
             .chartYScale(domain: 0...plotCeiling)
             .modifier(NativeChartChrome(

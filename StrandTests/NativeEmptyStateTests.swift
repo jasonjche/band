@@ -85,14 +85,14 @@ final class NativeEmptyStateTests: XCTestCase {
         let model = NativeTonightSleep.make(needMin: 480, alarmEnabled: true, alarmMinutes: 7 * 60)
         XCTAssertEqual(model?.wakeClock, "7:00 AM")
         XCTAssertEqual(model?.bedtimeClock, "11:00 PM")
-        XCTAssertEqual(model?.needClock, "8:00")
+        XCTAssertEqual(model?.needClock, "8 hr")
     }
 
     func testTonightSleepShowsNeedAloneWhenAlarmIsOff() {
         let model = NativeTonightSleep.make(needMin: 465, alarmEnabled: false, alarmMinutes: 7 * 60)
         XCTAssertNil(model?.wakeClock)
         XCTAssertNil(model?.bedtimeClock)
-        XCTAssertEqual(model?.needClock, "7:45")
+        XCTAssertEqual(model?.needClock, "7 hr 45 min")
     }
 
     private func localDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {

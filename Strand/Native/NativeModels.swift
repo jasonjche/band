@@ -771,8 +771,16 @@ enum NativeTonightSleep {
         return Model(
             bedtimeClock: bedtime,
             wakeClock: wake,
-            needClock: need.map { NativeScoreMath.duration($0) }
+            needClock: need.map { needText($0) }
         )
+    }
+
+    /// Sleep-need duration in the Tonight card. Uses `8 hr` / `7 hr 45 min` so it cannot
+    /// be read as a clock next to Bedtime and Wake.
+    static func needText(_ minutes: Double) -> String {
+        let parts = NativeScoreMath.clockParts(minutes)
+        if parts.minutes == 0 { return "\(parts.hours) hr" }
+        return "\(parts.hours) hr \(parts.minutes) min"
     }
 
     static func clock(_ minutes: Int) -> String {

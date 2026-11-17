@@ -670,11 +670,13 @@ struct NativeClockHero: View {
                     .textCase(.uppercase)
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("\(parts.hours)")
-                    .font(StrandFont.rounded(34))
-                Text("hr")
-                    .font(StrandFont.rounded(17, weight: .medium))
-                    .foregroundStyle(.secondary)
+                if parts.hours > 0 {
+                    Text("\(parts.hours)")
+                        .font(StrandFont.rounded(34))
+                    Text("hr")
+                        .font(StrandFont.rounded(17, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
                 Text("\(parts.minutes)")
                     .font(StrandFont.rounded(34))
                 Text("min")

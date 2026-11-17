@@ -376,7 +376,7 @@ private struct HomeHealthMonitorCard: View {
         var result: [(id: String, symbol: String, title: String, value: HomeMonitorValue)] = []
         if let hrv { result.append(("hrv", "waveform.path.ecg", "HRV", hrv)) }
         if let rhr { result.append(("rhr", "heart.fill", "RHR", rhr)) }
-        if let resp { result.append(("resp", "lungs.fill", "Resp.", resp)) }
+        if let resp { result.append(("resp", "lungs.fill", "RR", resp)) }
         return result
     }
 
@@ -401,8 +401,8 @@ private struct HomeHealthMonitorCard: View {
                         NativeContributorRow(
                             symbol: row.symbol,
                             title: row.title,
-                            value: labeled(row.value.value, row.value.unit),
-                            prior: row.value.typical.map { labeled($0, row.value.unit) },
+                            value: compact(row.value),
+                            prior: row.value.typical.map { compactValue($0, unit: row.value.unit) },
                             tint: row.id == "resp" ? NativePaint.respiratory(style) : NativePaint.heart(style)
                         )
                     }
@@ -414,6 +414,23 @@ private struct HomeHealthMonitorCard: View {
     private func labeled(_ value: String, _ unit: String) -> String {
         if unit.isEmpty || value.localizedCaseInsensitiveContains(unit) { return value }
         return "\(value) \(unit)"
+    }
+
+    private func compact(_ item: HomeMonitorValue) -> String {
+        if item.unit == "breaths/min" {
+            return compactValue(item.value, unit: item.unit)
+        }
+        return labeled(item.value, item.unit)
+    }
+
+    /// Half-width card: drop long units so "14.7 breaths/min" does not crush the title.
+    private func compactValue(_ value: String, unit: String) -> String {
+        var text = value
+        for token in ["breaths/min", "BPM", "ms", unit] where !token.isEmpty {
+            text = text.replacingOccurrences(of: "\u{00A0}\(token)", with: "")
+            text = text.replacingOccurrences(of: " \(token)", with: "")
+        }
+        return text.trimmingCharacters(in: .whitespaces)
     }
 }
 
@@ -1051,14 +1068,18 @@ struct NativeNoDataCard: View {
                     .foregroundStyle(style == .whoop ? NativeTokens.whoopLabel : Color.secondary)
                     .multilineTextAlignment(.center)
                 VStack(spacing: 10) {
-                    Button("Import WHOOP Export", action: onImport)
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity)
-                    Button("Pair Strap", action: onPair)
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity)
+                    Button(action: onImport) {
+                        Text("Import WHOOP Export")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    Button(action: onPair) {
+                        Text("Pair Strap")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                 }
                 .padding(.top, 8)
             }
@@ -1209,9 +1230,9 @@ enum HomeSnapshot {
         stride(from: 0, through: 18 * 60, by: 12).map { minute in
             let t = Double(minute)
             let seed = Double((minute &* 1103515245 &+ 12345) & 0xffff) / 65535
-            let diurnal = 0.55 + 0.35 * sin((t - 180) / 220)
-            let noise = (seed - 0.5) * 0.55
-            let bout = minute >= 500 && minute <= 620 ? 0.7 + 0.25 * seed : 0
+            let diurnal = 0.7 + 0.28 * sin((t - 200) / 260)
+            let noise = (seed - 0.5) * 0.22
+            let bout = minute >= 500 && minute <= 620 ? 0.85 : 0
             return NativeHourPoint(
                 time: dayStart.addingTimeInterval(t * 60),
                 value: min(3, max(0.2, diurnal + noise + bout))

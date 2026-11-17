@@ -152,7 +152,7 @@ struct NativeGallerySnapshot {
     }
 
     static var snapshotImported: [String: ImportedSleepFigures] {
-        Dictionary(uniqueKeysWithValues: weekKeys.map { key in
+        Dictionary(uniqueKeysWithValues: weekKeys.filter { $0 != "2026-11-12" }.map { key in
             (key, ImportedSleepFigures(performancePct: key == highlightKey ? 87 : 85,
                                        consistencyPct: key == highlightKey ? 79 : 82,
                                        needMin: 465, debtMin: 36))

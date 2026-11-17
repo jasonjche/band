@@ -92,7 +92,6 @@ enum NativeBandScores {
             let imported = isImported(importedSleep[d.day])
             let fig = importedSleep[d.day]
             let b = bandByDay[d.day]
-            let rec = recoveryAllowingMissing(b)
             let need = imported ? (fig?.needMin ?? b?.need) : b?.need
             let asleep = d.totalSleepMin
             let hours: Double?
@@ -102,7 +101,9 @@ enum NativeBandScores {
                 hours = nil
             }
             let day = Day(
-                recovery: imported ? d.recovery : rec,
+                // WHOOP's figure on imported days, NOOP's RecoveryScorer on strap days. The fitted Band
+                // recovery tied NOOP's on held-out days, so the scorer with no per-user parameters wins.
+                recovery: d.recovery,
                 sleepPerformance: imported ? (fig?.performancePct ?? b?.perf) : b?.perf,
                 sleepNeed: need,
                 sleepDebt: imported ? (fig?.debtMin ?? b?.debt) : b?.debt,
@@ -140,7 +141,7 @@ enum NativeBandScores {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
         }
         let workoutsByDay = Dictionary(grouping: workouts) {
-            Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs)))
+            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs)))
         }
         return days.map { day in
             let blocks = (sleepsByDay[day.day] ?? []).sorted {
@@ -154,8 +155,6 @@ enum NativeBandScores {
             let wo = workoutsByDay[day.day] ?? []
             var edwards = 0.0
             var z45 = 0.0
-            var kcalSum = 0.0
-            var hasKcal = false
             for row in wo {
                 let dur = (row.durationS ?? Double(max(0, row.endTs - row.startTs))) / 60.0
                 if let p = WorkoutZones.percents(row.zonesJSON), dur > 0 {
@@ -165,12 +164,9 @@ enum NativeBandScores {
                     edwards += parts.edwards
                     z45 += parts.z45
                 }
-                if let k = row.energyKcal {
-                    kcalSum += k
-                    hasKcal = true
-                }
             }
-            let energy = day.activeKcalEst ?? (hasKcal ? kcalSum : nil)
+            // Whole-day energy only. Workout calories are a different scale and skew sleep need.
+            let energy = day.activeKcalEst
             let asleep = day.totalSleepMin
             let inbed: Double?
             if let asleep, let raw = day.efficiency, raw > 0 {
@@ -205,23 +201,6 @@ enum NativeBandScores {
         let date = Date(timeIntervalSince1970: TimeInterval(ts))
         let c = Calendar.current.dateComponents([.hour, .minute], from: date)
         return (c.hour ?? 0) * 60 + (c.minute ?? 0)
-    }
-
-    /// Temp / SpO2 / RHR / RR are optional on-device; HRV and sleep performance are required.
-    private static func recoveryAllowingMissing(_ b: BandScores.DayOutput?) -> Double? {
-        guard let b else { return nil }
-        if let r = b.recovery { return r }
-        guard let zHrv = b.zHrv, let perf = b.perf, let params = params() else { return nil }
-        let rec = BandRecovery.run(
-            zHrv: [zHrv],
-            zRhr: [b.zRhr ?? 0],
-            zRr: [b.zRr ?? 0],
-            zTemp: [b.zTemp ?? 0],
-            zSpo2: [b.zSpo2 ?? 0],
-            perf: [perf],
-            params: params.recovery
-        )
-        return BandScores.finite(rec[0])
     }
 
     static func epochs(from stagesJSON: String?, sessionStart: Int) -> [BandHrvSws.Epoch] {
