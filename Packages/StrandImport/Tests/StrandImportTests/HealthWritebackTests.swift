@@ -1,4 +1,5 @@
 import XCTest
+import WhoopProtocol
 @testable import StrandImport
 
 final class HealthWritebackTests: XCTestCase {
@@ -353,5 +354,45 @@ final class HealthWritebackTests: XCTestCase {
         // Strap taken off to charge at wake: no newer heart rate arrives.
         XCTAssertTrue(HealthWriteback.nightIsStillOpen(endTs: 1_000, newestHeartRateTs: 1_000, now: 1_000 + 2 * 3_600 - 1))
         XCTAssertFalse(HealthWriteback.nightIsStillOpen(endTs: 1_000, newestHeartRateTs: 1_000, now: 1_000 + 2 * 3_600))
+    }
+
+    // MARK: - Workout heart-rate window / downsample
+
+    func testWorkoutHeartRateDropsSamplesOutsideTheWindow() {
+        let t = 1_700_000_000
+        let raw = [
+            HRSample(ts: t - 5, bpm: 90),
+            HRSample(ts: t, bpm: 100),
+            HRSample(ts: t + 30, bpm: 120),
+            HRSample(ts: t + 60, bpm: 130),
+            HRSample(ts: t + 61, bpm: 140),
+        ]
+        let result = HealthWriteback.workoutHeartRateSamples(raw, startTs: t, endTs: t + 60)
+        XCTAssertEqual(result.map(\.ts), [t, t + 30, t + 60])
+        XCTAssertEqual(result.map(\.bpm), [100, 120, 130])
+    }
+
+    func testWorkoutHeartRateSortsAndDedupesKeepingFirst() {
+        let t = 1_700_000_000
+        let raw = [
+            HRSample(ts: t + 15, bpm: 115),
+            HRSample(ts: t + 10, bpm: 111),
+            HRSample(ts: t, bpm: 100),
+            HRSample(ts: t + 10, bpm: 222),
+        ]
+        let result = HealthWriteback.workoutHeartRateSamples(raw, startTs: t, endTs: t + 60)
+        XCTAssertEqual(result, [
+            HRSample(ts: t, bpm: 100),
+            HRSample(ts: t + 10, bpm: 111),
+            HRSample(ts: t + 15, bpm: 115),
+        ])
+    }
+
+    func testWorkoutHeartRateDownsamplesToAboutOnePerFiveSeconds() {
+        let t = 1_700_000_000
+        let raw = (0...20).map { HRSample(ts: t + $0, bpm: 100 + $0) }
+        let result = HealthWriteback.workoutHeartRateSamples(raw, startTs: t, endTs: t + 20)
+        XCTAssertEqual(result.map(\.ts), [t, t + 5, t + 10, t + 15, t + 20])
+        XCTAssertEqual(HealthWriteback.workoutHeartRateIntervalSeconds, 5)
     }
 }

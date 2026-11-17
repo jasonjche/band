@@ -4,8 +4,8 @@ import XCTest
 final class NativeMoreListTests: XCTestCase {
 
     func testPersonalMoreListOrder() {
-        XCTAssertEqual(NativeMoreItem.titles, ["Healthspan", "Strap", "Profile", "Sleep Planner", "Assessments", "Data & Backup", "About"])
-        XCTAssertEqual(NativeMoreItem.allCases.map(\.rawValue), ["healthspan", "strap", "profile", "sleepPlanner", "assessments", "dataBackup", "about"])
+        XCTAssertEqual(NativeMoreItem.titles, ["Trends", "Healthspan", "Strap", "Profile", "Sleep Planner", "Assessments", "Data & Backup", "About"])
+        XCTAssertEqual(NativeMoreItem.allCases.map(\.rawValue), ["trends", "healthspan", "strap", "profile", "sleepPlanner", "assessments", "dataBackup", "about"])
     }
 
     func testPersonalMoreListHidesAlarmAndNotifications() {

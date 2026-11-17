@@ -3,6 +3,7 @@ import XCTest
 import SwiftUI
 import AppKit
 import WhoopStore
+import StrandAnalytics
 @testable import Strand
 
 @MainActor
@@ -64,11 +65,33 @@ final class NativeAddActivitySnapshotRender: XCTestCase {
 
     private func live(start: Date) -> some View {
         NativeActiveWorkoutScreen(
-            sport: "Running",
-            startedAt: start,
-            now: start.addingTimeInterval(12 * 60 + 34),
-            bpm: 148,
-            zone: 3,
+            snapshot: NativeActiveWorkoutSnapshot(
+                sport: "Running",
+                elapsed: "0:12:34",
+                strainText: "4.2",
+                strainBand: "Light",
+                strainFraction: 4.2 / 21,
+                bpm: 148,
+                zone: 3,
+                zoneSet: HRZones.zones(maxHR: 190, restingHR: 60),
+                avgHr: 141,
+                maxHr: 156,
+                caloriesText: "128",
+                caloriesHint: nil,
+                distanceText: "1.2 km",
+                paceText: "5:24 /km",
+                isRecovery: false,
+                isPaused: false,
+                targetFraction: nil,
+                hrPoints: [
+                    NativeHourPoint(time: start, value: 140),
+                    NativeHourPoint(time: start.addingTimeInterval(60), value: 148),
+                ],
+                route: [],
+                showsMap: true,
+                showsDistancePace: true
+            ),
+            onPause: {},
             onEnd: {}
         )
     }

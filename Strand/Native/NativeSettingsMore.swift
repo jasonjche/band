@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Personal-build More index. Order is the product contract the tests pin.
 enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
+    case trends
     case healthspan
     case strap
     case profile
@@ -14,6 +15,7 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
+        case .trends: return "Trends"
         case .healthspan: return "Healthspan"
         case .strap: return "Strap"
         case .profile: return "Profile"
@@ -26,6 +28,7 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
 
     var icon: String {
         switch self {
+        case .trends: return "chart.xyaxis.line"
         case .healthspan: return "sparkles"
         case .strap: return "badge.plus.radiowaves.right"
         case .profile: return "person.fill"
@@ -38,6 +41,7 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
 
     var color: Color {
         switch self {
+        case .trends: return NativeChrome.strain
         case .healthspan: return NativeChrome.recovery
         case .strap: return .blue
         case .profile: return .blue
@@ -49,6 +53,13 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
     }
 
     static var titles: [String] { allCases.map(\.title) }
+
+    var subtitle: String? {
+        switch self {
+        case .trends: return "All metrics over weeks and months"
+        default: return nil
+        }
+    }
 }
 
 /// Inset grouped More list for the Native iPhone shell.
@@ -68,6 +79,7 @@ struct NativeMoreList: View {
                         Spacer(minLength: 8)
                     }
                 }
+                .accessibilityHint(item.subtitle ?? "")
             }
         }
         #if os(iOS)

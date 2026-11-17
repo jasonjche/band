@@ -150,9 +150,11 @@ final class HealthKitBridge: ObservableObject {
     /// makes that structural: a read-only id added to a write list by mistake is dropped from the ask
     /// instead of bricking launch, turning a ship-and-crash into a no-op.
     private static let writeDenied: Set<HKQuantityTypeIdentifier> = [.appleSleepingWristTemperature]
-    // High-res write-back shares: the continuous 1-minute HR stream, and the energy/distance samples
-    // attached to written workouts. Kept separate from the four nightly-vital ids so the permission
-    // expansion and each independently-authorized writer remain explicit.
+    // High-res write-back shares: the continuous 1-minute HR stream, workout-attached HR (~5 s),
+    // and the energy/distance samples attached to written workouts. Kept separate from the four
+    // nightly-vital ids so the permission expansion and each independently-authorized writer remain
+    // explicit. `.heartRate` is already in this set — workout HR reuses that share type; it does
+    // not add a new authorization ask.
     private static let highResQuantityWriteIds: [HKQuantityTypeIdentifier] = [
         .heartRate, .activeEnergyBurned, .distanceWalkingRunning, .distanceCycling
     ]
@@ -1190,9 +1192,12 @@ final class HealthKitBridge: ObservableObject {
     }
 
     /// Write strap-detected and manual workouts into Health via `HKWorkoutBuilder`, with an
-    /// `activeEnergyBurned` sample when the row has energy and a distance sample for distance
-    /// sports. Workouts whose source is `apple-health` are EXCLUDED — those were imported FROM
-    /// Health, and writing them back would duplicate the user's own Apple Watch/gym-app workouts.
+    /// `activeEnergyBurned` sample when the row has energy, a distance sample for distance
+    /// sports, and the workout window's strap HR as `.heartRate` quantity samples (~1 per 5 s,
+    /// Apple Watch cadence) so a Health reader such as Strava can show an HR graph. Workouts
+    /// whose source is `apple-health` are EXCLUDED — those were imported FROM Health, and
+    /// writing them back would duplicate the user's own Apple Watch/gym-app workouts (HR
+    /// included).
     ///
     /// Dedup: `HKMetadataKeyExternalUUID = noop:workout:<startTs>` in the workout
     /// metadata; delete-then-write scoped to our own source, like sleep and the vitals. The key
@@ -1215,18 +1220,23 @@ final class HealthKitBridge: ObservableObject {
     /// A workout of ours with no external UUID at all is LEFT ALONE. It cannot be matched against the
     /// store, so deleting it would be guessing, and the #1503 sweep already exists for that class.
     ///
-    /// ONE assumption this rests on, and it is newly load-bearing: that deleting an `HKWorkout` also
-    /// removes the energy and distance samples `writeWorkouts` attached through its `HKWorkoutBuilder`.
-    /// The key-based delete already assumed it, but harmlessly, because every delete there is followed
-    /// immediately by a rewrite of the same key, so a surviving child is replaced rather than stranded.
-    /// An orphan is deleted and NOT rewritten, so if the assumption is wrong its children are left in
-    /// Health attributed to us with no workout above them, and nothing here will ever collect them.
+    /// Heart-rate samples Band attached to the workout ARE deleted here, before the workout itself.
+    /// They carry `HealthWriteback.appleHealthWorkoutHeartRateMetadataKey` = the workout key, so they
+    /// can be found without a range sweep over the 1-minute HR stream. Energy and distance samples
+    /// still have no such handle.
     ///
-    /// There is no fallback handle. `builder.addMetadata` puts the external UUID on the WORKOUT; the
-    /// samples go through `builder.addSamples` carrying no metadata at all, so they cannot be found by
-    /// key. Finding them by type and range instead would sweep `activeEnergyBurned` written by our own
-    /// vitals path and by every other source, which is precisely the blind range delete this function
-    /// exists to avoid. Verifying the assumption needs a device (#2210).
+    /// ONE remaining assumption: that deleting an `HKWorkout` also removes the energy and distance
+    /// samples `writeWorkouts` attached through its `HKWorkoutBuilder`. The key-based delete already
+    /// assumed it, but harmlessly, because every delete there is followed immediately by a rewrite of
+    /// the same key, so a surviving child is replaced rather than stranded. An orphan is deleted and
+    /// NOT rewritten, so if the assumption is wrong its children are left in Health attributed to us
+    /// with no workout above them, and nothing here will ever collect them.
+    ///
+    /// `builder.addMetadata` puts the external UUID on the WORKOUT; energy and distance go through
+    /// `builder.addSamples` carrying no metadata at all, so they cannot be found by key. Finding them
+    /// by type and range instead would sweep `activeEnergyBurned` written by our own vitals path and
+    /// by every other source, which is precisely the blind range delete this function exists to avoid.
+    /// Verifying the energy/distance assumption needs a device (#2210).
     ///
     /// Note also that this reads. `authorizationStatus` reports SHARE permission only, and HealthKit
     /// does not let an app ask whether it may read. With write granted and read withheld the query
@@ -1263,7 +1273,27 @@ final class HealthKitBridge: ObservableObject {
             store.execute(q)
         }
         guard !orphans.isEmpty else { return }
+        let orphanKeys = orphans.compactMap { $0.metadata?[HKMetadataKeyExternalUUID] as? String }
+        await deleteAuthoredWorkoutHeartRate(keys: orphanKeys)
         _ = try? await store.delete(orphans)
+    }
+
+    /// Delete Band-authored HR samples attached to the named workouts.
+    ///
+    /// Scoped to our source and the workout-HR metadata key, so the 1-minute stream and anyone
+    /// else's beats are left alone. Called before both the rewrite delete and the orphan delete
+    /// so a re-write cannot duplicate HR.
+    private func deleteAuthoredWorkoutHeartRate(keys: [String]) async {
+        guard !keys.isEmpty,
+              let type = HKQuantityType.quantityType(forIdentifier: .heartRate),
+              store.authorizationStatus(for: type) == .sharingAuthorized else { return }
+        let pred = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            HKQuery.predicateForObjects(from: HKSource.default()),
+            HKQuery.predicateForObjects(
+                withMetadataKey: HealthWriteback.appleHealthWorkoutHeartRateMetadataKey,
+                allowedValues: keys),
+        ])
+        _ = try? await store.deleteObjects(of: type, predicate: pred)
     }
 
     private func writeWorkouts(whoopStore: WhoopStore, fromTs: Int, toTs: Int) async throws {
@@ -1304,11 +1334,15 @@ final class HealthKitBridge: ObservableObject {
         }
 
         guard !rows.isEmpty else { return }
+        let rewriteKeys = rows.map(key)
         let pred = NSCompoundPredicate(andPredicateWithSubpredicates: [
             HKQuery.predicateForObjects(from: HKSource.default()),
             HKQuery.predicateForObjects(withMetadataKey: HKMetadataKeyExternalUUID,
-                                        allowedValues: rows.map(key)),
+                                        allowedValues: rewriteKeys),
         ])
+        // Drop previously attached HR before deleting the workout objects, otherwise a rewrite
+        // duplicates beats HealthKit does not remove with the workout.
+        await deleteAuthoredWorkoutHeartRate(keys: rewriteKeys)
         _ = try? await store.deleteObjects(of: .workoutType(), predicate: pred)
 
         for row in rows {
@@ -1320,7 +1354,8 @@ final class HealthKitBridge: ObservableObject {
             let builder = HKWorkoutBuilder(healthStore: store, configuration: config, device: .local())
             do {
                 try await builder.beginCollection(at: start)
-                try await builder.addMetadata([HKMetadataKeyExternalUUID: key(row)])
+                let workoutKey = key(row)
+                try await builder.addMetadata([HKMetadataKeyExternalUUID: workoutKey])
                 var extras: [HKSample] = []
                 if let kcal = row.energyKcal, kcal > 0,
                    let t = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned),
@@ -1334,6 +1369,28 @@ final class HealthKitBridge: ObservableObject {
                    store.authorizationStatus(for: t) == .sharingAuthorized {
                     extras.append(HKQuantitySample(type: t, quantity: .init(unit: .meter(), doubleValue: meters),
                                                    start: start, end: end))
+                }
+                // apple-health rows never reach this loop (filtered into `byKey` above). Their HR
+                // already lives on the original Health workout; writing it again would duplicate.
+                if let hrType = HKQuantityType.quantityType(forIdentifier: .heartRate),
+                   store.authorizationStatus(for: hrType) == .sharingAuthorized {
+                    let ids = Repository.workoutHrDeviceIds(
+                        source: row.source,
+                        activeStrapId: repo.deviceId,
+                        importedIds: repo.importedReadIds)
+                    let raw = await repo.hrSamples(deviceIds: ids, from: row.startTs, to: row.endTs,
+                                                   limit: 20_000)
+                    let unit = HKUnit.count().unitDivided(by: .minute())
+                    for sample in HealthWriteback.workoutHeartRateSamples(
+                        raw, startTs: row.startTs, endTs: row.endTs
+                    ) {
+                        let at = Date(timeIntervalSince1970: TimeInterval(sample.ts))
+                        extras.append(HKQuantitySample(
+                            type: hrType,
+                            quantity: .init(unit: unit, doubleValue: Double(sample.bpm)),
+                            start: at, end: at,
+                            metadata: [HealthWriteback.appleHealthWorkoutHeartRateMetadataKey: workoutKey]))
+                    }
                 }
                 if !extras.isEmpty { try await builder.addSamples(extras) }
                 try await builder.endCollection(at: end)

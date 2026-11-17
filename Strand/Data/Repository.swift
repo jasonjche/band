@@ -807,6 +807,17 @@ final class Repository: ObservableObject {
     /// Expose the shared store handle (used by the importer to persist mapped rows).
     func storeHandle() async -> WhoopStore? { await ensureStore() }
 
+    /// Finished display series for `(kind, day)` when the stored algorithm version matches.
+    func derivedSeries(kind: String, day: String, version: Int) async -> DerivedSeriesRow? {
+        guard let store = await ensureStore() else { return nil }
+        return try? await store.derivedSeries(kind: kind, day: day, version: version)
+    }
+
+    func upsertDerivedSeries(_ row: DerivedSeriesRow) async {
+        guard let store = await ensureStore() else { return }
+        _ = try? await store.upsertDerivedSeries(row)
+    }
+
     /// CAPTURE-D (#797): the on-device DATA VOLUME read FRESH from the STORE (never the `@Published`
     /// dashboard caches), for the Display & Performance test mode's `dataVolume` line. dbRows is the raw
     /// decoded-stream footprint; importedDays is the count of imported daily-metric rows under the active

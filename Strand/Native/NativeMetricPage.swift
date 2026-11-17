@@ -5,6 +5,7 @@ import StrandDesign
 /// Apple Health chart page: D/W/M/6M aggregation, hero, chart, Latest capsule, Trend.
 struct NativeMetricPage: View {
     var key: String
+    var showsNavigationTitle: Bool = true
     @AppStorage(NativeDaySelection.storageKey) private var nativeDayKey = ""
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @State private var repoHandle: Repository?
@@ -58,7 +59,8 @@ struct NativeMetricPage: View {
             latest: latest,
             color: pageColor,
             sourceCaption: sourceCaption,
-            scopes: allowedScopes
+            scopes: allowedScopes,
+            showsNavigationTitle: showsNavigationTitle
         )
         .background {
             NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
@@ -183,20 +185,8 @@ struct NativeMetricPage: View {
         repo: Repository, calendar: Calendar, ending: Date, mergedDaily: Double?
     ) async {
         let start = calendar.startOfDay(for: ending)
-        let from = Int(start.timeIntervalSince1970)
-        let appleHours = await repo.appleStepHours(from: from, to: from + 86_400 - 1)
-        let appleSum = appleHours.reduce(0) { $0 + $1.steps }
-        let appleDaily = (await repo.appleDailyRows(days: 3)).first { $0.day == dayKey }?.steps
-        let preferApple = NativeResolvedSteps.preferAppleHours(
-            appleSum: appleSum,
-            appleDaily: appleDaily,
-            mergedDaily: mergedDaily.map { Int($0.rounded()) }
-        )
-        hourPoints = NativeResolvedSteps.hourPoints(
-            appleHours: appleHours,
-            dayStart: start,
-            calendar: calendar,
-            preferApple: preferApple
+        hourPoints = await NativeDerivedSeries.hourlySteps(
+            repo: repo, dayKey: dayKey, dayStart: start, mergedDaily: mergedDaily, calendar: calendar
         )
     }
 

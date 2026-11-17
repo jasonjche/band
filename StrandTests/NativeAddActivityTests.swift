@@ -101,6 +101,17 @@ final class NativeAddActivityTests: XCTestCase {
         XCTAssertFalse(NativeActiveWorkoutState.shouldDiscard(elapsed: 90))
     }
 
+    func testLegacyActiveWorkoutPayloadStillLoads() throws {
+        let json = Data(#"{"sport":"Running","startTs":1700000000}"#.utf8)
+        let state = try JSONDecoder().decode(NativeActiveWorkoutState.self, from: json)
+        XCTAssertEqual(state.sport, "Running")
+        XCTAssertEqual(state.startTs, 1_700_000_000)
+        XCTAssertFalse(state.trackRoute)
+        XCTAssertFalse(state.strainTargetEnabled)
+        XCTAssertNil(state.pausedAtTs)
+        XCTAssertEqual(state.pausedDuration, 0)
+    }
+
     func testElapsedClockAndDurationLabel() {
         let start = Date(timeIntervalSince1970: 1_700_000_000)
         XCTAssertEqual(NativeActiveWorkoutState.elapsedClock(from: start, to: start), "0:00:00")

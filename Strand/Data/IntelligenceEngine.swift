@@ -1127,9 +1127,10 @@ final class IntelligenceEngine: ObservableObject {
         }
         let inDayScanCache = dayScanCache
 
-        let (scanned, skippedDayLines, updatedDayScanCache):
-            ([DayScan], [String], [String: (key: String, scan: DayScan)]) = await Task.detached(priority: .utility) {
+        let (scanned, skippedDayLines, updatedDayScanCache, freshScoredDays):
+            ([DayScan], [String], [String: (key: String, scan: DayScan)], [String]) = await Task.detached(priority: .utility) {
             var out: [DayScan] = []
+            var freshScoredDays: [String] = []
             // Days skipped below (too few HR samples) never get a DayScan, so this diagnostic can't ride
             // along on one; carried out alongside `out` and replayed through `diagnosticSink` on the main
             // actor below, same as `rhrLine`/the trace arrays. Mirrors the Kotlin `diag` sink.
@@ -1856,6 +1857,7 @@ final class IntelligenceEngine: ObservableObject {
                     dayScanCacheLocal[day] = (key: key, scan: scan)
                     dayCacheCacheable += 1
                 }
+                freshScoredDays.append(day)
                 out.append(scan)
             }
             // #1005: prune the reuse cache to the current 21-day window (the oldest day ages out at
@@ -1901,7 +1903,7 @@ final class IntelligenceEngine: ObservableObject {
                 rrTruncated: rrWindow.truncatedReads,
                 hrOwnerFlips: hrWindow.ownerFlips, rrOwnerFlips: rrWindow.ownerFlips,
                 hrReuseOff: hrWindow.reuseOffReads, rrReuseOff: rrWindow.reuseOffReads))
-            return (out, skippedDayLines, dayScanCacheLocal)
+            return (out, skippedDayLines, dayScanCacheLocal, freshScoredDays)
         }.value
         // #1005: write the loop's updated reuse cache back to the (main-actor) stored property. The pass ran
         // to completion above (`.value` awaited), so there is no concurrent access.
@@ -3032,6 +3034,19 @@ final class IntelligenceEngine: ObservableObject {
         // pass (#899 dedup deleted stale session rows but no daily changed) must refresh too, so the
         // Sleep tab stops showing the removed duplicates right away.
         if !dailies.isEmpty || !healDropped.isEmpty { await repo.refresh() }
+
+        // Finished display series for days whose scored inputs moved, plus today
+        // (today's 1 Hz stream is still growing). Off the main actor; the UI reads
+        // the same builder on a miss, so a race cannot disagree.
+        var fillDays = Set(freshScoredDays)
+        fillDays.insert(newestDay)
+        let fillList = fillDays.sorted()
+        let fillToday = newestDay
+        let fillRepo = self.repo
+        await Task.detached(priority: .utility) {
+            await NativeDerivedSeries.fill(repo: fillRepo, dayKeys: fillList, todayKey: fillToday)
+        }.value
+        markPostLoopPhase("derivedSeries")
 
         markPostLoopPhase("workouts")
         // #836/#sleep-sync: record the complete raw-analysis fingerprint this run scored against, so a later

@@ -911,6 +911,7 @@ struct NativeMetricChartPage: View {
     var scrolls: Bool = true
     var sourceCaption: String? = nil
     var scopes: [NativeMetricScope] = NativeMetricScope.pickerCases
+    var showsNavigationTitle: Bool = true
 
     var body: some View {
         NativeChrome.screen {
@@ -956,7 +957,21 @@ struct NativeMetricChartPage: View {
                     .accessibilityLabel(sourceCaption)
             }
         }
-        .navigationTitle(title)
-        .modifier(NativeInlineTitle())
+        .modifier(NativeMetricNavigationTitle(title: title, enabled: showsNavigationTitle))
+    }
+}
+
+private struct NativeMetricNavigationTitle: ViewModifier {
+    var title: String
+    var enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .navigationTitle(title)
+                .modifier(NativeInlineTitle())
+        } else {
+            content
+        }
     }
 }

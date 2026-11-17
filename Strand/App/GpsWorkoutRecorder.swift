@@ -482,6 +482,8 @@ final class GpsWorkoutRecorder: NSObject, ObservableObject {
     @Published private(set) var paceSecPerKm: Double?
     /// Number of accepted route points so far (lets the UI distinguish "recording, no fix yet" from "off").
     @Published private(set) var pointCount = 0
+    /// Live filtered track, same points `capturedRoute()` encodes. Empty until two fixes land.
+    @Published private(set) var points: [RouteMath.LatLng] = []
 
     private let manager = CLLocationManager()
     private var filter = TrackFilter()
@@ -538,6 +540,7 @@ final class GpsWorkoutRecorder: NSObject, ObservableObject {
         distanceM = 0
         paceSecPerKm = nil
         pointCount = 0
+        points = []
         rawFixCount = 0
         isRecording = true
 
@@ -569,6 +572,7 @@ final class GpsWorkoutRecorder: NSObject, ObservableObject {
             persistedPointCount = banked.count
             restoredSeam = banked.last
             pointCount = track.count
+            points = track
             distanceM = RouteMath.totalMeters(track)
             ActiveRouteStore.store(banked)
         }
@@ -674,6 +678,7 @@ final class GpsWorkoutRecorder: NSObject, ObservableObject {
         }
         guard changed else { return }
         pointCount = track.count
+        points = track
         distanceM = RouteMath.totalMeters(track)
         let elapsed = RouteMath.activeElapsedSeconds(
             startMs: startMs,

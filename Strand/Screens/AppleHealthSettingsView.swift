@@ -87,6 +87,8 @@ struct AppleHealthSettingsView: View {
             LabeledContent("Caffeine", value: "Read")
         } header: {
             Text("Data Types")
+        } footer: {
+            Text("Strap and manual workouts are written back to Apple Health with heart rate, energy, distance, and route. Workouts written to Apple Health can sync to Strava: in Strava, connect Apple Health under Settings → Manage Apps and Devices.")
         }
     }
 

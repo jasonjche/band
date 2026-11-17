@@ -314,55 +314,12 @@ struct NativeHomeView: View {
         let to = from + 86_400
         let buckets = await repo.hrSamples(from: from, to: to, bucketSeconds: 300)
         if Task.isCancelled { return }
-        let stressBuckets = await repo.hrSamples(
-            from: from, to: to, bucketSeconds: BandStress.bucketSeconds
-        )
-        if Task.isCancelled { return }
-        let rr = await repo.rrIntervals(from: from, to: to, limit: 200_000)
-        if Task.isCancelled { return }
-        let ticks = await repo.stepTicks(from: from, to: to)
-        if Task.isCancelled { return }
-        let grav = await repo.gravitySamplesUnion(from: from, to: to)
-        if Task.isCancelled { return }
         guard day == selectedKey else { return }
-
-        let sleep = repo.sleeps.last {
-            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == day
-        }
-        let sleepStartLocal = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
-        let sleepEndLocal = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
-        let boutsLocal: [(start: Date, end: Date)] = nextWorkouts.compactMap { row in
-            let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
-            guard NativeDayLogic.sleepSessionDayKey(boutStart) == day else { return nil }
-            return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
-        }
-        let rrPairs = rr.map { (ts: $0.ts, ms: Double($0.rrMs)) }
-        let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: day)
-        let samples = stressBuckets.map { (ts: $0.ts, bpm: $0.bpm) }
-        let unixBouts = boutsLocal.map {
-            (start: Int($0.start.timeIntervalSince1970), end: Int($0.end.timeIntervalSince1970))
-        }
-        let recovery = BandStress.recoveryWindows(workouts: unixBouts, samples: samples)
-        let motion = AutoWorkoutDetector.motionPoints(grav)
-        let activity = BandStress.activityBuckets(
-            bucketStarts: stressBuckets.map(\.ts),
-            steps: ticks.map { (ts: $0.ts, activityClass: $0.activityClass) },
-            motion: motion.map { (ts: $0.ts, intensity: $0.intensity) }
+        let timeline = await NativeDerivedSeries.stressDay(
+            repo: repo, dayKey: day, dayStart: start, days: repo.days,
+            sleeps: repo.sleeps, workouts: nextWorkouts
         )
-        let rmssd = await Task.detached(priority: .utility) {
-            BandStress.rmssdByBucket(rr: rrPairs)
-        }.value
         if Task.isCancelled { return }
-        let timeline = NativeHomeCharts.stressTimeline(
-            buckets: stressBuckets,
-            baselines: baselines,
-            sleepStart: sleepStartLocal,
-            sleepEnd: sleepEndLocal,
-            workouts: boutsLocal,
-            rmssdByBucket: rmssd,
-            activityBuckets: activity,
-            recovery: recovery
-        )
         let series = timeline.hours
         // Walking and recovery exclude the line. They are not drawn as activities.
         let extraExclusions: [(start: Date, end: Date)] = []

@@ -83,17 +83,6 @@ struct NativeStressPage: View {
         let calendar = Calendar.current
         let ending = NativeScopeSeries.date(from: key, calendar: calendar) ?? selectedDay
         let start = calendar.startOfDay(for: ending)
-        let from = Int(start.timeIntervalSince1970)
-        let buckets = await repo.hrSamples(
-            from: from, to: from + 86_400, bucketSeconds: BandStress.bucketSeconds
-        )
-        if Task.isCancelled { return }
-        let rr = await repo.rrIntervals(from: from, to: from + 86_400, limit: 200_000)
-        if Task.isCancelled { return }
-        let ticks = await repo.stepTicks(from: from, to: from + 86_400)
-        if Task.isCancelled { return }
-        let grav = await repo.gravitySamplesUnion(from: from, to: from + 86_400)
-        if Task.isCancelled { return }
         guard key == dayKey else { return }
         let sleep = repo.sleeps.last {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == key
@@ -112,33 +101,12 @@ struct NativeStressPage: View {
         let nextBouts = nextActivities.map { (start: $0.start, end: $0.end) }
         let nextSymbols = nextActivities.map(\.symbol)
         let days = repo.days
-        let rrPairs = rr.map { (ts: $0.ts, ms: Double($0.rrMs)) }
-        let baselines = NativeHomeCharts.stressBaselines(days: days, todayKey: key)
-        let samples = buckets.map { (ts: $0.ts, bpm: $0.bpm) }
-        let unixBouts = nextBouts.map {
-            (start: Int($0.start.timeIntervalSince1970), end: Int($0.end.timeIntervalSince1970))
-        }
-        let recovery = BandStress.recoveryWindows(workouts: unixBouts, samples: samples)
-        let motion = AutoWorkoutDetector.motionPoints(grav)
-        let activity = BandStress.activityBuckets(
-            bucketStarts: buckets.map(\.ts),
-            steps: ticks.map { (ts: $0.ts, activityClass: $0.activityClass) },
-            motion: motion.map { (ts: $0.ts, intensity: $0.intensity) }
+        let timeline = await NativeDerivedSeries.stressDay(
+            repo: repo, dayKey: key, dayStart: start, days: days,
+            sleeps: repo.sleeps, workouts: nextWorkouts, calendar: calendar
         )
-        let rmssd = await Task.detached(priority: .utility) {
-            BandStress.rmssdByBucket(rr: rrPairs)
-        }.value
         if Task.isCancelled { return }
-        let nextHours = NativeHomeCharts.stressSeries(
-            buckets: buckets,
-            baselines: baselines,
-            sleepStart: nextSleepStart,
-            sleepEnd: nextSleepEnd,
-            workouts: nextBouts,
-            rmssdByBucket: rmssd,
-            activityBuckets: activity,
-            recovery: recovery
-        )
+        let nextHours = timeline.hours
         guard key == dayKey else { return }
         let nextLevel = NativeStressResolver.level(hours: nextHours, days: days, todayKey: key)
         let nextHigh = NativeStressHistory.timeInHighMinutes(nextHours)
@@ -524,43 +492,25 @@ enum NativeStressBandTime {
         let from = Int(start.timeIntervalSince1970)
         let to = Int(ending.timeIntervalSince1970)
         guard to > from else { return [] }
-        let buckets = await repo.hrSamples(from: from, to: to, bucketSeconds: BandStress.bucketSeconds)
-        guard !buckets.isEmpty else { return [] }
-        var byDay: [String: [HRBucket]] = [:]
-        for bucket in buckets {
-            let date = Date(timeIntervalSince1970: TimeInterval(bucket.ts))
-            let key = NativeScopeSeries.key(from: date, calendar: calendar)
-            if key == todayKey { continue }
-            byDay[key, default: []].append(bucket)
-        }
-        var sleepByDay: [String: (Date, Date)] = [:]
         let sleeps = await MainActor.run { repo.sleeps }
-        for sleep in sleeps {
-            let end = Date(timeIntervalSince1970: TimeInterval(sleep.endTs))
-            let key = NativeDayLogic.sleepSessionDayKey(end)
-            guard key < todayKey else { continue }
-            sleepByDay[key] = (
-                Date(timeIntervalSince1970: TimeInterval(sleep.effectiveStartTs)),
-                end
-            )
-        }
         var result: [(weekday: Int, durations: NativeStressBandDurations)] = []
-        for key in byDay.keys.sorted() {
-            guard let dayDate = NativeScopeSeries.date(from: key, calendar: calendar) else { continue }
-            let sleep = sleepByDay[key]
-            let bouts: [(start: Date, end: Date)] = workouts.compactMap { row in
-                let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
-                guard NativeDayLogic.sleepSessionDayKey(boutStart) == key else { return nil }
-                return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
+        var missing: [String] = []
+        var cursor = start
+        while cursor < ending {
+            let key = NativeScopeSeries.key(from: cursor, calendar: calendar)
+            if key != todayKey {
+                missing.append(key)
             }
-            let hours = NativeHomeCharts.stressSeries(
-                buckets: byDay[key] ?? [],
-                baselines: NativeHomeCharts.stressBaselines(days: days, todayKey: key),
-                sleepStart: sleep?.0,
-                sleepEnd: sleep?.1,
-                workouts: bouts
+            cursor = calendar.date(byAdding: .day, value: 1, to: cursor) ?? ending
+        }
+        for key in missing {
+            guard let dayDate = NativeScopeSeries.date(from: key, calendar: calendar) else { continue }
+            let dayStart = calendar.startOfDay(for: dayDate)
+            let built = await NativeDerivedSeries.stressDay(
+                repo: repo, dayKey: key, dayStart: dayStart, days: days,
+                sleeps: sleeps, workouts: workouts, calendar: calendar
             )
-            let dur = durations(hours)
+            let dur = durations(built.hours)
             guard dur.total > 0 else { continue }
             result.append((calendar.component(.weekday, from: dayDate), dur))
         }

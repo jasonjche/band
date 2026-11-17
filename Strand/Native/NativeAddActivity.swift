@@ -1,5 +1,6 @@
 import SwiftUI
 import StrandDesign
+import StrandAnalytics
 import WhoopStore
 
 // Native add-activity flow: WHOOP's two actions (Start Activity / Add Past Activity),
@@ -79,6 +80,7 @@ enum NativeAddActivityLogic {
 
 enum NativeAddActivityRoute: Hashable {
     case startPicker
+    case startSetup(String)
     case pastForm
 }
 
@@ -88,6 +90,7 @@ struct NativeAddActivitySheet: View {
 
     @EnvironmentObject private var repo: Repository
     @EnvironmentObject private var intelligence: IntelligenceEngine
+    @EnvironmentObject private var profile: ProfileStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.nativeNavigationPath) private var homePath
 
@@ -114,7 +117,11 @@ struct NativeAddActivitySheet: View {
                             selected: nil,
                             title: "Start Activity"
                         ) { sport in
-                            startLive(sport.name)
+                            path.append(NativeAddActivityRoute.startSetup(sport.name))
+                        }
+                    case .startSetup(let sport):
+                        NativeStartActivityView(sport: sport, workouts: workouts) { trackRoute, strainTarget in
+                            startLive(sport, trackRoute: trackRoute, strainTargetEnabled: strainTarget)
                         }
                     case .pastForm:
                         NativeAddPastActivityForm(
@@ -141,8 +148,8 @@ struct NativeAddActivitySheet: View {
         .modifier(NativeLiveWorkoutPresentation(
             session: liveSession,
             isPresented: $showingLive,
-            onEnd: { elapsed in
-                Task { await endLive(elapsed: elapsed) }
+            onEnd: { result in
+                Task { await endLive(result) }
             },
             onDismiss: {
                 showingLive = false
@@ -196,10 +203,12 @@ struct NativeAddActivitySheet: View {
         #endif
     }
 
-    private func startLive(_ sport: String) {
+    private func startLive(_ sport: String, trackRoute: Bool, strainTargetEnabled: Bool) {
         let state = NativeActiveWorkoutState(
             sport: sport,
-            startTs: Int(Date().timeIntervalSince1970)
+            startTs: Int(Date().timeIntervalSince1970),
+            trackRoute: trackRoute,
+            strainTargetEnabled: strainTargetEnabled
         )
         NativeActiveWorkoutState.persist(state)
         liveSession = state
@@ -207,7 +216,7 @@ struct NativeAddActivitySheet: View {
     }
 
     @MainActor
-    private func endLive(elapsed: TimeInterval) async {
+    private func endLive(_ result: NativeLiveWorkoutResult) async {
         let session = liveSession
         showingLive = false
         liveSession = nil
@@ -216,17 +225,36 @@ struct NativeAddActivitySheet: View {
             dismiss()
             return
         }
-        if NativeActiveWorkoutState.shouldDiscard(elapsed: elapsed) {
+        if result.discarded || NativeActiveWorkoutState.shouldDiscard(elapsed: result.elapsed) {
             dismiss()
             return
         }
-        let start = session.startedAt
-        let end = start.addingTimeInterval(elapsed)
-        guard let row = WorkoutSource.buildManualRowFromSpan(
-            start: start, end: end, sport: session.sport, avgHr: nil, energyKcal: nil
+        let today = NativeDayLogic.logicalToday()
+        guard let row = NativeLiveActivityLogic.makeRow(
+            sport: session.sport,
+            startTs: session.startTs,
+            end: Date(),
+            elapsed: result.elapsed,
+            samples: result.samples,
+            maxHR: profile.effortHRmax ?? Double(profile.hrMax),
+            restingHR: NativeStrain.restingHR(
+                day: repo.days.last { $0.day == today },
+                days: repo.days,
+                dayKey: today
+            ),
+            profile: UserProfile(
+                weightKg: profile.weightKg,
+                heightCm: profile.heightCm,
+                age: Double(profile.age),
+                sex: profile.sex
+            ),
+            route: result.route
         ) else {
             dismiss()
             return
+        }
+        if let route = result.route {
+            RouteStore.store(route, startTs: row.startTs, sport: row.sport)
         }
         await persist(row, replacing: nil)
     }
@@ -540,7 +568,7 @@ struct NativeAddPastActivityForm: View {
 private struct NativeLiveWorkoutPresentation: ViewModifier {
     var session: NativeActiveWorkoutState?
     @Binding var isPresented: Bool
-    var onEnd: (TimeInterval) -> Void
+    var onEnd: (NativeLiveWorkoutResult) -> Void
     var onDismiss: () -> Void
 
     func body(content: Content) -> some View {
@@ -548,8 +576,7 @@ private struct NativeLiveWorkoutPresentation: ViewModifier {
         content.fullScreenCover(isPresented: $isPresented) {
             if let session {
                 NativeActiveWorkoutView(
-                    sport: session.sport,
-                    startedAt: session.startedAt,
+                    session: session,
                     onEnd: onEnd
                 )
             }
@@ -558,8 +585,7 @@ private struct NativeLiveWorkoutPresentation: ViewModifier {
         content.sheet(isPresented: $isPresented, onDismiss: onDismiss) {
             if let session {
                 NativeActiveWorkoutView(
-                    sport: session.sport,
-                    startedAt: session.startedAt,
+                    session: session,
                     onEnd: onEnd
                 )
             }

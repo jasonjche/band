@@ -141,27 +141,26 @@ struct NativeScorePage: View {
             }
             let from = Int(start.timeIntervalSince1970)
             let to = Int(end.timeIntervalSince1970)
-            let limit = kind == .sleep ? 200_000 : 8_000
-            let overnightHR = await repo.hrSamples(from: from, to: to, limit: limit)
-            if Task.isCancelled { return }
             guard kind == .sleep else {
+                let overnightHR = await repo.hrSamples(from: from, to: to, limit: 8_000)
+                if Task.isCancelled { return }
                 overnightHr = NativeOvernightHeart.points(from: overnightHR)
                 overnightHrAverage = nil
                 highSleepStress = nil
                 sleepStress = nil
                 return
             }
-            let ticks = overnightHR.map { (ts: $0.ts, bpm: $0.bpm) }
-            let heart = await Task.detached(priority: .utility) {
-                NativeOvernightHeart.make(samples: ticks.map { HRSample(ts: $0.ts, bpm: $0.bpm) })
-            }.value
+            let heart = await NativeDerivedSeries.overnightHeart(
+                repo: repo, start: start, end: end, dayKey: dayKey
+            )
             if Task.isCancelled { return }
             let mapped = heart.points
             let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: dayKey)
+            let overnightHR = await repo.hrSamples(from: from, to: to, limit: 200_000)
+            if Task.isCancelled { return }
             let stressModel = await Task.detached(priority: .utility) {
-                let samples = ticks.map { HRSample(ts: $0.ts, bpm: $0.bpm) }
-                return NativeSleepStress.make(
-                    hr: samples, startTs: from, endTs: to, baselines: baselines
+                NativeSleepStress.make(
+                    hr: overnightHR, startTs: from, endTs: to, baselines: baselines
                 )
             }.value
             if Task.isCancelled { return }

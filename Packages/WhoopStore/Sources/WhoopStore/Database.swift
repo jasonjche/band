@@ -1161,6 +1161,22 @@ extension WhoopStore {
             try db.create(index: "idx_hrSample_ts", on: "hrSample", columns: ["ts"],
                           options: [.ifNotExists])
         }
+        // Band chart cache: one finished display series per (kind, day). Home stress,
+        // the Stress page, Sleep overnight HR, and hourly steps previously rebuilt
+        // from raw 1 Hz HR on every open. Payload is an opaque blob (packed doubles);
+        // algorithm version lives in `version` so a code bump invalidates lazily.
+        // Additive: new table, no existing row touched. Not deviceId-keyed — Band is
+        // a single-user display cache that is rebuilt after each analysis pass.
+        migrator.registerMigration("v50-derived-series") { db in
+            try db.create(table: "derivedSeries", options: [.ifNotExists]) { t in
+                t.column("kind", .text).notNull()
+                t.column("day", .text).notNull()
+                t.column("version", .integer).notNull()
+                t.column("computedAt", .integer).notNull()
+                t.column("payload", .blob).notNull()
+                t.primaryKey(["kind", "day"])
+            }
+        }
         return migrator
     }
 }

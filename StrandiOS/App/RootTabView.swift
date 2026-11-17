@@ -572,7 +572,7 @@ struct RootTabView: View {
         .tabItem { Label("More", systemImage: nativeTodayEnabled ? "line.3.horizontal" : "ellipsis") }
     }
 
-    /// Native More index: Strap, Profile, Sleep Planner, Assessments, Data & Backup, About. Alarm lives on Home; notifications
+    /// Native More index: Trends, Healthspan, Strap, Profile, Sleep Planner, Assessments, Data & Backup, About. Alarm lives on Home; notifications
     /// are hidden on the personal shell (the strap alarm still requests permission when armed).
     private func nativeMoreList(path: Binding<NavigationPath>) -> some View {
         NativeMoreList { item in
@@ -583,6 +583,7 @@ struct RootTabView: View {
 
     private func moreDestination(_ item: NativeMoreItem) -> MoreDestination {
         switch item {
+        case .trends: return .trends
         case .healthspan: return .healthspan
         case .strap: return .devices
         case .profile: return .profile
@@ -657,7 +658,7 @@ private enum MoreDestination: Hashable {
     case live, workouts, liftLog, health, labBook, stress, breathe, intervals, rhythm
     case fusedRecord, appleHealth, miBand, dataSources, backupSync, shortcutsExport, noopLimitations
     case devices, alarms, automations, testCentre, siriShortcuts, powerSaving, settings
-    case backup, notifications, about, profile, dataBackup, healthspan, assessments, sleepPlanner
+    case backup, notifications, about, profile, dataBackup, healthspan, assessments, sleepPlanner, trends
 
     var usesAppleSettingsChrome: Bool {
         switch self {
@@ -715,6 +716,7 @@ private enum MoreDestination: Hashable {
         case .assessments:     NativePerformanceAssessmentView()
         case .sleepPlanner:    NativeSleepPlanner()
         case .healthspan:      NativeHealthspanPage()
+        case .trends:          NativeTrendsPage()
         }
     }
 }
