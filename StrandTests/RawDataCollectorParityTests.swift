@@ -1,8 +1,8 @@
 import XCTest
 @testable import Strand
 
-/// Feature-level parity guard for the Android and Apple raw-data collectors. The shared oracle lists
-/// every user-visible/session-lifecycle capability and source markers on both implementations.
+/// Feature-level guard for the Apple raw-data collector. The oracle lists every
+/// user-visible/session-lifecycle capability and source markers.
 final class RawDataCollectorParityTests: XCTestCase {
     private struct Oracle: Decodable {
         let schemaVersion: Int
@@ -39,12 +39,6 @@ final class RawDataCollectorParityTests: XCTestCase {
                 XCTAssertTrue(source.contains(marker), "Apple collector lost \(name) marker: \(marker)")
             }
         }
-    }
-
-    func testAndroidAndAppleOracleCopiesAreByteIdentical() throws {
-        let android = repoRoot.appendingPathComponent("android/app/src/test/resources/raw_data_collector_parity.json")
-        XCTAssertEqual(try oracleData(), try Data(contentsOf: android),
-                       "Raw-data collector parity oracle copies must change together")
     }
 
     func testAppleKeepsTheOffSessionRealtimeImuFailSafe() throws {

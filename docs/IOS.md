@@ -139,11 +139,6 @@ below.
 > Skip step 1 and the build still works under the default `com.noopapp` identifiers — fine if this is
 > the only NOOP install on your device.
 
-> ℹ️ **Cross-platform engineering lives in [`CROSS_PLATFORM.md`](CROSS_PLATFORM.md)** — the shared-code
-> boundary across the macOS / iOS / Android clients, the `Platform.swift` shim convention, the
-> Swift↔Kotlin parity discipline, and the playbook for adding a feature across all three. Read that
-> first if you're building something that should land on more than one client.
-
 This document describes how NOOP — a standalone, fully offline companion app for
 WHOOP straps — is positioned for iOS, what already works, and the concrete plan
 for a native iOS app target.
@@ -228,10 +223,8 @@ charts, and palette render on iOS as-is.
 
 ## The macOS app today (the reference implementation)
 
-The macOS app target lives in [`Strand/`](../Strand/). It is the reference
-implementation; Android ships as a full app (`android/`), and the iOS app is an
-experimental, build-from-source community port ([PR #42](../../../pull/42)). The macOS app composes
-the packages like this:
+The macOS app target lives in [`Strand/`](../Strand/). It is the host for app-target tests;
+the iOS app is the shipped client. The macOS app composes the packages like this:
 
 - `Strand/App/StrandApp.swift` — the `@main` SwiftUI `App`. Declares a `WindowGroup`
   and a `MenuBarExtra` scene.

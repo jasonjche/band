@@ -102,9 +102,8 @@ Packages/                       Cross-platform Swift packages (iOS 16+ / macOS 1
 Tools/Backfill/                 CLI offload/replay tool
 ```
 
-The app target (`Strand/`) is the **macOS reference implementation**. The same five packages back the
-**iOS** app (`StrandiOS/`, `StrandiOSShared/`, `StrandiOSWidgets/` — **build-from-source only**, no
-App Store/TestFlight; see [`IOS.md`](./IOS.md)) and the **Android** app (`android/`, Room/Kotlin). The
+The app target (`Strand/`) hosts shared app code and macOS tests. The same packages back the
+**iOS** app (`StrandiOS/`, `StrandiOSShared/`, `StrandiOSWidgets/` — see [`IOS.md`](./IOS.md)). The
 packages already declare `.iOS(.v16)` and `.macOS(.v13)` and keep all UI-framework code behind
 `#if canImport(UIKit)` / `#if canImport(AppKit)` guards so the cores port unchanged.
 

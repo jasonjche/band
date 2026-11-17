@@ -15,11 +15,9 @@ documented in the [privacy inventory](PRIVACY_SECURITY.md#11-network-paths-canon
 
 ## Repository layout
 
-The codebase is split into reusable, cross-platform Swift packages plus a thin platform-specific
-app layer. The **macOS app is the reference implementation**; **Android ships as a full app** under
-`android/`, and **iOS ships as a build-from-source target (`NOOPiOS`)** folded into main in v1.94 —
-built in Xcode, not distributed (no App Store / TestFlight, to stay anonymous). All reuse the same
-packages where they can.
+The codebase is split into reusable Swift packages plus a thin app layer. **iOS is the shipped
+target (`NOOPiOS`)**; the macOS `Strand` scheme hosts the app-target tests. All reuse the same
+packages.
 
 ```
 Strand/
@@ -302,32 +300,6 @@ Notes:
   `#if canImport(AppKit) / #elseif canImport(UIKit)`, so the palette, fonts, and components carry
   over. macOS-only surfaces (the menu-bar HR extra, screen-lock / Shortcut strap actions) have no
   iOS equivalent and are `#if os(macOS)`-gated; iOS uses a widget / Live Activity instead.
-
----
-
-## Android (shipped)
-
-Android ships as a **full, native client** — a separate Kotlin/Gradle module rather than a port of
-the Swift app. It lives under **`android/`** with its own `README`, and a pre-built APK
-(`NOOP-full.apk`) is published in [Releases](https://github.com/ryanbr/noop/releases). A sample-data **demo** flavour still
-exists for exploring every screen with no strap, but it's now **build-from-source only**
-(`./gradlew assembleDemoDebug`) — it is no longer published as a release asset.
-
-Toolchain:
-
-| Tool            | Version |
-|-----------------|---------|
-| JDK             | 17      |
-| Android Studio  | current stable (with Android SDK) |
-| Build system    | Gradle (Android Gradle Plugin) |
-
-The Android app re-implements the same wire protocol against Android's BLE stack (the protocol
-facts in `WhoopProtocol/Resources/whoop_protocol.json` are language-agnostic). Build and run
-instructions live in **`android/README.md`** — open the `android/` directory in Android Studio, let
-Gradle sync, and run on a device with Bluetooth (an emulator cannot reach a physical strap).
-
-> The macOS app remains the reference implementation; the shared packages define the protocol,
-> storage, analytics, and import behavior every client matches.
 
 ---
 

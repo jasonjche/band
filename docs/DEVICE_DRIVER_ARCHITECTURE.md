@@ -1,11 +1,9 @@
 # Device-driver architecture — pluggable live sources
 
-**Status:** Phase 1 implemented on `feat/multi-device-foundations` (`LiveHRSource`/`LiveHrSource`
-protocol + coordinator collapse, both platforms; macOS app compiles, Android awaits a local/CI compile).
-Companion to
-[`DEVICE_SUPPORT_ROADMAP.md`](DEVICE_SUPPORT_ROADMAP.md), which records the *per-brand protocol facts*
-(what each device exposes and how to reach it). This file covers the *internal architecture*: how a new
-brand becomes a **recipe** instead of bespoke code threaded through the coordinator on both platforms.
+**Status:** Phase 1 implemented (`LiveHRSource` protocol + coordinator collapse). Companion to
+[`BLE_REVERSE_ENGINEERING.md`](BLE_REVERSE_ENGINEERING.md). This file covers the *internal
+architecture*: how a new brand becomes a **recipe** instead of bespoke code threaded through the
+coordinator.
 
 North star is unchanged: **WHOOP is primary and must never regress.** Everything here is a refactor of
 the already-shipped experimental multi-source tier — same behaviour, less friction to extend.
@@ -123,20 +121,10 @@ lifecycle logic uses `activeSource`; the adopt UI keeps its typed handle. `tearD
 nils both. This preserves the exact adopt flow (`requestOuraAdopt` / `pendingAdoptDeviceId`) with no
 behaviour change.
 
-## Cross-platform parity (rule #1)
+No stored value, dedup key, or `.noopbak` field changes — this is an **in-memory runtime refactor
+only**, so there is no migration and no schema/backup-contract surface.
 
-The Android coordinator (`android/app/src/main/java/com/noop/ble/…`) mirrors the same shape and gets the
-**same** refactor in the **same PR**:
-
-- Kotlin `interface LiveHrSource { fun scan(); fun connect(id: …); fun stop() }`.
-- The Android source-coordinator's per-kind fields/branches collapse to one `activeSource` + a
-  `makeSource(kind)` factory, identical control flow to Swift.
-- No stored value, dedup key, or `.noopbak` field changes — this is an **in-memory runtime refactor
-  only**, so there is no migration and no schema/backup-contract surface. (Call this out explicitly in
-  the PR: parity here is *behavioural*, and the "numbers" — analytics, stored samples — are untouched by
-  construction.)
-
-### Parity checklist (for the PR)
+### Checklist (for the PR)
 - [ ] `LiveHRSource` (Swift) ⇄ `LiveHrSource` (Kotlin): same three methods, same semantics.
 - [ ] Coordinator control flow identical: same churn guards, same WHOOP-pause edge, same
       connect-by-identifier-else-scan fallback (#421), same single-active-source invariant.
@@ -164,7 +152,7 @@ Per [AGENTS.md](../AGENTS.md), know the coverage before claiming it works:
 
 - **Clean-room only.** Recognition stays name-substring (see `ExperimentalBrand`); no decompiled app
   code, no vendor firmware, no DRM circumvention. Deep decoders are re-derived, never GPL-copied — see
-  `DEVICE_SUPPORT_ROADMAP.md` and `BLE_REVERSE_ENGINEERING.md`.
+  `BLE_REVERSE_ENGINEERING.md`.
 - **Offline, on-device, anonymous.** No account, no cloud, no telemetry. Cloud "import lanes" for
   Oura/Fitbit remain off-by-default and out of scope for this refactor.
 - **Honest capability.** A brand with no open live stream (Oura live, Fitbit) must route to file import,
@@ -178,8 +166,8 @@ Per [AGENTS.md](../AGENTS.md), know the coverage before claiming it works:
 2. **Phase 2 — brand facts become a table (done).** The live-strap space is already broadly covered
    (standard 0x180D straps + Huami + Garmin broadcast + Oura), and Fitbit has no open live stream (it is
    an import lane, Phase 3) — so the highest-leverage groundwork was to make *recognising* a brand a
-   table row, not to bolt on one more driver. `DeviceBrandCatalog` (`Packages/WhoopStore` +
-   `android/…/data`) is now the single source of truth for advertised-name → `{brand, sourceKind,
+   table row, not to bolt on one more driver. `DeviceBrandCatalog` (`Packages/WhoopStore`) is now
+   the single source of truth for advertised-name → `{brand, sourceKind,
    idPrefix, canStreamLiveHR, isExperimentalTier}`. It replaced three duplicated `brandGuess` copies
    (Swift) + one (Kotlin) and the token list inside `ExperimentalBrand`, which is now a thin typed view
    over the catalog. Pinned by pure tests on both platforms. **Follow-up:** fold the wizard's
@@ -192,15 +180,15 @@ Per [AGENTS.md](../AGENTS.md), know the coverage before claiming it works:
    on both platforms. Fitbit specifically reads Google-Takeout `sleep-*` / `resting_heart_rate-*` /
    `steps-*` JSON. **Genuine remaining work is extension, not construction:** the Fitbit parser leaves
    HRV / SpO2 / breathing-rate / avg-HR `nil` (it does not fabricate them) — extending it needs the real
-   Takeout file shapes for those signals. The deeper unbuilt lanes are the *live* ones in
-   `DEVICE_SUPPORT_ROADMAP.md` (Polar PMD ECG/PPG, Xiaomi live-BLE sync), which would be the first real
-   new drivers built on the Phase 1 `LiveHRSource` abstraction.
+   Takeout file shapes for those signals. The deeper unbuilt lanes are Polar PMD ECG/PPG and Xiaomi
+   live-BLE sync, which would be the first real new drivers built on the Phase 1 `LiveHRSource`
+   abstraction.
 
 ## On-strap smoke test — the Phase 1 merge gate
 
 The Phase 1 refactor is byte-identical *by construction* (driver logic untouched, WHOOP-first isolation
 and churn guards preserved), and it compiles on both platforms, but **BLE behaviour cannot be CI- or
-Linux-tested** (`docs/CONTRIBUTING.md` §BLE). Run this once on real hardware before merging, and record
+Linux-tested** (`AGENTS.md` BLE safety contract). Run this once on real hardware before merging, and record
 the result on the PR:
 
 1. **Single-WHOOP zero-regression** (the default, dormant path): launch with only the WHOOP paired.

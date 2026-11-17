@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Catch doc comments that are silently attached to nothing.
 
-Kotlin and Swift both bind a doc comment to the declaration that FOLLOWS it, and both
-take only the LAST one when several are stacked. So a doc block can end up documenting
-nothing at all while still reading correctly to a human scrolling past the file — the
-text is right there, above the right function, in the right order. That is exactly why
-this class of mistake survives review: nothing looks wrong.
+Swift binds a doc comment to the declaration that FOLLOWS it, and takes only the LAST
+one when several are stacked. So a doc block can end up documenting nothing at all while
+still reading correctly to a human scrolling past the file — the text is right there,
+above the right function, in the right order. That is exactly why this class of mistake
+survives review: nothing looks wrong.
 
 It is caused by editing by INSERTION rather than in place — adding a new block above an
 existing one, or dropping a new declaration into the gap between a comment and the thing
@@ -22,9 +22,7 @@ Two patterns, both of which detach the FIRST block:
 
     internal const val PREFS = "..."                       <- blank line detaches the doc
 
-The cost is not cosmetic when the detached text is load-bearing. In #846 the block that
-came adrift was a parity-contract statement, and the parity rule is the first thing in
-CLAUDE.md — precisely the note you want attached to the function it constrains.
+The cost is not cosmetic when the detached text is load-bearing.
 
 Pre-existing sites are grandfathered in Tools/doc_comment_lint_baseline.txt so the gate
 starts green and blocks only NEW ones. It ratchets DOWN: fixing a baselined site prints an
@@ -41,7 +39,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-GLOBS = ("android/**/*.kt", "Strand/**/*.swift", "Packages/**/*.swift", "NOOPWatch/**/*.swift")
+GLOBS = ("Strand/**/*.swift", "Packages/**/*.swift", "NOOPWatch/**/*.swift")
 
 # A doc block sitting above these is a FILE header, not a declaration doc — the blank line
 # after it is conventional and correct, so it must not be reported.
@@ -131,9 +129,7 @@ def main() -> int:
             found = findings(path)
             if found:
                 # as_posix(), not str(): the baseline is written with forward slashes, so on Windows
-                # str() yields "android\app\..." and every baseline lookup misses. That made the gate fail
-                # on a clean tree there (every grandfathered site read as a regression, and every
-                # baselined file as IMPROVED -> 0), so a Windows contributor could not run it locally.
+                # str() yields backslashes and every baseline lookup misses.
                 rel = path.relative_to(ROOT).as_posix()
                 by_file[rel] = [f"{rel}:{ln}  {why}" for ln, why in found]
 

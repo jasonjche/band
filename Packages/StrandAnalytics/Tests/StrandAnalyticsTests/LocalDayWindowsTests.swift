@@ -301,29 +301,21 @@ final class LocalDayWindowsTests: XCTestCase {
 
     // MARK: - Both platforms agree, proven by a committed oracle
 
-    /// The committed oracle, loaded by a path derived from this file's own location.
+    /// The committed oracle, loaded from next to this file.
     ///
     /// It fails rather than skips when the file is absent: an oracle nobody can find would otherwise
-    /// let both platforms stay green while they disagree, which is the whole thing this file guards.
+    /// let the helper drift while the suite stayed green.
     private func loadOracle() throws -> [String: Any] {
-        let relative = "android/app/src/test/resources/local_day_windows_oracle.json"
-        var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        for _ in 0..<8 {
-            let candidate = dir.appendingPathComponent(relative)
-            if FileManager.default.fileExists(atPath: candidate.path) {
-                let data = try Data(contentsOf: candidate)
-                let parsed = try JSONSerialization.jsonObject(with: data)
-                return try XCTUnwrap(parsed as? [String: Any], "the oracle must be a JSON object")
-            }
-            dir = dir.deletingLastPathComponent()
-        }
-        XCTFail("committed oracle \(relative) not found above \(#filePath) — this test must not pass by default")
-        throw CocoaError(.fileNoSuchFile)
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("local_day_windows_oracle.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
+                      "committed oracle \(url.lastPathComponent) not found next to \(#filePath)")
+        let parsed = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+        return try XCTUnwrap(parsed as? [String: Any], "the oracle must be a JSON object")
     }
 
     /// Every value in the committed oracle, re-derived by the helper and compared.
-    ///
-    /// The Kotlin twin asserts the same file, so a change on either side reddens one of the two suites.
     func testSwiftTestReadsTheSameCommittedFile() throws {
         let oracle = try loadOracle()
 

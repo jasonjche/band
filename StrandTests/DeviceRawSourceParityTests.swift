@@ -4,8 +4,7 @@ import XCTest
 import WhoopStore
 import WhoopProtocol
 
-/// Apple half of the shared Android/Apple raw-source oracle. This tests the repository contract rather
-/// than duplicating expected values in Swift, so source precedence and R-R identity cannot drift quietly.
+/// Raw-source oracle for the repository contract. Source precedence and R-R identity cannot drift quietly.
 final class DeviceRawSourceParityTests: XCTestCase {
     private struct Fixture: Decodable {
         struct SourceCase: Decodable {
@@ -31,7 +30,7 @@ final class DeviceRawSourceParityTests: XCTestCase {
     private func fixture() throws -> Fixture {
         let testFile = URL(fileURLWithPath: #filePath)
         let url = testFile.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Tools/parity_cases/device_raw_sources.json")
+            .appendingPathComponent("StrandTests/Resources/device_raw_sources.json")
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
                       "Shared device-source parity fixture is missing; parity must fail closed")
         return try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
