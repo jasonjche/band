@@ -9,6 +9,8 @@ struct NativeAppSettingsView: View {
     @AppStorage(UnitPrefs.skinTempDisplayKey) private var skinTempDisplayRaw = ""
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @AppStorage(NativeStyle.storageKey) private var nativeStyleRaw = NativeStyle.apple.rawValue
+    /// Temporary: lets the user compare the three Band Age orb styles on the phone.
+    @AppStorage("band.orbStyle") private var orbStyleRaw = NativeHealthspanOrbStyle.ring.rawValue
     #if os(iOS)
     @AppStorage(ScreenIdle.strapSyncKeepAwakeKey) private var syncKeepScreenOn = false
     #endif
@@ -74,6 +76,11 @@ struct NativeAppSettingsView: View {
                     ForEach(NativeStyle.allCases) { option in
                         Text(option.label).tag(option.rawValue)
                     }
+                }
+                Picker("Band Age Orb", selection: $orbStyleRaw) {
+                    Text("Ring").tag(NativeHealthspanOrbStyle.ring.rawValue)
+                    Text("Bloom").tag(NativeHealthspanOrbStyle.bloom.rawValue)
+                    Text("Glass").tag(NativeHealthspanOrbStyle.glass.rawValue)
                 }
             } header: {
                 Text("Appearance")
