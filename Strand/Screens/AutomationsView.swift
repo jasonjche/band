@@ -78,6 +78,7 @@ struct AutomationsView: View {
         inactivityCard
         illnessCard
         healthInsightsCard
+        dailyNotificationsCard
         batteryCard
         strainTargetCard
     }
@@ -443,22 +444,68 @@ struct AutomationsView: View {
         }
     }
 
+    // MARK: - Daily notifications
+
+    private var dailyNotificationsCard: some View {
+        Section2(icon: "sun.max.fill", title: String(localized: "Daily notifications"),
+                 blurb: String(localized: "A once-a-day heads-up when last night's Recovery is scored, when a Health Monitor metric sits outside your typical range, and an optional note when the main sleep is recorded."),
+                 shortFooter: String(localized: "Local notifications. Recovery and Health Monitor are on by default."),
+                 active: behavior.recoveryReadyNotify || behavior.sleepRecordedNotify || behavior.healthMonitorNotify) {
+            VStack(spacing: 0) {
+                ToggleRow(label: String(localized: "Recovery is ready"),
+                          help: String(localized: "Posts once per day after your main sleep is scored, with the same Recovery percent the Home ring shows. Needs notification permission."),
+                          isOn: $behavior.recoveryReadyNotify)
+                    .onChangeCompat(of: behavior.recoveryReadyNotify) { on in
+                        if on {
+                            RecoveryReadyNotifier.requestAuthorization()
+                            model.evaluateDailyNotifications()
+                        }
+                    }
+                rowDivider
+                ToggleRow(label: String(localized: "Health Monitor"),
+                          help: String(localized: "Posts once in the morning if a Health Monitor metric is outside your typical range, using the same flags as the Home tile. Off while the range is still calibrating."),
+                          isOn: $behavior.healthMonitorNotify)
+                    .onChangeCompat(of: behavior.healthMonitorNotify) { on in
+                        if on {
+                            HealthMonitorNotifier.requestAuthorization()
+                            model.evaluateDailyNotifications()
+                        }
+                    }
+                rowDivider
+                ToggleRow(label: String(localized: "Sleep recorded"),
+                          help: String(localized: "Posts once when your main sleep is detected, with hours slept and sleep performance. Off by default."),
+                          isOn: $behavior.sleepRecordedNotify)
+                    .onChangeCompat(of: behavior.sleepRecordedNotify) { on in
+                        if on {
+                            SleepRecordedNotifier.requestAuthorization()
+                            model.evaluateDailyNotifications()
+                        }
+                    }
+            }
+        }
+        .onAppear {
+            // Default ON for Recovery, so visiting Automations is the moment to ask for permission.
+            if behavior.recoveryReadyNotify { RecoveryReadyNotifier.requestAuthorization() }
+            if behavior.healthMonitorNotify { HealthMonitorNotifier.requestAuthorization() }
+        }
+    }
+
     // MARK: - Strap battery alerts
 
     private var batteryCard: some View {
         Section2(icon: "battery.25", title: String(localized: "Battery alerts"),
-                 blurb: String(localized: "Get a notification when the strap battery runs low (15%) so you can top it up before tonight, and when it finishes charging."),
+                 blurb: String(localized: "Get a notification when the strap battery runs low (20%) so you can top it up before tonight, and when it finishes charging."),
                  shortFooter: String(localized: "Low and full charge notifications."),
                  active: behavior.batteryAlerts) {
             ToggleRow(label: String(localized: "Notify on low and full battery"),
-                      help: String(localized: "A reminder to recharge before bed when the strap drops to 15%, and a heads-up when it reaches 100%, each at most once per charge cycle."),
+                      help: String(localized: "A reminder to recharge before bed when the strap drops to 20%, and a heads-up when it reaches 100%, each at most once per charge cycle."),
                       isOn: $behavior.batteryAlerts)
                 .onChangeCompat(of: behavior.batteryAlerts) { on in
                     if on { BatteryNotifier.requestAuthorization() }
                 }
             if behavior.batteryAlerts {
                 ToggleRow(label: String(localized: "Predictive runtime warning"),
-                          help: String(localized: "An early \"recharge tonight\" heads-up when the strap has about a day of estimated runtime left, at most once per discharge cycle. Turn off to keep only the 15% warning."),
+                          help: String(localized: "An early \"recharge tonight\" heads-up when the strap has about a day of estimated runtime left, at most once per discharge cycle. Turn off to keep only the 20% warning."),
                           isOn: $behavior.batteryPredictiveAlerts)
             }
         }

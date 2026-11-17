@@ -57,6 +57,15 @@ final class BehaviorStore: ObservableObject {
     /// recovery-derived optimal band. Default OFF like every other automation.
     @Published var strainTargetNudge: Bool { didSet { d.set(strainTargetNudge, forKey: K.strainTargetNudge) } }
 
+    // MARK: Daily notifications
+    /// "Your Recovery is ready." once per local day after the main sleep is scored. Default ON;
+    /// still needs notification permission before it actually posts.
+    @Published var recoveryReadyNotify: Bool { didSet { d.set(recoveryReadyNotify, forKey: K.recoveryReadyNotify) } }
+    /// "Sleep recorded." once when the main sleep is detected. Default OFF.
+    @Published var sleepRecordedNotify: Bool { didSet { d.set(sleepRecordedNotify, forKey: K.sleepRecordedNotify) } }
+    /// Health Monitor out-of-range, once per morning after the main sleep is scored. Default ON.
+    @Published var healthMonitorNotify: Bool { didSet { d.set(healthMonitorNotify, forKey: K.healthMonitorNotify) } }
+
     private let d = UserDefaults.standard
     private enum K {
         static let dtAction = "behavior.doubleTapAction"
@@ -80,6 +89,9 @@ final class BehaviorStore: ObservableObject {
         static let batteryAlerts = "behavior.batteryAlerts"
         static let batteryPredictiveAlerts = "behavior.batteryPredictiveAlerts"
         static let strainTargetNudge = "behavior.strainTargetNudge"
+        static let recoveryReadyNotify = "behavior.recoveryReadyNotify"
+        static let sleepRecordedNotify = "behavior.sleepRecordedNotify"
+        static let healthMonitorNotify = "behavior.healthMonitorNotify"
     }
 
     init() {
@@ -102,6 +114,9 @@ final class BehaviorStore: ObservableObject {
         batteryAlerts = d.object(forKey: K.batteryAlerts) as? Bool ?? true
         batteryPredictiveAlerts = d.object(forKey: K.batteryPredictiveAlerts) as? Bool ?? true
         strainTargetNudge = d.object(forKey: K.strainTargetNudge) as? Bool ?? false
+        recoveryReadyNotify = d.object(forKey: K.recoveryReadyNotify) as? Bool ?? true
+        sleepRecordedNotify = d.object(forKey: K.sleepRecordedNotify) as? Bool ?? false
+        healthMonitorNotify = d.object(forKey: K.healthMonitorNotify) as? Bool ?? true
     }
 
     // MARK: Charge baseline recalibration

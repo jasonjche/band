@@ -120,19 +120,15 @@ enum NativePaint {
     }
 
     static func sleepStage(named name: String, style: NativeStyle) -> Color {
-        if style == .whoop {
-            switch name {
-            case "Awake": return NativeTokens.whoopSleepAwake
-            case "REM": return NativeTokens.whoopSleepREM
-            case "Deep": return NativeTokens.whoopSleepDeep
-            default: return NativeTokens.whoopSleepLight
-            }
-        }
-        switch name {
-        case "Awake": return NativeTokens.sleepAwake
-        case "REM": return NativeTokens.sleepREM
-        case "Deep": return NativeTokens.sleepDeep
-        default: return NativeTokens.sleepCore
+        switch NativeSleepStageKind.parse(name) {
+        case .awake:
+            return style == .whoop ? NativeTokens.whoopSleepAwake : NativeChrome.sleepAwake
+        case .rem:
+            return style == .whoop ? NativeTokens.whoopSleepREM : NativeChrome.sleepREM
+        case .deep:
+            return style == .whoop ? NativeTokens.whoopSleepDeep : NativeChrome.sleepDeep
+        case .light:
+            return style == .whoop ? NativeTokens.whoopSleepLight : NativeChrome.sleepLight
         }
     }
 

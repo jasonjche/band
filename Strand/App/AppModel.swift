@@ -370,6 +370,9 @@ final class AppModel: ObservableObject {
                 self?.evaluateIllness(days)
                 self?.evaluateStrainTarget()
             }
+            // Daily recovery-ready / sleep-recorded notifications: same days republish the Home
+            // rings already wait on. Safe to fire freely; each notifier carries its own day gate.
+            self?.evaluateDailyNotifications()
             // Keep the battery night-guard's learned bedtime warm off the same signal (throttled inside).
             self?.refreshHabitualMidsleep()
         }.store(in: &hrCancellables)
@@ -2185,6 +2188,83 @@ final class AppModel: ObservableObject {
             enabled: behavior.strainTargetNudge)
     }
 
+    /// WHOOP-style daily notifications. Recovery percent and sleep performance come from the
+    /// same `NativeBandScores` snapshot the Home rings read, keyed on `NativeDayLogic.logicalToday`
+    /// (not a carried prior-day row), so the notification cannot disagree with the ring.
+    func evaluateDailyNotifications() {
+        Task { [weak self] in
+            guard let self else { return }
+            let todayKey = NativeDayLogic.logicalToday()
+            let workouts = await self.repo.workoutRows(days: 120)
+            let scores = NativeBandScores.resolve(
+                days: self.repo.days,
+                sleeps: self.repo.sleeps,
+                workouts: workouts,
+                importedSleep: self.repo.importedSleep)
+            let scored = scores.byDay[todayKey]
+            let todaySleeps = self.repo.sleeps.filter {
+                NativeDayLogic.sleepSessionDayKey(
+                    Date(timeIntervalSince1970: TimeInterval($0.endTs))) == todayKey
+            }
+            let blocks = todaySleeps.map {
+                SleepStageTotals.NightBlock(start: $0.effectiveStartTs, end: $0.endTs)
+            }
+            let main = SleepStageTotals.mainNightIndex(
+                blocks,
+                offsetSec: TimeZone.current.secondsFromGMT(),
+                habitualMidsleepSec: self.habitualMidsleepCache)
+                .map { todaySleeps[$0] }
+            let nowSec = Int(Date().timeIntervalSince1970)
+            let durationMin = main.map { Double($0.endTs - $0.effectiveStartTs) / 60.0 } ?? 0
+            let isMain = RecoveryReadyNotifier.RecoveryReadyPolicy.isMainSleep(durationMinutes: durationMin)
+            let sleepEnded = (main?.endTs ?? Int.max) <= nowSec
+            let todayRow = self.repo.days.last { $0.day == todayKey }
+            let asleep = NativeDayLogic.asleepMinutes(
+                light: todayRow?.lightMin, deep: todayRow?.deepMin, rem: todayRow?.remMin,
+                totalSleepMin: todayRow?.totalSleepMin)
+            let hrvZ: Double?
+            if let params = NativeBandScores.params() {
+                let inputs = NativeBandScores.dayInputs(
+                    days: self.repo.days, sleeps: self.repo.sleeps,
+                    workouts: workouts, importedSleep: self.repo.importedSleep)
+                hrvZ = BandScores.evaluate(days: inputs, params: params)
+                    .first { $0.day == todayKey }?.zHrv
+            } else {
+                hrvZ = nil
+            }
+            RecoveryReadyNotifier.onDayUpdate(
+                day: todayKey,
+                recovery: scored?.recovery,
+                hrvZ: hrvZ,
+                isMainSleep: isMain,
+                sleepEnded: sleepEnded,
+                enabled: self.behavior.recoveryReadyNotify)
+            SleepRecordedNotifier.onDayUpdate(
+                day: todayKey,
+                asleepMinutes: asleep,
+                sleepPerformance: scored?.sleepPerformance,
+                isMainSleep: isMain,
+                sleepEnded: sleepEnded,
+                enabled: self.behavior.sleepRecordedNotify)
+            let healthReport = NativeHealthRange.report(
+                days: self.repo.days,
+                todayKey: todayKey,
+                temperature: self.displayTemperatureUnit)
+            let nightsWorn = NativeHealthMonitorMath.nightsWorn(
+                days: self.repo.days, todayKey: todayKey)
+            let illnessPosted = IllnessNotifier.didNotify(on: todayKey)
+                || IllnessNotifier.didNotify(on: Repository.localDayKey(Date()))
+            HealthMonitorNotifier.onDayUpdate(
+                day: todayKey,
+                report: healthReport,
+                isMainSleep: isMain,
+                sleepEnded: sleepEnded,
+                nightsWorn: nightsWorn,
+                illnessPostedToday: illnessPosted,
+                enabled: self.behavior.healthMonitorNotify)
+        }
+    }
+
     /// Re-run the illness watch over the cached history. Called when the Automations toggle
     /// flips , the repo.$days sink only fires on data changes, so a flip would otherwise wait
     /// for the next refresh.
@@ -2546,6 +2626,7 @@ final class AppModel: ObservableObject {
                                                                    deviceId: deviceId, trace: importTraceSink())
                 try? await store.checkpointWAL()   // reclaim the WAL a bulk import grew (#590)
                 await repo.refresh()
+                await profile.syncObservedHRMax(from: repo)
                 let days = summary.countsByCategory["cycles"] ?? 0
                 let sleeps = summary.countsByCategory["sleeps"] ?? 0
                 let workouts = summary.countsByCategory["workouts"] ?? 0

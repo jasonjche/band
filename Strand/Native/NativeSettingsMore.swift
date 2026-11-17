@@ -2,8 +2,11 @@ import SwiftUI
 
 /// Personal-build More index. Order is the product contract the tests pin.
 enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
+    case healthspan
     case strap
     case profile
+    case sleepPlanner
+    case assessments
     case dataBackup
     case about
 
@@ -11,8 +14,11 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
+        case .healthspan: return "Healthspan"
         case .strap: return "Strap"
         case .profile: return "Profile"
+        case .sleepPlanner: return "Sleep Planner"
+        case .assessments: return "Assessments"
         case .dataBackup: return "Data & Backup"
         case .about: return "About"
         }
@@ -20,8 +26,11 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
 
     var icon: String {
         switch self {
+        case .healthspan: return "sparkles"
         case .strap: return "badge.plus.radiowaves.right"
         case .profile: return "person.fill"
+        case .sleepPlanner: return "bed.double.fill"
+        case .assessments: return "calendar"
         case .dataBackup: return "externaldrive.fill"
         case .about: return "info.circle.fill"
         }
@@ -29,8 +38,11 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
 
     var color: Color {
         switch self {
+        case .healthspan: return NativeChrome.recovery
         case .strap: return .blue
         case .profile: return .blue
+        case .sleepPlanner: return NativeChrome.sleep
+        case .assessments: return .blue
         case .dataBackup: return Color(white: 0.45)
         case .about: return .gray
         }

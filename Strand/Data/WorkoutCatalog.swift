@@ -1,4 +1,5 @@
 import Foundation
+import StrandAnalytics
 
 /// The named-sport catalogue for the workout pickers (manual add/edit + live tracking), the Apple-side
 /// mirror of Android's `WorkoutSport.all` (built from `ExerciseTypes.NAMES` + `EXTRA`). The two lists
@@ -16,10 +17,24 @@ enum WorkoutCatalog {
 
     /// One selectable activity. `name` is the verbatim stored/display label.
     struct Sport: Identifiable, Hashable {
+        enum Category: String, Hashable, Sendable {
+            /// Strain activity: cardio, strength, or mixed. Adds activity strain.
+            case strain
+            /// WHOOP Recovery activity: HR is recorded, activity strain is not.
+            case recovery
+        }
+
         let name: String
         /// Types where a route makes sense → GPS hint / default on.
         let isDistanceSport: Bool
+        let category: Category
         var id: String { name }
+
+        init(name: String, isDistanceSport: Bool, category: Category = .strain) {
+            self.name = name
+            self.isDistanceSport = isDistanceSport
+            self.category = category
+        }
     }
 
     /// Ordered to match Android `WorkoutSport.all`: common / distance first, the rest, the EXTRA
@@ -61,7 +76,7 @@ enum WorkoutCatalog {
         Sport(name: "Dancing", isDistanceSport: false),
         Sport(name: "Golf", isDistanceSport: false),
         Sport(name: "Climbing", isDistanceSport: false),
-        Sport(name: "Stretching", isDistanceSport: false),
+        Sport(name: "Stretching", isDistanceSport: false, category: .recovery),
         // Snow sports cover ground → a route makes sense, so GPS defaults on. (#768)
         Sport(name: "Skiing", isDistanceSport: true),
         Sport(name: "Snowboarding", isDistanceSport: true),
@@ -116,7 +131,7 @@ enum WorkoutCatalog {
         Sport(name: "Spikeball", isDistanceSport: false),
         // WHOOP-parity batch: activities in WHOOP's catalogue NOOP lacked. All ride EXTRA on Android
         // (no dedicated HC type) so GPS defaults off, like every other extra. Ordered to match.
-        Sport(name: "Meditation", isDistanceSport: false),
+        Sport(name: "Meditation", isDistanceSport: false, category: .recovery),
         Sport(name: "Horseback riding", isDistanceSport: false),
         Sport(name: "Wheelchair", isDistanceSport: false),
         Sport(name: "Gaming", isDistanceSport: false),
@@ -143,6 +158,21 @@ enum WorkoutCatalog {
         Sport(name: "Parkour", isDistanceSport: false),
         Sport(name: "Polo", isDistanceSport: false),
         Sport(name: "Skydiving", isDistanceSport: false),
+        // WHOOP Recovery activities: HR is stored, activity strain is not.
+        // Regular Yoga / Pilates stay strain (with muscular when sets are logged);
+        // Restorative Yoga is recovery. Names match WHOOP's public list where we
+        // keep a single Sauna / Ice Bath rather than every sauna variant.
+        Sport(name: "Breathwork", isDistanceSport: false, category: .recovery),
+        Sport(name: "Cold Shower", isDistanceSport: false, category: .recovery),
+        Sport(name: "Contrast Therapy", isDistanceSport: false, category: .recovery),
+        Sport(name: "Foam Rolling", isDistanceSport: false, category: .recovery),
+        Sport(name: "Hot Tub", isDistanceSport: false, category: .recovery),
+        Sport(name: "Ice Bath", isDistanceSport: false, category: .recovery),
+        Sport(name: "Massage Therapy", isDistanceSport: false, category: .recovery),
+        Sport(name: "Restorative Yoga", isDistanceSport: false, category: .recovery),
+        Sport(name: "Sauna", isDistanceSport: false, category: .recovery),
+        Sport(name: "Steam Room", isDistanceSport: false, category: .recovery),
+        Sport(name: "Tai Chi", isDistanceSport: false, category: .recovery),
         Sport(name: "Other", isDistanceSport: false),
     ]
 
@@ -178,5 +208,14 @@ enum WorkoutCatalog {
     static func isOnFoot(_ sportName: String) -> Bool {
         let q = sportName.trimmingCharacters(in: .whitespaces)
         return onFootSportNames.contains { $0.caseInsensitiveCompare(q) == .orderedSame }
+    }
+
+    static var strainSports: [Sport] { all.filter { $0.category == .strain } }
+    static var recoverySports: [Sport] { all.filter { $0.category == .recovery } }
+
+    /// Catalogue match, else the scoring classifier (free-typed "cold plunge", "dry sauna").
+    static func isRecovery(_ sportName: String) -> Bool {
+        if let sport = sport(named: sportName) { return sport.category == .recovery }
+        return ActivityScoring.kind(sportName) == .recovery
     }
 }

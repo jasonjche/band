@@ -458,6 +458,7 @@ final class NativeScopeSeriesTests: XCTestCase {
         XCTAssertEqual(segments.map(\.key), ["2026-10-01", "2026-10-04", "2026-10-20"])
         XCTAssertEqual(NativeScopePlotMath.barUnit(scope: .week), .day)
         XCTAssertEqual(NativeScopePlotMath.barUnit(scope: .sixMonths), .weekOfYear)
+        XCTAssertGreaterThan(NativeScopePlotMath.plotTrailing, NativeScopePlotMath.plotLeading)
         XCTAssertTrue(NativeScopePlotMath.showsVertices(scope: .week, knownCount: 2))
         let clipped = NativeScopePlotMath.clippedTypical((-6_273)...35_137, yDomain: 0...10_000)
         XCTAssertEqual(clipped?.lowerBound ?? -1, 0, accuracy: 1e-9)
@@ -494,6 +495,33 @@ final class NativeScopeSeriesTests: XCTestCase {
         )
         XCTAssertEqual(NativeScopeSummary.periodPhrase(.month), "this month")
         XCTAssertEqual(NativeScopeSummary.priorPhrase(.month), "30-day")
+        XCTAssertNil(
+            NativeScopeSummary.sentence(
+                title: "VO₂ Max",
+                scope: .month,
+                kind: .rate,
+                current: 43.1,
+                previous: nil,
+                format: { String(format: "%.1f", $0) },
+                higherIsBetter: true
+            ),
+            "a sentence that only restates the hero is omitted"
+        )
+    }
+
+    func testDailyMetricsDropDayScopeUnlessHourly() {
+        XCTAssertFalse(NativeMetricScope.pickerCases(for: "vo2max").contains(.day))
+        XCTAssertFalse(NativeMetricScope.pickerCases(for: "weight").contains(.day))
+        XCTAssertFalse(NativeMetricScope.pickerCases(for: "hrv").contains(.day))
+        XCTAssertFalse(NativeMetricScope.pickerCases(for: "rhr").contains(.day))
+        XCTAssertFalse(NativeMetricScope.pickerCases(for: "resp_rate").contains(.day))
+        XCTAssertFalse(NativeMetricScope.pickerCases(for: "recovery").contains(.day))
+        XCTAssertFalse(NativeMetricScope.pickerCases(for: "asleep_min").contains(.day))
+        XCTAssertFalse(NativeMetricScope.pickerCases(for: "energy_kcal").contains(.day))
+        XCTAssertEqual(NativeMetricScope.pickerCases(for: "vo2max"), [.week, .month, .sixMonths])
+        XCTAssertTrue(NativeMetricScope.pickerCases(for: "steps").contains(.day))
+        XCTAssertTrue(NativeMetricScope.pickerCases(for: "avg_hr").contains(.day))
+        XCTAssertEqual(NativeMetricScope.pickerCases(for: "steps").first, .day)
     }
 
     func testLineYTicksAreRoundNumbers() {

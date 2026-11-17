@@ -693,6 +693,9 @@ enum NativeActivity {
 /// `TypicalVitalRange` (the same function as the metric-page typical band). Missing metrics
 /// are omitted. Home's header and the Health Monitor page both read `report`.
 enum NativeHealthRange {
+    /// Respiratory Rate, SpO₂, RHR, HRV, Skin Temp — Home tile and the page share this count.
+    static let metricSlots = 5
+
     struct Summary: Equatable {
         var inRange: Int
         var measured: Int
@@ -709,6 +712,23 @@ enum NativeHealthRange {
 
         /// Same wording as `caption` — the Home card header.
         var headerTrailing: String? { caption }
+
+        /// Home tile headline. Green path is only "Within Range"; any out-of-range metric is red.
+        var tileHeadline: String {
+            guard measured > 0 else { return "No Data" }
+            if judged == 0 { return "Building baseline" }
+            if outside == 0 { return "Within Range" }
+            if outside == 1 { return "1 metric outside range" }
+            return "\(outside) metrics outside range"
+        }
+
+        /// WHOOP Home tile subline, e.g. "5/5 Metrics". Always of 5 slots.
+        var tileDetail: String {
+            guard measured > 0 else { return "" }
+            return "\(inRange)/\(NativeHealthRange.metricSlots) Metrics"
+        }
+
+        var tileWithinRange: Bool { measured > 0 && judged > 0 && outside == 0 }
     }
 
     struct Vital: Equatable, Identifiable {
@@ -742,8 +762,8 @@ enum NativeHealthRange {
         var vitals: [Vital]
 
         var summary: Summary {
-            let outside = vitals.filter(\.flagged).count
-            let judged = vitals.filter { $0.status != .building || $0.flagged }.count
+            let outside = vitals.filter { $0.status == .above || $0.status == .below }.count
+            let judged = vitals.filter { $0.status != .building }.count
             return Summary(
                 inRange: vitals.filter(\.inRange).count,
                 measured: vitals.count,

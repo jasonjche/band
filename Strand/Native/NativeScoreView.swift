@@ -28,6 +28,7 @@ struct NativeScorePage: View {
     @State private var workouts: [WorkoutRow] = []
     @State private var workoutsSeq = -1
     @State private var overnightHr: [NativeHourPoint] = []
+    @State private var overnightHrAverage: Double?
     @State private var highSleepStress: Double?
     @State private var sleepStress: NativeSleepStress.Model?
     @State private var sleepEdit: NativeSleepEditTarget?
@@ -69,6 +70,7 @@ struct NativeScorePage: View {
                     sleepStart: model.sleepStart,
                     sleepEnd: model.sleepEnd,
                     overnightHr: overnightHr,
+                    overnightHrAverage: overnightHrAverage,
                     awakeTypical: model.awakeTypical,
                     dayKey: dayKey,
                     needMinutes: NativeSleepNeed.needMinutes(sleepDetail?.need) ?? model.sleepNeedMin,
@@ -131,6 +133,7 @@ struct NativeScorePage: View {
             guard handlesReady else { return }
             guard let repo = repoHandle, let start = dayModel?.sleepStart, let end = dayModel?.sleepEnd else {
                 overnightHr = []
+                overnightHrAverage = nil
                 highSleepStress = nil
                 sleepStress = nil
                 rebuild(includingSleepDetail: true)
@@ -141,14 +144,19 @@ struct NativeScorePage: View {
             let limit = kind == .sleep ? 200_000 : 8_000
             let overnightHR = await repo.hrSamples(from: from, to: to, limit: limit)
             if Task.isCancelled { return }
-            let mapped = NativeOvernightHeart.points(from: overnightHR)
             guard kind == .sleep else {
-                overnightHr = mapped
+                overnightHr = NativeOvernightHeart.points(from: overnightHR)
+                overnightHrAverage = nil
                 highSleepStress = nil
                 sleepStress = nil
                 return
             }
             let ticks = overnightHR.map { (ts: $0.ts, bpm: $0.bpm) }
+            let heart = await Task.detached(priority: .utility) {
+                NativeOvernightHeart.make(samples: ticks.map { HRSample(ts: $0.ts, bpm: $0.bpm) })
+            }.value
+            if Task.isCancelled { return }
+            let mapped = heart.points
             let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: dayKey)
             let stressModel = await Task.detached(priority: .utility) {
                 let samples = ticks.map { HRSample(ts: $0.ts, bpm: $0.bpm) }
@@ -158,6 +166,7 @@ struct NativeScorePage: View {
             }.value
             if Task.isCancelled { return }
             overnightHr = mapped
+            overnightHrAverage = heart.average
             sleepStress = stressModel
             // One source: the row reads the chart's own share so the two cannot disagree.
             highSleepStress = stressModel?.highShare ?? BandStress.overnightHighShare(
@@ -259,6 +268,7 @@ struct NativeScoreView: View {
     var sleepStart: Date? = nil
     var sleepEnd: Date? = nil
     var overnightHr: [NativeHourPoint] = []
+    var overnightHrAverage: Double? = nil
     var awakeTypical: Double? = nil
     var dayKey: String? = nil
     var needMinutes: Double? = nil
@@ -298,15 +308,6 @@ struct NativeScoreView: View {
         .navigationDestination(for: NativeScoreMetricRoute.self) { route in
             NativeMetricPage(key: route.key)
         }
-        .navigationDestination(for: NativeSleepStageRoute.self) { route in
-            NativeSleepStageDetailView(
-                detail: stageDetail(for: route.kind),
-                spans: sleepDetail?.hypnogram ?? [],
-                nightStart: sleepStart,
-                nightEnd: sleepEnd,
-                dayKey: dayKey
-            )
-        }
         .navigationDestination(for: NativeScoreTrendRoute.self) { route in
             if let card = weekCards.first(where: { $0.title == route.title }) {
                 NativeScoreTrendPage(
@@ -321,6 +322,14 @@ struct NativeScoreView: View {
                 )
             }
         }
+        .navigationDestination(for: NativeSleepConsistencyRoute.self) { _ in
+            NativeSleepConsistencyPage(
+                nights: sleepDetail?.consistencyNights ?? [],
+                percent: NativeScoreMath.percentValue(
+                    score.rows.first { $0.title == "Sleep Consistency" }?.value ?? ""
+                )
+            )
+        }
         .navigationDestination(for: NativeSleepHypnogramRoute.self) { _ in
             NativeSleepHypnogramPage(
                 spans: sleepDetail?.hypnogram ?? [],
@@ -328,7 +337,8 @@ struct NativeScoreView: View {
                 nightEnd: sleepEnd,
                 stages: stages,
                 asleepMinutes: asleepMinutes,
-                awakeTypical: awakeTypical
+                awakeTypical: awakeTypical,
+                estimated: sleepDetail?.hypnogramEstimated ?? false
             )
         }
     }
@@ -420,13 +430,14 @@ struct NativeScoreView: View {
                 debtMinutes: debtMinutes,
                 onEdit: onEditSleep,
                 spans: sleepDetail?.hypnogram ?? [],
-                onStage: { path.wrappedValue.append(NativeSleepStageRoute(kind: $0)) },
+                hypnogramEstimated: sleepDetail?.hypnogramEstimated ?? false,
                 onHypnogram: { path.wrappedValue.append(NativeSleepHypnogramRoute()) }
             )
         }
         if kind == .sleep {
             NativeOvernightHeartCard(
                 points: overnightHr,
+                average: overnightHrAverage,
                 onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "avg_hr")) }
             )
         }
@@ -592,6 +603,13 @@ struct NativeScoreView: View {
                 highlightKey: dayKey,
                 onOpen: { openCard(card) }
             )
+        } else if kind == .sleep, card.title == "Restorative Sleep" {
+            NativeSleepRestorativeWeekCard(
+                deep: card.stacks.first { $0.title == "Deep" }?.points ?? [],
+                rem: card.stacks.first { $0.title == "REM" }?.points ?? [],
+                highlightKey: dayKey,
+                onOpen: { openCard(card) }
+            )
         } else {
             weekChartCard(card)
         }
@@ -630,6 +648,10 @@ struct NativeScoreView: View {
     }
 
     private func openRow(_ row: NativeScore.Row) {
+        if row.title == "Sleep Consistency" {
+            path.wrappedValue.append(NativeSleepConsistencyRoute())
+            return
+        }
         if case .metric(let key) = row.route {
             path.wrappedValue.append(NativeScoreMetricRoute(key: key))
             return
@@ -644,6 +666,8 @@ struct NativeScoreView: View {
             path.wrappedValue.append(NativeScoreTrendRoute(title: card.title))
         case "Sleep Stress":
             path.wrappedValue.append(TabRoute.stress)
+        case "Sleep Consistency":
+            path.wrappedValue.append(NativeSleepConsistencyRoute())
         case "Sleep Debt":
             path.wrappedValue.append(NativeScoreMetricRoute(key: "sleep_debt_min"))
         default:
@@ -678,27 +702,6 @@ struct NativeScoreView: View {
         }
     }
 
-    private func stageDetail(for kind: NativeSleepStageKind) -> NativeSleepStageDetail {
-        if let existing = sleepDetail?.stageDetails.first(where: { $0.kind == kind }) {
-            return existing
-        }
-        let stage = stages.first { NativeSleepStageKind.parse($0.name) == kind }
-        let inBed = NativeDayLogic.inBedMinutes(start: sleepStart, end: sleepEnd)
-            ?? stages.compactMap(\.minutes).reduce(0, +)
-        let minutes = stage?.minutes
-        let percent: Double? = {
-            guard let minutes, inBed > 0 else { return nil }
-            return NativeSleepHypnogramMath.share(minutes: minutes, inBed: inBed) * 100
-        }()
-        return NativeSleepStageDetail(
-            kind: kind,
-            minutes: minutes,
-            percent: percent,
-            typical: stage?.typical,
-            trend: []
-        )
-    }
-
     @ViewBuilder private var sleepDetailCards: some View {
         if let need = sleepDetail?.need ?? hoursNeededFromPage,
            need.percent != nil || need.hoursSleptMin != nil {
@@ -713,7 +716,7 @@ struct NativeScoreView: View {
                 percent: NativeScoreMath.percentValue(
                     score.rows.first { $0.title == "Sleep Consistency" }?.value ?? ""
                 ),
-                onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "sleep_consistency")) }
+                onOpen: { path.wrappedValue.append(NativeSleepConsistencyRoute()) }
             )
         }
         if let efficiency = sleepDetail?.efficiency {
@@ -756,13 +759,8 @@ struct NativeScoreView: View {
         return nil
     }
 
-    static func stageTint(_ stage: NativeStage) -> Color {
-        switch stage.name {
-        case "Awake": return NativeTokens.sleepAwake
-        case "REM": return NativeTokens.sleepREM
-        case "Deep": return NativeTokens.sleepDeep
-        default: return NativeTokens.sleepCore
-        }
+    static func stageTint(_ stage: NativeStage, style: NativeStyle = .apple) -> Color {
+        NativePaint.sleepStage(named: stage.name, style: style)
     }
 
     @ViewBuilder private var activitiesCard: some View {
@@ -809,9 +807,11 @@ struct NativeLastNightCard: View {
     var debtMinutes: Double? = nil
     var onEdit: (() -> Void)? = nil
     var spans: [NativeSleepStageSpan] = []
-    var onStage: ((NativeSleepStageKind) -> Void)? = nil
+    var hypnogramEstimated: Bool = false
     var onHypnogram: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
+    @State private var selectedStage: NativeSleepStageKind?
+    @State private var hapticTick = 0
 
     private var inBedMinutes: Double? {
         NativeDayLogic.inBedMinutes(start: sleepStart, end: sleepEnd)
@@ -868,6 +868,7 @@ struct NativeLastNightCard: View {
             hypnogram
             appleStages
         }
+        .modifier(NativeSleepLightHaptic(trigger: hapticTick))
     }
 
     private var whoop: some View {
@@ -918,6 +919,7 @@ struct NativeLastNightCard: View {
                 stageRows
             }
         }
+        .modifier(NativeSleepLightHaptic(trigger: hapticTick))
     }
 
     private func lastNightHeader(title: String) -> some View {
@@ -932,20 +934,12 @@ struct NativeLastNightCard: View {
     }
 
     private var lastNightStages: [NativeStage] {
-        var rows = stages
-        if !rows.contains(where: { $0.name == "Awake" }),
-           let inBedMinutes, let asleepMinutes, inBedMinutes > asleepMinutes {
-            let awake = inBedMinutes - asleepMinutes
-            rows.insert(
-                NativeStage(name: "Awake", minutes: awake, typical: awakeTypical, tint: NativeTokens.sleepAwake),
-                at: 0
-            )
-        } else if let idx = rows.firstIndex(where: { $0.name == "Awake" }),
-                  rows[idx].typical == nil, let awakeTypical {
-            rows[idx].typical = awakeTypical
-        }
-        let order = ["Awake", "Light", "Deep", "REM"]
-        return rows.sorted { (order.firstIndex(of: $0.name) ?? 99) < (order.firstIndex(of: $1.name) ?? 99) }
+        NativeSleepNightRows.make(
+            stages: stages,
+            inBedMinutes: inBedMinutes,
+            asleepMinutes: asleepMinutes,
+            awakeTypical: awakeTypical
+        )
     }
 
     private var drawsTypicalRange: Bool {
@@ -957,17 +951,15 @@ struct NativeLastNightCard: View {
     }
 
     @ViewBuilder private var hypnogram: some View {
-        if let sleepStart, let sleepEnd, sleepEnd > sleepStart {
-            if !spans.isEmpty {
-                NativeSleepHypnogram(
-                    spans: spans,
-                    nightStart: sleepStart,
-                    nightEnd: sleepEnd,
-                    onOpen: onHypnogram
-                )
-            } else {
-                Color.clear.frame(height: 176)
-            }
+        if let sleepStart, let sleepEnd, sleepEnd > sleepStart, !spans.isEmpty {
+            NativeSleepHypnogram(
+                spans: spans,
+                nightStart: sleepStart,
+                nightEnd: sleepEnd,
+                highlight: selectedStage,
+                estimated: hypnogramEstimated,
+                onOpen: onHypnogram
+            )
         }
     }
 
@@ -996,25 +988,39 @@ struct NativeLastNightCard: View {
         ForEach(lastNightStages) { stage in
             let kind = NativeSleepStageKind.parse(stage.name)
             let minutes = stage.minutes ?? 0
-            let row = NativeSleepStageRow(
+            NativeSleepStageRow(
                 kind: kind,
                 minutes: minutes,
                 percent: NativeSleepHypnogramMath.share(minutes: minutes, inBed: scale) * 100,
                 typical: stage.typical,
                 scale: scale,
-                chevron: onStage != nil
+                selected: selectedStage == kind,
+                dimmed: selectedStage != nil && selectedStage != kind,
+                tappable: true
             )
-            if let onStage {
-                Button { onStage(kind) } label: { row }
-                    .buttonStyle(.plain)
-            } else {
-                row
-            }
+            .onTapGesture { selectStage(kind) }
         }
+    }
+
+    private func selectStage(_ kind: NativeSleepStageKind) {
+        selectedStage = NativeSleepHypnogramMath.toggleHighlight(selectedStage, tapped: kind)
+        hapticTick += 1
     }
 }
 
 enum NativeOvernightHeart {
+    /// Display budget for the Sleep HR chart (300–600 Chart marks).
+    static let displayTarget = 480
+    static let displayMin = 300
+    static let displayMax = 600
+
+    struct Model: Equatable {
+        var points: [NativeHourPoint]
+        var average: Double?
+        var rawCount: Int
+        var plotCount: Int { points.count }
+    }
+
     /// Downsample for the Sleep HR chart. Stats still use the raw samples.
     static func points(from samples: [HRSample], every: Int = 2, cap: Int = 8_000) -> [NativeHourPoint] {
         samples.prefix(cap).enumerated().compactMap { index, sample in
@@ -1025,16 +1031,57 @@ enum NativeOvernightHeart {
             )
         }
     }
+
+    /// Mean-per-bucket downsample onto `target` points (clamped to 300...600 when the
+    /// raw series is denser than that). Nights shorter than `target` keep every sample.
+    static func displayPoints(from samples: [HRSample], target: Int = displayTarget) -> [NativeHourPoint] {
+        let budget = min(max(target, displayMin), displayMax)
+        let ordered = samples.sorted { $0.ts < $1.ts }
+        guard let first = ordered.first, let last = ordered.last else { return [] }
+        if ordered.count <= budget {
+            return ordered.map {
+                NativeHourPoint(
+                    time: Date(timeIntervalSince1970: TimeInterval($0.ts)),
+                    value: Double($0.bpm)
+                )
+            }
+        }
+        let span = max(last.ts - first.ts, 1)
+        let width = max(1, Int((Double(span) / Double(budget)).rounded(.up)))
+        var buckets: [Int: (sum: Int, n: Int)] = [:]
+        for sample in ordered {
+            let key = (sample.ts - first.ts) / width
+            let cur = buckets[key] ?? (0, 0)
+            buckets[key] = (cur.sum + sample.bpm, cur.n + 1)
+        }
+        return buckets.keys.sorted().map { key in
+            let bucket = buckets[key]!
+            let ts = first.ts + key * width + width / 2
+            return NativeHourPoint(
+                time: Date(timeIntervalSince1970: TimeInterval(ts)),
+                value: Double(bucket.sum) / Double(bucket.n)
+            )
+        }
+    }
+
+    static func make(samples: [HRSample], target: Int = displayTarget) -> Model {
+        Model(
+            points: displayPoints(from: samples, target: target),
+            average: NativeScoreMath.mean(samples.map { Double($0.bpm) }),
+            rawCount: samples.count
+        )
+    }
 }
 
 struct NativeOvernightHeartCard: View {
     var points: [NativeHourPoint]
+    var average: Double? = nil
     var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
     @State private var selectedTime: Date?
 
-    private var average: Double? {
-        NativeScoreMath.mean(points.map(\.value).filter(\.isFinite))
+    private var displayedAverage: Double? {
+        average ?? NativeScoreMath.mean(points.map(\.value).filter(\.isFinite))
     }
 
     private var selectedPoint: NativeHourPoint? {
@@ -1067,8 +1114,8 @@ struct NativeOvernightHeartCard: View {
                     unit: "BPM",
                     date: NativeScopeFormat.time(point.time)
                 )
-            } else if let average {
-                NativeHeroValue(caption: "Average", value: "\(Int(average.rounded()))", unit: "BPM")
+            } else if let displayedAverage {
+                NativeHeroValue(caption: "Average", value: "\(Int(displayedAverage.rounded()))", unit: "BPM")
             } else {
                 NativeHeroValue(caption: "Average", value: "—", unit: "BPM")
             }

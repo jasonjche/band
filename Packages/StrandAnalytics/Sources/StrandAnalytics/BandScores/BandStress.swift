@@ -4,8 +4,9 @@ import WhoopProtocol
 /// Baseline-relative 0–3 stress for Band's Native Stress Monitor.
 ///
 /// Estimate only. There is no WHOOP stress series to fit. HR (and optional RMSSD)
-/// versus the wearer's own overnight resting HR / HRV, 5-minute grain, existing
-/// Low (<1) / Medium (<2) / High (≥2) bands.
+/// versus the wearer's own overnight resting HR / HRV, 1-minute grain with a
+/// centred ~5-minute smooth (US20240188896A1), existing Low (<1) / Medium (<2) /
+/// High (≥2) bands.
 ///
 /// DaytimeStress.baselineRelative is the unused hourly Oura-style scorer: waking
 /// 06–22 only, logistic squash that maps baseline to 1.5 Medium, gravity masking,
@@ -43,8 +44,25 @@ public enum BandStress {
     /// Shared High-band floor (2.0) with the existing Native labels.
     public static let highBandFloor: Double = 2.0
 
-    /// Native chart / store grain.
-    public static let bucketSeconds: Int = 300
+    /// Native chart / store grain. Score every minute from 1 Hz HR (and RR).
+    public static let bucketSeconds: Int = 60
+
+    /// Centred smoothing window, matching the patent's ~5-minute score.
+    public static let smoothWindowSeconds: Int = 300
+
+    /// Neighbours on each side of a minute so `(2 * radius + 1) * bucketSeconds`
+    /// equals `smoothWindowSeconds`.
+    public static let smoothRadiusBuckets: Int = 2
+
+    /// Overnight High-share still uses a 5-minute window so Sleep scoring stays put.
+    public static let overnightWindowSeconds: Int = 300
+
+    /// A hole larger than 1.5 buckets is a break, not a High minute.
+    public static var chartGapSeconds: Int { bucketSeconds + bucketSeconds / 2 }
+
+    /// Merge short walking spans that sit within this many seconds so the chart
+    /// does not grow one icon per minute of walking.
+    public static let activityMergeGapSeconds: Int = 10 * 60
 
     public struct Baselines: Equatable, Sendable {
         public var wakeRestingHR: Double
@@ -84,7 +102,7 @@ public enum BandStress {
 
     /// Why a bucket is omitted from the 0–3 series. The chart draws these as
     /// excluded spans (WHOOP uses a walker icon for activity).
-    public enum ExclusionKind: Equatable, Sendable {
+    public enum ExclusionKind: Equatable, Sendable, Hashable {
         case workout
         case recovery
         case activity
@@ -108,7 +126,7 @@ public enum BandStress {
     public static let recoveryMaxSeconds: Int = 3_600
     /// Floor on that cap so a short easy bout still has a few minutes of shadow.
     public static let recoveryMinSeconds: Int = 15 * 60
-    /// Walk/run share of classed step ticks that marks a 5-minute bucket as activity.
+    /// Walk/run share of classed step ticks that marks a minute bucket as activity.
     /// `AutoWorkoutDetector.minNonStillShare` is 0.05 for workout detection; stress
     /// uses a higher bar so a few steps around the kitchen do not mask sitting.
     public static let activityWalkShare: Double = 0.15
@@ -177,7 +195,7 @@ public enum BandStress {
     /// nothing scored. Empty windows are gaps, not Low.
     public static func overnightHighShare(hr: [HRSample], startTs: Int, endTs: Int,
                                           baselines: Baselines,
-                                          windowSeconds: Int = bucketSeconds) -> Double? {
+                                          windowSeconds: Int = overnightWindowSeconds) -> Double? {
         overnightHighShare(
             samples: hr.map { (ts: $0.ts, bpm: Double($0.bpm)) },
             startTs: startTs, endTs: endTs, baselines: baselines,
@@ -188,7 +206,7 @@ public enum BandStress {
     public static func overnightHighShare(samples: [(ts: Int, bpm: Double)],
                                           startTs: Int, endTs: Int,
                                           baselines: Baselines,
-                                          windowSeconds: Int = bucketSeconds) -> Double? {
+                                          windowSeconds: Int = overnightWindowSeconds) -> Double? {
         let levels = windowLevels(
             samples: samples, startTs: startTs, endTs: endTs,
             baselines: baselines, windowSeconds: windowSeconds
@@ -199,7 +217,7 @@ public enum BandStress {
     public static func windowLevels(samples: [(ts: Int, bpm: Double)],
                                     startTs: Int, endTs: Int,
                                     baselines: Baselines,
-                                    windowSeconds: Int = bucketSeconds) -> [Double?] {
+                                    windowSeconds: Int = overnightWindowSeconds) -> [Double?] {
         guard endTs > startTs, windowSeconds > 0 else { return [] }
         var buckets: [Int: (sum: Double, n: Int)] = [:]
         for sample in samples where sample.ts >= startTs && sample.ts < endTs {
@@ -271,7 +289,7 @@ public enum BandStress {
         workouts.compactMap { recoveryWindow(workoutStart: $0.start, workoutEnd: $0.end, samples: samples) }
     }
 
-    /// 5-minute buckets where the wearer is walking or running (activity class 1/2),
+    /// Minute buckets where the wearer is walking or running (activity class 1/2),
     /// or gravity intensity is at walk floor for enough of the bucket.
     public static func activityBuckets(bucketStarts: [Int],
                                        bucketSeconds: Int = bucketSeconds,
@@ -316,7 +334,7 @@ public enum BandStress {
         return out
     }
 
-    /// Merge adjacent 5-minute activity buckets into `[start, end)` spans.
+    /// Merge adjacent minute activity buckets into `[start, end)` spans.
     public static func spans(fromBuckets buckets: Set<Int>,
                              bucketSeconds: Int = bucketSeconds) -> [ExclusionSpan] {
         guard bucketSeconds > 0 else { return [] }
@@ -332,6 +350,69 @@ public enum BandStress {
                 j += 1
             }
             out.append(ExclusionSpan(startTs: start, endTs: end, kind: .activity))
+            i = j
+        }
+        return out
+    }
+
+    /// Merge same-kind spans that overlap or sit within `gapSeconds`.
+    /// Walking uses `activityMergeGapSeconds` so a cluster of short walks is one span.
+    public static func mergeSpans(_ spans: [ExclusionSpan],
+                                 gapSeconds: Int = activityMergeGapSeconds) -> [ExclusionSpan] {
+        guard gapSeconds >= 0 else { return spans }
+        var byKind: [ExclusionKind: [ExclusionSpan]] = [:]
+        for span in spans where span.endTs > span.startTs {
+            byKind[span.kind, default: []].append(span)
+        }
+        var out: [ExclusionSpan] = []
+        for kind in [ExclusionKind.workout, .recovery, .activity] {
+            let sorted = (byKind[kind] ?? []).sorted { $0.startTs < $1.startTs }
+            var merged: [ExclusionSpan] = []
+            for span in sorted {
+                if let last = merged.last, span.startTs <= last.endTs + gapSeconds {
+                    merged[merged.count - 1].endTs = max(last.endTs, span.endTs)
+                } else {
+                    merged.append(span)
+                }
+            }
+            out.append(contentsOf: merged)
+        }
+        return out.sorted { $0.startTs < $1.startTs }
+    }
+
+    /// Centred rolling mean over contiguous minute scores. Gaps and exclusions
+    /// stay omitted: a missing bucket starts a new run, never filled from neighbours.
+    public static func smoothCentered(
+        points: [(ts: Int, value: Double)],
+        bucketSeconds: Int = bucketSeconds,
+        radius: Int = smoothRadiusBuckets
+    ) -> [(ts: Int, value: Double)] {
+        guard radius > 0, bucketSeconds > 0, points.count > 1 else { return points }
+        let sorted = points.sorted { $0.ts < $1.ts }
+        var out: [(ts: Int, value: Double)] = []
+        out.reserveCapacity(sorted.count)
+        var i = 0
+        while i < sorted.count {
+            var j = i + 1
+            while j < sorted.count, sorted[j].ts - sorted[j - 1].ts == bucketSeconds {
+                j += 1
+            }
+            let run = Array(sorted[i..<j])
+            if run.count == 1 {
+                out.append(run[0])
+            } else {
+                for k in run.indices {
+                    let lo = max(0, k - radius)
+                    let hi = min(run.count - 1, k + radius)
+                    var sum = 0.0
+                    var n = 0
+                    for m in lo...hi {
+                        sum += run[m].value
+                        n += 1
+                    }
+                    out.append((run[k].ts, n > 0 ? sum / Double(n) : run[k].value))
+                }
+            }
             i = j
         }
         return out

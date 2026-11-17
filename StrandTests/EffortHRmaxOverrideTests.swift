@@ -189,6 +189,27 @@ final class EffortHRmaxOverrideTests: XCTestCase {
         }
     }
 
+    /// Display zones on the activity page: 14-night median RHR 63 and confirmed max 198
+    /// reproduce WHOOP's 117 / 145 / 158 / 172 / 185. A custom override still wins.
+    @MainActor
+    func testDisplayZonesMatchWhoopHRRAndCustomWins() {
+        withProfile(age: 30, hrMaxOverride: 0, hrMaxObserved: 198) { p in
+            let set = p.displayZoneSet(restingHR: 63)
+            XCTAssertEqual(set.source, "hrr")
+            XCTAssertEqual(set.zones.map { Int($0.lower) }, [117, 145, 158, 172, 185])
+            XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 0, set: set), "< 117 BPM")
+            XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 1, set: set), "117–144 BPM")
+            XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 5, set: set), "185+ BPM")
+        }
+        withProfile(age: 30, hrMaxOverride: 190) { p in
+            p.hrZoneThresholds = [100, 120, 140, 160, 180]
+            let custom = p.displayZoneSet(restingHR: 63)
+            XCTAssertEqual(custom.source, "custom")
+            XCTAssertEqual(custom.zones.map { Int($0.lower) }, [100, 120, 140, 160, 180])
+            XCTAssertEqual(p.hrMax, 190)
+        }
+    }
+
     // MARK: fixture
 
     /// A profile with the given age and override, with the stored defaults restored afterwards.
@@ -205,7 +226,7 @@ final class EffortHRmaxOverrideTests: XCTestCase {
                              _ body: (ProfileStore) -> Void) {
         let defaults = UserDefaults.standard
         let keys = ["profile.dateOfBirth", "profile.age", "profile.sex",
-                    "profile.hrMaxOverride", "profile.hrMaxObserved"]
+                    "profile.hrMaxOverride", "profile.hrMaxObserved", "profile.hrZoneThresholds"]
         let saved = keys.map { ($0, defaults.object(forKey: $0)) }
         defer {
             for (key, value) in saved {
@@ -218,6 +239,7 @@ final class EffortHRmaxOverrideTests: XCTestCase {
         p.sex = sex
         p.hrMaxOverride = hrMaxOverride
         p.hrMaxObserved = hrMaxObserved
+        p.hrZoneThresholds = []
         body(p)
     }
 

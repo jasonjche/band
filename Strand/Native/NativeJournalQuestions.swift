@@ -1,9 +1,11 @@
 import SwiftUI
+import StrandDesign
 
-/// Toggle list of journal behaviours. Hidden items stay out of the day's form; the catalog persists.
+/// Library browser: categories, search, and a toggle to put a behaviour on the day's form.
 struct NativeJournalQuestionsView: View {
     @ObservedObject var catalog: JournalCatalogStore
     var imported: [String]
+    @State private var query = ""
 
     var body: some View {
         NativeChrome.screen {
@@ -13,12 +15,21 @@ struct NativeJournalQuestionsView: View {
                     NativeChrome.panel {
                         NativeCardHeader(
                             title: group.title,
-                            symbol: "checklist",
+                            symbol: NativeJournalLogForm.symbol(for: group),
                             tint: NativeChrome.recovery
                         )
-                        ForEach(items) { item in
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            if index > 0 { Divider() }
                             Toggle(isOn: visibilityBinding(item)) {
-                                Text(verbatim: item.display)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(verbatim: item.display)
+                                        .font(StrandFont.body)
+                                    if item.display != item.canonical {
+                                        Text(verbatim: item.canonical)
+                                            .font(StrandFont.footnote)
+                                            .foregroundStyle(Color.secondary)
+                                    }
+                                }
                             }
                             .frame(minHeight: 44)
                         }
@@ -26,28 +37,24 @@ struct NativeJournalQuestionsView: View {
                 }
             }
         }
-        .navigationTitle("Edit Questions")
+        .searchable(text: $query, prompt: "Search behaviours")
+        .navigationTitle("Add behaviours")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
     }
 
     private func grouped(_ group: JournalGroup) -> [JournalCatalogItem] {
-        catalog.resolvedItems(imported: imported, includeHidden: true)
+        catalog.libraryItems(imported: imported)
             .filter { $0.group == group }
+            .filter { JournalCatalogStore.libraryMatches($0, query: query) }
             .sorted { ($0.sortIndex, $0.display) < ($1.sortIndex, $1.display) }
     }
 
     private func visibilityBinding(_ item: JournalCatalogItem) -> Binding<Bool> {
         Binding(
-            get: { !item.hidden },
-            set: { visible in
-                if visible {
-                    catalog.restore(item.canonical)
-                } else {
-                    catalog.remove(item.canonical)
-                }
-            }
+            get: { catalog.isOnDailyForm(item.canonical, imported: imported) },
+            set: { catalog.setOnDailyForm(item.canonical, enabled: $0) }
         )
     }
 }

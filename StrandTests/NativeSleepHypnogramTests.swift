@@ -1,7 +1,9 @@
 import XCTest
 import SwiftUI
 import WhoopStore
+import WhoopProtocol
 import StrandAnalytics
+import StrandDesign
 @testable import Strand
 
 @MainActor
@@ -102,8 +104,104 @@ final class NativeSleepHypnogramTests: XCTestCase {
         ).width
         XCTAssertGreaterThan(lightW, wakeW)
         XCTAssertTrue(NativeSleepGallery.sections.contains { $0.name == "sleep-last-night" })
+        XCTAssertTrue(NativeSleepGallery.sections.contains { $0.name == "sleep-estimated-hypnogram" })
         XCTAssertTrue(NativeSleepGallery.sections.contains { $0.name == "sleep-stage-detail" })
         XCTAssertTrue(NativeSleepGallery.sections.contains { $0.name == "sleep-hypnogram-page" })
+        XCTAssertTrue(NativeSleepGallery.sections.contains { $0.name == "sleep-week-restorative" })
+    }
+
+    func testSnapshotHypnogramHasFourWHOOPStages() {
+        let kinds = Set(NativeSleepSnapshot.hypnogram.map(\.kind))
+        XCTAssertEqual(kinds, Set(NativeSleepStageKind.allCases))
+        XCTAssertGreaterThanOrEqual(NativeSleepSnapshot.hypnogram.filter { $0.kind == .awake }.count, 2)
+        XCTAssertGreaterThanOrEqual(NativeSleepSnapshot.hypnogram.filter { $0.kind == .light }.count, 2)
+        XCTAssertGreaterThanOrEqual(NativeSleepSnapshot.hypnogram.filter { $0.kind == .deep }.count, 1)
+        XCTAssertGreaterThanOrEqual(NativeSleepSnapshot.hypnogram.filter { $0.kind == .rem }.count, 1)
+        XCTAssertEqual(NativeSleepStageKind.hypnogramLanes, [.awake, .rem, .light, .deep])
+        XCTAssertEqual(NativeSleepStageKind.durationOrder, [.awake, .light, .deep, .rem])
+    }
+
+    func testImportedTotalsJSONEstimatesADisplayHypnogram() {
+        let json = NativeSleepEstimatedHypnogram.sampleTotalsJSON
+        XCTAssertTrue(NativeSleepStagesJSON.isTotalsOnly(json))
+        XCTAssertFalse(NativeSleepStagesJSON.hasEpochTimeline(json))
+        XCTAssertTrue(AnalyticsEngine.decodeStages(json).isEmpty)
+
+        let start = Int(NativeSleepSnapshot.sleepStart.timeIntervalSince1970)
+        let end = start + 442 * 60
+        let session = CachedSleepSession(
+            startTs: start, endTs: end, efficiency: 92, restingHr: 51, avgHrv: 66, stagesJSON: json
+        )
+        let detail = NativeSleepPageDetail.make(
+            dayKey: NativeSleepSnapshot.highlightKey,
+            days: NativeSleepSnapshot.snapshotDays,
+            sleeps: [session],
+            workouts: [],
+            importedSleep: NativeSleepSnapshot.snapshotImported,
+            parsedStages: []
+        )
+        XCTAssertFalse(detail.hypnogram.isEmpty)
+        XCTAssertTrue(detail.hasHypnogram)
+        XCTAssertTrue(detail.hypnogramEstimated)
+        XCTAssertFalse(detail.stageDetails.isEmpty)
+        XCTAssertEqual(
+            detail.stageDetails.first { $0.kind == .deep }?.minutes,
+            NativeSleepSnapshot.snapshotDays.last { $0.day == NativeSleepSnapshot.highlightKey }?.deepMin
+        )
+    }
+
+    func testEpochJSONStillDrawsAHypnogram() {
+        XCTAssertTrue(NativeSleepStagesJSON.hasEpochTimeline(NativeSleepSnapshot.stagesJSON))
+        XCTAssertFalse(NativeSleepStagesJSON.isTotalsOnly(NativeSleepSnapshot.stagesJSON))
+        XCTAssertFalse(NativeSleepSnapshot.pageDetail.hypnogram.isEmpty)
+        XCTAssertTrue(NativeSleepSnapshot.pageDetail.hasHypnogram)
+        XCTAssertFalse(NativeSleepSnapshot.pageDetail.hypnogramEstimated)
+        XCTAssertNil(
+            NativeSleepEstimatedHypnogram.spansIfTotalsOnly(
+                startTs: 1, endTs: 2, json: NativeSleepSnapshot.stagesJSON
+            )
+        )
+    }
+
+    func testRestorativeStacksREMUnderDeep() throws {
+        XCTAssertEqual(NativeSleepRestorativeChart.stackOrder(), ["REM", "Deep"])
+        let card = try XCTUnwrap(
+            NativeSleepSnapshot.extraWeekCards.first { $0.title == "Restorative Sleep" }
+        )
+        XCTAssertEqual(card.stacks.map(\.title), ["REM", "Deep"])
+        XCTAssertTrue(card.stacks.contains { $0.title == "Deep" && $0.points.contains { $0.value.isFinite } })
+        XCTAssertTrue(card.stacks.contains { $0.title == "REM" && $0.points.contains { $0.value.isFinite } })
+    }
+
+    func testOvernightHeartDisplayBudgetIsThreeToSixHundred() {
+        let start = 1_700_000_000
+        // 1 Hz over 8 hours — the lag case called out in the sleep-page brief.
+        let rawCount = 8 * 3600
+        let samples = (0..<rawCount).map { HRSample(ts: start + $0, bpm: 54 + ($0 % 7)) }
+        let previous = NativeOvernightHeart.points(from: samples, every: 2, cap: 8_000)
+        let model = NativeOvernightHeart.make(samples: samples)
+        XCTAssertEqual(samples.count, 28_800)
+        XCTAssertGreaterThan(previous.count, NativeOvernightHeart.displayMax, "before: every-2 cap 8_000 drew thousands")
+        XCTAssertEqual(model.rawCount, 28_800)
+        XCTAssertGreaterThanOrEqual(model.plotCount, NativeOvernightHeart.displayMin)
+        XCTAssertLessThanOrEqual(model.plotCount, NativeOvernightHeart.displayMax)
+        XCTAssertEqual(Double(model.plotCount), 480, accuracy: 2)
+        XCTAssertEqual(model.average ?? -1, NativeScoreMath.mean(samples.map { Double($0.bpm) }) ?? -2, accuracy: 1e-9)
+    }
+
+    func testOvernightHeartKeepsShortNightsIntact() {
+        let samples = (0..<6).map { HRSample(ts: $0 * 10, bpm: 50 + $0) }
+        XCTAssertEqual(NativeOvernightHeart.displayPoints(from: samples).map(\.value), [50, 51, 52, 53, 54, 55])
+    }
+
+    func testNightRowsKeepAwakeLightDeepREMOrder() {
+        let rows = NativeSleepNightRows.make(
+            stages: NativeSleepSnapshot.stages,
+            inBedMinutes: 443,
+            asleepMinutes: 410,
+            awakeTypical: 45
+        )
+        XCTAssertEqual(rows.map(\.name), ["Awake", "Light", "Deep", "REM"])
     }
 
     func testHoursTypicalRangeNeedsThirtyDayHistory() {

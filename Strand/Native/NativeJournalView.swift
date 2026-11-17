@@ -288,8 +288,8 @@ struct NativeJournalLogForm: View {
                 } label: {
                     NativeChrome.panel {
                         NativeCardHeader(
-                            title: "Edit Questions",
-                            symbol: "list.bullet",
+                            title: "Add behaviours",
+                            symbol: "plus.circle",
                             tint: Color.secondary,
                             chevron: true
                         )
@@ -433,15 +433,17 @@ struct NativeJournalLogForm: View {
         return number
     }
 
-    private static func symbol(for group: JournalGroup) -> String {
+    static func symbol(for group: JournalGroup) -> String {
         switch group {
         case .nutrition: return "fork.knife"
         case .sleep: return "bed.double"
         case .lifestyle: return "figure.walk"
         case .recovery: return "heart"
-        case .health: return "cross.case"
-        case .supplements: return "pills"
-        case .behaviour: return "person"
+        case .health, .supplements: return "cross.case"
+        case .mental, .behaviour: return "person"
+        case .training: return "figure.walk"
+        case .environment: return "sun.max"
+        case .womensHealth: return "heart"
         case .other: return "square.grid.2x2"
         }
     }
@@ -452,9 +454,11 @@ struct NativeJournalLogForm: View {
         case .sleep: return NativePaint.sleep(style)
         case .lifestyle: return NativePaint.strain(style)
         case .recovery: return NativePaint.recovery(style)
-        case .health: return NativePaint.heart(style)
-        case .supplements: return NativePaint.respiratory(style)
-        case .behaviour: return NativeChrome.stressMid
+        case .health, .supplements: return NativePaint.heart(style)
+        case .mental, .behaviour: return NativeChrome.stressMid
+        case .training: return NativePaint.strain(style)
+        case .environment: return NativePaint.respiratory(style)
+        case .womensHealth: return NativePaint.heart(style)
         case .other: return Color.secondary
         }
     }

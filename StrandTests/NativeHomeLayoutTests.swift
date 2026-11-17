@@ -1,6 +1,7 @@
 import XCTest
 import WhoopStore
 import StrandAnalytics
+import StrandDesign
 @testable import Strand
 
 /// Home layout: WHOOP section order, one stress-level resolver, dashboard rows, journal glyphs.
@@ -43,12 +44,13 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertEqual(HomeSectionOrder.content, [
             "rings",
             "Health Monitor",
+            "Stress Monitor",
             "My Day",
             "Activities",
             "Tonight's Sleep",
             "Journal",
             "My Dashboard",
-            "Stress Monitor",
+            "Stress Monitor chart",
             "Strain & Recovery",
         ])
     }
@@ -65,7 +67,7 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertEqual(dots.count, 7)
     }
 
-    func testDashboardRowsHideWhenThereIsNoValue() {
+    func testDashboardRowsStayWhenThereIsNoValue() {
         let empty = DailyMetric(
             day: "2026-11-12",
             totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
@@ -80,7 +82,13 @@ final class NativeHomeLayoutTests: XCTestCase {
             days: [empty],
             todayKey: empty.day
         )
-        XCTAssertTrue(none.isEmpty)
+        XCTAssertEqual(none.map(\.title), HomeDashboardMetric.defaultIds.compactMap { id in
+            HomeDashboardMetric(rawValue: id)?.title
+        })
+        XCTAssertTrue(none.allSatisfy { $0.value == HomeDashboardMetric.emptyValue })
+        XCTAssertEqual(none.map(\.route), HomeDashboardMetric.defaultIds.compactMap { id in
+            HomeDashboardMetric(rawValue: id)?.route
+        })
 
         let scored = DailyMetric(
             day: "2026-11-12",
@@ -96,19 +104,27 @@ final class NativeHomeLayoutTests: XCTestCase {
             dashboard: model.dashboard, days: [scored], todayKey: scored.day, vo2max: 48.2
         )
         XCTAssertEqual(rows.map(\.title), [
+            "Heart Rate Variability",
+            "Resting Heart Rate",
+            "Respiratory Rate",
             "Steps",
+            "Heart Rate Zones 1–3",
+            "Heart Rate Zones 4–5",
+            "Strength Activity Time",
             "VO₂ Max",
             "Calories",
         ])
-        XCTAssertFalse(rows.contains { $0.title.contains("Heart Rate Variability") })
-        XCTAssertFalse(rows.contains { $0.title.contains("Resting Heart Rate") })
-        XCTAssertFalse(rows.contains { $0.title.contains("Respiratory") })
-        XCTAssertFalse(rows.contains { $0.title.contains("Zones") })
-        XCTAssertFalse(rows.contains { $0.title.contains("Strength") })
+        XCTAssertEqual(rows.first { $0.title == "Heart Rate Variability" }?.value, "66")
+        XCTAssertEqual(rows.first { $0.title == "Resting Heart Rate" }?.value, "51")
+        XCTAssertEqual(rows.first { $0.title == "Respiratory Rate" }?.value, HomeDashboardMetric.emptyValue)
+        XCTAssertEqual(rows.first { $0.title == "Steps" }?.value, NativeDayLogic.countText(1200))
+        XCTAssertEqual(rows.first { $0.title == "Heart Rate Zones 1–3" }?.value, HomeDashboardMetric.emptyValue)
+        XCTAssertEqual(rows.first { $0.title == "VO₂ Max" }?.value, "48.2")
+        XCTAssertEqual(rows.first { $0.title == "Calories" }?.value, NativeDayLogic.countText(400))
     }
 
-    func testDefaultDashboardOmitsHealthMonitorMetricsUntilChosen() {
-        XCTAssertFalse(HomeDashboardMetric.defaultIds.contains(where: HomeDashboardMetric.healthMonitorIds.contains))
+    func testDefaultDashboardIncludesHealthMonitorMetricsAndHonorsChosenIds() {
+        XCTAssertTrue(HomeDashboardMetric.defaultIds.contains(where: HomeDashboardMetric.healthMonitorIds.contains))
         let scored = DailyMetric(
             day: "2026-11-12",
             totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
@@ -233,10 +249,10 @@ final class NativeHomeLayoutTests: XCTestCase {
         let t0 = Date(timeIntervalSince1970: 1_700_000_000)
         let consecutive: [NativeHourPoint] = [
             NativeHourPoint(time: t0, value: 2.1),
-            NativeHourPoint(time: t0.addingTimeInterval(300), value: 2.4),
-            NativeHourPoint(time: t0.addingTimeInterval(600), value: 0.4),
+            NativeHourPoint(time: t0.addingTimeInterval(60), value: 2.4),
+            NativeHourPoint(time: t0.addingTimeInterval(120), value: 0.4),
         ]
-        XCTAssertEqual(NativeStressHistory.timeInHighMinutes(consecutive) ?? -1, 10, accuracy: 0.01)
+        XCTAssertEqual(NativeStressHistory.timeInHighMinutes(consecutive) ?? -1, 2, accuracy: 0.01)
 
         let gapped: [NativeHourPoint] = [
             NativeHourPoint(time: t0, value: 2.1),
@@ -249,15 +265,15 @@ final class NativeHomeLayoutTests: XCTestCase {
         let t0 = Date(timeIntervalSince1970: 1_700_000_000)
         let consecutive: [NativeHourPoint] = [
             NativeHourPoint(time: t0, value: 0.4),
-            NativeHourPoint(time: t0.addingTimeInterval(300), value: 1.4),
-            NativeHourPoint(time: t0.addingTimeInterval(600), value: 2.4),
-            NativeHourPoint(time: t0.addingTimeInterval(900), value: 2.1),
+            NativeHourPoint(time: t0.addingTimeInterval(60), value: 1.4),
+            NativeHourPoint(time: t0.addingTimeInterval(120), value: 2.4),
+            NativeHourPoint(time: t0.addingTimeInterval(180), value: 2.1),
         ]
         let durations = NativeStressBandTime.durations(consecutive)
-        XCTAssertEqual(durations.low, 300, accuracy: 0.01)
-        XCTAssertEqual(durations.mid, 300, accuracy: 0.01)
-        XCTAssertEqual(durations.high, 300, accuracy: 0.01)
-        XCTAssertEqual(NativeStressHistory.timeInHighMinutes(consecutive) ?? -1, 5, accuracy: 0.01)
+        XCTAssertEqual(durations.low, 60, accuracy: 0.01)
+        XCTAssertEqual(durations.mid, 60, accuracy: 0.01)
+        XCTAssertEqual(durations.high, 60, accuracy: 0.01)
+        XCTAssertEqual(NativeStressHistory.timeInHighMinutes(consecutive) ?? -1, 1, accuracy: 0.01)
 
         let gapped: [NativeHourPoint] = [
             NativeHourPoint(time: t0, value: 2.1),
@@ -297,11 +313,149 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertEqual(NativeStressMonitorMath.segments(gappedPoints()).count, 2)
     }
 
+    func testStressTimelineSmoothsMinuteScores() {
+        let t0 = 1_700_000_000
+        var buckets: [HRBucket] = []
+        for i in 0..<11 {
+            let bpm = i == 5 ? 96.0 : 60.0
+            buckets.append(HRBucket(ts: t0 + i * 60, bpm: bpm, minBpm: bpm, maxBpm: bpm))
+        }
+        let hours = NativeHomeCharts.stressSeries(buckets: buckets)
+        XCTAssertEqual(hours.count, 11)
+        XCTAssertEqual(hours[5].value, 0.6, accuracy: 0.05)
+        XCTAssertLessThan(hours[5].value, 1)
+    }
+
+    func testStressTimelineMergesWalkingExclusionsWithoutDrawingThemAsHours() {
+        let t0 = 1_700_000_000
+        let buckets = (0..<3).map {
+            HRBucket(ts: t0 + $0 * 60, bpm: 80, minBpm: 80, maxBpm: 80)
+        }
+        let activity: Set<Int> = [t0, t0 + 60, t0 + 12 * 60]
+        let timeline = NativeHomeCharts.stressTimeline(
+            buckets: buckets,
+            activityBuckets: activity
+        )
+        let walks = timeline.exclusions.filter { $0.kind == .activity }
+        XCTAssertEqual(walks.count, 1)
+        XCTAssertEqual(walks[0].startTs, t0)
+        XCTAssertEqual(walks[0].endTs, t0 + 13 * 60)
+        XCTAssertEqual(timeline.hours.count, 1)
+        XCTAssertEqual(timeline.hours[0].time.timeIntervalSince1970, TimeInterval(t0 + 120), accuracy: 0.01)
+    }
+
+    func testStressMonitorMergesActivitiesAndDownsamplesDraw() {
+        let t0 = Date(timeIntervalSince1970: 0)
+        let merged = NativeStressMonitorMath.mergeDateSpans([
+            (start: t0, end: t0.addingTimeInterval(600)),
+            (start: t0.addingTimeInterval(300), end: t0.addingTimeInterval(900)),
+        ])
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged[0].start.timeIntervalSince1970, 0, accuracy: 0.01)
+        XCTAssertEqual(merged[0].end.timeIntervalSince1970, 900, accuracy: 0.01)
+        let points = (0..<1_440).map {
+            NativeHourPoint(time: t0.addingTimeInterval(TimeInterval($0 * 60)), value: 1)
+        }
+        XCTAssertEqual(points.count, 1_440)
+        XCTAssertEqual(
+            NativeStressMonitorMath.drawPoints(points).count,
+            NativeStressMonitorMath.drawBudget
+        )
+        XCTAssertEqual(NativeStressMonitorMath.drawPoints(Array(points.prefix(10))).count, 10)
+    }
+
+    func testStressMonitorLineStopsStayGreenThroughMedium() {
+        XCTAssertEqual(
+            NativeStressMonitorMath.lineStopValues,
+            [0, 1.0, 1.2, 2.0, 2.4, 2.7, 3.0]
+        )
+        XCTAssertEqual(
+            NativeStressMonitorMath.lineStops(style: .apple).map(\.value),
+            NativeStressMonitorMath.lineStopValues
+        )
+        XCTAssertEqual(
+            NativeStressMonitorMath.lineStops(style: .whoop).map(\.value),
+            NativeStressMonitorMath.lineStopValues
+        )
+        XCTAssertEqual(NativeStressMonitorMath.yAxisValues, [0, 1, 2, 3])
+        XCTAssertEqual(NativeStressMonitorMath.yLabel(0), "0.0")
+        XCTAssertEqual(NativeStressMonitorMath.yLabel(1), "1.0")
+        XCTAssertEqual(NativeStressMonitorMath.yLabel(2), "2.0")
+        XCTAssertEqual(NativeStressMonitorMath.yLabel(3), "3.0")
+        XCTAssertEqual(NativeHomeCharts.stressBand(1.2), "MEDIUM")
+        XCTAssertEqual(NativeHomeCharts.stressBandWord(1.2), "Medium")
+    }
+
+    func testStressHeaderLastUpdatedPrefix() {
+        let time = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertEqual(
+            NativeStressMonitorMath.lastUpdated(time)?.hasPrefix("Last updated "),
+            true
+        )
+        XCTAssertNil(NativeStressMonitorMath.lastUpdated(nil))
+    }
+
+    func testStressIconClustersCollapseOverlapIntoCount() {
+        let start = Date(timeIntervalSince1970: 0)
+        let end = start.addingTimeInterval(24 * 3600)
+        let activities: [(start: Date, end: Date, symbol: String)] = [
+            (
+                start.addingTimeInterval(8 * 3600),
+                start.addingTimeInterval(8.5 * 3600),
+                "figure.run"
+            ),
+            (
+                start.addingTimeInterval(8.3 * 3600),
+                start.addingTimeInterval(8.8 * 3600),
+                "figure.walk"
+            ),
+            (
+                start.addingTimeInterval(16 * 3600),
+                start.addingTimeInterval(17 * 3600),
+                "figure.outdoor.cycle"
+            ),
+        ]
+        let clusters = NativeStressMonitorMath.iconClusters(
+            activities: activities, plotStart: start, plotEnd: end
+        )
+        XCTAssertEqual(clusters.count, 2)
+        XCTAssertEqual(clusters[0].count, 2)
+        XCTAssertEqual(clusters[1].count, 1)
+        XCTAssertEqual(clusters[1].symbol, "figure.outdoor.cycle")
+        XCTAssertEqual(
+            NativeStressMonitorMath.activities(
+                workouts: [(start: start, end: start.addingTimeInterval(600))],
+                symbols: ["figure.run"]
+            ).first?.symbol,
+            "figure.run"
+        )
+    }
+
+    func testStressNowMarkerSitsAtPlotEndOnToday() {
+        let day = Date(timeIntervalSince1970: 1_700_000_000)
+        let dayStart = Calendar.current.startOfDay(for: day)
+        let now = dayStart.addingTimeInterval(21 * 3600)
+        XCTAssertTrue(NativeStressMonitorMath.showsNow(dayStart: dayStart, now: now))
+        XCTAssertEqual(
+            NativeStressMonitorMath.plotEnd(dayStart: dayStart, now: now).timeIntervalSince1970,
+            now.timeIntervalSince1970,
+            accuracy: 0.01
+        )
+        let marks = NativeStressMonitorMath.xAxisDates(dayStart: dayStart, plotEnd: now)
+        XCTAssertEqual(marks.count, 4)
+        XCTAssertEqual(marks.last?.timeIntervalSince1970 ?? -1, now.timeIntervalSince1970, accuracy: 0.01)
+        XCTAssertTrue(NativeStressMonitorMath.isNow(now, now: now))
+        let past = dayStart.addingTimeInterval(-2 * 86_400)
+        XCTAssertFalse(NativeStressMonitorMath.showsNow(dayStart: past, now: now))
+        let dayEnd = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? now
+        XCTAssertFalse(NativeStressMonitorMath.showsNow(dayStart: dayStart, now: dayEnd))
+    }
+
     private func consecutivePoints() -> [NativeHourPoint] {
         let t0 = Date(timeIntervalSince1970: 0)
         return [
             NativeHourPoint(time: t0, value: 1),
-            NativeHourPoint(time: t0.addingTimeInterval(300), value: 1.2),
+            NativeHourPoint(time: t0.addingTimeInterval(60), value: 1.2),
         ]
     }
 
@@ -316,10 +470,81 @@ final class NativeHomeLayoutTests: XCTestCase {
     func testDateStepperChevronsFitBesideStrapOnIPhone15() {
         let strapBudget: CGFloat = 96
         XCTAssertEqual(HomeDateStepperLayout.chevronSize, 32, accuracy: 0.5)
+        XCTAssertEqual(HomeDateStepperLayout.hitHeight, 44, accuracy: 0.5)
         XCTAssertLessThanOrEqual(
-            HomeDateStepperLayout.compactWidth + HomeDateStepperLayout.strapGutter + strapBudget,
+            HomeDateStepperLayout.streakWidth
+                + HomeDateStepperLayout.strapGutter
+                + HomeDateStepperLayout.compactWidth
+                + HomeDateStepperLayout.strapGutter
+                + strapBudget,
             HomeDateStepperLayout.iphone15Width
         )
         XCTAssertEqual(NativeHomeLoadMetrics.publishedSnapshotsPerLoad, 1)
+    }
+
+    func testCalendarCellsPadToSixWeeksAndHonorFirstWeekday() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        calendar.firstWeekday = 1
+        let month = calendar.date(from: DateComponents(year: 2026, month: 11, day: 1))!
+        let sunday = HomeCalendarMath.cells(month: month, calendar: calendar)
+        XCTAssertEqual(sunday.count, HomeCalendarMath.cellsPerMonth)
+        XCTAssertEqual(calendar.component(.day, from: try XCTUnwrap(sunday[0])), 1)
+        XCTAssertEqual(HomeCalendarMath.weekdaySymbols(calendar: calendar).first, "S")
+
+        calendar.firstWeekday = 2
+        let monday = HomeCalendarMath.cells(month: month, calendar: calendar)
+        XCTAssertNil(monday[0])
+        XCTAssertEqual(monday.compactMap { $0 }.count, 30)
+        XCTAssertEqual(HomeCalendarMath.weekdaySymbols(calendar: calendar).first, "M")
+    }
+
+    func testCalendarPagingAndFutureDays() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let first = calendar.date(from: DateComponents(year: 2026, month: 10, day: 1))!
+        let today = calendar.date(from: DateComponents(year: 2026, month: 11, day: 17))!
+        let range = first...today
+        let november = calendar.date(from: DateComponents(year: 2026, month: 11, day: 1))!
+        XCTAssertTrue(HomeCalendarMath.canPage(from: november, delta: -1, range: range, calendar: calendar))
+        XCTAssertFalse(HomeCalendarMath.canPage(from: november, delta: 1, range: range, calendar: calendar))
+        XCTAssertTrue(HomeCalendarMath.isEnabled(today, range: range, calendar: calendar))
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today)!
+        XCTAssertFalse(HomeCalendarMath.isEnabled(tomorrow, range: range, calendar: calendar))
+        XCTAssertEqual(HomeCalendarSheetLayout.rows, 6)
+        XCTAssertEqual(
+            HomeCalendarSheetLayout.compactHeight,
+            NoopMetrics.space4 + HomeCalendarSheetLayout.header + NoopMetrics.space2
+                + HomeCalendarSheetLayout.weekdayRow + HomeCalendarSheetLayout.gridHeight
+                + NoopMetrics.space4,
+            accuracy: 0.5
+        )
+    }
+
+    func testCalendarRecoveryMatchesHomeRingScoresAndWHOOPBands() {
+        XCTAssertEqual(NativeChrome.recoveryBandIndex(0), 0)
+        XCTAssertEqual(NativeChrome.recoveryBandIndex(33), 0)
+        XCTAssertEqual(NativeChrome.recoveryBandIndex(34), 1)
+        XCTAssertEqual(NativeChrome.recoveryBandIndex(66), 1)
+        XCTAssertEqual(NativeChrome.recoveryBandIndex(67), 2)
+        XCTAssertEqual(NativeChrome.recoveryBandIndex(100), 2)
+
+        let day = DailyMetric(
+            day: "2026-11-16",
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 51, avgHrv: 66, recovery: 37, strain: nil,
+            exerciseCount: nil
+        )
+        let scores = NativeBandScores.resolve(days: [day], sleeps: [], workouts: [], importedSleep: [:])
+        let map = HomeCalendarRecovery.values(days: [day], sleeps: [], workouts: [], importedSleep: [:])
+        XCTAssertEqual(map[day.day], scores.byDay[day.day]?.recovery)
+        let model = NativeDay.make(
+            days: [day], sleeps: [], workouts: [],
+            todayKey: day.day, connected: false, effortScale: .whoop
+        )
+        if let recovery = scores.byDay[day.day]?.recovery {
+            XCTAssertEqual(model.recovery.value, NativeScoreMath.percent(recovery))
+        }
     }
 }

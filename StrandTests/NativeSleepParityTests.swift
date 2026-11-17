@@ -119,17 +119,20 @@ final class NativeSleepParityTests: XCTestCase {
         ).byDay[todayKey]?.sleepNeed)
     }
 
-    func testConsistencyUsesFiveToSevenNightsAndSkipsMissingDays() {
+    func testConsistencyChartUsesLastFourNightsAndSkipsMissingDays() {
+        XCTAssertEqual(NativeSleepConsistency.chartNights, 4)
+        XCTAssertEqual(NativeSleepConsistency.scoreNights, 5)
         let nights = NativeSleepConsistency.nights(
             dayKey: NativeSleepSnapshot.highlightKey,
             sleeps: NativeSleepSnapshot.snapshotSleeps
         )
-        XCTAssertGreaterThanOrEqual(nights.count, 5)
-        XCTAssertLessThanOrEqual(nights.count, 7)
+        XCTAssertLessThanOrEqual(nights.count, NativeSleepConsistency.chartNights)
         XCTAssertFalse(nights.contains { $0.key == "2026-11-12" })
         XCTAssertEqual(nights.last?.key, NativeSleepSnapshot.highlightKey)
         XCTAssertTrue(nights.last?.isToday == true)
         XCTAssertLessThan(nights.last?.bedFromEvening ?? 9_999, nights.last?.wakeFromEvening ?? 0)
+        XCTAssertNotNil(nights.last?.bedtime)
+        XCTAssertNotNil(nights.last?.wake)
     }
 
     func testEfficiencyWakeEventsCountStageTransitionsIntoAwake() throws {
@@ -176,6 +179,10 @@ final class NativeSleepParityTests: XCTestCase {
         XCTAssertTrue(titles.contains("Hours vs. Needed"))
         XCTAssertTrue(titles.contains("Hours vs. Needed %"))
         XCTAssertTrue(titles.contains("Restorative Sleep"))
+        XCTAssertEqual(
+            sleepCards.first { $0.title == "Restorative Sleep" }?.stacks.map(\.title),
+            ["REM", "Deep"]
+        )
         XCTAssertTrue(titles.contains("Sleep Consistency"))
         XCTAssertTrue(titles.contains("Time in Bed"))
         XCTAssertTrue(titles.contains("Sleep Efficiency"))

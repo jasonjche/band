@@ -15,6 +15,12 @@ enum IllnessNotifier {
             .requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
+    /// True when the illness watch already posted (or marked) `day`. Health Monitor yields on that
+    /// morning so the two local notifications cannot stack.
+    static func didNotify(on day: String) -> Bool {
+        UserDefaults.standard.string(forKey: lastDayKey) == day
+    }
+
     /// Post the early-warning, at most once per local calendar day.
     static func post(_ message: String) {
         let day = dayKey(Date())

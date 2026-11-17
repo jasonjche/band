@@ -35,6 +35,86 @@ final class NativeChartScrubTests: XCTestCase {
         XCTAssertNil(NativeChartScrubMath.inferredMaxGap(in: [hour(0, 1)]))
     }
 
+    func testUnitCenterIsTheBarXSwiftChartsUses() {
+        let start = Date(timeIntervalSince1970: 0)
+        let end = Date(timeIntervalSince1970: 86_400)
+        XCTAssertEqual(
+            NativeChartScrubMath.unitCenter(start: start, end: end).timeIntervalSince1970,
+            43_200,
+            accuracy: 1e-9
+        )
+        let origin = CGPoint(x: 12, y: 16)
+        let overlay = NativeChartScrubMath.overlayPoint(plotOrigin: origin, x: 40, y: 80)
+        XCTAssertEqual(overlay.x, 52, accuracy: 1e-9)
+        XCTAssertEqual(overlay.y, 96, accuracy: 1e-9)
+    }
+
+    func testDayBarsSnapToUnitCenterNotNextDayStart() {
+        let filled = NativeScopeBucket(
+            start: Date(timeIntervalSince1970: 0),
+            end: Date(timeIntervalSince1970: 86_400),
+            value: 12,
+            low: nil, high: nil, isPartial: false, sampleCount: 1, key: "2026-11-10"
+        )
+        let next = NativeScopeBucket(
+            start: Date(timeIntervalSince1970: 86_400),
+            end: Date(timeIntervalSince1970: 172_800),
+            value: 20,
+            low: nil, high: nil, isPartial: false, sampleCount: 1, key: "2026-11-11"
+        )
+        let lateInFirstDay = Date(timeIntervalSince1970: 80_000)
+        XCTAssertEqual(
+            NativeChartScrubMath.nearestBucket(to: lateInFirstDay, in: [filled, next])?.key,
+            "2026-11-10"
+        )
+        let bar = NativeChartScrubMath.snapBucket(date: lateInFirstDay, buckets: [filled, next], bars: true)
+        XCTAssertEqual(bar?.key, "2026-11-10")
+        XCTAssertEqual(bar?.time.timeIntervalSince1970 ?? -1, 43_200, accuracy: 1)
+        let line = NativeChartScrubMath.snapBucket(date: lateInFirstDay, buckets: [filled, next], bars: false)
+        XCTAssertEqual(line?.time.timeIntervalSince1970 ?? -1, 0, accuracy: 1)
+    }
+
+    func testHourlyStepBarsSnapToUnitCenterNotNextHourStart() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = calendar.date(from: DateComponents(year: 2026, month: 11, day: 17))!
+        let ten = Int(start.timeIntervalSince1970) + 10 * 3600
+        let eleven = Int(start.timeIntervalSince1970) + 11 * 3600
+        let points = NativeResolvedSteps.hourPoints(
+            appleHours: [(ts: ten, steps: 800), (ts: eleven, steps: 200)],
+            dayStart: start,
+            calendar: calendar,
+            preferApple: true
+        )
+        XCTAssertEqual(points.count, 24)
+        let finger = start.addingTimeInterval(10 * 3600 + 50 * 60)
+        let hit = NativeChartScrubMath.nearestCentered(
+            to: finger,
+            in: points,
+            duration: NativeChartScrubMath.hourDuration
+        )
+        XCTAssertEqual(hit?.time, points[10].time)
+        XCTAssertEqual(hit?.value ?? -1, 800, accuracy: 0.1)
+        XCTAssertEqual(
+            NativeChartScrubMath.nearestHour(to: finger, in: points)?.time,
+            points[11].time,
+            "comparing to hour starts is the offset-bar bug"
+        )
+        let snapped = NativeChartScrubMath.snapHour(date: finger, points: points, calendar: calendar)
+        let center = NativeChartScrubMath.selectionDate(forHour: points[10].time, calendar: calendar)
+        XCTAssertEqual(snapped?.timeIntervalSince1970 ?? -1, center.timeIntervalSince1970, accuracy: 1)
+        XCTAssertEqual(
+            NativeChartScrubMath.barOpacity(isSelected: true, hasSelection: true),
+            1,
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(
+            NativeChartScrubMath.barOpacity(isSelected: false, hasSelection: true),
+            0.35,
+            accuracy: 1e-9
+        )
+    }
+
     func testNearestBucketSkipsEmptySlot() {
         let filled = NativeScopeBucket(
             start: Date(timeIntervalSince1970: 0),

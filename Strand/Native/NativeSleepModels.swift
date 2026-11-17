@@ -216,6 +216,353 @@ enum NativeSleepStageKind: String, Hashable, CaseIterable, Identifiable {
     }
 }
 
+/// Classifies a sleep row's `stagesJSON`: epoch timeline vs imported minute totals.
+enum NativeSleepStagesJSON {
+    /// On-device segment array `[{start,end,stage}]` — enough to draw a hypnogram.
+    static func hasEpochTimeline(_ json: String?) -> Bool {
+        !AnalyticsEngine.decodeStages(json).isEmpty
+    }
+
+    /// Imported WHOOP minute dict `{light,deep,rem,awake}` with no epoch timestamps.
+    static func isTotalsOnly(_ json: String?) -> Bool {
+        !hasEpochTimeline(json) && SleepStageTotals.minutes(fromStagesJSON: json) != nil
+    }
+}
+
+/// Display-only hypnogram for imported WHOOP nights that store minute totals
+/// (`{light,deep,rem,awake}`) and no epoch timeline. Never persisted, never scored.
+enum NativeSleepEstimatedHypnogram {
+    static let cycleSeconds = 90 * 60
+    static let caption = "Estimated timing from stage totals"
+    /// WHOOP import example: minute totals, no epochs.
+    static let sampleTotalsJSON = "{\"light\":157,\"rem\":113,\"deep\":125,\"awake\":47}"
+
+    struct Budget: Equatable {
+        var awake: Int
+        var light: Int
+        var deep: Int
+        var rem: Int
+        var total: Int { awake + light + deep + rem }
+    }
+
+    /// `[{start,end,stage}]` spans covering `[startTs, endTs)`. Empty when the JSON
+    /// is an epoch timeline or has no usable totals.
+    static func spansIfTotalsOnly(startTs: Int, endTs: Int, json: String?) -> [NativeSleepStageSpan]? {
+        guard NativeSleepStagesJSON.isTotalsOnly(json),
+              let totals = SleepStageTotals.minutes(fromStagesJSON: json) else { return nil }
+        let spans = spans(startTs: startTs, endTs: endTs, totals: totals)
+        return spans.isEmpty ? nil : spans
+    }
+
+    static func spans(startTs: Int, endTs: Int, totals: SleepStageTotals.Minutes) -> [NativeSleepStageSpan] {
+        let span = endTs - startTs
+        guard span > 0, totals.inBed > 0 else { return [] }
+        let budget = scaledSeconds(span: span, totals: totals)
+        guard budget.total == span else { return [] }
+        let pieces = layout(budget: budget, seed: startTs)
+        return materialize(pieces, startTs: startTs, endTs: endTs)
+    }
+
+    static func scaledSeconds(span: Int, totals: SleepStageTotals.Minutes) -> Budget {
+        let raw = [max(0, totals.awake), max(0, totals.light), max(0, totals.deep), max(0, totals.rem)]
+        let sumMin = raw.reduce(0, +)
+        guard span > 0, sumMin > 0 else {
+            return Budget(awake: 0, light: max(span, 0), deep: 0, rem: 0)
+        }
+        let seconds = raw.map { $0 * Double(span) / sumMin }
+        var floors = seconds.map { Int($0.rounded(.down)) }
+        var left = span - floors.reduce(0, +)
+        let order = seconds.indices.sorted {
+            let fa = seconds[$0] - Double(floors[$0])
+            let fb = seconds[$1] - Double(floors[$1])
+            if fa != fb { return fa > fb }
+            return $0 < $1
+        }
+        var i = 0
+        while left > 0 {
+            floors[order[i % order.count]] += 1
+            left -= 1
+            i += 1
+        }
+        while left < 0 {
+            if let idx = floors.indices.reversed().first(where: { floors[$0] > 0 }) {
+                floors[idx] -= 1
+                left += 1
+            } else {
+                break
+            }
+        }
+        return Budget(awake: floors[0], light: floors[1], deep: floors[2], rem: floors[3])
+    }
+
+    static func seconds(_ spans: [NativeSleepStageSpan], kind: NativeSleepStageKind) -> Int {
+        spans.filter { $0.kind == kind }.reduce(0) { $0 + max(0, $1.endTs - $1.startTs) }
+    }
+
+    static func overlapSeconds(span: NativeSleepStageSpan, from: Int, to: Int) -> Int {
+        max(0, min(span.endTs, to) - max(span.startTs, from))
+    }
+
+    // MARK: - Layout
+
+    private struct Piece {
+        var kind: NativeSleepStageKind
+        var seconds: Int
+    }
+
+    private static func layout(budget: Budget, seed: Int) -> [Piece] {
+        let n = max(1, Int((Double(budget.total) / Double(cycleSeconds)).rounded()))
+        var cycleLen = Array(repeating: budget.total / n, count: n)
+        let extra = budget.total % n
+        let rot = n == 0 ? 0 : abs(seed) % n
+        for i in 0..<extra { cycleLen[(rot + i) % n] += 1 }
+
+        let bouts = awakeBouts(awake: budget.awake, cycles: n, seed: seed)
+        var onset = bouts.onset
+        var waso = bouts.waso
+        var finale = bouts.finale
+
+        var interiors = cycleLen
+        interiors[0] -= onset
+        if n > 1 {
+            for i in 0..<(n - 1) { interiors[i] -= waso[i] }
+        }
+        interiors[n - 1] -= finale
+
+        for i in 0..<n where interiors[i] < 0 {
+            var deficit = -interiors[i]
+            interiors[i] = 0
+            if i < waso.count {
+                let take = min(waso[i], deficit)
+                waso[i] -= take
+                deficit -= take
+            }
+            if i == 0 && deficit > 0 {
+                let take = min(onset, deficit)
+                onset -= take
+                deficit -= take
+            }
+            if i == n - 1 && deficit > 0 {
+                let take = min(finale, deficit)
+                finale -= take
+                deficit -= take
+            }
+            if deficit > 0 { finale += deficit }
+        }
+
+        let interiorTotal = interiors.reduce(0, +)
+        var deep = fit(distribute(budget.deep, weights: deepWeights(n)), caps: interiors)
+        let remCaps = zip(interiors, deep).map { max(0, $0 - $1) }
+        var rem = fit(distribute(budget.rem, weights: remWeights(n)), caps: remCaps)
+        var light = zip(zip(interiors, deep), rem).map { max(0, $0.0.0 - $0.0.1 - $0.1) }
+
+        let placed = light.reduce(0, +) + deep.reduce(0, +) + rem.reduce(0, +)
+        var leftoverLight = budget.light - light.reduce(0, +)
+        var leftoverDeep = budget.deep - deep.reduce(0, +)
+        var leftoverRem = budget.rem - rem.reduce(0, +)
+        var leftover = interiorTotal - placed
+        func pour(_ extra: inout Int, into target: inout [Int]) {
+            guard extra > 0 else { return }
+            for i in 0..<n {
+                let room = interiors[i] - light[i] - deep[i] - rem[i]
+                let take = min(room, extra)
+                target[i] += take
+                extra -= take
+                leftover -= take
+                if extra == 0 { break }
+            }
+        }
+        pour(&leftoverDeep, into: &deep)
+        pour(&leftoverRem, into: &rem)
+        pour(&leftoverLight, into: &light)
+        if leftover > 0 { light[n - 1] += leftover }
+
+        var pieces: [Piece] = []
+        func add(_ kind: NativeSleepStageKind, _ seconds: Int) {
+            guard seconds > 0 else { return }
+            if let last = pieces.indices.last, pieces[last].kind == kind {
+                pieces[last].seconds += seconds
+            } else {
+                pieces.append(Piece(kind: kind, seconds: seconds))
+            }
+        }
+
+        add(.awake, onset)
+        for i in 0..<n {
+            let early = (Double(i) + 0.5) / Double(n) < 0.5
+            for piece in interiorSequence(light: light[i], deep: deep[i], rem: rem[i], early: early) {
+                add(piece.kind, piece.seconds)
+            }
+            if i < n - 1 { add(.awake, waso[i]) }
+        }
+        add(.awake, finale)
+        return pieces
+    }
+
+    private static func awakeBouts(awake: Int, cycles: Int, seed: Int) -> (onset: Int, waso: [Int], finale: Int) {
+        let boundaries = max(cycles - 1, 0)
+        guard awake > 0 else { return (0, Array(repeating: 0, count: boundaries), 0) }
+        if cycles == 1 {
+            let onset = min(awake, awake * 20 / 100)
+            return (onset, [], awake - onset)
+        }
+        var onset = awake * 20 / 100
+        var finale = awake * 30 / 100
+        var rest = awake - onset - finale
+        if rest < 0 {
+            finale = awake - onset
+            rest = 0
+        }
+        var waso = Array(repeating: 0, count: boundaries)
+        if rest > 0, boundaries > 0 {
+            let base = rest / boundaries
+            var extra = rest % boundaries
+            let rot = abs(seed) % boundaries
+            for i in 0..<boundaries { waso[i] = base }
+            var i = 0
+            while extra > 0 {
+                waso[(rot + i) % boundaries] += 1
+                extra -= 1
+                i += 1
+            }
+        }
+        return (onset, waso, finale)
+    }
+
+    private static func deepWeights(_ n: Int) -> [Double] {
+        (0..<n).map { i in
+            let t = (Double(i) + 0.5) / Double(n)
+            return max(0.02, pow(max(0, 1 - t * 1.35), 1.4))
+        }
+    }
+
+    private static func remWeights(_ n: Int) -> [Double] {
+        (0..<n).map { i in
+            let t = (Double(i) + 0.5) / Double(n)
+            return max(0.02, pow(max(0, t * 1.35 - 0.2), 1.4))
+        }
+    }
+
+    private static func distribute(_ total: Int, weights: [Double]) -> [Int] {
+        guard !weights.isEmpty else { return [] }
+        let w = weights.map { max(0, $0) }
+        let sumW = w.reduce(0, +)
+        guard total > 0, sumW > 0 else { return Array(repeating: 0, count: w.count) }
+        let raw = w.map { Double(total) * $0 / sumW }
+        var floors = raw.map { Int($0.rounded(.down)) }
+        var left = total - floors.reduce(0, +)
+        let order = floors.indices.sorted {
+            let fa = raw[$0] - Double(floors[$0])
+            let fb = raw[$1] - Double(floors[$1])
+            if fa != fb { return fa > fb }
+            return $0 < $1
+        }
+        var i = 0
+        while left > 0 {
+            floors[order[i % order.count]] += 1
+            left -= 1
+            i += 1
+        }
+        return floors
+    }
+
+    private static func fit(_ want: [Int], caps: [Int]) -> [Int] {
+        var out = want
+        var spill = 0
+        for i in 0..<out.count {
+            let cap = i < caps.count ? max(0, caps[i]) : 0
+            if out[i] > cap {
+                spill += out[i] - cap
+                out[i] = cap
+            }
+        }
+        guard spill > 0 else { return out }
+        for i in 0..<out.count {
+            let cap = i < caps.count ? max(0, caps[i]) : 0
+            let room = cap - out[i]
+            let take = min(room, spill)
+            out[i] += take
+            spill -= take
+            if spill == 0 { break }
+        }
+        return out
+    }
+
+    private static func interiorSequence(light: Int, deep: Int, rem: Int, early: Bool) -> [Piece] {
+        var out: [Piece] = []
+        func add(_ kind: NativeSleepStageKind, _ n: Int) {
+            if n > 0 { out.append(Piece(kind: kind, seconds: n)) }
+        }
+        if early {
+            let lead = light * 2 / 5
+            add(.light, lead)
+            add(.deep, deep)
+            add(.light, light - lead)
+            add(.rem, rem)
+        } else {
+            let lead = light / 3
+            add(.light, lead)
+            add(.deep, deep)
+            add(.rem, rem)
+            add(.light, light - lead)
+        }
+        return out
+    }
+
+    private static func materialize(_ pieces: [Piece], startTs: Int, endTs: Int) -> [NativeSleepStageSpan] {
+        var t = startTs
+        var spans: [NativeSleepStageSpan] = []
+        for piece in pieces where piece.seconds > 0 {
+            let end = min(endTs, t + piece.seconds)
+            if end > t {
+                spans.append(NativeSleepStageSpan(startTs: t, endTs: end, name: piece.kind.title))
+            }
+            t = end
+            if t >= endTs { break }
+        }
+        if t < endTs {
+            if let last = spans.indices.last {
+                spans[last].endTs = endTs
+            } else {
+                spans.append(NativeSleepStageSpan(startTs: startTs, endTs: endTs, name: "Light"))
+            }
+        }
+        return spans
+    }
+}
+
+/// Last Night duration rows. Built once; views do not sort in `body`.
+enum NativeSleepNightRows {
+    static let order = ["Awake", "Light", "Deep", "REM"]
+
+    static func make(
+        stages: [NativeStage],
+        inBedMinutes: Double?,
+        asleepMinutes: Double?,
+        awakeTypical: Double?
+    ) -> [NativeStage] {
+        var rows = stages
+        if !rows.contains(where: { $0.name == "Awake" }),
+           let inBedMinutes, let asleepMinutes, inBedMinutes > asleepMinutes {
+            rows.insert(
+                NativeStage(
+                    name: "Awake",
+                    minutes: inBedMinutes - asleepMinutes,
+                    typical: awakeTypical,
+                    tint: NativeChrome.sleepAwake
+                ),
+                at: 0
+            )
+        } else if let idx = rows.firstIndex(where: { $0.name == "Awake" }),
+                  rows[idx].typical == nil, let awakeTypical {
+            rows[idx].typical = awakeTypical
+        }
+        return rows.sorted {
+            (order.firstIndex(of: $0.name) ?? 99) < (order.firstIndex(of: $1.name) ?? 99)
+        }
+    }
+}
+
 struct NativeSleepStageDetail: Equatable, Identifiable {
     var id: NativeSleepStageKind { kind }
     var kind: NativeSleepStageKind
@@ -266,6 +613,14 @@ enum NativeSleepHypnogramMath {
     }
 
     /// Full opacity for the selected (or highlighted) segment; others dim while a selection is active.
+    /// Activity-page zone toggle: tap again to clear.
+    static func toggleHighlight(
+        _ current: NativeSleepStageKind?,
+        tapped: NativeSleepStageKind
+    ) -> NativeSleepStageKind? {
+        current == tapped ? nil : tapped
+    }
+
     static func spanOpacity(
         span: NativeSleepStageSpan,
         selected: NativeSleepStageSpan?,
@@ -289,11 +644,35 @@ enum NativeSleepHypnogramMath {
     }
 }
 
+/// Poor / Sufficient / Optimal cut-offs for sleep percents.
+/// WHOOP published Sleep Performance: ≥85 optimal, 70–84 sufficient, <70 poor.
+/// Hours vs. Needed, Consistency, and Efficiency use the same published bands.
+/// High Sleep Stress is a 0…3 stress scale, not this percent ladder.
+enum NativeSleepBands {
+    static let poorBelow: Double = 70
+    static let optimalAt: Double = 85
+
+    enum Band: String, Equatable {
+        case poor, sufficient, optimal
+    }
+
+    static func band(_ percent: Double) -> Band {
+        if percent < poorBelow { return .poor }
+        if percent < optimalAt { return .sufficient }
+        return .optimal
+    }
+}
+
 enum NativeSleepConsistency {
+    /// Chart window: last 4 nights (bed and wake). Score uses BandConsistency's
+    /// 5-night last-vs-each window (today vs the prior 4, recency 0.7).
+    static let chartNights = 4
+    static let scoreNights = 5
+
     static func nights(
         dayKey: String,
         sleeps: [CachedSleepSession],
-        limit: Int = 7
+        limit: Int = chartNights
     ) -> [NativeSleepNight] {
         let keys = NativeWeek.lastSevenKeys(ending: dayKey).suffix(limit)
         let byDay = Dictionary(grouping: sleeps) {
@@ -567,8 +946,9 @@ enum NativeSleepWeek {
                 bars: true, tint: NativeChrome.sleep, route: .metric("restorative_min"),
                 format: .duration, band: false,
                 stacks: [
-                    NativeWeek.Card.Stack(title: "Deep", points: deep, tint: NativeTokens.sleepDeep),
-                    NativeWeek.Card.Stack(title: "REM", points: rem, tint: NativeTokens.sleepREM),
+                    // REM at the bottom, Deep on top — WHOOP IMG_9434.
+                    NativeWeek.Card.Stack(title: "REM", points: rem, tint: NativeChrome.sleepREM),
+                    NativeWeek.Card.Stack(title: "Deep", points: deep, tint: NativeChrome.sleepDeep),
                 ]
             ),
             NativeWeek.Card(
@@ -688,6 +1068,9 @@ struct NativeSleepPageDetail {
     var hypnogram: [NativeSleepStageSpan]
     var hoursTypical: ClosedRange<Double>?
     var stageDetails: [NativeSleepStageDetail]
+    /// True when the hypnogram was synthesized from minute totals. Display only.
+    var hypnogramEstimated: Bool = false
+    var hasHypnogram: Bool { !hypnogram.isEmpty }
 
     static func make(
         dayKey: String,
@@ -704,9 +1087,17 @@ struct NativeSleepPageDetail {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
         }
         let segments = AnalyticsEngine.decodeStages(session?.stagesJSON)
-        let hypnogram = parsedStages.isEmpty
+        let epoch = parsedStages.isEmpty
             ? NativeSleepEfficiency.spans(from: segments)
             : NativeSleepEfficiency.spans(from: parsedStages)
+        let estimated = epoch.isEmpty
+            ? NativeSleepEstimatedHypnogram.spansIfTotalsOnly(
+                startTs: session?.effectiveStartTs ?? 0,
+                endTs: session?.endTs ?? 0,
+                json: session?.stagesJSON
+            )
+            : nil
+        let hypnogram = epoch.isEmpty ? (estimated ?? []) : epoch
         return NativeSleepPageDetail(
             need: NativeSleepNeed.resolve(
                 dayKey: dayKey, days: days, sleeps: sleeps, workouts: workouts, importedSleep: importedSleep
@@ -720,7 +1111,8 @@ struct NativeSleepPageDetail {
             timeInBedWeek: NativeSleepWeek.timeInBedPoints(todayKey: dayKey, sleeps: sleeps),
             hypnogram: hypnogram,
             hoursTypical: hoursTypicalRange(days: days, dayKey: dayKey),
-            stageDetails: stageDetails(dayKey: dayKey, days: days, sleeps: sleeps)
+            stageDetails: stageDetails(dayKey: dayKey, days: days, sleeps: sleeps),
+            hypnogramEstimated: epoch.isEmpty && estimated != nil
         )
     }
 
@@ -826,15 +1218,26 @@ enum NativeSleepSnapshot {
 
     static var stagesJSON: String {
         let start = Int(sleepStart.timeIntervalSince1970)
-        let segs = [
-            StageSegment(start: start, end: start + 1_800, stage: "wake"),
-            StageSegment(start: start + 1_800, end: start + 9_000, stage: "light"),
-            StageSegment(start: start + 9_000, end: start + 13_200, stage: "deep"),
-            StageSegment(start: start + 13_200, end: start + 13_800, stage: "wake"),
-            StageSegment(start: start + 13_800, end: start + 20_400, stage: "rem"),
-            StageSegment(start: start + 20_400, end: start + 25_800, stage: "light"),
-            StageSegment(start: start + 25_800, end: start + 26_580, stage: "wake"),
+        // 443 min in bed matching 00:37–08:00. Minutes: Light 250, Deep 70, REM 90, Awake 33.
+        let minutes: [(Int, Int, String)] = [
+            (0, 12, "wake"),
+            (12, 52, "light"),
+            (52, 92, "deep"),
+            (92, 122, "light"),
+            (122, 152, "rem"),
+            (152, 192, "light"),
+            (192, 222, "deep"),
+            (222, 262, "light"),
+            (262, 307, "rem"),
+            (307, 357, "light"),
+            (357, 365, "wake"),
+            (365, 415, "light"),
+            (415, 430, "rem"),
+            (430, 443, "wake"),
         ]
+        let segs = minutes.map { lo, hi, stage in
+            StageSegment(start: start + lo * 60, end: start + hi * 60, stage: stage)
+        }
         return AnalyticsEngine.encodeStages(segs) ?? "[]"
     }
 
@@ -915,9 +1318,10 @@ enum NativeSleepSnapshot {
 
     static var stages: [NativeStage] {
         [
-            NativeStage(name: "Light", minutes: 250, typical: 240, tint: NativeTokens.sleepCore),
-            NativeStage(name: "Deep", minutes: 70, typical: 80, tint: NativeTokens.sleepDeep),
-            NativeStage(name: "REM", minutes: 90, typical: 95, tint: NativeTokens.sleepREM),
+            NativeStage(name: "Awake", minutes: 33, typical: 45, tint: NativeChrome.sleepAwake),
+            NativeStage(name: "Light", minutes: 250, typical: 240, tint: NativeChrome.sleepLight),
+            NativeStage(name: "Deep", minutes: 70, typical: 80, tint: NativeChrome.sleepDeep),
+            NativeStage(name: "REM", minutes: 90, typical: 95, tint: NativeChrome.sleepREM),
         ]
     }
 
@@ -998,7 +1402,8 @@ enum NativeSleepSnapshot {
             timeInBedWeek: NativeSleepWeek.timeInBedPoints(todayKey: highlightKey, sleeps: snapshotSleeps),
             hypnogram: hypnogram,
             hoursTypical: NativeSleepPageDetail.hoursTypicalRange(days: snapshotDays, dayKey: highlightKey),
-            stageDetails: stageDetails
+            stageDetails: stageDetails,
+            hypnogramEstimated: false
         )
     }
 }

@@ -44,7 +44,9 @@ struct NativeMetricPage: View {
         NativeMetricChartPage(
             title: pageTitle,
             scope: scope,
-            onScope: { scope = $0 },
+            onScope: { new in
+                if allowedScopes.contains(new) { scope = new }
+            },
             series: series,
             hourPoints: hourPoints,
             bars: pageBars,
@@ -55,15 +57,23 @@ struct NativeMetricPage: View {
             higherIsBetter: NativeMetricDirection.higherIsBetter(key),
             latest: latest,
             color: pageColor,
-            sourceCaption: sourceCaption
+            sourceCaption: sourceCaption,
+            scopes: allowedScopes
         )
         .background {
             NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
         }
         .task(id: taskID) {
             guard handlesReady else { return }
+            if !allowedScopes.contains(scope) {
+                scope = allowedScopes.first ?? .week
+            }
             await reload()
         }
+    }
+
+    private var allowedScopes: [NativeMetricScope] {
+        NativeMetricScope.pickerCases(for: key)
     }
 
     private var usesBars: Bool {

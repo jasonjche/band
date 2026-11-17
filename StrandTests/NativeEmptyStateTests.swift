@@ -150,7 +150,7 @@ final class NativeEmptyStateTests: XCTestCase {
         let label = NativeHealthMonitorFormat.accessibilityLabel(resp)
         XCTAssertTrue(label.contains("Respiratory Rate"))
         XCTAssertTrue(label.contains("breaths/min"))
-        XCTAssertTrue(label.contains("Building baseline"))
+        XCTAssertTrue(label.contains("Calibrating range"))
         XCTAssertFalse(label.contains(" rpm"))
         XCTAssertFalse(label.contains("Out of Range"))
         XCTAssertFalse(label.contains("In Range"))

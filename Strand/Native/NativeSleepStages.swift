@@ -17,12 +17,26 @@ struct NativeSleepStageRoute: Hashable {
 
 struct NativeSleepHypnogramRoute: Hashable {}
 
+struct NativeSleepConsistencyRoute: Hashable {}
+
+struct NativeSleepLightHaptic<Value: Equatable>: ViewModifier {
+    var trigger: Value
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            content.sensoryFeedback(.impact(weight: .light), trigger: trigger)
+        } else {
+            content
+        }
+    }
+}
+
 struct NativeSleepHypnogram: View {
     var spans: [NativeSleepStageSpan]
     var nightStart: Date
     var nightEnd: Date
     var highlight: NativeSleepStageKind? = nil
     var plotHeight: CGFloat = 132
+    var estimated: Bool = false
     var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
     @State private var scrub = NativeScopeScrub()
@@ -44,9 +58,17 @@ struct NativeSleepHypnogram: View {
             )
             .frame(height: plotHeight)
             axis
+            if estimated {
+                Text(NativeSleepEstimatedHypnogram.caption)
+                    .font(style == .whoop ? NativeTokens.whoopCaps(10) : .caption2)
+                    .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
+                    .foregroundStyle(style == .whoop ? NativeTokens.whoopLabel : Color.secondary)
+            }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Sleep stages from \(NativeSleepClock.clock(nightStart)) to \(NativeSleepClock.clock(nightEnd))")
+        .accessibilityLabel(estimated
+            ? "\(NativeSleepEstimatedHypnogram.caption). Sleep stages from \(NativeSleepClock.clock(nightStart)) to \(NativeSleepClock.clock(nightEnd))"
+            : "Sleep stages from \(NativeSleepClock.clock(nightStart)) to \(NativeSleepClock.clock(nightEnd))")
         .accessibilityAddTraits(onOpen == nil ? [] : .isButton)
     }
 
@@ -162,6 +184,7 @@ struct NativeSleepHypnogramPage: View {
     var stages: [NativeStage]
     var asleepMinutes: Double?
     var awakeTypical: Double?
+    var estimated: Bool = false
     var scrolls: Bool = true
     @Environment(\.nativeStyle) private var style
 
@@ -189,7 +212,8 @@ struct NativeSleepHypnogramPage: View {
                     spans: spans,
                     nightStart: nightStart,
                     nightEnd: nightEnd,
-                    plotHeight: 220
+                    plotHeight: 220,
+                    estimated: estimated
                 )
             }
         }
@@ -214,20 +238,12 @@ struct NativeSleepHypnogramPage: View {
     }
 
     private var nightRows: [NativeStage] {
-        var rows = stages
-        let inBed = NativeDayLogic.inBedMinutes(start: nightStart, end: nightEnd)
-        if !rows.contains(where: { $0.name == "Awake" }),
-           let inBed, let asleepMinutes, inBed > asleepMinutes {
-            rows.insert(
-                NativeStage(name: "Awake", minutes: inBed - asleepMinutes, typical: awakeTypical, tint: NativeTokens.sleepAwake),
-                at: 0
-            )
-        } else if let idx = rows.firstIndex(where: { $0.name == "Awake" }),
-                  rows[idx].typical == nil, let awakeTypical {
-            rows[idx].typical = awakeTypical
-        }
-        let order = ["Awake", "Light", "Deep", "REM"]
-        return rows.sorted { (order.firstIndex(of: $0.name) ?? 99) < (order.firstIndex(of: $1.name) ?? 99) }
+        NativeSleepNightRows.make(
+            stages: stages,
+            inBedMinutes: NativeDayLogic.inBedMinutes(start: nightStart, end: nightEnd),
+            asleepMinutes: asleepMinutes,
+            awakeTypical: awakeTypical
+        )
     }
 }
 
@@ -274,6 +290,9 @@ struct NativeSleepStageRow: View {
     var typical: Double?
     var scale: Double
     var chevron: Bool = false
+    var selected: Bool = false
+    var dimmed: Bool = false
+    var tappable: Bool = false
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
@@ -282,6 +301,7 @@ struct NativeSleepStageRow: View {
             HStack(spacing: 10) {
                 Circle()
                     .strokeBorder(tint, lineWidth: 2)
+                    .background(Circle().fill(selected ? tint : Color.clear))
                     .frame(width: 14, height: 14)
                 Text(label)
                     .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
@@ -303,10 +323,12 @@ struct NativeSleepStageRow: View {
             NativeSleepStageShareBar(minutes: minutes, typical: typical, scale: scale, tint: tint)
         }
         .padding(.vertical, 6)
+        .opacity(dimmed ? 0.35 : 1)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(label), \(NativeScoreMath.duration(minutes)), \(Int(percent.rounded())) percent")
-        .accessibilityAddTraits(chevron ? .isButton : [])
+        .accessibilityAddTraits(tappable || chevron ? .isButton : [])
+        .accessibilityHint(tappable ? (selected ? "Clears the stage highlight" : "Highlights this stage on the graph") : "")
     }
 
     private var label: String {
@@ -325,6 +347,7 @@ struct NativeSleepStageDetailView: View {
     var nightStart: Date?
     var nightEnd: Date?
     var dayKey: String?
+    var estimated: Bool = false
     var scrolls: Bool = true
     @Environment(\.nativeStyle) private var style
 
@@ -402,7 +425,8 @@ struct NativeSleepStageDetailView: View {
                     spans: spans,
                     nightStart: nightStart,
                     nightEnd: nightEnd,
-                    highlight: detail.kind
+                    highlight: detail.kind,
+                    estimated: estimated
                 )
             }
         }
@@ -428,22 +452,31 @@ struct NativeScoreTrendPage: View {
                     symbol: symbol,
                     tint: tint
                 )
-                NativeChartBlock(
-                    points: card.points,
-                    bars: card.bars,
-                    tint: tint,
-                    format: format,
-                    axisFormat: axisFormat,
-                    unit: unit,
-                    maxY: card.maxY,
-                    color: color,
-                    highlightKey: dayKey,
-                    plotHeight: 200,
-                    accessibilityName: card.title,
-                    clockHero: card.format == .duration,
-                    yTicks: card.format == .strain ? NativeDayLogic.strainYTicks(maxY: card.maxY) : nil,
-                    stacks: card.stacks
-                )
+                if card.title == "Restorative Sleep", !card.stacks.isEmpty {
+                    NativeSleepRestorativeChart(
+                        deep: card.stacks.first { $0.title == "Deep" }?.points ?? [],
+                        rem: card.stacks.first { $0.title == "REM" }?.points ?? [],
+                        highlightKey: dayKey,
+                        plotHeight: 200
+                    )
+                } else {
+                    NativeChartBlock(
+                        points: card.points,
+                        bars: card.bars,
+                        tint: tint,
+                        format: format,
+                        axisFormat: axisFormat,
+                        unit: unit,
+                        maxY: card.maxY,
+                        color: color,
+                        highlightKey: dayKey,
+                        plotHeight: 200,
+                        accessibilityName: card.title,
+                        clockHero: card.format == .duration,
+                        yTicks: card.format == .strain ? NativeDayLogic.strainYTicks(maxY: card.maxY) : nil,
+                        stacks: card.stacks
+                    )
+                }
             }
         }
         .navigationTitle(card.title)

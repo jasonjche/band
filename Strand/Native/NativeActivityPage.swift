@@ -57,6 +57,11 @@ enum NativeActivityPageLogic {
         var neutralDelta: Bool = false
     }
 
+    struct MuscularSplit: Equatable {
+        var cardioPercent: Int
+        var muscularPercent: Int
+    }
+
     struct Model: Equatable {
         var sport: String
         var timeRange: String
@@ -70,6 +75,8 @@ enum NativeActivityPageLogic {
         var stats: [Stat]
         var isManual: Bool
         var hasStrain: Bool
+        var isRecovery: Bool
+        var muscularSplit: MuscularSplit?
     }
 
     static func make(
@@ -79,38 +86,53 @@ enum NativeActivityPageLogic {
         zoneSet: HRZoneSet?,
         percents: [Double]?,
         heartRateRecovery: Int? = nil,
-        priorHeartRateRecovery: [Double] = []
+        priorHeartRateRecovery: [Double] = [],
+        steps: Int? = nil,
+        muscular: ActivityScoring.Muscular? = nil
     ) -> Model {
         let sameAll = sameSport(as: workout, in: prior, windowDays: nil)
         let sameWindow = sameSport(as: workout, in: prior, windowDays: statsWindowDays)
         let strainValues = sameAll.compactMap(NativeStrain.workout)
-        let strain = NativeStrain.workout(workout)
+        let isRecovery = WorkoutCatalog.isRecovery(workout.sport)
+        let storedStrain = isRecovery ? nil : NativeStrain.workout(workout)
+        let strain: Double?
+        if isRecovery {
+            strain = nil
+        } else if let muscular {
+            strain = StrainScorer.effortValue(fromWhoopStrain: muscular.combinedStrain21)
+        } else {
+            strain = storedStrain
+        }
         let sport = WorkoutSource.displaySport(workout.sport)
-        let steps = workout.steps.map(Double.init)
+        let stepCount = steps ?? workout.steps
+        let stepsValue = stepCount.map(Double.init)
         let priorSteps = sameAll.compactMap { $0.steps.map(Double.init) }
+        let showSteps = !isRecovery && muscular == nil
         return Model(
             sport: sport,
             timeRange: dateTimeRange(startTs: workout.startTs, endTs: workout.endTs),
-            sourceLine: importSourceLine(workout.source),
+            sourceLine: isRecovery ? recoverySourceLine(workout.source) : importSourceLine(workout.source),
             strainText: NativeDayLogic.strainText(strain, scale: scale),
             strainTypical: typical(
                 current: strain, prior: strainValues, sport: sport, metric: "strain"
             ) { NativeDayLogic.strainText($0, scale: scale) },
             duration: durationClock(workout),
-            stepsText: steps.map { NativeScoreMath.count($0) },
-            stepsTypical: typical(
-                current: steps, prior: priorSteps, sport: sport, metric: "steps"
-            ) { NativeScoreMath.count($0) },
-            zones: zones(percents: percents, durationS: durationSeconds(workout), zoneSet: zoneSet),
+            stepsText: showSteps ? stepsValue.flatMap { NativeScoreMath.count($0) } : nil,
+            stepsTypical: showSteps ? typical(
+                current: stepsValue, prior: priorSteps, sport: sport, metric: "steps"
+            ) { NativeScoreMath.count($0) } : nil,
+            zones: isRecovery ? [] : zones(percents: percents, durationS: durationSeconds(workout), zoneSet: zoneSet),
             stats: stats(
                 workout,
                 same: sameWindow,
                 sport: sport,
-                heartRateRecovery: heartRateRecovery,
+                heartRateRecovery: isRecovery ? nil : heartRateRecovery,
                 priorHeartRateRecovery: priorHeartRateRecovery
             ),
             isManual: WorkoutSource.classify(workout.source) == .manual,
-            hasStrain: strain != nil
+            hasStrain: strain != nil,
+            isRecovery: isRecovery,
+            muscularSplit: muscular.map { MuscularSplit(cardioPercent: $0.cardioPercent, muscularPercent: $0.muscularPercent) }
         )
     }
 
@@ -220,6 +242,13 @@ enum NativeActivityPageLogic {
         case .activityFile, .lifting: return "Imported"
         case .manual, .detected: return nil
         }
+    }
+
+    static func recoverySourceLine(_ source: String) -> String {
+        if let imported = importSourceLine(source) {
+            return "\(imported). Recovery activity — no activity strain"
+        }
+        return "Recovery activity — no activity strain"
     }
 
     static func bpmRange(zone: Int, set: HRZoneSet?) -> String? {
@@ -367,6 +396,8 @@ struct NativeActivityView: View {
     @State private var priorHeartRateRecovery: [Double] = []
     @State private var route: [RouteMath.LatLng] = []
     @State private var zoneSet: HRZoneSet?
+    @State private var activitySteps: Int?
+    @State private var muscular: ActivityScoring.Muscular?
     @State private var showEdit = false
     @State private var confirmDelete = false
 
@@ -384,7 +415,9 @@ struct NativeActivityView: View {
                     zoneSet: zoneSet,
                     percents: percents,
                     heartRateRecovery: heartRateRecoveryBpm,
-                    priorHeartRateRecovery: priorHeartRateRecovery
+                    priorHeartRateRecovery: priorHeartRateRecovery,
+                    steps: activitySteps,
+                    muscular: muscular
                 )
                 NativeActivityBody(
                     model: model,
@@ -448,6 +481,7 @@ struct NativeActivityView: View {
 
     private func load() async {
         guard let repo = repoHandle else { return }
+        await profileHandle?.syncObservedHRMax(from: repo)
         let restingHR = HRZones.medianRestingHR(repo.days.compactMap(\.restingHr))
         zoneSet = profileHandle?.displayZoneSet(restingHR: restingHR)
         let rows = await repo.workoutRows(days: 120)
@@ -460,6 +494,8 @@ struct NativeActivityView: View {
             route = []
             heartRateRecoveryBpm = nil
             priorHeartRateRecovery = []
+            activitySteps = nil
+            muscular = nil
             return
         }
         percents = repo.parsedZones(for: workout) ?? WorkoutZones.percents(workout.zonesJSON)
@@ -473,17 +509,35 @@ struct NativeActivityView: View {
             seconds: NativeActivityPageLogic.hrBucketSeconds
         )
         hr = NativeHRSmoothing.smooth(rawPoints)
+        let isRecovery = WorkoutCatalog.isRecovery(workout.sport)
         let zones = zoneSet ?? HRZones.zones(
             maxHR: profileHandle?.effortHRmax ?? 197,
             restingHR: restingHR ?? BandStrain.defaultRestingHR
         )
-        if percents == nil, !series.samples.isEmpty {
+        if isRecovery {
+            percents = nil
+        } else if percents == nil, !series.samples.isEmpty {
             percents = NativeActivityPageLogic.zonePercents(from: series.samples, zoneSet: zones)
             if zoneSet == nil { zoneSet = zones }
         }
+        let ticksPerStep = profileHandle?.stepTicksPerStep ?? 1
+        activitySteps = await repo.workoutStepCount(
+            from: workout.startTs, to: workout.endTs,
+            ticksPerStep: ticksPerStep, stored: workout.steps
+        )
+        let sets = await repo.liftSets(startTs: workout.startTs, sport: workout.sport)
+        let cardio21 = NativeStrain.workout(workout).map {
+            NativeDayLogic.strainDisplayValue($0, scale: .whoop)
+        }
+        muscular = ActivityScoring.muscularLoad(
+            sport: workout.sport,
+            sets: sets,
+            bodyWeightKg: profileHandle?.weightKg,
+            cardioStrain21: cardio21
+        )
         heartRateRecoveryBpm = nil
         priorHeartRateRecovery = []
-        if series.origin == .strap, let maxHR = profileHandle?.effortHRmax, maxHR > 0 {
+        if !isRecovery, series.origin == .strap, let maxHR = profileHandle?.effortHRmax, maxHR > 0 {
             let recovered = await repo.workoutHeartRateRecovery(
                 from: workout.startTs, to: workout.endTs, maxHR: maxHR, source: workout.source
             )
@@ -625,7 +679,9 @@ struct NativeActivityBody: View {
                         accessibilityValue: "\(model.strainText) activity strain"
                     )
                 }
-                if let steps = model.stepsText {
+                if let split = model.muscularSplit {
+                    NativeActivityStrainSplit(split: split)
+                } else if let steps = model.stepsText {
                     NativeActivityHeroMetric(
                         value: steps,
                         caption: "Activity Steps",
@@ -663,6 +719,43 @@ struct NativeActivityBody: View {
             zoneCount: model.zones.count,
             heartStatCount: model.stats.filter(\.heartFamily).count
         )
+    }
+}
+
+private struct NativeActivityStrainSplit: View {
+    var split: NativeActivityPageLogic.MuscularSplit
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Cardio")
+                Spacer()
+                Text("Muscular")
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            GeometryReader { geo in
+                let cardioWidth = geo.size.width * CGFloat(split.cardioPercent) / 100
+                HStack(spacing: 2) {
+                    Capsule().fill(NativeTokens.strain)
+                        .frame(width: max(cardioWidth, split.cardioPercent > 0 ? 4 : 0))
+                    Capsule().fill(NativeTokens.strain.opacity(0.45))
+                }
+            }
+            .frame(height: 10)
+            HStack {
+                Text("\(split.cardioPercent)%")
+                Spacer()
+                Text("\(split.muscularPercent)%")
+            }
+            .font(.caption.weight(.semibold))
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+        }
+        .frame(minWidth: 140, maxWidth: 200)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Cardio \(split.cardioPercent) percent, muscular \(split.muscularPercent) percent")
     }
 }
 

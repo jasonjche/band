@@ -50,6 +50,10 @@ final class WorkoutTypeIconTests: XCTestCase {
         XCTAssertEqual(KnownWorkoutType.resolving("open water swimming"), .openWaterSwim)
         XCTAssertEqual(KnownWorkoutType.resolving("detected"), .other)
         XCTAssertNil(KnownWorkoutType.resolving(""))
+        XCTAssertEqual(KnownWorkoutType.resolving("Cold Plunge"), .iceBath)
+        XCTAssertEqual(KnownWorkoutType.resolving("dry sauna"), .sauna)
+        XCTAssertEqual(KnownWorkoutType.resolving("Restorative Yoga"), .restorativeYoga)
+        XCTAssertEqual(KnownWorkoutType.resolving("vinyasa yoga"), .yoga)
     }
 
     func testPadelUsesCustomGlyph() {

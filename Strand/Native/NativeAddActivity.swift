@@ -51,6 +51,16 @@ enum NativeAddActivityLogic {
         return base.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// Strain and Recovery groups, each A–Z, after the same search filter.
+    static func groupedSports(query: String, in sports: [WorkoutCatalog.Sport] = WorkoutCatalog.all)
+        -> (strain: [WorkoutCatalog.Sport], recovery: [WorkoutCatalog.Sport]) {
+        let filtered = filteredSports(query: query, in: sports)
+        return (
+            filtered.filter { $0.category == .strain },
+            filtered.filter { $0.category == .recovery }
+        )
+    }
+
     static func isSelected(_ sport: WorkoutCatalog.Sport, selected: String?) -> Bool {
         guard let selected, !selected.isEmpty else { return false }
         return WorkoutSource.sportKey(sport.name) == WorkoutSource.sportKey(selected)
@@ -257,8 +267,8 @@ struct NativeSportPicker: View {
         _recents = State(initialValue: NativeAddActivityLogic.recentSports(from: workouts))
     }
 
-    private var allSports: [WorkoutCatalog.Sport] {
-        NativeAddActivityLogic.filteredSports(query: query)
+    private var groupedSports: (strain: [WorkoutCatalog.Sport], recovery: [WorkoutCatalog.Sport]) {
+        NativeAddActivityLogic.groupedSports(query: query)
     }
 
     private var showRecent: Bool {
@@ -274,9 +284,18 @@ struct NativeSportPicker: View {
                     }
                 }
             }
-            Section {
-                ForEach(allSports) { sport in
-                    sportRow(sport)
+            if !groupedSports.strain.isEmpty {
+                Section("Activities") {
+                    ForEach(groupedSports.strain) { sport in
+                        sportRow(sport)
+                    }
+                }
+            }
+            if !groupedSports.recovery.isEmpty {
+                Section("Recovery") {
+                    ForEach(groupedSports.recovery) { sport in
+                        sportRow(sport)
+                    }
                 }
             }
         }
@@ -301,7 +320,7 @@ struct NativeSportPicker: View {
             HStack(spacing: 12) {
                 Image(systemName: sportSymbol(sport.name))
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(NativeChrome.strain)
+                    .foregroundStyle(sport.category == .recovery ? NativeChrome.sleep : NativeChrome.strain)
                     .frame(width: 28)
                 Text(sport.name)
                     .foregroundStyle(.primary)

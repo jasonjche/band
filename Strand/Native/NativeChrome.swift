@@ -14,6 +14,10 @@ enum NativeChrome {
     static let recovery = NativeTokens.recoveryHigh
     static let strain = NativeTokens.strain
     static let sleep = NativeTokens.sleep
+    static let sleepAwake = NativeTokens.sleepAwake
+    static let sleepLight = NativeTokens.sleepLight
+    static let sleepDeep = NativeTokens.sleepDeep
+    static let sleepREM = NativeTokens.sleepREM
     static let heart = NativeTokens.heart
     static let respiratory = NativeTokens.respiratory
     static let activity = NativeTokens.activity
@@ -479,9 +483,15 @@ extension View {
 /// so `drawn` interpolates the delta instead of revealing from 0 again.
 enum NativeRingMotion {
     static let spring = Animation.spring(response: 0.42, dampingFraction: 0.86)
+    /// Arc length of the strain-target tick on the 0...1 track.
+    static let targetTickSpan: Double = 0.018
 
     static func clamped(_ fraction: Double?) -> Double {
         fraction.map { min(1, max(0, $0)) } ?? 0
+    }
+
+    static func targetTick(from range: ClosedRange<Double>) -> Double {
+        clamped((range.lowerBound + range.upperBound) / 2)
     }
 }
 
@@ -517,19 +527,20 @@ struct NativeRing: View {
                         whoop ? NativeTokens.whoopTrack : tint.opacity(NativeTokens.trackOpacity),
                         lineWidth: line
                     )
-                if let target = trimmedTarget {
-                    Circle()
-                        .trim(from: target.lowerBound, to: target.upperBound)
-                        .stroke(
-                            whoop ? NativeTokens.whoopLabel : tint.opacity(min(1, NativeTokens.trackOpacity * 2.5)),
-                            style: StrokeStyle(lineWidth: line, lineCap: .butt)
-                        )
-                        .rotationEffect(.degrees(-90))
-                }
                 Circle()
                     .trim(from: 0, to: drawn)
                     .stroke(tint, style: StrokeStyle(lineWidth: line, lineCap: .round))
                     .rotationEffect(.degrees(-90))
+                if let tick = targetTick {
+                    let span = NativeRingMotion.targetTickSpan
+                    Circle()
+                        .trim(from: max(0, tick - span / 2), to: min(1, tick + span / 2))
+                        .stroke(
+                            NativeTokens.sleepAwake,
+                            style: StrokeStyle(lineWidth: line * 0.55, lineCap: .butt)
+                        )
+                        .rotationEffect(.degrees(-90))
+                }
                 VStack(spacing: whoop ? 6 : 0) {
                     HStack(alignment: .firstTextBaseline, spacing: whoop ? 1 : 0) {
                         Text(numericText)
@@ -571,8 +582,11 @@ struct NativeRing: View {
         guard let target = targetFraction else { return nil }
         let lo = min(max(target.lowerBound, 0), 1)
         let hi = min(max(target.upperBound, 0), 1)
-        guard hi > lo else { return nil }
-        return lo...hi
+        return min(lo, hi)...max(lo, hi)
+    }
+
+    private var targetTick: Double? {
+        trimmedTarget.map { NativeRingMotion.targetTick(from: $0) }
     }
 
     private var ringAccessibilityLabel: String {
@@ -1107,6 +1121,12 @@ struct NativeLabeledLine: View {
                     .accessibilityLabel(NativeChartDay.longLabel(point.key))
                     .accessibilityValue(format(point.value))
                 }
+                if let key = selectedDay?.wrappedValue {
+                    RuleMark(x: .value("Day", key))
+                        .foregroundStyle(NativeTokens.separator)
+                        .lineStyle(StrokeStyle(lineWidth: 1))
+                        .accessibilityHidden(true)
+                }
             }
             .chartYScale(domain: yDomain)
             .modifier(NativeChartChrome(
@@ -1232,6 +1252,12 @@ struct NativeStrainRecoveryChart: View {
                                 .monospacedDigit()
                         }
                     }
+            }
+            if let selectedDay {
+                RuleMark(x: .value("Day", selectedDay))
+                    .foregroundStyle(NativeTokens.separator)
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                    .accessibilityHidden(true)
             }
         }
         .chartLegend(.hidden)
@@ -1724,6 +1750,16 @@ struct NativeOvernightLine: View {
         selectedTime ?? $localSelected
     }
 
+    private var scrubPoint: NativeHourPoint? {
+        guard let selected = selection.wrappedValue,
+              let raw = NativeChartScrubMath.nearestHour(
+                to: selected,
+                in: points,
+                maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+              ) else { return nil }
+        return NativeChartScrubMath.nearestHour(to: raw.time, in: plotPoints) ?? raw
+    }
+
     var body: some View {
         Group {
             if points.isEmpty {
@@ -1738,12 +1774,11 @@ struct NativeOvernightLine: View {
                             .accessibilityLabel(NativeScopeFormat.time(point.time))
                             .accessibilityValue("\(Int(point.value.rounded()))")
                     }
-                    if let selected = selection.wrappedValue,
-                       let point = NativeChartScrubMath.nearestHour(
-                        to: selected,
-                        in: points,
-                        maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
-                       ) {
+                    if let point = scrubPoint {
+                        RuleMark(x: .value("Scrub rule", point.time))
+                            .foregroundStyle(NativeTokens.separator)
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                            .accessibilityHidden(true)
                         PointMark(x: .value("Scrub", point.time), y: .value("HR", point.value))
                             .foregroundStyle(tint)
                             .symbol { NativeSelectedVertex(tint: tint) }
@@ -1773,7 +1808,18 @@ struct NativeOvernightLine: View {
                         }
                     }
                 }
-                .modifier(NativeTimeSelect(selected: selection, onChange: { _ in }))
+                .modifier(NativeTimeSelect(
+                    selected: selection,
+                    snap: { time in
+                        guard let time else { return nil }
+                        return NativeChartScrubMath.nearestHour(
+                            to: time,
+                            in: points,
+                            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+                        )?.time
+                    },
+                    onChange: { _ in }
+                ))
                 .onAppear { if selection.wrappedValue == nil { selection.wrappedValue = previewSelected } }
                 .modifier(NativeSelectionFeedback(trigger: selection.wrappedValue ?? .distantPast))
             }
@@ -1797,6 +1843,7 @@ struct NativeStressMonitor: View {
     var dayStart: Date
     var now: Date
     var sampleHours: [NativeHourPoint] = []
+    var workoutSymbols: [String] = []
     var previewSelected: Date? = nil
     @Environment(\.nativeStyle) private var style
 
@@ -1809,9 +1856,10 @@ struct NativeStressMonitor: View {
     }
 
     /// Break the line at holes (including omitted workout buckets) so Charts does not
-    /// interpolate a spike through an excluded window.
+    /// interpolate a spike through an excluded window. Draw a downsampled polyline;
+    /// scrub still reads the full minute series.
     private var hourSegments: [[NativeHourPoint]] {
-        NativeStressMonitorMath.segments(hours)
+        NativeStressMonitorMath.segments(hours).map { NativeStressMonitorMath.drawPoints($0) }
     }
 
     private var lineGradient: LinearGradient {
@@ -1822,51 +1870,84 @@ struct NativeStressMonitor: View {
     @Binding var scrubTime: Date?
     @State private var selectedTime: Date?
 
-    private var dayEnd: Date {
-        Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? now
+    private var plotEnd: Date {
+        NativeStressMonitorMath.plotEnd(dayStart: dayStart, now: now)
     }
+
+    private var showsNow: Bool {
+        NativeStressMonitorMath.showsNow(dayStart: dayStart, now: now)
+    }
+
+    private var activities: [(start: Date, end: Date, symbol: String)] {
+        NativeStressMonitorMath.activities(workouts: workouts, symbols: workoutSymbols)
+    }
+
+    private var iconClusters: [NativeStressIconCluster] {
+        NativeStressMonitorMath.iconClusters(activities: activities, plotStart: dayStart, plotEnd: plotEnd)
+    }
+
+    private var laneTint: Color { NativePaint.separator(style) }
+
+    private var spanBar: Color { NativePaint.strain(style) }
 
     var body: some View {
         Chart {
             if let sleepStart, let sleepEnd {
+                RectangleMark(
+                    xStart: .value("Sleep shade start", sleepStart),
+                    xEnd: .value("Sleep shade end", sleepEnd),
+                    yStart: .value("Plot", 0),
+                    yEnd: .value("Top", 3)
+                )
+                .foregroundStyle(laneTint.opacity(0.16))
+                .accessibilityHidden(true)
                 RectangleMark(
                     xStart: .value("Sleep start", sleepStart),
                     xEnd: .value("Sleep end", sleepEnd),
                     yStart: .value("Lane", NativeStressMonitorMath.spanBarLow),
                     yEnd: .value("Lane top", NativeStressMonitorMath.spanBarHigh)
                 )
-                .foregroundStyle(Color.secondary.opacity(0.55))
+                .foregroundStyle(spanBar.opacity(0.85))
                 .accessibilityLabel("Sleep")
                 PointMark(
                     x: .value("Sleep icon", NativeStressMonitorMath.midpoint(sleepStart, sleepEnd)),
                     y: .value("Lane icon", NativeStressMonitorMath.spanIconY)
                 )
-                .foregroundStyle(Color.secondary)
+                .foregroundStyle(laneTint)
                 .symbol {
                     Image(systemName: "moon.fill")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.secondary)
                 }
                 .accessibilityHidden(true)
             }
-            ForEach(Array(workouts.enumerated()), id: \.offset) { index, bout in
+            ForEach(Array(activities.enumerated()), id: \.offset) { _, bout in
                 RectangleMark(
                     xStart: .value("Activity start", bout.start),
                     xEnd: .value("Activity end", bout.end),
                     yStart: .value("Lane", NativeStressMonitorMath.spanBarLow),
                     yEnd: .value("Lane top", NativeStressMonitorMath.spanBarHigh)
                 )
-                .foregroundStyle(Color.secondary.opacity(0.55))
+                .foregroundStyle(spanBar.opacity(0.85))
                 .accessibilityLabel("Activity")
+            }
+            ForEach(iconClusters) { cluster in
                 PointMark(
-                    x: .value("Activity icon \(index)", NativeStressMonitorMath.midpoint(bout.start, bout.end)),
+                    x: .value("Activity icon \(cluster.id)", cluster.mid),
                     y: .value("Lane icon", NativeStressMonitorMath.spanIconY)
                 )
                 .foregroundStyle(Color.secondary)
                 .symbol {
-                    Image(systemName: "figure.walk")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.secondary)
+                    if cluster.count > 1 {
+                        Text("\(cluster.count)")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Color.secondary)
+                            .monospacedDigit()
+                    } else {
+                        Image(systemName: cluster.symbol)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.secondary)
+                    }
                 }
                 .accessibilityHidden(true)
             }
@@ -1874,11 +1955,21 @@ struct NativeStressMonitor: View {
                 ForEach(segment) { point in
                     LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
                         .foregroundStyle(lineGradient)
-                        .interpolationMethod(.linear)
+                        .interpolationMethod(.monotone)
                         .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
                         .accessibilityLabel(NativeScopeFormat.time(point.time))
                         .accessibilityValue(String(format: "%.1f", point.value))
                 }
+            }
+            if showsNow {
+                RuleMark(x: .value("Now", now))
+                    .foregroundStyle(NativePaint.separator(style))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .accessibilityHidden(true)
+                PointMark(x: .value("Now dot", now), y: .value("Base", 0))
+                    .foregroundStyle(Color.primary)
+                    .symbolSize(28)
+                    .accessibilityHidden(true)
             }
             if let selectedTime,
                let point = NativeChartScrubMath.nearestHour(
@@ -1893,35 +1984,41 @@ struct NativeStressMonitor: View {
             }
         }
         .chartYScale(domain: 0...NativeStressMonitorMath.yTop)
-        .chartXScale(domain: dayStart...dayEnd)
+        .chartXScale(domain: dayStart...plotEnd)
         .chartYAxis {
-            AxisMarks(position: .trailing, values: [0, 1, 2, 3]) { value in
+            AxisMarks(position: .trailing, values: NativeStressMonitorMath.yAxisValues) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativePaint.separator(style))
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
-                        Text(bandWord(raw))
+                        Text(NativeStressMonitorMath.yLabel(raw))
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
+                            .monospacedDigit()
                     }
                 }
             }
         }
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { value in
-                AxisGridLine(stroke: NativeChrome.gridStroke)
-                    .foregroundStyle(NativePaint.separator(style))
+            AxisMarks(values: NativeStressMonitorMath.xAxisDates(dayStart: dayStart, plotEnd: plotEnd)) { value in
+                if let date = value.as(Date.self),
+                   !NativeStressMonitorMath.isNow(date, now: now) {
+                    AxisGridLine(stroke: NativeChrome.gridStroke)
+                        .foregroundStyle(NativePaint.separator(style))
+                }
                 AxisValueLabel {
                     if let date = value.as(Date.self) {
+                        let current = NativeStressMonitorMath.isNow(date, now: now)
                         Text(NativeScopeFormat.time(date))
-                            .font(.caption2)
-                            .foregroundStyle(Color.secondary)
+                            .font(.caption2.weight(current ? .bold : .regular))
+                            .foregroundStyle(current ? Color.primary : Color.secondary)
+                            .monospacedDigit()
                     }
                 }
             }
         }
         .chartPlotStyle { plot in
-            plot.padding(.top, 2).clipped()
+            plot.padding(.top, 4).clipped()
         }
         .modifier(NativeTimeSelect(selected: $selectedTime, onChange: { time in
             if let time, let point = NativeChartScrubMath.nearestHour(
@@ -1940,24 +2037,138 @@ struct NativeStressMonitor: View {
         .accessibilityLabel("Stress monitor \(String(format: "%.1f", score))")
     }
 
-    private func bandWord(_ value: Double) -> String {
-        if value <= 0 { return "0" }
-        if value == 1 { return "Low" }
-        if value == 2 { return "Med" }
-        if value >= 3 { return "High" }
-        return ""
-    }
+}
 
+struct NativeStressIconCluster: Identifiable, Equatable {
+    var mid: Date
+    var count: Int
+    var symbol: String
+    var id: Date { mid }
 }
 
 enum NativeStressMonitorMath {
     static let yTop: Double = 3.35
-    static let spanBarLow: Double = 3.10
-    static let spanBarHigh: Double = 3.16
-    static let spanIconY: Double = 3.28
+    static let spanBarLow: Double = 3.02
+    static let spanBarHigh: Double = 3.10
+    static let spanIconY: Double = 3.26
+    static let yAxisValues: [Double] = [0, 1, 2, 3]
+    /// Sampled WHOOP line: cyan 0–1, green 1.2–2.0, yellow-green 2.4, gold 2.7–3.0.
+    static let lineStopValues: [Double] = [0, 1.0, 1.2, 2.0, 2.4, 2.7, 3.0]
+    /// A full day is 1,440 minutes. Charts stays cheap above this many vertices.
+    static let drawBudget = 360
+    /// Icons closer than this fraction of the plot width collapse to a count badge.
+    static let iconOverlapFraction: Double = 0.055
 
     static func midpoint(_ start: Date, _ end: Date) -> Date {
         start.addingTimeInterval(end.timeIntervalSince(start) / 2)
+    }
+
+    static func yLabel(_ value: Double) -> String {
+        String(format: "%.1f", value)
+    }
+
+    static func lastUpdated(_ time: Date?) -> String? {
+        time.map { "Last updated \(NativeScopeFormat.time($0))" }
+    }
+
+    static func plotEnd(dayStart: Date, now: Date) -> Date {
+        let dayEnd = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? now
+        if now > dayStart, now < dayEnd { return now }
+        return dayEnd
+    }
+
+    static func showsNow(dayStart: Date, now: Date) -> Bool {
+        let dayEnd = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? now
+        return now > dayStart && now < dayEnd
+    }
+
+    static func isNow(_ date: Date, now: Date) -> Bool {
+        abs(date.timeIntervalSince(now)) < 90
+    }
+
+    static func xAxisDates(dayStart: Date, plotEnd: Date) -> [Date] {
+        let span = plotEnd.timeIntervalSince(dayStart)
+        guard span > 0 else { return [dayStart] }
+        return (0..<4).map { dayStart.addingTimeInterval(span * Double($0) / 3) }
+    }
+
+    static func activities(
+        workouts: [(start: Date, end: Date)],
+        symbols: [String]
+    ) -> [(start: Date, end: Date, symbol: String)] {
+        workouts.enumerated().compactMap { index, bout in
+            guard bout.end > bout.start else { return nil }
+            let symbol = index < symbols.count && !symbols[index].isEmpty
+                ? symbols[index]
+                : "figure.walk"
+            return (bout.start, bout.end, symbol)
+        }
+    }
+
+    /// Collapse activity icons that would overlap into a count badge, WHOOP-style.
+    static func iconClusters(
+        activities: [(start: Date, end: Date, symbol: String)],
+        plotStart: Date,
+        plotEnd: Date
+    ) -> [NativeStressIconCluster] {
+        let span = max(1, plotEnd.timeIntervalSince(plotStart))
+        let minSep = max(45 * 60, span * iconOverlapFraction)
+        let sorted = activities
+            .map { (mid: midpoint($0.start, $0.end), symbol: $0.symbol) }
+            .sorted { $0.mid < $1.mid }
+        var out: [NativeStressIconCluster] = []
+        for item in sorted {
+            if let last = out.last, item.mid.timeIntervalSince(last.mid) < minSep {
+                let count = last.count + 1
+                let mid = last.mid.addingTimeInterval(item.mid.timeIntervalSince(last.mid) / 2)
+                out[out.count - 1] = NativeStressIconCluster(
+                    mid: mid, count: count, symbol: last.symbol
+                )
+            } else {
+                out.append(NativeStressIconCluster(mid: item.mid, count: 1, symbol: item.symbol))
+            }
+        }
+        return out
+    }
+
+    /// Overlapping or touching real activities become one highlighted span + one icon.
+    static func mergeDateSpans(
+        _ spans: [(start: Date, end: Date)],
+        gap: TimeInterval = 0
+    ) -> [(start: Date, end: Date)] {
+        let sorted = spans
+            .filter { $0.end > $0.start }
+            .sorted { $0.start < $1.start }
+        var out: [(start: Date, end: Date)] = []
+        for span in sorted {
+            if let last = out.last, span.start.timeIntervalSince(last.end) <= gap {
+                out[out.count - 1].end = max(last.end, span.end)
+            } else {
+                out.append(span)
+            }
+        }
+        return out
+    }
+
+    /// Keep first/last and evenly spaced vertices so a 1,440-point score still
+    /// draws in a few hundred marks. Scrub uses the full series.
+    static func drawPoints(
+        _ points: [NativeHourPoint],
+        budget: Int = drawBudget
+    ) -> [NativeHourPoint] {
+        guard points.count > budget, budget >= 2 else { return points }
+        let step = Double(points.count - 1) / Double(budget - 1)
+        var out: [NativeHourPoint] = []
+        out.reserveCapacity(budget)
+        var last = -1
+        for i in 0..<budget {
+            let idx = min(points.count - 1, Int((Double(i) * step).rounded()))
+            if idx != last {
+                out.append(points[idx])
+                last = idx
+            }
+        }
+        return out
     }
 
     static func segments(_ hours: [NativeHourPoint]) -> [[NativeHourPoint]] {
@@ -1976,21 +2187,34 @@ enum NativeStressMonitorMath {
         return segments
     }
 
+    static func lineStops(style: NativeStyle) -> [(value: Double, color: Color)] {
+        if style == .whoop {
+            return [
+                (0, NativeTokens.whoopStressLine0),
+                (1.0, NativeTokens.whoopStressLine1),
+                (1.2, NativeTokens.whoopStressLine12),
+                (2.0, NativeTokens.whoopStressLine2),
+                (2.4, NativeTokens.whoopStressLine24),
+                (2.7, NativeTokens.whoopStressLine27),
+                (3.0, NativeTokens.whoopStressLine3),
+            ]
+        }
+        return [
+            (0, NativeTokens.stressLine0),
+            (1.0, NativeTokens.stressLine1),
+            (1.2, NativeTokens.stressLine12),
+            (2.0, NativeTokens.stressLine2),
+            (2.4, NativeTokens.stressLine24),
+            (2.7, NativeTokens.stressLine27),
+            (3.0, NativeTokens.stressLine3),
+        ]
+    }
+
     static func lineGradient(style: NativeStyle) -> LinearGradient {
-        let low = NativePaint.stressBand(0.4, style: style)
-        let mid = NativePaint.stressBand(1.4, style: style)
-        let yellow = style == .whoop ? NativeTokens.whoopRecoveryMid : NativeTokens.recoveryMid
-        let high = NativePaint.stressBand(2.6, style: style)
-        return LinearGradient(
-            stops: [
-                .init(color: low, location: 0),
-                .init(color: mid, location: 1.0 / yTop),
-                .init(color: yellow, location: 2.0 / yTop),
-                .init(color: high, location: 3.0 / yTop),
-            ],
-            startPoint: .bottom,
-            endPoint: .top
-        )
+        let stops = lineStops(style: style).map {
+            Gradient.Stop(color: $0.color, location: $0.value / yTop)
+        }
+        return LinearGradient(stops: stops, startPoint: .bottom, endPoint: .top)
     }
 }
 
@@ -2018,12 +2242,19 @@ private struct NativeDaySelect: ViewModifier {
 
 struct NativeTimeSelect: ViewModifier {
     @Binding var selected: Date?
+    var snap: (Date?) -> Date? = { $0 }
     var onChange: (Date?) -> Void
     func body(content: Content) -> some View {
         if #available(iOS 17.0, macOS 14.0, *) {
             content
-                .chartXSelection(value: $selected)
-                .onChange(of: selected) { _, time in onChange(time) }
+                .chartXSelection(value: Binding(
+                    get: { selected },
+                    set: { newValue in
+                        let snapped = snap(newValue)
+                        selected = snapped
+                        onChange(snapped)
+                    }
+                ))
         } else {
             content
         }
@@ -2218,27 +2449,33 @@ struct NativeStrainRecoveryColumns: View {
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 28) {
-            if let strain {
-                column(
-                    label: "Strain",
-                    value: String(format: "%.1f", strain),
-                    unit: nil,
-                    tint: NativePaint.strain(style)
-                )
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 28) {
+                if let strain {
+                    column(
+                        label: "Strain",
+                        value: String(format: "%.1f", strain),
+                        unit: nil,
+                        tint: NativePaint.strain(style)
+                    )
+                }
+                if let recovery {
+                    column(
+                        label: "Recovery",
+                        value: "\(Int(recovery.rounded()))",
+                        unit: "%",
+                        tint: NativePaint.recoveryBand(recovery, style: style)
+                    )
+                }
+                if strain == nil && recovery == nil {
+                    NativeValueText(value: "No Data", size: 28)
+                }
+                Spacer(minLength: 0)
             }
-            if let recovery {
-                column(
-                    label: "Recovery",
-                    value: "\(Int(recovery.rounded()))",
-                    unit: "%",
-                    tint: NativePaint.recoveryBand(recovery, style: style)
-                )
-            }
-            if strain == nil && recovery == nil {
-                NativeValueText(value: "No Data", size: 28)
-            }
-            Spacer(minLength: 0)
+            Text(caption ?? " ")
+                .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption)
+                .foregroundStyle(.secondary)
+                .opacity(caption == nil ? 0 : 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -2262,10 +2499,6 @@ struct NativeStrainRecoveryColumns: View {
                 }
             }
             .foregroundStyle(tint)
-            Text(caption ?? " ")
-                .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption)
-                .foregroundStyle(.secondary)
-                .opacity(caption == nil ? 0 : 1)
         }
     }
 

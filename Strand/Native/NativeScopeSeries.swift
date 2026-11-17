@@ -45,6 +45,20 @@ enum NativeMetricScope: String, CaseIterable, Identifiable, Hashable {
     }
 
     static let pickerCases: [NativeMetricScope] = [.day, .week, .month, .sixMonths]
+
+    /// D only when the page actually plots hours. Daily-value metrics are W / M / 6M.
+    static func showsHourlyDay(_ key: String) -> Bool {
+        switch key {
+        case "steps", "steps_est", "avg_hr", "max_hr":
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func pickerCases(for key: String) -> [NativeMetricScope] {
+        showsHourlyDay(key) ? pickerCases : pickerCases.filter { $0 != .day }
+    }
 }
 
 enum NativeScopeKind: String, Equatable {
@@ -693,6 +707,10 @@ enum NativeCountTicks {
 enum NativeScopePlotMath {
     /// Join consecutive readings closer than this; a 14-day hole stays a hole.
     static let maxConnectGap: TimeInterval = 14 * 24 * 60 * 60
+    /// Trailing room so the latest-value label and last x tick are not clipped.
+    static let plotLeading: CGFloat = 8
+    static let plotTrailing: CGFloat = 36
+    static let plotTop: CGFloat = 20
 
     struct LinePoint: Identifiable, Equatable {
         var date: Date
@@ -807,12 +825,11 @@ enum NativeScopeSummary {
         guard let current, current.isFinite else { return nil }
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
+        // Restating the hero ("Your average VO₂ Max this month was 43.1.") is slop.
+        guard let previous, previous.isFinite else { return nil }
         let caption = kind == .total && scope == .day ? "total" : "average"
         let period = periodPhrase(scope)
         let formatted = format(current)
-        guard let previous, previous.isFinite else {
-            return "Your \(caption) \(name) \(period) was \(formatted)."
-        }
         let denom = max(abs(previous), 1e-9)
         let relation: String
         if abs(current - previous) / denom <= 0.03 {

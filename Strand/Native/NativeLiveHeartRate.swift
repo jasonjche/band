@@ -4,6 +4,34 @@ import Charts
 import StrandDesign
 import StrandAnalytics
 
+/// Arms the strap live-HR stream only while visible. Health Monitor and the
+/// compact sheet both use this — `startRealtimeHR` / `stopRealtimeHR` stay 1:1.
+struct NativeLiveHRArm: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var live: LiveState
+    @Binding var bpm: Int?
+    @Binding var samples: [NativeHourPoint]
+    var window: TimeInterval = 60
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onAppear { model.startRealtimeHR() }
+            .onDisappear { model.stopRealtimeHR() }
+            .onReceive(
+                live.$heartRate.throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
+            ) { value in
+                bpm = value
+                let now = Date()
+                if let value {
+                    samples.append(NativeHourPoint(time: now, value: Double(value)))
+                }
+                samples.removeAll { now.timeIntervalSince($0.time) > window }
+            }
+    }
+}
+
 /// Compact live heart-rate sheet. Arms the strap stream only while visible.
 struct NativeLiveHeartRate: View {
     @EnvironmentObject private var profile: ProfileStore
@@ -11,13 +39,7 @@ struct NativeLiveHeartRate: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var bpm: Int?
-    @State private var samples: [Sample] = []
-
-    private struct Sample: Identifiable {
-        var time: Date
-        var bpm: Int
-        var id: Date { time }
-    }
+    @State private var samples: [NativeHourPoint] = []
 
     var body: some View {
         NavigationStack {
@@ -43,33 +65,7 @@ struct NativeLiveHeartRate: View {
         #if os(iOS)
         .presentationDetents([.medium, .large])
         #endif
-        .background { LiveHRArm(bpm: $bpm, samples: $samples) }
-    }
-
-    /// Holds AppModel + LiveState so RR packets do not rebuild the sparkline. BPM is throttled to 1 Hz.
-    private struct LiveHRArm: View {
-        @EnvironmentObject private var model: AppModel
-        @EnvironmentObject private var live: LiveState
-        @Binding var bpm: Int?
-        @Binding var samples: [Sample]
-
-        var body: some View {
-            Color.clear
-                .frame(width: 0, height: 0)
-                .accessibilityHidden(true)
-                .onAppear { model.startRealtimeHR() }
-                .onDisappear { model.stopRealtimeHR() }
-                .onReceive(
-                    live.$heartRate.throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
-                ) { value in
-                    bpm = value
-                    let now = Date()
-                    if let value {
-                        samples.append(Sample(time: now, bpm: value))
-                    }
-                    samples.removeAll { now.timeIntervalSince($0.time) > 60 }
-                }
-        }
+        .background { NativeLiveHRArm(bpm: $bpm, samples: $samples) }
     }
 
     private var hero: some View {
@@ -108,7 +104,7 @@ struct NativeLiveHeartRate: View {
                 Chart(plotSamples) { sample in
                     LineMark(
                         x: .value("Time", sample.time),
-                        y: .value("BPM", sample.bpm)
+                        y: .value("BPM", sample.value)
                     )
                     .foregroundStyle(NativePaint.heart(style))
                     .interpolationMethod(.linear)
@@ -139,9 +135,8 @@ struct NativeLiveHeartRate: View {
     }
 
     /// Smoothed polyline. Hero BPM stays on the latest raw sample.
-    private var plotSamples: [Sample] {
-        let hours = samples.map { NativeHourPoint(time: $0.time, value: Double($0.bpm)) }
-        return NativeHRSmoothing.smooth(hours).map { Sample(time: $0.time, bpm: Int($0.value.rounded())) }
+    private var plotSamples: [NativeHourPoint] {
+        NativeHRSmoothing.smooth(samples)
     }
 
     private func zoneLabel(_ zone: Int) -> String {
@@ -156,7 +151,7 @@ struct NativeLiveHeartRate: View {
     }
 
     private var yDomain: ClosedRange<Double> {
-        let values = plotSamples.map { Double($0.bpm) }
+        let values = plotSamples.map(\.value)
         guard let lo = values.min(), let hi = values.max() else { return 40...180 }
         let pad = max(2, (hi - lo) / 8)
         return (lo - pad)...(hi + pad)

@@ -54,6 +54,21 @@ final class NativeAddActivityTests: XCTestCase {
         XCTAssertTrue(NativeAddActivityLogic.filteredSports(query: "zzzz").isEmpty)
     }
 
+    func testGroupedSportsPutsRecoveryInItsOwnSection() {
+        let groups = NativeAddActivityLogic.groupedSports(query: "")
+        XCTAssertTrue(groups.strain.contains { $0.name == "Running" })
+        XCTAssertTrue(groups.strain.contains { $0.name == "Yoga" })
+        XCTAssertTrue(groups.strain.contains { $0.name == "Pilates" })
+        XCTAssertFalse(groups.strain.contains { $0.name == "Sauna" })
+        XCTAssertEqual(Set(groups.recovery.map(\.name)).isSuperset(of: [
+            "Breathwork", "Ice Bath", "Meditation", "Massage Therapy",
+            "Restorative Yoga", "Sauna", "Stretching",
+        ]), true)
+        let sauna = NativeAddActivityLogic.groupedSports(query: "sauna")
+        XCTAssertTrue(sauna.strain.isEmpty)
+        XCTAssertEqual(sauna.recovery.map(\.name), ["Sauna"])
+    }
+
     func testSelectedSportMatchesCatalogueKey() {
         let running = WorkoutCatalog.sport(named: "Running")!
         XCTAssertTrue(NativeAddActivityLogic.isSelected(running, selected: "Running"))

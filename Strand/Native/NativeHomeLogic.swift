@@ -61,13 +61,16 @@ enum HomeActivityDedupe {
     }
 }
 
-/// Consecutive days with a recorded sleep (strap session or WHOOP import), ending today or yesterday.
+/// Consecutive nights with recorded sleep (strap session or WHOOP import).
+/// Count ends at `todayKey`. When that key is the live day and tonight is not recorded yet,
+/// yesterday still counts so a live streak does not read 0 all day.
 enum HomeSleepStreak {
     static func days(
         sleeps: [CachedSleepSession],
         imported: [String: ImportedSleepFigures],
         todayKey: String,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        viewingToday: Bool = true
     ) -> Int {
         let keys = recordedDays(sleeps: sleeps, imported: imported)
         guard !keys.isEmpty else { return 0 }
@@ -78,7 +81,7 @@ enum HomeSleepStreak {
         let start: Date
         if keys.contains(todayKey) {
             start = today
-        } else if keys.contains(key(yesterday)) {
+        } else if viewingToday, keys.contains(key(yesterday)) {
             start = yesterday
         } else {
             return 0
@@ -139,9 +142,13 @@ enum HomeDashboardMetric: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Current Home rows minus Health Monitor duplicates (HRV, resting HR, respiratory rate).
+    /// Empty dashboard readout. Rows stay on screen and stay tappable.
+    static let emptyValue = "—"
+
+    /// WHOOP My Dashboard pins (9418/9419), plus respiratory which Band tracks.
     static let defaultIds = [
-        "steps", "hr_zones_13", "hr_zones_45", "strength", "vo2max", "calories",
+        "hrv", "resting_hr", "respiratory", "steps",
+        "hr_zones_13", "hr_zones_45", "strength", "vo2max", "calories",
     ]
 
     static let healthMonitorIds: Set<String> = ["hrv", "resting_hr", "respiratory"]
@@ -308,5 +315,161 @@ enum HomeDashboardStore {
 
     static func save(_ ids: [String], to defaults: UserDefaults = .standard) {
         defaults.set(encode(ids), forKey: key)
+    }
+}
+
+/// Copy for the compact Home Stress Monitor tile. Level and time match the chart card.
+enum HomeMonitorTile {
+    struct Stress: Equatable {
+        var value: String?
+        var band: String?
+        var time: String?
+
+        var accessibility: String {
+            if let value, let band {
+                var parts = ["Stress \(value)", band]
+                if let time { parts.append(time) }
+                return parts.joined(separator: ", ")
+            }
+            return "No Data"
+        }
+    }
+
+    static func stress(level: Double?, at time: Date?) -> Stress {
+        let clock = time.map { NativeScopeFormat.time($0) }
+        guard let level else { return Stress(value: nil, band: nil, time: clock) }
+        return Stress(
+            value: String(format: "%.1f", level),
+            band: NativeHomeCharts.stressBandWord(level),
+            time: clock
+        )
+    }
+}
+
+/// Month grid for the Home day picker. Pure; the sheet never folds this in `body`.
+enum HomeCalendarMath {
+    static let columns = 7
+    static let rows = 6
+    static var cellsPerMonth: Int { columns * rows }
+
+    static func monthStart(_ date: Date, calendar: Calendar) -> Date {
+        calendar.date(from: calendar.dateComponents([.year, .month], from: date)) ?? date
+    }
+
+    static func weekdaySymbols(calendar: Calendar) -> [String] {
+        let symbols = calendar.veryShortWeekdaySymbols
+        let first = calendar.firstWeekday - 1
+        guard first >= 0, first < symbols.count else { return symbols }
+        return Array(symbols[first...] + symbols[..<first])
+    }
+
+    /// 42 slots. `nil` is a leading or trailing blank, never a day of another month.
+    static func cells(month: Date, calendar: Calendar) -> [Date?] {
+        let start = monthStart(month, calendar: calendar)
+        let weekday = calendar.component(.weekday, from: start)
+        let lead = (weekday - calendar.firstWeekday + 7) % 7
+        let daysInMonth = calendar.range(of: .day, in: .month, for: start)?.count ?? 0
+        var cells: [Date?] = Array(repeating: nil, count: lead)
+        cells.reserveCapacity(cellsPerMonth)
+        for day in 0..<daysInMonth {
+            cells.append(calendar.date(byAdding: .day, value: day, to: start))
+        }
+        while cells.count < cellsPerMonth { cells.append(nil) }
+        return Array(cells.prefix(cellsPerMonth))
+    }
+
+    static func canPage(from month: Date, delta: Int, range: ClosedRange<Date>, calendar: Calendar) -> Bool {
+        let start = monthStart(month, calendar: calendar)
+        guard let next = calendar.date(byAdding: .month, value: delta, to: start) else { return false }
+        let nextStart = monthStart(next, calendar: calendar)
+        guard let nextEnd = calendar.date(byAdding: .month, value: 1, to: nextStart) else { return false }
+        return nextStart <= range.upperBound && nextEnd > range.lowerBound
+    }
+
+    static func isEnabled(_ date: Date, range: ClosedRange<Date>, calendar: Calendar) -> Bool {
+        let day = calendar.startOfDay(for: date)
+        return day >= calendar.startOfDay(for: range.lowerBound)
+            && day <= calendar.startOfDay(for: range.upperBound)
+    }
+
+    static func isSameDay(_ a: Date, _ b: Date, calendar: Calendar) -> Bool {
+        calendar.isDate(a, inSameDayAs: b)
+    }
+
+    static func monthTitle(_ date: Date, calendar: Calendar) -> String {
+        alignedMonthTitle.calendar = calendar
+        alignedMonthTitle.locale = calendar.locale ?? Locale.current
+        alignedMonthTitle.timeZone = calendar.timeZone
+        return alignedMonthTitle.string(from: date)
+    }
+
+    private static let alignedMonthTitle: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMM yyyy")
+        return formatter
+    }()
+}
+
+/// Stress chart window for the selected civil day. Built once per model rebuild, not in `body`.
+enum HomeStressWindow {
+    static func dayStart(for selected: Date, calendar: Calendar = .current) -> Date {
+        calendar.startOfDay(for: selected)
+    }
+
+    static func now(
+        dayStart: Date,
+        calendar: Calendar = .current,
+        clock: Date = Date()
+    ) -> Date {
+        let end = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? clock
+        return min(clock, end)
+    }
+}
+
+/// Recovery colours for the day picker. Same `NativeBandScores` values the Home ring uses.
+enum HomeCalendarRecovery {
+    static func values(
+        days: [DailyMetric],
+        sleeps: [CachedSleepSession] = [],
+        workouts: [WorkoutRow] = [],
+        importedSleep: [String: ImportedSleepFigures] = [:]
+    ) -> [String: Double] {
+        var map: [String: Double] = [:]
+        for (key, day) in NativeBandScores.resolve(
+            days: days, sleeps: sleeps, workouts: workouts, importedSleep: importedSleep
+        ).byDay {
+            if let recovery = day.recovery { map[key] = recovery }
+        }
+        return map
+    }
+}
+
+extension HomeRingsRow: Equatable {
+    static func == (lhs: HomeRingsRow, rhs: HomeRingsRow) -> Bool {
+        lhs.sleep == rhs.sleep
+            && lhs.recovery == rhs.recovery
+            && lhs.strain == rhs.strain
+            && lhs.strainTargetFraction == rhs.strainTargetFraction
+    }
+}
+
+extension HomeHealthMonitorTile: Equatable {
+    static func == (lhs: HomeHealthMonitorTile, rhs: HomeHealthMonitorTile) -> Bool {
+        lhs.report == rhs.report
+    }
+}
+
+extension HomeStressMonitorTile: Equatable {
+    static func == (lhs: HomeStressMonitorTile, rhs: HomeStressMonitorTile) -> Bool {
+        lhs.level == rhs.level && lhs.updated == rhs.updated
+    }
+}
+
+extension HomeWeekCard: Equatable {
+    static func == (lhs: HomeWeekCard, rhs: HomeWeekCard) -> Bool {
+        lhs.recovery == rhs.recovery
+            && lhs.strain == rhs.strain
+            && lhs.highlightKey == rhs.highlightKey
+            && lhs.previewSelected == rhs.previewSelected
     }
 }

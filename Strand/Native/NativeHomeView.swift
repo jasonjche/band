@@ -8,19 +8,21 @@ import WhoopStore
 // Sections take plain value models so snapshots can render without Repository.
 //
 // Home content order (WHOOP capture, top to bottom):
-// date stepper + battery, rings, Health Monitor, My Day (Activities, Tonight's Sleep,
-// Journal), My Dashboard rows, Stress Monitor, Strain & Recovery.
+// date stepper + battery, rings, Health | Stress tiles, My Day (Activities,
+// Tonight's Sleep, Journal), My Dashboard rows, Stress Monitor chart,
+// Strain & Recovery.
 
 enum HomeSectionOrder {
     static let content = [
         "rings",
         "Health Monitor",
+        "Stress Monitor",
         "My Day",
         "Activities",
         "Tonight's Sleep",
         "Journal",
         "My Dashboard",
-        "Stress Monitor",
+        "Stress Monitor chart",
         "Strain & Recovery",
     ]
 }
@@ -114,8 +116,14 @@ struct NativeHomeView: View {
     @State private var stressBouts: [(start: Date, end: Date)] = []
     /// Walking/running and post-workout recovery windows, drawn as excluded spans.
     @State private var stressExtraExclusions: [(start: Date, end: Date)] = []
-    @State private var stressScrubValue: Double = 0
-    @State private var stressScrubTime: Date?
+    @State private var stressDayStart = Date()
+    @State private var stressNow = Date()
+    @State private var stressUpdatedAt: Date?
+    @State private var strainTargetFraction: ClosedRange<Double>?
+    @State private var activityItems: [HomeActivityItem] = []
+    @State private var journalDots: [HomeJournalDot] = []
+    @State private var journalHasEntry = false
+    @State private var calendarRecovery: [String: Double] = [:]
     @State private var weekRecovery: [NativeDayPoint] = []
     @State private var weekStrain: [NativeDayPoint] = []
     @State private var dashboardItems: [HomeMetricItem] = []
@@ -150,7 +158,7 @@ struct NativeHomeView: View {
         ScrollView {
             NativeChrome.stack {
                 #if os(iOS)
-                // Stepper centred on the screen (WHOOP layout); strap status pinned trailing.
+                // Streak leading, stepper centred, strap status trailing (WHOOP header).
                 ZStack {
                     HomeDateStepper(
                         title: HomeDayTitle.text(for: selectedDay),
@@ -161,13 +169,18 @@ struct NativeHomeView: View {
                         onTitleTap: { showingCalendar = true }
                     )
                     HStack {
+                        HomeStreakBadge(count: sleepStreak)
                         Spacer(minLength: 0)
                         HomeStrapStatus()
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .sheet(isPresented: $showingCalendar) {
-                    HomeCalendarSheet(selected: selectedDay, range: calendarRange) { picked in
+                    HomeCalendarSheet(
+                        selected: selectedDay,
+                        range: calendarRange,
+                        recoveryByDay: calendarRecovery
+                    ) { picked in
                         selectedDay = Calendar.current.startOfDay(for: picked)
                     }
                 }
@@ -230,12 +243,10 @@ struct NativeHomeView: View {
             }
         }
         .toolbar {
-            if sleepStreak >= 2 {
-                ToolbarItem(placement: streakPlacement) {
-                    HomeStreakBadge(count: sleepStreak)
-                }
-            }
             #if os(macOS)
+            ToolbarItem(placement: streakPlacement) {
+                HomeStreakBadge(count: sleepStreak)
+            }
             ToolbarItem(placement: .principal) {
                 HomeDateStepper(
                     title: HomeDayTitle.text(for: selectedDay),
@@ -253,13 +264,9 @@ struct NativeHomeView: View {
         .accessibilityElement(children: .contain)
     }
 
-    private var streakPlacement: ToolbarItemPlacement {
-        #if os(iOS)
-        .navigationBarLeading
-        #else
-        .navigation
-        #endif
-    }
+    #if os(macOS)
+    private var streakPlacement: ToolbarItemPlacement { .navigation }
+    #endif
 
     private var canGoBack: Bool {
         HomeDayNav.canGoBack(selectedKey: selectedKey, firstDay: firstDay)
@@ -307,7 +314,11 @@ struct NativeHomeView: View {
         let to = from + 86_400
         let buckets = await repo.hrSamples(from: from, to: to, bucketSeconds: 300)
         if Task.isCancelled { return }
-        let rr = await repo.rrIntervals(from: from, to: to, limit: 50_000)
+        let stressBuckets = await repo.hrSamples(
+            from: from, to: to, bucketSeconds: BandStress.bucketSeconds
+        )
+        if Task.isCancelled { return }
+        let rr = await repo.rrIntervals(from: from, to: to, limit: 200_000)
         if Task.isCancelled { return }
         let ticks = await repo.stepTicks(from: from, to: to)
         if Task.isCancelled { return }
@@ -327,14 +338,14 @@ struct NativeHomeView: View {
         }
         let rrPairs = rr.map { (ts: $0.ts, ms: Double($0.rrMs)) }
         let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: day)
-        let samples = buckets.map { (ts: $0.ts, bpm: $0.bpm) }
+        let samples = stressBuckets.map { (ts: $0.ts, bpm: $0.bpm) }
         let unixBouts = boutsLocal.map {
             (start: Int($0.start.timeIntervalSince1970), end: Int($0.end.timeIntervalSince1970))
         }
         let recovery = BandStress.recoveryWindows(workouts: unixBouts, samples: samples)
         let motion = AutoWorkoutDetector.motionPoints(grav)
         let activity = BandStress.activityBuckets(
-            bucketStarts: buckets.map(\.ts),
+            bucketStarts: stressBuckets.map(\.ts),
             steps: ticks.map { (ts: $0.ts, activityClass: $0.activityClass) },
             motion: motion.map { (ts: $0.ts, intensity: $0.intensity) }
         )
@@ -343,7 +354,7 @@ struct NativeHomeView: View {
         }.value
         if Task.isCancelled { return }
         let timeline = NativeHomeCharts.stressTimeline(
-            buckets: buckets,
+            buckets: stressBuckets,
             baselines: baselines,
             sleepStart: sleepStartLocal,
             sleepEnd: sleepEndLocal,
@@ -353,12 +364,8 @@ struct NativeHomeView: View {
             recovery: recovery
         )
         let series = timeline.hours
-        let extraExclusions = timeline.exclusions
-            .filter { $0.kind != .workout }
-            .map {
-                (start: Date(timeIntervalSince1970: TimeInterval($0.startTs)),
-                 end: Date(timeIntervalSince1970: TimeInterval($0.endTs)))
-            }
+        // Walking and recovery exclude the line. They are not drawn as activities.
+        let extraExclusions: [(start: Date, end: Date)] = []
         guard day == selectedKey else { return }
 
         let liveStrain = await liveStrainValue(buckets: buckets, day: day, seq: seq)
@@ -423,10 +430,20 @@ struct NativeHomeView: View {
             tonight = nil
         }
         stressLevel = NativeStressResolver.level(hours: sampleHours, days: repo.days, todayKey: selectedKey)
-        if let latest = stressLevel {
-            stressScrubValue = latest
-        }
-        stressScrubTime = nil
+        stressUpdatedAt = sampleHours.last?.time
+        let windowStart = HomeStressWindow.dayStart(for: selectedDay)
+        stressDayStart = windowStart
+        stressNow = HomeStressWindow.now(dayStart: windowStart)
+        strainTargetFraction = strainTarget.map { NativeStrainTarget.ringFraction($0.range) }
+        activityItems = HomeActivityItem.make(from: model)
+        journalDots = NativeHomeCharts.journalDots(filled: model.journalDays, todayKey: selectedKey)
+        journalHasEntry = model.journalDays.last == true
+        calendarRecovery = HomeCalendarRecovery.values(
+            days: repo.days,
+            sleeps: repo.sleeps,
+            workouts: workouts,
+            importedSleep: repo.importedSleep
+        )
         let sleep = repo.sleeps.last {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == selectedKey
         }
@@ -446,10 +463,12 @@ struct NativeHomeView: View {
             effortScale: scale,
             sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
         )
+        let liveDay = NativeDayLogic.logicalToday()
         sleepStreak = HomeSleepStreak.days(
             sleeps: repo.sleeps,
             imported: repo.importedSleep,
-            todayKey: NativeDayLogic.logicalToday()
+            todayKey: selectedKey,
+            viewingToday: selectedKey == liveDay
         )
         NativeHomeLoadMetrics.modelRebuilds += 1
         dashboardItems = HomeMetricItem.make(
@@ -496,18 +515,31 @@ struct NativeHomeView: View {
             recovery: model.recovery,
             strain: model.strain,
             onOpen: { path.wrappedValue.append($0) },
-            strainTargetFraction: strainTarget.map { NativeStrainTarget.ringFraction($0.range) }
+            strainTargetFraction: strainTargetFraction
         )
-        Button {
-            path.wrappedValue.append(TabRoute.healthMonitor)
-        } label: {
-            HomeHealthMonitorCard(report: healthReport)
+        .equatable()
+        HStack(alignment: .top, spacing: 10) {
+            Button {
+                path.wrappedValue.append(TabRoute.healthMonitor)
+            } label: {
+                HomeHealthMonitorTile(report: healthReport)
+                    .equatable()
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            Button {
+                path.wrappedValue.append(TabRoute.stress)
+            } label: {
+                HomeStressMonitorTile(level: stressLevel, updated: stressUpdatedAt)
+                    .equatable()
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.plain)
         NativeIllnessSignalCard(result: overnightLoad, compact: true)
         NativeChrome.section("My Day")
         HomeActivitiesCard(
-            items: HomeActivityItem.make(from: model),
+            items: activityItems,
             onSleep: { path.wrappedValue.append(TabRoute.sleep) },
             onActivity: { path.wrappedValue.append(NativeActivityRoute(startTs: $0)) },
             onAdd: { addingActivity = true }
@@ -519,8 +551,8 @@ struct NativeHomeView: View {
             )
         }
         HomeJournalCard(
-            dots: NativeHomeCharts.journalDots(filled: model.journalDays, todayKey: selectedKey),
-            hasEntry: model.journalDays.last == true,
+            dots: journalDots,
+            hasEntry: journalHasEntry,
             onOpen: { path.wrappedValue.append(TabRoute.journal) },
             onLog: { path.wrappedValue.append(TabRoute.journalLog) }
         )
@@ -540,29 +572,28 @@ struct NativeHomeView: View {
                 path.wrappedValue.append(item.route)
             } label: {
                 HomeMetricCard(item: item)
+                    .equatable()
             }
             .buttonStyle(.plain)
         }
-        HomeStressMonitorCard(
+        HomeStressMonitorHost(
             level: stressLevel,
             hours: sampleHours,
             sleepStart: stressSleepStart,
             sleepEnd: stressSleepEnd,
             workouts: stressBouts,
-            dayStart: Calendar.current.startOfDay(for: selectedDay),
-            now: min(
-                Date(),
-                Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: selectedDay)) ?? Date()
-            ),
-            scrubValue: $stressScrubValue,
-            scrubTime: $stressScrubTime,
+            dayStart: stressDayStart,
+            now: stressNow,
             onOpen: { path.wrappedValue.append(TabRoute.stress) }
         )
+        .equatable()
+        .id(selectedKey)
         HomeWeekCard(
             recovery: weekRecovery,
             strain: weekStrain,
             highlightKey: selectedKey
         )
+        .equatable()
     }
 }
 
@@ -609,9 +640,14 @@ enum HomeDateStepperLayout {
     static let titleMinWidth: CGFloat = 96
     static let spacing: CGFloat = 6
     static let strapGutter: CGFloat = 8
-    /// Chevrons + title + gutters. Leaves room for strap status on iPhone 15 (393 pt).
+    static let capsulePaddingH: CGFloat = 10
+    /// Minimum tappable height for the glass date capsule.
+    static let hitHeight: CGFloat = 44
+    /// Flame + a two-digit count. Overlay; the stepper stays centred.
+    static let streakWidth: CGFloat = 44
+    /// Capsule padding + chevrons + title. Leaves room for streak and strap on iPhone 15 (393 pt).
     static var compactWidth: CGFloat {
-        chevronSize + spacing + titleMinWidth + spacing + chevronSize
+        capsulePaddingH + chevronSize + spacing + titleMinWidth + spacing + chevronSize + capsulePaddingH
     }
     static let iphone15Width: CGFloat = 393
 }
@@ -635,12 +671,14 @@ struct HomeDateStepper: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
-                    .frame(minWidth: HomeDateStepperLayout.titleMinWidth, minHeight: HomeDateStepperLayout.chevronSize)
+                    .frame(minWidth: HomeDateStepperLayout.titleMinWidth, minHeight: HomeDateStepperLayout.hitHeight)
                     .contentShape(Rectangle())
             }
+            .buttonStyle(HomeStepperPressStyle())
             .disabled(onTitleTap == nil)
             .accessibilityLabel(title)
             .accessibilityHint(onTitleTap == nil ? "Steps through days" : "Shows the calendar")
+            .accessibilityAddTraits(onTitleTap == nil ? [] : .isButton)
             .accessibilityAdjustableAction { direction in
                 switch direction {
                 case .increment: onForward()
@@ -652,68 +690,226 @@ struct HomeDateStepper: View {
             chevron(systemName: "chevron.right", enabled: canGoForward, action: onForward)
                 .accessibilityLabel("Next day")
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, HomeDateStepperLayout.capsulePaddingH)
+        .frame(minHeight: HomeDateStepperLayout.hitHeight)
+        .contentShape(Capsule())
+        .homeStepperGlass()
     }
 
     private func chevron(systemName: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.body.weight(.semibold))
-                .frame(width: HomeDateStepperLayout.chevronSize, height: HomeDateStepperLayout.chevronSize)
-                .contentShape(Circle())
+                .frame(width: HomeDateStepperLayout.chevronSize, height: HomeDateStepperLayout.hitHeight)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(HomeStepperPressStyle())
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.35)
-        .homeChevronGlass()
     }
 }
 
-/// Calendar for jumping straight to a day. Picking a date selects it and closes the sheet.
+/// Fixed month-grid chrome. Height is known up front so the sheet does not reflow.
+enum HomeCalendarSheetLayout {
+    static let cell = NoopMetrics.profileAvatarDiameter
+    static let circle = NoopMetrics.compactControlSize
+    static let weekdayRow = NoopMetrics.space6
+    static let header = NoopMetrics.controlHeight
+    static let rows = HomeCalendarMath.rows
+    static var gridHeight: CGFloat { cell * CGFloat(rows) }
+    static var compactHeight: CGFloat {
+        NoopMetrics.space4 + header + NoopMetrics.space2 + weekdayRow + gridHeight + NoopMetrics.space4
+    }
+}
+
+/// Calendar for jumping straight to a day. Past days carry that day's recovery zone.
 struct HomeCalendarSheet: View {
     var range: ClosedRange<Date>
+    var recoveryByDay: [String: Double]
     var onPick: (Date) -> Void
-    @State private var date: Date
+    @State private var month: Date
     @Environment(\.dismiss) private var dismiss
 
-    init(selected: Date, range: ClosedRange<Date>, onPick: @escaping (Date) -> Void) {
+    private let calendar = Calendar.current
+    private let selected: Date
+
+    init(
+        selected: Date,
+        range: ClosedRange<Date>,
+        recoveryByDay: [String: Double],
+        onPick: @escaping (Date) -> Void
+    ) {
         self.range = range
+        self.recoveryByDay = recoveryByDay
         self.onPick = onPick
-        _date = State(initialValue: min(max(selected, range.lowerBound), range.upperBound))
+        let clamped = min(max(selected, range.lowerBound), range.upperBound)
+        self.selected = Calendar.current.startOfDay(for: clamped)
+        _month = State(initialValue: HomeCalendarMath.monthStart(clamped, calendar: .current))
     }
 
     var body: some View {
-        NavigationStack {
-            DatePicker("Day", selection: $date, in: range, displayedComponents: .date)
-                .datePickerStyle(.graphical)
-                .padding(.horizontal)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Today") { onPick(range.upperBound); dismiss() }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { dismiss() }
-                    }
-                }
-                .onChangeCompat(of: date) { picked in
-                    onPick(picked)
+        VStack(spacing: 0) {
+            HStack {
+                Button("Today") {
+                    onPick(range.upperBound)
                     dismiss()
                 }
+                Spacer(minLength: NoopMetrics.space2)
+                Button("Done") { dismiss() }
+                    .fontWeight(.semibold)
+            }
+            .padding(.horizontal, NoopMetrics.space4)
+            .padding(.top, NoopMetrics.space4)
+            .padding(.bottom, NoopMetrics.space2)
+
+            HStack {
+                Button { page(-1) } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.body.weight(.semibold))
+                        .frame(width: NoopMetrics.compactControlSize, height: NoopMetrics.compactControlSize)
+                        .contentShape(Circle())
+                }
+                .disabled(!HomeCalendarMath.canPage(from: month, delta: -1, range: range, calendar: calendar))
+                Spacer(minLength: 0)
+                Text(HomeCalendarMath.monthTitle(month, calendar: calendar))
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 0)
+                Button { page(1) } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.body.weight(.semibold))
+                        .frame(width: NoopMetrics.compactControlSize, height: NoopMetrics.compactControlSize)
+                        .contentShape(Circle())
+                }
+                .disabled(!HomeCalendarMath.canPage(from: month, delta: 1, range: range, calendar: calendar))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, NoopMetrics.space2)
+            .frame(height: HomeCalendarSheetLayout.header)
+
+            HStack(spacing: 0) {
+                ForEach(Array(HomeCalendarMath.weekdaySymbols(calendar: calendar).enumerated()), id: \.offset) { _, symbol in
+                    Text(symbol)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(height: HomeCalendarSheetLayout.weekdayRow)
+            .padding(.horizontal, NoopMetrics.space2)
+            .accessibilityHidden(true)
+
+            LazyVGrid(
+                columns: Array(
+                    repeating: GridItem(.flexible(), spacing: 0),
+                    count: HomeCalendarMath.columns
+                ),
+                spacing: 0
+            ) {
+                ForEach(Array(HomeCalendarMath.cells(month: month, calendar: calendar).enumerated()), id: \.offset) { _, date in
+                    HomeCalendarDayCell(
+                        date: date,
+                        selected: selected,
+                        today: range.upperBound,
+                        enabled: date.map { HomeCalendarMath.isEnabled($0, range: range, calendar: calendar) } ?? false,
+                        recovery: date.flatMap { recoveryByDay[Repository.localDayKey($0)] },
+                        calendar: calendar,
+                        onPick: { picked in
+                            onPick(picked)
+                            dismiss()
+                        }
+                    )
+                }
+            }
+            .padding(.horizontal, NoopMetrics.space2)
+            .frame(height: HomeCalendarSheetLayout.gridHeight)
+            Spacer(minLength: 0)
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.height(HomeCalendarSheetLayout.compactHeight), .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func page(_ delta: Int) {
+        guard HomeCalendarMath.canPage(from: month, delta: delta, range: range, calendar: calendar),
+              let next = calendar.date(byAdding: .month, value: delta, to: month)
+        else { return }
+        month = HomeCalendarMath.monthStart(next, calendar: calendar)
+    }
+}
+
+private struct HomeCalendarDayCell: View {
+    var date: Date?
+    var selected: Date
+    var today: Date
+    var enabled: Bool
+    var recovery: Double?
+    var calendar: Calendar
+    var onPick: (Date) -> Void
+
+    var body: some View {
+        Group {
+            if let date {
+                Button { onPick(date) } label: { glyph(date) }
+                    .buttonStyle(.plain)
+                    .disabled(!enabled)
+                    .opacity(enabled ? 1 : 0.35)
+                    .accessibilityLabel(accessibility(date))
+            } else {
+                Color.clear
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: HomeCalendarSheetLayout.cell, maxHeight: HomeCalendarSheetLayout.cell)
+    }
+
+    private func glyph(_ date: Date) -> some View {
+        let isSelected = HomeCalendarMath.isSameDay(date, selected, calendar: calendar)
+        let isToday = HomeCalendarMath.isSameDay(date, today, calendar: calendar)
+        return ZStack {
+            if isSelected {
+                Circle().fill(recovery.map(NativeTokens.recoveryBand) ?? NativeTokens.highlight)
+            } else if let recovery, enabled {
+                Circle().fill(NativeTokens.recoveryBand(recovery))
+            }
+            if isToday {
+                Circle().strokeBorder(Color.primary, lineWidth: NoopMetrics.hairlineWidth)
+            }
+            Text("\(calendar.component(.day, from: date))")
+                .font(.body.weight(isToday || isSelected ? .semibold : .regular))
+                .foregroundStyle(Color.primary)
+                .monospacedDigit()
+        }
+        .frame(width: HomeCalendarSheetLayout.circle, height: HomeCalendarSheetLayout.circle)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Circle())
+    }
+
+    private func accessibility(_ date: Date) -> String {
+        var parts = [NativeChartDay.longLabel(Repository.localDayKey(date))]
+        if let recovery { parts.append("Recovery \(Int(recovery.rounded())) percent") }
+        if !enabled { parts.append("Unavailable") }
+        return parts.joined(separator: ", ")
+    }
+}
+
+private struct HomeStepperPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.55 : 1)
     }
 }
 
 private extension View {
-    /// Circular Liquid Glass on the day-stepper chevrons. Older systems and macOS stay bare.
-    @ViewBuilder func homeChevronGlass() -> some View {
+    /// Capsule Liquid Glass on the date stepper. iOS 26 uses `glassEffect`; iOS 17
+    /// uses ultra-thin material; macOS uses the card token.
+    @ViewBuilder func homeStepperGlass() -> some View {
         #if os(iOS)
         if #available(iOS 26.0, *) {
-            self.glassEffect(.regular.interactive(), in: Circle())
+            self.glassEffect(.regular.interactive(), in: Capsule())
         } else {
-            self
+            self.background(.ultraThinMaterial, in: Capsule())
         }
         #else
-        self
+        self.background(NativeTokens.card, in: Capsule())
         #endif
     }
 }
@@ -761,6 +957,100 @@ struct HomeRingsRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("Opens \(score.name)")
+    }
+}
+
+// MARK: - Health + Stress tiles
+
+struct HomeHealthMonitorTile: View {
+    var report: NativeHealthRange.Report
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
+        let summary = report.summary
+        NativeChrome.panel {
+            NativeCardHeader(
+                title: "Health Monitor",
+                symbol: nil,
+                tint: NativePaint.heart(style),
+                chevron: true
+            )
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: summary.tileWithinRange ? "checkmark.square.fill" : "exclamationmark.square.fill")
+                    .font(.title3)
+                    .foregroundStyle(
+                        summary.tileWithinRange ? NativeTokens.recoveryHigh : NativeTokens.recoveryLow
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(summary.tileHeadline.uppercased())
+                        .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
+                        .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
+                        .foregroundStyle(
+                            summary.tileWithinRange ? NativeTokens.recoveryHigh : NativeTokens.recoveryLow
+                        )
+                    if !summary.tileDetail.isEmpty {
+                        Text(summary.tileDetail)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(summary.tileHeadline), \(summary.tileDetail)")
+        }
+    }
+}
+
+struct HomeStressMonitorTile: View {
+    var level: Double?
+    var updated: Date?
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
+        let tile = HomeMonitorTile.stress(level: level, at: updated)
+        NativeChrome.panel {
+            NativeCardHeader(
+                title: "Stress Monitor",
+                symbol: nil,
+                tint: level.map { NativePaint.stressBand($0, style: style) } ?? NativeChrome.stress,
+                chevron: true
+            )
+            HStack(alignment: .center, spacing: 8) {
+                if let value = tile.value, let band = tile.band, let level {
+                    Text(value)
+                        .font(style == .whoop
+                              ? NativeTokens.whoopNumber(15, weight: .semibold)
+                              : StrandFont.rounded(15, weight: .semibold))
+                        .monospacedDigit()
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .background(
+                            NativePaint.stressBand(level, style: style).opacity(0.22),
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(band.uppercased())
+                            .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
+                            .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
+                            .foregroundStyle(NativePaint.stressBand(level, style: style))
+                        if let time = tile.time {
+                            Text(time)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                } else {
+                    Text("No Data")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(tile.accessibility)
+        }
     }
 }
 
@@ -819,6 +1109,48 @@ struct HomeHealthMonitorCard: View {
 
     private func compactValue(_ vital: NativeHealthRange.Vital) -> String {
         NativeHealthMonitorFormat.trailingValue(vital)
+    }
+}
+
+/// Owns stress scrub so dragging the chart does not invalidate the whole Home scroll.
+private struct HomeStressMonitorHost: View, Equatable {
+    var level: Double?
+    var hours: [NativeHourPoint]
+    var sleepStart: Date?
+    var sleepEnd: Date?
+    var workouts: [(start: Date, end: Date)]
+    var dayStart: Date
+    var now: Date
+    var onOpen: () -> Void
+    @State private var scrubValue = 0.0
+    @State private var scrubTime: Date?
+
+    static func == (lhs: HomeStressMonitorHost, rhs: HomeStressMonitorHost) -> Bool {
+        lhs.level == rhs.level
+            && lhs.hours == rhs.hours
+            && lhs.sleepStart == rhs.sleepStart
+            && lhs.sleepEnd == rhs.sleepEnd
+            && lhs.dayStart == rhs.dayStart
+            && lhs.now == rhs.now
+            && lhs.workouts.count == rhs.workouts.count
+            && zip(lhs.workouts, rhs.workouts).allSatisfy {
+                $0.start == $1.start && $0.end == $1.end
+            }
+    }
+
+    var body: some View {
+        HomeStressMonitorCard(
+            level: level,
+            hours: hours,
+            sleepStart: sleepStart,
+            sleepEnd: sleepEnd,
+            workouts: workouts,
+            dayStart: dayStart,
+            now: now,
+            scrubValue: $scrubValue,
+            scrubTime: $scrubTime,
+            onOpen: onOpen
+        )
     }
 }
 
@@ -913,8 +1245,8 @@ struct HomeStressHero: View {
 
 // MARK: - My Day
 
-struct HomeActivityItem: Identifiable {
-    enum Kind { case sleep, strain }
+struct HomeActivityItem: Identifiable, Equatable {
+    enum Kind: Equatable { case sleep, strain }
     var id: String
     var symbol: String
     var kind: Kind
@@ -999,6 +1331,7 @@ struct HomeActivitiesCard: View {
                             }
                         } label: {
                             HomeActivityRow(item: item)
+                                .equatable()
                         }
                         .buttonStyle(.plain)
                     }
@@ -1008,9 +1341,13 @@ struct HomeActivitiesCard: View {
     }
 }
 
-private struct HomeActivityRow: View {
+private struct HomeActivityRow: View, Equatable {
     var item: HomeActivityItem
     @Environment(\.nativeStyle) private var style
+
+    static func == (lhs: HomeActivityRow, rhs: HomeActivityRow) -> Bool {
+        lhs.item == rhs.item
+    }
 
     var body: some View {
         let tint = item.kind == .sleep ? NativePaint.sleep(style) : NativePaint.strain(style)
@@ -1214,7 +1551,7 @@ private struct HomeDualSeriesHeader: View {
 
 // MARK: - Metric cards
 
-struct HomeMetricItem: Identifiable {
+struct HomeMetricItem: Identifiable, Equatable {
     var id: String { title }
     var title: String
     var value: String
@@ -1247,13 +1584,13 @@ struct HomeMetricItem: Identifiable {
         var filled: [String: HomeMetricItem] = [:]
         func put(_ metric: HomeDashboardMetric, value: String, prior: String? = nil,
                  unit: String? = nil, delta: NativeScore.Delta = .none) {
-            guard NativeScoreMath.hasValue(value) else { return }
+            let known = NativeScoreMath.hasValue(value)
             filled[metric.rawValue] = HomeMetricItem(
                 title: metric.title,
-                value: value,
+                value: known ? value : HomeDashboardMetric.emptyValue,
                 unit: unit ?? metric.unit,
                 prior: prior.flatMap { NativeScoreMath.hasValue($0) ? $0 : nil },
-                delta: delta,
+                delta: known ? delta : .none,
                 symbol: metric.symbol,
                 tint: metric.tint,
                 points: [],
@@ -1262,8 +1599,7 @@ struct HomeMetricItem: Identifiable {
             )
         }
         func fromDashboard(_ metric: HomeDashboardMetric, title: String, unit: String?) {
-            guard let row = dashboard.first(where: { $0.title == title }),
-                  NativeScoreMath.hasValue(row.value) else { return }
+            guard let row = dashboard.first(where: { $0.title == title }) else { return }
             put(metric, value: row.value, prior: row.prior, unit: unit, delta: row.delta)
         }
         fromDashboard(.hrv, title: "Heart Rate Variability", unit: "ms")
@@ -1303,13 +1639,20 @@ struct HomeMetricItem: Identifiable {
         if let stress {
             put(.stress, value: String(format: "%.1f", stress))
         }
+        for metric in HomeDashboardMetric.allCases where filled[metric.rawValue] == nil {
+            put(metric, value: HomeDashboardMetric.emptyValue)
+        }
         return filled
     }
 }
 
-struct HomeMetricCard: View {
+struct HomeMetricCard: View, Equatable {
     var item: HomeMetricItem
     @Environment(\.nativeStyle) private var style
+
+    static func == (lhs: HomeMetricCard, rhs: HomeMetricCard) -> Bool {
+        lhs.item == rhs.item
+    }
 
     var body: some View {
         NativeChrome.panel {
@@ -1350,6 +1693,7 @@ struct HomeMetricCard: View {
     }
 
     private var displayValue: String {
+        guard NativeScoreMath.hasValue(item.value) else { return item.value }
         if let unit = item.unit, !unit.isEmpty, item.value.localizedCaseInsensitiveContains(unit) == false {
             return "\(item.value) \(unit)"
         }
@@ -1409,8 +1753,9 @@ enum NativeHomeCharts {
         }
     }
 
-    /// Chart-width buckets (300 s). Workout, post-workout recovery, and walking/running
-    /// buckets are omitted so the line breaks. Gaps stay omitted.
+    /// Minute buckets. Workout, post-workout recovery, and walking/running
+    /// buckets are omitted so the line breaks. Gaps stay omitted. Scored minutes
+    /// are centred-smoothed over ~5 minutes inside each contiguous run.
     static func stressSeries(buckets: [HRBucket],
                              baselines: BandStress.Baselines = .fallback,
                              sleepStart: Date? = nil,
@@ -1426,7 +1771,8 @@ enum NativeHomeCharts {
         ).hours
     }
 
-    /// Hours plus the excluded spans the chart can draw (workout / recovery / walker).
+    /// Hours plus the excluded spans (workout / recovery / walking). Walking spans
+    /// are merged for display; they are not drawn as activities.
     static func stressTimeline(buckets: [HRBucket],
                                baselines: BandStress.Baselines = .fallback,
                                sleepStart: Date? = nil,
@@ -1452,8 +1798,10 @@ enum NativeHomeCharts {
                                                            kind: .recovery))
             }
         }
-        exclusions.append(contentsOf: BandStress.spans(fromBuckets: activityBuckets))
-        let hours: [NativeHourPoint] = buckets.compactMap { bucket in
+        exclusions.append(contentsOf: BandStress.mergeSpans(
+            BandStress.spans(fromBuckets: activityBuckets)
+        ))
+        let scored: [(ts: Int, value: Double)] = buckets.compactMap { bucket in
             let asleep: Bool = {
                 guard let sleepStart, let sleepEnd else { return false }
                 return BandStress.overlaps(
@@ -1483,13 +1831,16 @@ enum NativeHomeCharts {
                 isRecovery: recovering
             ) {
             case .value(let value):
-                return NativeHourPoint(
-                    time: Date(timeIntervalSince1970: TimeInterval(bucket.ts)),
-                    value: value
-                )
+                return (bucket.ts, value)
             case .excluded, .gap:
                 return nil
             }
+        }
+        let hours = BandStress.smoothCentered(points: scored).map { point in
+            NativeHourPoint(
+                time: Date(timeIntervalSince1970: TimeInterval(point.ts)),
+                value: point.value
+            )
         }
         return (hours, exclusions)
     }
@@ -1981,7 +2332,10 @@ enum HomeSnapshot {
                 strain: strainOnlyModel.strain,
                 onOpen: { _ in }
             )
-            HomeHealthMonitorCard(report: NativeHealthRange.Report(vitals: []))
+            HStack(alignment: .top, spacing: 10) {
+                HomeHealthMonitorTile(report: NativeHealthRange.Report(vitals: []))
+                HomeStressMonitorTile(level: nil, updated: nil)
+            }
             NativeChrome.section("My Day")
             HomeActivitiesCard(
                 items: HomeActivityItem.make(from: strainOnlyModel),
@@ -2040,7 +2394,10 @@ enum HomeSnapshot {
             HomeRingsRow(
                 sleep: sleepScore, recovery: recoveryScore, strain: strainScore, onOpen: { _ in }
             )
-            healthCard
+            HStack(alignment: .top, spacing: 10) {
+                HomeHealthMonitorTile(report: healthReport)
+                HomeStressMonitorTile(level: 1.2, updated: dayStart.addingTimeInterval(16 * 3600))
+            }
             NativeChrome.section("My Day")
             HomeActivitiesCard(items: activities, onSleep: {}, onActivity: { _ in })
             HomeTonightSleepCard(model: tonightSleep, onAlarm: {})
@@ -2102,7 +2459,10 @@ enum HomeSnapshot {
                 HomeJournalCard(dots: journalDots, hasEntry: true, onOpen: {}, onLog: {})
             })),
             Section(name: "monitors", view: AnyView(VStack(spacing: 10) {
-                healthCard
+                HStack(alignment: .top, spacing: 10) {
+                    HomeHealthMonitorTile(report: healthReport)
+                    HomeStressMonitorTile(level: 1.2, updated: dayStart.addingTimeInterval(16 * 3600))
+                }
                 homeStressCard
             })),
             Section(name: "activities", view: AnyView(HomeActivitiesCard(

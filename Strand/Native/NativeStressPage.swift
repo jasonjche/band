@@ -26,6 +26,7 @@ struct NativeStressPage: View {
     @State private var sleepStart: Date?
     @State private var sleepEnd: Date?
     @State private var bouts: [(start: Date, end: Date)] = []
+    @State private var boutSymbols: [String] = []
     @State private var todayDurations = NativeStressBandDurations.zero
     @State private var typicalDurations: NativeStressBandDurations?
     @State private var typicalSameWeekday = false
@@ -51,6 +52,7 @@ struct NativeStressPage: View {
             sleepStart: sleepStart,
             sleepEnd: sleepEnd,
             workouts: bouts,
+            workoutSymbols: boutSymbols,
             dayStart: dayStart,
             now: now,
             scrubValue: $scrubValue,
@@ -82,9 +84,15 @@ struct NativeStressPage: View {
         let ending = NativeScopeSeries.date(from: key, calendar: calendar) ?? selectedDay
         let start = calendar.startOfDay(for: ending)
         let from = Int(start.timeIntervalSince1970)
-        let buckets = await repo.hrSamples(from: from, to: from + 86_400, bucketSeconds: 300)
+        let buckets = await repo.hrSamples(
+            from: from, to: from + 86_400, bucketSeconds: BandStress.bucketSeconds
+        )
         if Task.isCancelled { return }
-        let rr = await repo.rrIntervals(from: from, to: from + 86_400, limit: 50_000)
+        let rr = await repo.rrIntervals(from: from, to: from + 86_400, limit: 200_000)
+        if Task.isCancelled { return }
+        let ticks = await repo.stepTicks(from: from, to: from + 86_400)
+        if Task.isCancelled { return }
+        let grav = await repo.gravitySamplesUnion(from: from, to: from + 86_400)
         if Task.isCancelled { return }
         guard key == dayKey else { return }
         let sleep = repo.sleeps.last {
@@ -92,14 +100,31 @@ struct NativeStressPage: View {
         }
         let nextSleepStart = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
         let nextSleepEnd = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
-        let nextBouts: [(start: Date, end: Date)] = nextWorkouts.compactMap { row in
+        let nextActivities: [(start: Date, end: Date, symbol: String)] = nextWorkouts.compactMap { row in
             let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
             guard NativeDayLogic.sleepSessionDayKey(boutStart) == key else { return nil }
-            return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
+            return (
+                boutStart,
+                Date(timeIntervalSince1970: TimeInterval(row.endTs)),
+                NativeDay.symbol(for: row.sport)
+            )
         }
+        let nextBouts = nextActivities.map { (start: $0.start, end: $0.end) }
+        let nextSymbols = nextActivities.map(\.symbol)
         let days = repo.days
         let rrPairs = rr.map { (ts: $0.ts, ms: Double($0.rrMs)) }
         let baselines = NativeHomeCharts.stressBaselines(days: days, todayKey: key)
+        let samples = buckets.map { (ts: $0.ts, bpm: $0.bpm) }
+        let unixBouts = nextBouts.map {
+            (start: Int($0.start.timeIntervalSince1970), end: Int($0.end.timeIntervalSince1970))
+        }
+        let recovery = BandStress.recoveryWindows(workouts: unixBouts, samples: samples)
+        let motion = AutoWorkoutDetector.motionPoints(grav)
+        let activity = BandStress.activityBuckets(
+            bucketStarts: buckets.map(\.ts),
+            steps: ticks.map { (ts: $0.ts, activityClass: $0.activityClass) },
+            motion: motion.map { (ts: $0.ts, intensity: $0.intensity) }
+        )
         let rmssd = await Task.detached(priority: .utility) {
             BandStress.rmssdByBucket(rr: rrPairs)
         }.value
@@ -110,7 +135,9 @@ struct NativeStressPage: View {
             sleepStart: nextSleepStart,
             sleepEnd: nextSleepEnd,
             workouts: nextBouts,
-            rmssdByBucket: rmssd
+            rmssdByBucket: rmssd,
+            activityBuckets: activity,
+            recovery: recovery
         )
         guard key == dayKey else { return }
         let nextLevel = NativeStressResolver.level(hours: nextHours, days: days, todayKey: key)
@@ -128,6 +155,7 @@ struct NativeStressPage: View {
         sleepStart = nextSleepStart
         sleepEnd = nextSleepEnd
         bouts = nextBouts
+        boutSymbols = nextSymbols
         sampleHours = nextHours
         level = nextLevel
         if let latest = nextLevel {
@@ -169,6 +197,7 @@ struct NativeStressChartPage: View {
     var sleepStart: Date?
     var sleepEnd: Date?
     var workouts: [(start: Date, end: Date)]
+    var workoutSymbols: [String] = []
     var dayStart: Date
     var now: Date
     @Binding var scrubValue: Double
@@ -229,6 +258,7 @@ struct NativeStressChartPage: View {
                 sleepStart: sleepStart,
                 sleepEnd: sleepEnd,
                 workouts: workouts,
+                workoutSymbols: workoutSymbols,
                 dayStart: dayStart,
                 now: now,
                 height: NativeStressDayChart.heightPage,
@@ -281,6 +311,7 @@ struct NativeStressDayChart: View {
     var sleepStart: Date?
     var sleepEnd: Date?
     var workouts: [(start: Date, end: Date)]
+    var workoutSymbols: [String] = []
     var dayStart: Date
     var now: Date
     var height: CGFloat
@@ -292,27 +323,71 @@ struct NativeStressDayChart: View {
     static let heightHome: CGFloat = 168
 
     var body: some View {
-        ZStack {
-            NativeStressMonitor(
-                score: level ?? hours.last?.value ?? 0,
-                sleepStart: sleepStart,
-                sleepEnd: sleepEnd,
-                workouts: workouts,
-                dayStart: dayStart,
-                now: now,
-                sampleHours: hours,
-                previewSelected: previewSelected,
-                scrubValue: $scrubValue,
-                scrubTime: $scrubTime
+        VStack(alignment: .leading, spacing: 8) {
+            NativeStressChartHeader(
+                level: level,
+                updated: NativeStressMonitorMath.lastUpdated(hours.last?.time)
             )
-            if hours.isEmpty {
-                Text("No Data")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+            ZStack {
+                NativeStressMonitor(
+                    score: level ?? hours.last?.value ?? 0,
+                    sleepStart: sleepStart,
+                    sleepEnd: sleepEnd,
+                    workouts: workouts,
+                    dayStart: dayStart,
+                    now: now,
+                    sampleHours: hours,
+                    workoutSymbols: workoutSymbols,
+                    previewSelected: previewSelected,
+                    scrubValue: $scrubValue,
+                    scrubTime: $scrubTime
+                )
+                if hours.isEmpty {
+                    Text("No Data")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(height: height)
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+struct NativeStressChartHeader: View {
+    var level: Double?
+    var updated: String?
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(updated ?? " ")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .opacity(updated == nil ? 0 : 1)
+            Spacer(minLength: 8)
+            if let level {
+                Text(NativeHomeCharts.stressBand(level))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(NativePaint.stressBand(level, style: style))
+                Text(String(format: "%.1f", level))
+                    .font(.body.weight(.semibold))
+                    .monospacedDigit()
             }
         }
-        .frame(height: height)
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibility)
+    }
+
+    private var accessibility: String {
+        var parts: [String] = []
+        if let updated { parts.append(updated) }
+        if let level {
+            parts.append(NativeHomeCharts.stressBandWord(level))
+            parts.append(String(format: "%.1f", level))
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -335,8 +410,8 @@ enum NativeStressHistory {
     }
 
     /// Duration in the High band (≥ 2.0). Each high point contributes only the gap to the next
-    /// point when that gap is one chart bucket (5 min ± slack). A hole in stored HR is not High.
-    static let highBucketMaxGap: TimeInterval = 6 * 60
+    /// point when that gap is one chart bucket (1 min ± slack). A hole in stored HR is not High.
+    static let highBucketMaxGap: TimeInterval = TimeInterval(BandStress.chartGapSeconds)
 
     static func timeInHighMinutes(_ hours: [NativeHourPoint]) -> Double? {
         guard hours.count >= 2 else { return nil }
@@ -449,7 +524,7 @@ enum NativeStressBandTime {
         let from = Int(start.timeIntervalSince1970)
         let to = Int(ending.timeIntervalSince1970)
         guard to > from else { return [] }
-        let buckets = await repo.hrSamples(from: from, to: to, bucketSeconds: 300)
+        let buckets = await repo.hrSamples(from: from, to: to, bucketSeconds: BandStress.bucketSeconds)
         guard !buckets.isEmpty else { return [] }
         var byDay: [String: [HRBucket]] = [:]
         for bucket in buckets {

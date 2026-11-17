@@ -11,6 +11,9 @@ final class NativeHealthRangeTests: XCTestCase {
         let report = NativeHealthRange.report(days: days, todayKey: "2026-11-16")
         XCTAssertEqual(report.summary.caption, "All within range")
         XCTAssertEqual(report.summary.headerTrailing, "All within range")
+        XCTAssertEqual(report.summary.tileHeadline, "Within Range")
+        XCTAssertEqual(report.summary.tileDetail, "5/5 Metrics")
+        XCTAssertTrue(report.summary.tileWithinRange)
         XCTAssertEqual(report.summary.outside, 0)
         XCTAssertEqual(report.summary.judged, 5)
         XCTAssertEqual(report.vitals.count, 5)
@@ -34,11 +37,14 @@ final class NativeHealthRangeTests: XCTestCase {
         )
         let report = NativeHealthRange.report(days: days, todayKey: "2026-11-16")
         XCTAssertEqual(report.summary.caption, "1 outside range")
+        XCTAssertEqual(report.summary.tileHeadline, "1 metric outside range")
+        XCTAssertEqual(report.summary.tileDetail, "4/5 Metrics")
+        XCTAssertFalse(report.summary.tileWithinRange)
         let rhr = report.vitals.first { $0.id == "rhr" }
         XCTAssertEqual(rhr?.flagged, true)
         XCTAssertEqual(rhr?.status, .above)
         XCTAssertEqual(rhr?.inRange, false)
-        XCTAssertTrue(NativeHealthMonitorFormat.accessibilityLabel(try XCTUnwrap(rhr)).contains("Outside your typical range"))
+        XCTAssertTrue(NativeHealthMonitorFormat.accessibilityLabel(try XCTUnwrap(rhr)).contains("Higher"))
     }
 
     func testLowHrvIsOutsideRangeAndHighHrvIsNot() {
@@ -59,7 +65,40 @@ final class NativeHealthRangeTests: XCTestCase {
         let highReport = NativeHealthRange.report(days: high, todayKey: "2026-11-16")
         XCTAssertEqual(highReport.vitals.first { $0.id == "hrv" }?.flagged, false)
         XCTAssertEqual(highReport.vitals.first { $0.id == "hrv" }?.status, .above)
-        XCTAssertEqual(highReport.summary.caption, "All within range")
+        XCTAssertEqual(highReport.summary.outside, 1)
+        XCTAssertEqual(highReport.summary.tileHeadline, "1 metric outside range")
+        XCTAssertFalse(highReport.summary.tileWithinRange)
+    }
+
+    func testPageChipsAndHomeTileShareGreenInRangeAndRedOutside() {
+        XCTAssertEqual(NativeHealthMonitorMath.chipText(status: .inRange, hasValue: true), "Within range")
+        XCTAssertEqual(NativeHealthMonitorMath.chipTintName(status: .inRange), "high")
+        XCTAssertEqual(NativeHealthMonitorMath.chipText(status: .above, hasValue: true), "Higher")
+        XCTAssertEqual(NativeHealthMonitorMath.chipTintName(status: .above), "low")
+        XCTAssertEqual(NativeHealthMonitorMath.chipText(status: .below, hasValue: true), "Lower")
+        XCTAssertEqual(NativeHealthMonitorMath.chipTintName(status: .below), "low")
+        XCTAssertEqual(NativeHealthMonitorMath.chipText(status: .building, hasValue: true), "Calibrating range")
+        XCTAssertEqual(NativeHealthMonitorMath.chipTintName(status: .building), "secondary")
+        XCTAssertEqual(NativeHealthMonitorMath.chipText(status: nil, hasValue: false), "Calibrating range")
+        XCTAssertEqual(NativeHealthRange.metricSlots, 5)
+        XCTAssertEqual(NativeHealthMonitorMath.slots(from: NativeHealthRange.Report(vitals: [])).map(\.id),
+                       ["resp", "spo2", "rhr", "hrv", "skin"])
+        XCTAssertEqual(NativeHealthMonitorMath.zoneLabel(0), "Zone 0")
+        XCTAssertEqual(NativeHealthMonitorMath.nightsRemaining(worn: 1), 6)
+        XCTAssertNil(NativeHealthMonitorMath.nightsRemaining(worn: 7))
+        XCTAssertEqual(
+            NativeHealthMonitorMath.calibrationCaption(remaining: 6),
+            "Wear your strap to sleep 6 more nights to calibrate"
+        )
+        XCTAssertEqual(
+            NativeHealthMonitorMath.calibrationCaption(remaining: 1),
+            "Wear your strap to sleep 1 more night to calibrate"
+        )
+        let today = sampleMetric(day: "2026-11-16", hrv: 66, rhr: 51)
+        XCTAssertEqual(NativeHealthMonitorMath.nightsWorn(days: [today], todayKey: today.day), 1)
+        let empty = NativeHealthRange.summary(days: [sampleMetric(day: "2026-11-16")], todayKey: "2026-11-16")
+        XCTAssertEqual(empty.tileHeadline, "No Data")
+        XCTAssertFalse(empty.tileWithinRange)
     }
 
     func testSpo2AbsoluteRailFlagsEvenWithoutABaseline() {

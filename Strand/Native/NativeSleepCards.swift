@@ -123,7 +123,6 @@ struct NativeSleepConsistencyCard: View {
         NativeChrome.panel {
             header
             hero
-                .frame(height: 76, alignment: .topLeading)
             NativeSleepConsistencyChart(
                 nights: nights,
                 tint: NativePaint.sleep(style),
@@ -150,25 +149,48 @@ struct NativeSleepConsistencyCard: View {
     }
 
     @ViewBuilder private var hero: some View {
-        if let selected {
+        let night = selected ?? nights.last
+        if let percent {
             NativeHeroValue(
-                caption: NativeChartDay.longLabel(selected.key),
-                value: NativeSleepClock.clock(selected.bedtime),
-                date: NativeSleepClock.clock(selected.wake)
-            )
-        } else if let percent {
-            NativeHeroValue(
-                caption: "Last night",
+                caption: selected.map { NativeChartDay.longLabel($0.key) } ?? "Sleep Consistency",
                 value: "\(Int(percent.rounded()))",
                 unit: "%"
             )
-        } else if let last = nights.last {
-            NativeHeroValue(
-                caption: NativeChartDay.longLabel(last.key),
-                value: NativeSleepClock.clock(last.bedtime),
-                date: NativeSleepClock.clock(last.wake)
-            )
         }
+        if let night {
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Bedtime")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(NativeSleepClock.clock(night.bedtime))
+                        .font(StrandFont.rounded(17, weight: .semibold))
+                        .monospacedDigit()
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Wake")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(NativeSleepClock.clock(night.wake))
+                        .font(StrandFont.rounded(17, weight: .semibold))
+                        .monospacedDigit()
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+}
+
+struct NativeSleepConsistencyPage: View {
+    var nights: [NativeSleepNight]
+    var percent: Double?
+
+    var body: some View {
+        NativeChrome.screen {
+            NativeSleepConsistencyCard(nights: nights, percent: percent)
+        }
+        .navigationTitle("Sleep Consistency")
+        .modifier(NativeInlineTitle())
     }
 }
 
@@ -786,6 +808,210 @@ struct NativeSleepTimeInBedWeekCard: View {
     }
 }
 
+/// Restorative Sleep week: stacked REM (bottom) + Deep (top) in WHOOP stage colours.
+struct NativeSleepRestorativeWeekCard: View {
+    var deep: [NativeDayPoint]
+    var rem: [NativeDayPoint]
+    var highlightKey: String?
+    var onOpen: (() -> Void)? = nil
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
+        NativeChrome.panel {
+            let header = NativeCardHeader(
+                title: "Restorative Sleep",
+                symbol: "sparkles",
+                tint: NativePaint.sleep(style),
+                chevron: onOpen != nil
+            )
+            if let onOpen {
+                Button(action: onOpen) { header }
+                    .buttonStyle(.plain)
+            } else {
+                header
+            }
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                NativeSleepSeriesKey(
+                    color: NativePaint.sleepStage(named: "Deep", style: style),
+                    name: "Deep Sleep"
+                )
+                NativeSleepSeriesKey(
+                    color: NativePaint.sleepStage(named: "REM", style: style),
+                    name: "REM Sleep"
+                )
+            }
+            NativeSleepRestorativeChart(
+                deep: deep,
+                rem: rem,
+                highlightKey: highlightKey,
+                plotHeight: 200
+            )
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { onOpen?() }
+        .accessibilityLabel("Restorative Sleep")
+        .accessibilityAddTraits(onOpen == nil ? [] : .isButton)
+    }
+}
+
+struct NativeSleepRestorativeChart: View {
+    var deep: [NativeDayPoint]
+    var rem: [NativeDayPoint]
+    var highlightKey: String?
+    var plotHeight: CGFloat = 200
+    var previewSelected: String? = nil
+    @Environment(\.nativeStyle) private var style
+    @State private var selectedKey: String?
+
+    private struct Slice: Identifiable {
+        var key: String
+        var value: Double
+        var series: String
+        var id: String { series + key }
+    }
+
+    /// REM first (bottom of the stack), Deep second (top). WHOOP IMG_9434.
+    static func stackOrder() -> [String] { ["REM", "Deep"] }
+
+    private var totals: [NativeDayPoint] { NativeWeek.sumSeries(deep, rem) }
+    private var known: [NativeDayPoint] { totals.filter { $0.value.isFinite } }
+
+    private var slices: [Slice] {
+        Self.stackOrder().flatMap { series -> [Slice] in
+            let points = series == "REM" ? rem : deep
+            return points.compactMap { point -> Slice? in
+                guard point.value.isFinite, point.value > 0 else { return nil }
+                return Slice(key: point.key, value: point.value, series: series)
+            }
+        }
+    }
+
+    private var keys: [String] {
+        var seen = Set<String>()
+        return (rem + deep).map(\.key).filter { seen.insert($0).inserted }
+    }
+
+    private var ceiling: Double {
+        max(known.map(\.value).max() ?? 0, 120) * 1.22
+    }
+
+    private var selectedPoint: NativeDayPoint? {
+        guard let selectedKey else { return nil }
+        return NativeChartScrubMath.finitePoint(key: selectedKey, in: totals)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            hero.frame(height: 76, alignment: .topLeading)
+            plot.frame(height: plotHeight)
+        }
+        .onAppear {
+            if selectedKey == nil { selectedKey = previewSelected }
+        }
+        .modifier(NativeSelectionFeedback(trigger: selectedKey ?? ""))
+    }
+
+    @ViewBuilder private var hero: some View {
+        if let selectedPoint {
+            NativeClockHero(minutes: selectedPoint.value)
+            Text(NativeChartDay.longLabel(selectedPoint.key))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else if let average = NativeScoreMath.mean(known.map(\.value)),
+                  let first = totals.first?.key, let last = totals.last?.key {
+            NativeClockHero(caption: "Average", minutes: average)
+            Text(NativeChartDay.rangeLabel(from: first, to: last))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else {
+            NativeHeroValue(caption: "Average", value: "No Data")
+        }
+    }
+
+    private var plot: some View {
+        let deepTint = NativePaint.sleepStage(named: "Deep", style: style)
+        let remTint = NativePaint.sleepStage(named: "REM", style: style)
+        let whoop = style == .whoop
+        return Chart {
+            ForEach(keys, id: \.self) { key in
+                BarMark(
+                    x: .value("Day", key),
+                    y: .value("Slot", 0),
+                    width: .ratio(whoop ? 0.42 : 0.5)
+                )
+                .foregroundStyle(Color.clear)
+                .accessibilityHidden(true)
+                if key == highlightKey {
+                    RectangleMark(
+                        x: .value("Day", key),
+                        yStart: .value("Low", 0),
+                        yEnd: .value("High", ceiling)
+                    )
+                    .foregroundStyle(whoop ? NativeTokens.whoopHighlight : NativeTokens.highlight)
+                    .cornerRadius(8)
+                    .accessibilityHidden(true)
+                }
+            }
+            ForEach(slices) { slice in
+                BarMark(
+                    x: .value("Day", slice.key),
+                    y: .value("Minutes", slice.value),
+                    width: .ratio(whoop ? 0.42 : 0.5)
+                )
+                .foregroundStyle(by: .value("Stage", slice.series))
+                .cornerRadius(whoop ? 3 : 4)
+                .opacity(NativeChartScrubMath.barOpacity(
+                    isSelected: slice.key == selectedKey,
+                    hasSelection: selectedKey != nil
+                ))
+                .annotation(position: .top, spacing: 4) {
+                    if slice.series == "Deep",
+                       let total = NativeChartScrubMath.finitePoint(key: slice.key, in: totals) {
+                        Text(NativeScoreMath.duration(total.value))
+                            .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
+                            .foregroundStyle(whoop ? NativeTokens.whoopLabel : Color.secondary)
+                    }
+                }
+            }
+        }
+        .chartForegroundStyleScale([
+            "Deep": deepTint,
+            "REM": remTint,
+        ])
+        .chartLegend(.hidden)
+        .chartYScale(domain: 0...max(ceiling, 1))
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativeChrome.hairline)
+                AxisValueLabel {
+                    if let v = value.as(Double.self) {
+                        Text(NativeScoreMath.duration(v))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                    }
+                }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: keys) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativeChrome.hairline)
+                AxisValueLabel {
+                    if let key = value.as(String.self) {
+                        Text(NativeChartDay.weekday(key))
+                            .font(.caption2.weight(key == highlightKey ? .semibold : .regular))
+                            .foregroundStyle(key == highlightKey ? Color.primary : Color.secondary)
+                    }
+                }
+            }
+        }
+        .accessibilityLabel("Restorative sleep, deep and REM")
+        .modifier(NativeSleepDaySelect(selected: $selectedKey))
+    }
+}
+
 enum NativeSleepGallery {
     struct Section: Identifiable {
         var id: String { name }
@@ -803,7 +1029,9 @@ enum NativeSleepGallery {
             Section(name: "sleep-stress-card", padded: true, view: AnyView(stress)),
             Section(name: "sleep-week-hours-needed", padded: true, view: AnyView(weekHours)),
             Section(name: "sleep-week-time-in-bed", padded: true, view: AnyView(weekInBed)),
+            Section(name: "sleep-week-restorative", padded: true, view: AnyView(weekRestorative)),
             Section(name: "sleep-last-night", padded: true, view: AnyView(lastNight)),
+            Section(name: "sleep-estimated-hypnogram", padded: true, view: AnyView(estimatedLastNight)),
             Section(name: "sleep-stage-detail", padded: true, view: AnyView(stageDetail)),
             Section(name: "sleep-hypnogram-page", padded: true, view: AnyView(hypnogramPage)),
         ]
@@ -852,6 +1080,15 @@ enum NativeSleepGallery {
         )
     }
 
+    private static var weekRestorative: some View {
+        let card = NativeSleepSnapshot.extraWeekCards.first { $0.title == "Restorative Sleep" }
+        return NativeSleepRestorativeWeekCard(
+            deep: card?.stacks.first { $0.title == "Deep" }?.points ?? [],
+            rem: card?.stacks.first { $0.title == "REM" }?.points ?? [],
+            highlightKey: NativeSleepSnapshot.highlightKey
+        )
+    }
+
     private static var lastNight: some View {
         NativeLastNightCard(
             asleepMinutes: 410,
@@ -862,6 +1099,30 @@ enum NativeSleepGallery {
             needMinutes: 465,
             debtMinutes: 36,
             spans: NativeSleepSnapshot.hypnogram
+        )
+    }
+
+    private static var estimatedLastNight: some View {
+        let json = NativeSleepEstimatedHypnogram.sampleTotalsJSON
+        let start = NativeSleepSnapshot.sleepStart
+        let end = start.addingTimeInterval(442 * 60)
+        let spans = NativeSleepEstimatedHypnogram.spans(
+            startTs: Int(start.timeIntervalSince1970),
+            endTs: Int(end.timeIntervalSince1970),
+            totals: SleepStageTotals.minutes(fromStagesJSON: json)!
+        )
+        return NativeLastNightCard(
+            asleepMinutes: 395,
+            stages: [
+                NativeStage(name: "Awake", minutes: 47, typical: 45, tint: NativeChrome.sleepAwake),
+                NativeStage(name: "Light", minutes: 157, typical: 240, tint: NativeChrome.sleepLight),
+                NativeStage(name: "Deep", minutes: 125, typical: 80, tint: NativeChrome.sleepDeep),
+                NativeStage(name: "REM", minutes: 113, typical: 95, tint: NativeChrome.sleepREM),
+            ],
+            sleepStart: start,
+            sleepEnd: end,
+            spans: spans,
+            hypnogramEstimated: true
         )
     }
 

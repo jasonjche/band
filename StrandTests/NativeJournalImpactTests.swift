@@ -136,4 +136,19 @@ final class NativeJournalImpactTests: XCTestCase {
         XCTAssertEqual(NativeJournalImpactCopy.title(for: "Have any alcoholic drinks?"), "Alcohol")
         XCTAssertEqual(NativeJournalImpactCopy.title(for: "Did you drink any alcohol?"), "Alcohol")
     }
+
+    func testImpactKeysOnCanonicalLibraryIds() {
+        let imported = JournalEntry(
+            day: "2026-01-01", question: "Engaged in sexual activity?", answeredYes: true, notes: nil
+        )
+        let native = JournalEntry(
+            day: "2026-01-02", question: "Did you have sex?", answeredYes: false, notes: nil
+        )
+        let answers = NativeJournalIdentity.winningEntries([imported, native]).map {
+            JournalImpact.Answer(day: $0.day, behaviorId: $0.question, yes: $0.answeredYes)
+        }
+        XCTAssertEqual(Set(answers.map(\.behaviorId)), ["Did you have sex?"])
+        XCTAssertEqual(NativeJournalImpactCopy.title(for: "Engaged in sexual activity?"), "Sex")
+        XCTAssertEqual(NativeJournalImpactCopy.title(for: "Did you take a cold plunge?"), "Cold plunge")
+    }
 }

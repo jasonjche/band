@@ -76,13 +76,10 @@ enum NativeDayLogic {
         return [0, maxY / 2, maxY]
     }
 
-    /// Asleep minutes: sum of non-awake stages when all three are present, else stored totalSleepMin.
+    /// Asleep minutes. Delegates to `PerformanceAssessment.asleepMinutes` so the Sleep
+    /// page and Assessments cannot disagree.
     static func asleepMinutes(light: Double?, deep: Double?, rem: Double?, totalSleepMin: Double?) -> Double? {
-        if let light, let deep, let rem {
-            let sum = light + deep + rem
-            return sum > 0 ? sum : nil
-        }
-        return totalSleepMin.flatMap { $0 > 0 ? $0 : nil }
+        PerformanceAssessment.asleepMinutes(light: light, deep: deep, rem: rem, totalSleepMin: totalSleepMin)
     }
 
     /// In bed = session end − start. No session → nothing (do not invent from efficiency).

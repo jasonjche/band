@@ -238,7 +238,7 @@ final class NativeDayLogicTests: XCTestCase {
         XCTAssertEqual(home?.value, expected)
     }
 
-    func testHomeCaloriesRowUsesWholeDayEnergyAndHidesWhenNil() {
+    func testHomeCaloriesRowUsesWholeDayEnergyAndDashesWhenNil() {
         let with = DailyMetric(
             day: "2026-11-16",
             totalSleepMin: 410, efficiency: 0.92, deepMin: 70, remMin: 90, lightMin: 250,
@@ -271,10 +271,11 @@ final class NativeDayLogicTests: XCTestCase {
             todayKey: without.day, connected: true, effortScale: .whoop, now: now
         )
         XCTAssertFalse(NativeScoreMath.hasValue(modelWithout.dashboard.first { $0.title == "Calories" }?.value ?? "—"))
-        XCTAssertNil(
-            HomeMetricItem.make(dashboard: modelWithout.dashboard, days: [without], todayKey: without.day)
-                .first { $0.title == "Calories" }
-        )
+        let emptyCalories = HomeMetricItem.make(
+            dashboard: modelWithout.dashboard, days: [without], todayKey: without.day
+        ).first { $0.title == "Calories" }
+        XCTAssertEqual(emptyCalories?.value, HomeDashboardMetric.emptyValue)
+        XCTAssertEqual(emptyCalories?.route, HomeDashboardMetric.calories.route)
     }
 
     func testDayStrainAtLeastMaxActivityAndBothUseStrainText() {

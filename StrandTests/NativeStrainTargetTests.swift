@@ -100,6 +100,16 @@ final class NativeStrainTargetTests: XCTestCase {
         let frac = NativeStrainTarget.ringFraction(10.5...14.7)
         XCTAssertEqual(frac.lowerBound, 10.5 / 21, accuracy: 1e-12)
         XCTAssertEqual(frac.upperBound, 14.7 / 21, accuracy: 1e-12)
+        XCTAssertEqual(
+            NativeStrainTarget.ringTickFraction(10.5...14.7),
+            (10.5 + 14.7) / 2 / 21,
+            accuracy: 1e-12
+        )
+        XCTAssertEqual(
+            NativeRingMotion.targetTick(from: frac),
+            NativeStrainTarget.ringTickFraction(10.5...14.7),
+            accuracy: 1e-12
+        )
     }
 
     private func day(_ key: String, recovery: Double?, strain21: Double?) -> DailyMetric {

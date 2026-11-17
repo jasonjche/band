@@ -29,6 +29,17 @@ public enum NativeTokens {
     public static let stressMid = Color(light: "#2E9E4F", dark: "#4CD964")
     public static let stressHigh = Color(light: "#E09A16", dark: "#FFC043")
 
+    /// Stress Monitor line, sampled from WHOOP (`IMG` 9:01 PM chart).
+    /// Cyan at 0, teal at 1.0, green through 1.2–2.0, yellow-green at 2.4,
+    /// gold at 2.7, orange-gold only at 3.0. Medium must not read yellow.
+    public static let stressLine0 = Color(light: "#1AA3B5", dark: "#5CB9D2")
+    public static let stressLine1 = Color(light: "#1A9E88", dark: "#44D8AE")
+    public static let stressLine12 = Color(light: "#1BB87A", dark: "#3DE2A5")
+    public static let stressLine2 = Color(light: "#2E9E4F", dark: "#90D973")
+    public static let stressLine24 = Color(light: "#8A9A28", dark: "#B7C55D")
+    public static let stressLine27 = Color(light: "#C9A000", dark: "#DBB041")
+    public static let stressLine3 = Color(light: "#E09A16", dark: "#E5A638")
+
     // MARK: Sleep performance bands
 
     public static let bandPoor = Color(light: "#E07A20", dark: "#FF9F45")
@@ -46,35 +57,46 @@ public enum NativeTokens {
     /// Legacy alias for heart-family charts that still read `vitals`.
     public static let vitals = heart
 
-    // MARK: Heart-rate zones (stacked Strain trends)
+    // MARK: Heart-rate zones (list, bars, tap-to-highlight chart)
 
-    public static let hrZone1 = Color(light: "#C6C6C8", dark: "#8E8E93")
-    public static let hrZone2 = Color(light: "#2B6DE5", dark: "#5B9BFF")
-    public static let hrZone3 = Color(light: "#00B85C", dark: "#00E66A")
-    public static let hrZone4 = Color(light: "#E85D13", dark: "#FF5813")
-    public static let hrZone5 = Color(light: "#E53935", dark: "#FF3B30")
+    /// Sampled from WHOOP activity screens (IMG_9448–9451). Zone 0 is the darker grey;
+    /// zone 1 is silver. One function colours the zone list, the duration bars, and the
+    /// selected-zone chart highlight.
+    public static let hrZone0 = Color(light: "#6C7278", dark: "#5C646C")
+    public static let hrZone1 = Color(light: "#8E97A3", dark: "#A8B2BC")
+    public static let hrZone2 = Color(light: "#2B7FD4", dark: "#5BA3E0")
+    public static let hrZone3 = Color(light: "#1A9E80", dark: "#6FCBB4")
+    public static let hrZone4 = Color(light: "#D4893C", dark: "#E0A06A")
+    public static let hrZone5 = Color(light: "#D4522A", dark: "#E86B3C")
 
     public static func hrZone(_ number: Int) -> Color {
         switch number {
+        case 0: return hrZone0
+        case 1: return hrZone1
         case 2: return hrZone2
         case 3: return hrZone3
         case 4: return hrZone4
         case 5: return hrZone5
-        default: return hrZone1
+        default: return number < 0 ? hrZone0 : hrZone5
         }
     }
 
-    // MARK: Sleep stages (Apple hypnogram)
+    // MARK: Sleep stages (WHOOP hypnogram)
 
-    /// Awake. Measured `#FF684F` / `#FE6A4E`.
-    public static let sleepAwake = Color(light: "#E85A40", dark: "#FF684F")
-    /// REM. Measured `#3CD3FE` / `#0191FD`.
-    public static let sleepREM = Color(light: "#0191FD", dark: "#3CD3FE")
-    /// Light / Core. WHOOP lavender `#A3A3F1`, distinct from the steel-blue sleep tint.
-    /// Light hex is the same hue, darkened so it reads on white.
-    public static let sleepCore = Color(light: "#5B5BC7", dark: "#A3A3F1")
-    /// Deep. Measured `#3634A2`.
-    public static let sleepDeep = Color(light: "#3634A2", dark: "#5B59C7")
+    /// Awake. Dark `#C8C8C8` sampled from the Last Night bar in `IMG_9429`.
+    /// Light hex is the same grey, darkened so it reads on white.
+    public static let sleepAwake = Color(light: "#8E8E93", dark: "#C8C8C8")
+    /// Light. Dark `#A4A3EB` sampled from the Light bar in `IMG_9429` and the
+    /// Light ticks in `IMG_9430`.
+    public static let sleepLight = Color(light: "#6E6DD4", dark: "#A4A3EB")
+    /// Light / Core alias — same WHOOP periwinkle as `sleepLight`.
+    public static let sleepCore = sleepLight
+    /// Deep / SWS. Dark `#EC9AF4` sampled from the SWS bar in `IMG_9429` and
+    /// the Deep stack in `IMG_9434`.
+    public static let sleepDeep = Color(light: "#C45CCE", dark: "#EC9AF4")
+    /// REM. Dark `#A15EE5` sampled from the REM bar in `IMG_9429` and the REM
+    /// stack in `IMG_9434`.
+    public static let sleepREM = Color(light: "#7A3DC4", dark: "#A15EE5")
 
     public static let positiveDelta = Color(light: "#1B9E57", dark: "#3DDB7C")
     public static let negativeDelta = Color(light: "#D35400", dark: "#FF8A3D")
@@ -139,17 +161,27 @@ public enum NativeTokens {
     public static let whoopRespiratory = Color(hex: "#4DD0E0")
     public static let whoopActivity = Color(hex: "#1A9BFF")
 
-    public static let whoopSleepAwake = Color(hex: "#C5C9CE")
-    /// Light stage. Sampled `#A3A3F1` from `sleep_last_night/whoop.png`.
-    public static let whoopSleepLight = Color(hex: "#A3A3F1")
-    public static let whoopSleepDeep = Color(hex: "#E056A0")
-    public static let whoopSleepREM = Color(hex: "#A05EE8")
+    /// Awake. Sampled `#C8C8C8` from `IMG_9429` Last Night bar.
+    public static let whoopSleepAwake = Color(hex: "#C8C8C8")
+    /// Light. Sampled `#A4A3EB` from `IMG_9429` / `IMG_9430`.
+    public static let whoopSleepLight = Color(hex: "#A4A3EB")
+    /// Deep / SWS. Sampled `#EC9AF4` from `IMG_9429` and `IMG_9434`.
+    public static let whoopSleepDeep = Color(hex: "#EC9AF4")
+    /// REM. Sampled `#A15EE5` from `IMG_9429` and `IMG_9434`.
+    public static let whoopSleepREM = Color(hex: "#A15EE5")
 
     public static let whoopPositiveDelta = Color(hex: "#00E66A")
     public static let whoopNegativeDelta = Color(hex: "#FF9A2E")
     public static let whoopStressLow = Color(hex: "#4DD0E0")
     public static let whoopStressMid = Color(hex: "#00E66A")
     public static let whoopStressHigh = Color(hex: "#F5D000")
+    public static let whoopStressLine0 = Color(hex: "#5CB9D2")
+    public static let whoopStressLine1 = Color(hex: "#44D8AE")
+    public static let whoopStressLine12 = Color(hex: "#3DE2A5")
+    public static let whoopStressLine2 = Color(hex: "#90D973")
+    public static let whoopStressLine24 = Color(hex: "#B7C55D")
+    public static let whoopStressLine27 = Color(hex: "#DBB041")
+    public static let whoopStressLine3 = Color(hex: "#E5A638")
 
     public static let whoopTrackOpacity: Double = 1
 

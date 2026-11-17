@@ -1434,6 +1434,34 @@ final class Repository: ObservableObject {
         return nil
     }
 
+    /// Steps covering a workout window: strap `StepsCounter` first, then overlapping Apple Health
+    /// hours, then a stored row count. Any sport, any source.
+    func workoutStepCount(from: Int, to: Int, ticksPerStep: Double, stored: Int?) async -> Int? {
+        let strap = WorkoutSteps.scaledTicks(
+            await strapStepTicks(from: from, to: to),
+            ticksPerStep: ticksPerStep
+        )
+        let hourStart = (from / WorkoutSteps.hourSeconds) * WorkoutSteps.hourSeconds
+        let hours = await appleStepHours(from: hourStart, to: to)
+        let apple = WorkoutSteps.appleStepsInWindow(hours, from: from, to: to)
+        return WorkoutSteps.resolve(strap: strap, apple: apple, stored: stored)
+    }
+
+    /// Lift-log sets paired to this workout through (deviceId, startTs, sport).
+    func liftSets(startTs: Int, sport: String) async -> [LiftSetRow] {
+        guard let store = await ensureStore() else { return [] }
+        for id in importedReadIds {
+            let sessions = (try? await store.liftSessions(deviceId: id, fromTs: startTs, toTs: startTs)) ?? []
+            let match = sessions.first {
+                $0.startTs == startTs && $0.sport.caseInsensitiveCompare(sport) == .orderedSame
+            } ?? sessions.first { $0.startTs == startTs }
+            if let session = match {
+                return (try? await store.liftSets(sessionId: session.id)) ?? []
+            }
+        }
+        return []
+    }
+
     /// Pure pick of the latest classed activity across the union's per-id step lists: the non-nil
     /// `activityClass` on the sample with the greatest ts, resolving a ts tie in favour of the FIRST list (the
     /// active strap, mirroring the union's active-wins rule). Static + pure so it's unit-testable without a
@@ -2978,6 +3006,7 @@ final class Repository: ObservableObject {
                     // so the child task crosses only Sendable scalars.
                     let cls = WorkoutSource.classify(rows[idx].source)
                     let wantStrain = (cls == .manual || cls == .detected) && rows[idx].strain == nil
+                        && ActivityScoring.contributesActivityStrain(rows[idx].sport)
                     // #510: read HR under the workout's OWN recording strap, not a single active id. A detected
                     // row's `source` IS its computed strap id ("<base>-noop"), so a bout auto-detected on a 2nd
                     // WHOOP reads "<base>" instead of the active strap's empty window. Resolved on the main actor;

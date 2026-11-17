@@ -572,7 +572,7 @@ struct RootTabView: View {
         .tabItem { Label("More", systemImage: nativeTodayEnabled ? "line.3.horizontal" : "ellipsis") }
     }
 
-    /// Native More index: Strap, Profile, Data & Backup, About. Alarm lives on Home; notifications
+    /// Native More index: Strap, Profile, Sleep Planner, Assessments, Data & Backup, About. Alarm lives on Home; notifications
     /// are hidden on the personal shell (the strap alarm still requests permission when armed).
     private func nativeMoreList(path: Binding<NavigationPath>) -> some View {
         NativeMoreList { item in
@@ -583,8 +583,11 @@ struct RootTabView: View {
 
     private func moreDestination(_ item: NativeMoreItem) -> MoreDestination {
         switch item {
+        case .healthspan: return .healthspan
         case .strap: return .devices
         case .profile: return .profile
+        case .sleepPlanner: return .sleepPlanner
+        case .assessments: return .assessments
         case .dataBackup: return .dataBackup
         case .about: return .about
         }
@@ -654,14 +657,14 @@ private enum MoreDestination: Hashable {
     case live, workouts, liftLog, health, labBook, stress, breathe, intervals, rhythm
     case fusedRecord, appleHealth, miBand, dataSources, backupSync, shortcutsExport, noopLimitations
     case devices, alarms, automations, testCentre, siriShortcuts, powerSaving, settings
-    case backup, notifications, about, profile, dataBackup
+    case backup, notifications, about, profile, dataBackup, healthspan, assessments, sleepPlanner
 
     var usesAppleSettingsChrome: Bool {
         switch self {
         case .devices, .dataSources, .backupSync, .appleHealth, .alarms,
              .automations, .testCentre, .powerSaving, .settings,
              .siriShortcuts, .shortcutsExport, .backup, .notifications, .about,
-             .profile, .dataBackup:
+             .profile, .dataBackup, .sleepPlanner:
             return true
         default:
             return false
@@ -709,6 +712,9 @@ private enum MoreDestination: Hashable {
         case .about:           BandAboutView()
         case .profile:         NativeProfileView()
         case .dataBackup:      NativeDataBackupView()
+        case .assessments:     NativePerformanceAssessmentView()
+        case .sleepPlanner:    NativeSleepPlanner()
+        case .healthspan:      NativeHealthspanPage()
         }
     }
 }

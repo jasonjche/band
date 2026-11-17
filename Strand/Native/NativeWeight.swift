@@ -1,5 +1,4 @@
 import SwiftUI
-import Charts
 import WhoopStore
 import StrandDesign
 
@@ -55,6 +54,7 @@ enum NativeWeight {
 struct NativeWeightPage: View {
     let readings: [NativeWeight.Reading]
     let unitSystem: UnitSystem
+    @State private var scope: NativeMetricScope = .week
 
     private func value(_ kg: Double) -> Double {
         unitSystem == .imperial ? UnitFormatter.kgToPounds(kg) : kg
@@ -62,53 +62,36 @@ struct NativeWeightPage: View {
 
     private var unit: String { unitSystem == .imperial ? "lb" : "kg" }
 
-    private func label(_ kg: Double) -> String {
-        String(format: "%.1f %@", value(kg), unit)
+    private var points: [NativeDayPoint] {
+        readings.map { NativeDayPoint(key: $0.day, value: value($0.kg)) }
+    }
+
+    private var series: NativeScopeSeries {
+        let ending = readings.last?.date ?? Date()
+        return NativeScopeSeries.make(
+            points: points,
+            scope: scope,
+            kind: .rate,
+            now: ending,
+            ending: ending
+        )
     }
 
     var body: some View {
-        List {
-            if let latest = readings.last {
-                Section {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(label(latest.kg))
-                            .font(.largeTitle.weight(.semibold))
-                            .monospacedDigit()
-                        Text("Apple Health · \(latest.date.formatted(.dateTime.month().day().year()))")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    if readings.count > 1 {
-                        Chart(readings) { r in
-                            LineMark(x: .value("Date", r.date), y: .value("Weight", value(r.kg)))
-                                .interpolationMethod(.monotone)
-                            PointMark(x: .value("Date", r.date), y: .value("Weight", value(r.kg)))
-                                .symbolSize(24)
-                        }
-                        .chartYScale(domain: .automatic(includesZero: false))
-                        .frame(height: 180)
-                        .padding(.vertical, 8)
-                    }
-                }
-            }
-            Section("History") {
-                ForEach(readings.reversed()) { r in
-                    LabeledContent(r.date.formatted(.dateTime.month().day().year()),
-                                   value: label(r.kg))
-                }
-            }
-        }
-        .navigationTitle("Weight")
-        .navigationBarTitleDisplayModeInlineIfAvailable()
-    }
-}
-
-private extension View {
-    @ViewBuilder func navigationBarTitleDisplayModeInlineIfAvailable() -> some View {
-        #if os(iOS)
-        self.navigationBarTitleDisplayMode(.inline)
-        #else
-        self
-        #endif
+        NativeMetricChartPage(
+            title: "Weight",
+            scope: scope,
+            onScope: { new in
+                if NativeMetricScope.pickerCases(for: "weight").contains(new) { scope = new }
+            },
+            series: series,
+            bars: false,
+            tint: NativeTokens.activity,
+            format: { String(format: "%.1f", $0) },
+            unit: unit,
+            latest: points.last,
+            sourceCaption: "From Apple Health",
+            scopes: NativeMetricScope.pickerCases(for: "weight")
+        )
     }
 }

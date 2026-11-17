@@ -92,12 +92,13 @@ final class BandStressTests: XCTestCase {
     func testSparseRROmitsRMSSDBucket() {
         let thin = (0..<10).map { (ts: 1_000 + $0, ms: 800.0) }
         XCTAssertTrue(BandStress.rmssdByBucket(rr: thin).isEmpty)
+        let start = 1_200
         let dense = (0..<40).map { i -> (ts: Int, ms: Double) in
-            (ts: 1_000 + i, ms: 800 + Double(i % 3) * 10)
+            (ts: start + i, ms: 800 + Double(i % 3) * 10)
         }
         let got = BandStress.rmssdByBucket(rr: dense)
         XCTAssertEqual(got.count, 1)
-        XCTAssertNotNil(got[900] ?? got[1_000] ?? got.values.first)
+        XCTAssertNotNil(got[start] ?? got.values.first)
     }
 
     func testOvernightHighShareUsesSleepBaseline() {
@@ -119,8 +120,8 @@ final class BandStressTests: XCTestCase {
     }
 
     func testWorkoutOverlapAndClamps() {
-        XCTAssertTrue(BandStress.overlaps(bucketTs: 1_000, start: 1_100, end: 1_400))
-        XCTAssertFalse(BandStress.overlaps(bucketTs: 1_000, start: 1_300, end: 1_400))
+        XCTAssertTrue(BandStress.overlaps(bucketTs: 1_080, start: 1_100, end: 1_400))
+        XCTAssertFalse(BandStress.overlaps(bucketTs: 1_000, start: 1_100, end: 1_400))
         XCTAssertEqual(BandStress.score(bpm: 200, isAsleep: false, baselines: rhr55), 3, accuracy: 1e-9)
         XCTAssertEqual(BandStress.score(bpm: 40, isAsleep: false, baselines: rhr55), 0, accuracy: 1e-9)
     }
@@ -194,5 +195,81 @@ final class BandStressTests: XCTestCase {
         XCTAssertEqual(spans[0].endTs, 600)
         XCTAssertEqual(spans[1].startTs, 900)
         XCTAssertEqual(spans[1].kind, .activity)
+    }
+
+    func testBucketSecondsIsOneMinute() {
+        XCTAssertEqual(BandStress.bucketSeconds, 60)
+        XCTAssertEqual(BandStress.smoothWindowSeconds, 300)
+        XCTAssertEqual(BandStress.smoothRadiusBuckets, 2)
+        XCTAssertEqual(
+            (2 * BandStress.smoothRadiusBuckets + 1) * BandStress.bucketSeconds,
+            BandStress.smoothWindowSeconds
+        )
+        XCTAssertEqual(BandStress.chartGapSeconds, 90)
+        XCTAssertEqual(BandStress.overnightWindowSeconds, 300)
+    }
+
+    func testCenteredSmoothDampsAOneMinuteSpike() {
+        let t0 = 10_000
+        var points: [(ts: Int, value: Double)] = []
+        for i in 0..<11 {
+            let ts = t0 + i * BandStress.bucketSeconds
+            points.append((ts, i == 5 ? 3.0 : 0.0))
+        }
+        let smoothed = BandStress.smoothCentered(points: points)
+        XCTAssertEqual(smoothed.count, 11)
+        let peak = smoothed[5].value
+        XCTAssertEqual(peak, 0.6, accuracy: 1e-9)
+        XCTAssertLessThan(peak, 1)
+        XCTAssertEqual(smoothed[0].value, 0, accuracy: 1e-9)
+        XCTAssertEqual(smoothed[10].value, 0, accuracy: 1e-9)
+    }
+
+    func testCenteredSmoothDoesNotFillAHole() {
+        let t0 = 20_000
+        let left = (0..<3).map { (ts: t0 + $0 * 60, value: 1.0) }
+        let right = (0..<3).map { (ts: t0 + 5 * 60 + $0 * 60, value: 2.0) }
+        let smoothed = BandStress.smoothCentered(points: left + right)
+        XCTAssertEqual(smoothed.count, 6)
+        XCTAssertEqual(smoothed[2].ts, t0 + 120)
+        XCTAssertEqual(smoothed[3].ts, t0 + 300)
+        XCTAssertEqual(smoothed[2].value, 1.0, accuracy: 1e-9)
+        XCTAssertEqual(smoothed[3].value, 2.0, accuracy: 1e-9)
+        XCTAssertFalse(smoothed.contains { $0.ts == t0 + 180 || $0.ts == t0 + 240 })
+    }
+
+    func testMergeSpansJoinsShortWalksWithinTenMinutes() {
+        let walks = [
+            BandStress.ExclusionSpan(startTs: 0, endTs: 60, kind: .activity),
+            BandStress.ExclusionSpan(startTs: 180, endTs: 240, kind: .activity),
+            BandStress.ExclusionSpan(startTs: 12 * 60, endTs: 13 * 60, kind: .activity),
+        ]
+        let merged = BandStress.mergeSpans(walks)
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged[0].startTs, 0)
+        XCTAssertEqual(merged[0].endTs, 13 * 60)
+        let far = BandStress.mergeSpans([
+            BandStress.ExclusionSpan(startTs: 0, endTs: 60, kind: .activity),
+            BandStress.ExclusionSpan(startTs: 20 * 60, endTs: 21 * 60, kind: .activity),
+        ])
+        XCTAssertEqual(far.count, 2)
+        let mixed = BandStress.mergeSpans([
+            BandStress.ExclusionSpan(startTs: 0, endTs: 600, kind: .workout),
+            BandStress.ExclusionSpan(startTs: 120, endTs: 180, kind: .activity),
+        ], gapSeconds: 10 * 60)
+        XCTAssertEqual(mixed.count, 2)
+        XCTAssertEqual(mixed.map(\.kind), [.workout, .activity])
+    }
+
+    func testFullDayMinuteGridIs1440() {
+        let start = 1_700_000_000
+        let points = (0..<1_440).map { i in
+            (ts: start + i * BandStress.bucketSeconds, value: Double(i % 3))
+        }
+        let smoothed = BandStress.smoothCentered(points: points)
+        XCTAssertEqual(points.count, 1_440)
+        XCTAssertEqual(smoothed.count, 1_440)
+        XCTAssertEqual(smoothed.first?.ts, start)
+        XCTAssertEqual(smoothed.last?.ts, start + 1_439 * 60)
     }
 }

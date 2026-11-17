@@ -194,6 +194,62 @@ final class NativeActivityPageTests: XCTestCase {
         XCTAssertEqual(NativeActivityPageLogic.zoneRuns(points, zone: 0, zoneSet: set).flatMap { $0 }.map(\.value), [100])
     }
 
+    func testComputedStepsOverrideANilRowCount() {
+        let workout = WorkoutRow(
+            startTs: 1_700_000_000, endTs: 1_700_001_800, sport: "Running", source: "apple-health",
+            durationS: 1_800, energyKcal: nil, avgHr: nil, maxHr: nil, strain: 13.6,
+            distanceM: nil, zonesJSON: nil, notes: nil, steps: nil
+        )
+        let model = NativeActivityPageLogic.make(
+            workout, prior: [], scale: .whoop, zoneSet: nil, percents: nil, steps: 3_942
+        )
+        XCTAssertEqual(model.stepsText, NativeScoreMath.count(Double(3_942)) as String)
+        XCTAssertEqual(model.sourceLine, "Imported from Apple Health")
+        XCTAssertNil(model.muscularSplit)
+    }
+
+    func testRecoveryActivityHidesStrainAndZones() {
+        let workout = WorkoutRow(
+            startTs: 1_700_000_000, endTs: 1_700_001_200, sport: "Sauna", source: "manual",
+            durationS: 1_200, energyKcal: nil, avgHr: 92, maxHr: 110, strain: 8,
+            distanceM: nil, zonesJSON: nil, notes: nil, steps: 400
+        )
+        let model = NativeActivityPageLogic.make(
+            workout, prior: [], scale: .whoop, zoneSet: HRZones.zones(maxHR: 198, restingHR: 63),
+            percents: [10, 20, 30, 20, 20], steps: 400
+        )
+        XCTAssertTrue(model.isRecovery)
+        XCTAssertFalse(model.hasStrain)
+        XCTAssertTrue(model.zones.isEmpty)
+        XCTAssertNil(model.stepsText)
+        XCTAssertEqual(model.sourceLine, "Recovery activity — no activity strain")
+        XCTAssertEqual(model.stats.first { $0.title == "Avg HR" }?.value, "92")
+    }
+
+    func testMuscularSplitReplacesStepsOnStrengthWork() {
+        let workout = WorkoutRow(
+            startTs: 1_700_000_000, endTs: 1_700_001_200, sport: "Weightlifting", source: "manual",
+            durationS: 1_200, energyKcal: 103, avgHr: 120, maxHr: 150, strain: 30.5,
+            distanceM: nil, zonesJSON: nil, notes: nil, steps: 200
+        )
+        let muscular = ActivityScoring.Muscular(
+            kind: .strength, relativeVolume: 10, intensity: 0.7,
+            cardioStrain21: 3.1, muscularStrain21: 3.3, combinedStrain21: 6.2,
+            cardioPercent: 48, muscularPercent: 52
+        )
+        let model = NativeActivityPageLogic.make(
+            workout, prior: [], scale: .whoop, zoneSet: nil, percents: nil,
+            steps: 200, muscular: muscular
+        )
+        XCTAssertEqual(model.muscularSplit?.cardioPercent, 48)
+        XCTAssertEqual(model.muscularSplit?.muscularPercent, 52)
+        XCTAssertNil(model.stepsText)
+        XCTAssertTrue(model.hasStrain)
+        XCTAssertEqual(model.strainText, NativeDayLogic.strainText(
+            StrainScorer.effortValue(fromWhoopStrain: 6.2), scale: .whoop
+        ))
+    }
+
     func testStepsHeroHidesTypicalChipWithoutThreePriorWorkoutsWithSteps() {
         let workout = WorkoutRow(
             startTs: 1_700_000_000, endTs: 1_700_001_800, sport: "Running", source: "whoop",

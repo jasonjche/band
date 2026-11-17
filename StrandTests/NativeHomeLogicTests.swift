@@ -62,7 +62,7 @@ final class NativeHomeLogicTests: XCTestCase {
         XCTAssertEqual([imported, strap].count, 2, "store rows stay")
     }
 
-    func testSleepStreakEndsTodayOrYesterdayAndHidesUnderTwo() {
+    func testSleepStreakEndsAtSelectedDayAndKeepsZero() {
         let today = "2026-11-16"
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -76,6 +76,10 @@ final class NativeHomeLogicTests: XCTestCase {
                 efficiency: 0.9, restingHr: 52, avgHrv: 60, stagesJSON: nil
             )
         }
+        XCTAssertEqual(
+            HomeSleepStreak.days(sleeps: [], imported: [:], todayKey: today),
+            0
+        )
         XCTAssertEqual(
             HomeSleepStreak.days(sleeps: [session(on: today)], imported: [:], todayKey: today),
             1
@@ -94,7 +98,8 @@ final class NativeHomeLogicTests: XCTestCase {
                 imported: [:],
                 todayKey: today
             ),
-            2
+            2,
+            "tonight not yet recorded must not zero a live streak"
         )
         XCTAssertEqual(
             HomeSleepStreak.days(
@@ -103,6 +108,25 @@ final class NativeHomeLogicTests: XCTestCase {
                 todayKey: today
             ),
             0
+        )
+        XCTAssertEqual(
+            HomeSleepStreak.days(
+                sleeps: [session(on: "2026-11-14"), session(on: "2026-11-15")],
+                imported: [:],
+                todayKey: "2026-11-15",
+                viewingToday: false
+            ),
+            2
+        )
+        XCTAssertEqual(
+            HomeSleepStreak.days(
+                sleeps: [session(on: "2026-11-14")],
+                imported: [:],
+                todayKey: "2026-11-15",
+                viewingToday: false
+            ),
+            0,
+            "a past day with no night does not borrow the previous night"
         )
         let imported: [String: ImportedSleepFigures] = [
             "2026-11-16": ImportedSleepFigures(performancePct: 80, consistencyPct: nil, needMin: 480, debtMin: nil),
@@ -116,7 +140,11 @@ final class NativeHomeLogicTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         XCTAssertEqual(HomeDashboardStore.decode(nil), HomeDashboardMetric.defaultIds)
-        XCTAssertFalse(HomeDashboardMetric.defaultIds.contains("hrv"))
+        XCTAssertEqual(HomeDashboardMetric.defaultIds, [
+            "hrv", "resting_hr", "respiratory", "steps",
+            "hr_zones_13", "hr_zones_45", "strength", "vo2max", "calories",
+        ])
+        XCTAssertTrue(HomeDashboardMetric.healthMonitorIds.isSubset(of: Set(HomeDashboardMetric.defaultIds)))
         let ids = ["steps", "hrv", "calories"]
         HomeDashboardStore.save(ids, to: defaults)
         XCTAssertEqual(HomeDashboardStore.load(defaults), ids)
@@ -191,7 +219,7 @@ final class NativeHomeLogicTests: XCTestCase {
         XCTAssertTrue(empty.allSatisfy { $0.value == 0 })
     }
 
-    func testChosenDashboardMetricWithNoValueIsHidden() {
+    func testChosenDashboardMetricWithNoValueStillShowsDash() {
         let empty = DailyMetric(
             day: "2026-11-12",
             totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
@@ -207,6 +235,55 @@ final class NativeHomeLogicTests: XCTestCase {
             todayKey: empty.day,
             ids: ["hrv", "steps", "calories"]
         )
-        XCTAssertTrue(rows.isEmpty)
+        XCTAssertEqual(rows.map(\.title), ["Heart Rate Variability", "Steps", "Calories"])
+        XCTAssertTrue(rows.allSatisfy { $0.value == HomeDashboardMetric.emptyValue })
+        XCTAssertEqual(rows.map(\.route), [
+            HomeDashboardMetric.hrv.route,
+            HomeDashboardMetric.steps.route,
+            HomeDashboardMetric.calories.route,
+        ])
+    }
+
+    func testStressMonitorTileUsesSameBandAndClockAsTheChartCard() {
+        let empty = HomeMonitorTile.stress(level: nil, at: nil)
+        XCTAssertNil(empty.value)
+        XCTAssertEqual(empty.accessibility, "No Data")
+
+        let time = Date(timeIntervalSince1970: 1_763_409_000)
+        let tile = HomeMonitorTile.stress(level: 1.5, at: time)
+        XCTAssertEqual(tile.value, "1.5")
+        XCTAssertEqual(tile.band, NativeHomeCharts.stressBandWord(1.5))
+        XCTAssertEqual(tile.band, "Medium")
+        XCTAssertEqual(tile.time, NativeScopeFormat.time(time))
+        XCTAssertTrue(tile.accessibility.contains("1.5"))
+        XCTAssertTrue(tile.accessibility.contains("Medium"))
+    }
+
+    func testStressWindowNowDoesNotCrossMidnight() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = calendar.date(from: DateComponents(year: 2026, month: 11, day: 17))!
+        let noon = start.addingTimeInterval(12 * 3600)
+        let nextMorning = start.addingTimeInterval(26 * 3600)
+        XCTAssertEqual(HomeStressWindow.dayStart(for: noon, calendar: calendar), start)
+        XCTAssertEqual(HomeStressWindow.now(dayStart: start, calendar: calendar, clock: noon), noon)
+        XCTAssertEqual(
+            HomeStressWindow.now(dayStart: start, calendar: calendar, clock: nextMorning),
+            start.addingTimeInterval(24 * 3600)
+        )
+    }
+
+    func testActivityItemsAreEquatableAndSortedByStart() {
+        let start = 1_700_000_000
+        let late = workout(start: start + 3_600, duration: 1_800, source: "manual", sport: "Run")
+        let early = workout(start: start, duration: 1_800, source: "manual", sport: "Walk")
+        let model = NativeDay.make(
+            days: [], sleeps: [], workouts: [late, early],
+            todayKey: Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(start))),
+            connected: false, effortScale: .whoop
+        )
+        let items = HomeActivityItem.make(from: model)
+        XCTAssertEqual(items.map(\.startTs), [start, start + 3_600])
+        XCTAssertEqual(items, HomeActivityItem.make(from: model))
     }
 }

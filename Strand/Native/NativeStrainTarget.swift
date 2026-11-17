@@ -76,4 +76,10 @@ enum NativeStrainTarget {
         let hi = min(max(range.upperBound / 21, 0), 1)
         return min(lo, hi)...max(lo, hi)
     }
+
+    /// Midpoint of the target range on the 0–1 ring. WHOOP draws one tick here.
+    static func ringTickFraction(_ range: ClosedRange<Double>) -> Double {
+        let frac = ringFraction(range)
+        return (frac.lowerBound + frac.upperBound) / 2
+    }
 }
