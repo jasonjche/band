@@ -100,8 +100,8 @@ public enum BandRecoveryV3 {
     }
 
     /// Production path: restart EWMA and the residual MAD at a source change; withhold recovery
-    /// until `warmupNights` finite-z observations on the current source. Missing HRV carries
-    /// state and does not update.
+    /// until `warmupNights` finite-z observations on the current source (21; whoopfit6).
+    /// Expanding MAD from the new source only. Missing HRV carries state and does not update.
     public static func run(hrv: [Double], sleepPct: [Double],
                            sources: [BandScores.DaySource],
                            params: Params) -> Series {

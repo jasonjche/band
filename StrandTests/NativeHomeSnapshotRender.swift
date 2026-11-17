@@ -78,6 +78,10 @@ final class NativeHomeSnapshotRender: XCTestCase {
         XCTAssertEqual(home.map(\.value), page.map(\.value))
         XCTAssertEqual(home.map(\.time), page.map(\.time))
         XCTAssertEqual(NativeHomeCharts.stressLevel(hours: home, days: [], todayKey: "2026-11-12") ?? -1, 2.0, accuracy: 0.01)
+        XCTAssertEqual(
+            NativeStressResolver.level(hours: home, days: [], todayKey: "2026-11-12"),
+            NativeHomeCharts.stressLevel(hours: home, days: [], todayKey: "2026-11-12")
+        )
     }
 
     func testRenderHomeSections() throws {

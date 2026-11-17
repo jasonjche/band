@@ -539,7 +539,7 @@
     "outlier_k": null,
     "z_scale": 8.6076235845313,
     "z_floor": 1.0,
-    "warmup_nights": 30,
+    "warmup_nights": 21,
     "sleep_center": 75.0,
     "sleep_scale": 15.0,
     "z_clip": 6.0,
@@ -556,6 +556,6 @@
       "transfer_our_to_69_mae": 6.07,
       "transfer_69_to_our_mae": 5.94
     },
-    "note": "Recursive causal EWMA on raw HRV ms + round-2 perf_ours sleep term. RHR/RR/temp/SpO2 omitted. Publish after warmup_nights finite-z observations on the current source; restart EWMA and MAD at a source change."
+    "note": "Recursive causal EWMA on raw HRV ms + round-2 perf_ours sleep term. RHR/RR/temp/SpO2 omitted. Publish after warmup_nights=21 finite-z observations on the current source (whoopfit6: shortest N within ~1 MAE of fully-warmed without large early errors); expanding MAD from the new source only; restart EWMA and MAD at a source change. score() golden path unchanged."
   }
 }

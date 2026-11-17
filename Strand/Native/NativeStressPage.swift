@@ -64,7 +64,7 @@ struct NativeStressPage: View {
         let from = Int(start.timeIntervalSince1970)
         let buckets = await repo.hrSamples(from: from, to: from + 86_400, bucketSeconds: 300)
         sampleHours = NativeHomeCharts.stressSeries(buckets: buckets)
-        level = NativeHomeCharts.stressLevel(hours: sampleHours, days: repo.days, todayKey: dayKey)
+        level = NativeStressResolver.level(hours: sampleHours, days: repo.days, todayKey: dayKey)
         if let latest = level {
             scrubValue = latest
         }
@@ -152,24 +152,19 @@ struct NativeStressChartPage: View {
             .frame(maxWidth: .infinity)
 
         NativeChrome.panel {
-            if hours.isEmpty {
-                NativeEmptyState(text: "No Data", symbol: "chart.xyaxis.line")
-                    .frame(height: 220)
-            } else {
-                NativeStressMonitor(
-                    score: shownLevel ?? hours.last?.value ?? 0,
-                    sleepStart: sleepStart,
-                    sleepEnd: sleepEnd,
-                    workouts: workouts,
-                    dayStart: dayStart,
-                    now: now,
-                    sampleHours: hours,
-                    previewSelected: previewTime,
-                    scrubValue: $scrubValue,
-                    scrubTime: $scrubTime
-                )
-                .frame(height: 260)
-            }
+            NativeStressDayChart(
+                level: shownLevel,
+                hours: hours,
+                sleepStart: sleepStart,
+                sleepEnd: sleepEnd,
+                workouts: workouts,
+                dayStart: dayStart,
+                now: now,
+                height: NativeStressDayChart.heightPage,
+                previewSelected: previewTime,
+                scrubValue: $scrubValue,
+                scrubTime: $scrubTime
+            )
         }
 
         if let minutes = timeInHighMinutes, minutes > 0, scrubTime == nil {
@@ -200,6 +195,55 @@ enum NativeStressHero {
     /// Idle hero is AVERAGE; a held point is STRESS (Apple Health uppercases the caption).
     static func caption(scrubbing: Bool) -> String {
         scrubbing ? "Stress" : "Average"
+    }
+}
+
+/// One number for Home and the Stress page. Last sample, else the daily HRV/RHR score, else nil.
+enum NativeStressResolver {
+    static func level(hours: [NativeHourPoint], days: [DailyMetric], todayKey: String) -> Double? {
+        NativeHomeCharts.stressLevel(hours: hours, days: days, todayKey: todayKey)
+    }
+}
+
+/// Same 0–3 day chart Home and the Stress page draw. Empty series keeps the axes and says "No Data".
+struct NativeStressDayChart: View {
+    var level: Double?
+    var hours: [NativeHourPoint]
+    var sleepStart: Date?
+    var sleepEnd: Date?
+    var workouts: [(start: Date, end: Date)]
+    var dayStart: Date
+    var now: Date
+    var height: CGFloat
+    var previewSelected: Date? = nil
+    @Binding var scrubValue: Double
+    @Binding var scrubTime: Date?
+
+    static let heightPage: CGFloat = 260
+    static let heightHome: CGFloat = 168
+
+    var body: some View {
+        ZStack {
+            NativeStressMonitor(
+                score: level ?? hours.last?.value ?? 0,
+                sleepStart: sleepStart,
+                sleepEnd: sleepEnd,
+                workouts: workouts,
+                dayStart: dayStart,
+                now: now,
+                sampleHours: hours,
+                previewSelected: previewSelected,
+                scrubValue: $scrubValue,
+                scrubTime: $scrubTime
+            )
+            if hours.isEmpty {
+                Text("No Data")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(height: height)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -259,23 +303,18 @@ struct HomeStressBody: View {
                 .frame(maxWidth: .infinity)
 
             NativeChrome.panel {
-                if hours.isEmpty {
-                    NativeEmptyState(text: "No Data", symbol: "chart.xyaxis.line")
-                        .frame(height: 220)
-                } else {
-                    NativeStressMonitor(
-                        score: shownLevel ?? hours.last?.value ?? 0,
-                        sleepStart: sleepStart,
-                        sleepEnd: sleepEnd,
-                        workouts: workouts,
-                        dayStart: dayStart,
-                        now: now,
-                        sampleHours: hours,
-                        scrubValue: $scrubValue,
-                        scrubTime: $scrubTime
-                    )
-                    .frame(height: 260)
-                }
+                NativeStressDayChart(
+                    level: shownLevel,
+                    hours: hours,
+                    sleepStart: sleepStart,
+                    sleepEnd: sleepEnd,
+                    workouts: workouts,
+                    dayStart: dayStart,
+                    now: now,
+                    height: NativeStressDayChart.heightPage,
+                    scrubValue: $scrubValue,
+                    scrubTime: $scrubTime
+                )
             }
         }
     }

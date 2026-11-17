@@ -253,27 +253,28 @@ struct NativeGallerySnapshot {
         )
     }
 
-    static var activityModel: NativeActivity.Model {
-        NativeActivity.Model(
-            sport: "Running",
-            symbol: "figure.run",
-            timeRange: "8:27 AM – 8:55 AM",
-            strainText: NativeDayLogic.strainText(26, scale: .whoop),
-            strainDelta: .up,
-            duration: "0:28:00",
-            zones: [
-                NativeActivity.Zone(zone: 1, minutes: 0.1, label: "Zone 1"),
-                NativeActivity.Zone(zone: 2, minutes: 1.7, label: "Zone 2"),
-                NativeActivity.Zone(zone: 3, minutes: 5.0, label: "Zone 3"),
-                NativeActivity.Zone(zone: 4, minutes: 20.5, label: "Zone 4"),
-                NativeActivity.Zone(zone: 5, minutes: 0.02, label: "Zone 5"),
-            ],
-            stats: [
-                NativeActivity.Stat(title: "Calories", value: "312 kcal", comparison: "vs 280", symbol: "flame"),
-                NativeActivity.Stat(title: "Avg HR", value: "168 BPM", comparison: "vs 154", symbol: "heart"),
-            ],
-            hasRoute: false
+    static var activityModel: NativeActivityPageLogic.Model {
+        NativeActivityPageLogic.make(
+            snapshotWorkouts[0],
+            prior: snapshotWorkouts + activityPriorRuns,
+            scale: .whoop,
+            zoneSet: HRZones.zones(maxHR: 190),
+            percents: WorkoutZones.percents(snapshotWorkouts[0].zonesJSON)
         )
+    }
+
+    private static var activityPriorRuns: [WorkoutRow] {
+        (1...3).map { offset in
+            WorkoutRow(
+                startTs: snapshotWorkouts[0].startTs - offset * 86_400,
+                endTs: snapshotWorkouts[0].endTs - offset * 86_400,
+                sport: "Running", source: "my-whoop",
+                durationS: 28 * 60, energyKcal: 280, avgHr: 154, maxHr: 176,
+                strain: 22, distanceM: 5000,
+                zonesJSON: snapshotWorkouts[0].zonesJSON,
+                notes: nil, steps: 4000
+            )
+        }
     }
 
     static var activityHr: [NativeHourPoint] {
@@ -411,7 +412,8 @@ struct NativeGallerySnapshot {
             dayKey: highlightKey,
             needMinutes: snapshotModel.sleepNeedMin,
             debtMinutes: snapshotModel.sleepDebtMin,
-            scrolls: false
+            scrolls: false,
+            sleepDetail: NativeSleepSnapshot.pageDetail
         )
     }
 

@@ -2711,7 +2711,7 @@ private struct AddNapSeed: Identifiable {
 /// A small sheet to hand-correct a night's bed (onset) and wake (end) instants. Seeds both pickers with
 /// the current values, including each calendar date. Hands the chosen unix-second (bed, wake) back via
 /// `onSave`. Pure presentation + a single async save — persistence lives in the repo.
-private struct SleepTimeEditor: View {
+struct SleepTimeEditor: View {
     let onSave: (Int, Int) async -> Void
     /// Optional destructive delete (#68). Non-nil for an existing main-sleep / nap edit (the editor then
     /// shows a "Delete this sleep" button gated behind a confirmation); nil for the "Add a nap" sheet,
@@ -2793,77 +2793,48 @@ private struct SleepTimeEditor: View {
     var body: some View {
         let canSave = validatedWindow != nil
 
-        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-            Text(title).font(StrandFont.title2).foregroundStyle(StrandPalette.textPrimary)
-            Text(blurb)
-                .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            NoopCard(padding: NoopMetrics.cardPadding, tint: StrandPalette.restColor) {
-                VStack(alignment: .leading, spacing: 10) {
-                    // Bed is bounded to the PAST (#940): a sleep can't start in the future, and an
-                    // unbounded picker let a cross-midnight time roll land the bed on the coming
-                    // evening, creating a future-dated night the tab couldn't render.
+        NavigationStack {
+            Form {
+                Section {
                     DatePicker(bedLabel, selection: $bed, in: ...Date(),
                                displayedComponents: [.date, .hourAndMinute])
-                        .datePickerStyle(.compact)
-                        .font(StrandFont.body)
-                        .tint(StrandPalette.restColor)
-                    Divider().overlay(StrandPalette.hairline)
-                    // The wake date and time are both editable so corrections preserve the exact
-                    // endpoint selected by the user (#970).
                     DatePicker(wakeLabel, selection: $wake, in: ...Date(),
                                displayedComponents: [.date, .hourAndMinute])
-                        .datePickerStyle(.compact)
-                        .font(StrandFont.body)
-                        .tint(StrandPalette.restColor)
+                } footer: {
+                    Text(blurb)
                 }
-            }
-
-            // Destructive delete for an existing night/nap (#68). Confirmation-gated so a tap can't clear
-            // a night by accident; nil for the "Add a nap" sheet (nothing to delete). Sits below the
-            // pickers, visually separated from the primary Save action.
-            if onDelete != nil {
-                Button(role: .destructive) { confirmingDelete = true } label: {
-                    Label(deleteLabel, systemImage: "trash")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.statusCritical)
-                }
-                .buttonStyle(.plain)
-                .disabled(saving)
-                .accessibilityLabel(deleteLabel)
-            }
-
-            HStack(spacing: NoopMetrics.gap) {
-                Button("Cancel") { dismiss() }
-                    .buttonStyle(.noopGhost)
-                    .disabled(saving)
-                Spacer()
-                Button(saving ? "Saving…" : "Save") {
-                    // #940 guard 2: a corrected window that no longer touches the night's recorded
-                    // coverage has no data to stage from. Silently accepting it fabricated an
-                    // all-awake phantom night; ask first.
-                    guard let window = validatedWindow else { return }
-                    if let coverage, SleepEditGuard.isDisjoint(
-                        newStart: window.start, newEnd: window.end,
-                        coverageStart: coverage.lowerBound, coverageEnd: coverage.upperBound) {
-                        confirmingDisjoint = true
-                    } else {
-                        commit(start: window.start, end: window.end)
+                if onDelete != nil {
+                    Section {
+                        Button(deleteLabel, role: .destructive) { confirmingDelete = true }
+                            .disabled(saving)
                     }
                 }
-                .buttonStyle(.noopPrimary)
-                .disabled(saving || !canSave)
-                .opacity(canSave ? 1 : 0.55)
+            }
+            .navigationTitle(title)
+            .modifier(NativeInlineTitle())
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(saving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Saving…" : "Save") {
+                        guard let window = validatedWindow else { return }
+                        if let coverage, SleepEditGuard.isDisjoint(
+                            newStart: window.start, newEnd: window.end,
+                            coverageStart: coverage.lowerBound, coverageEnd: coverage.upperBound) {
+                            confirmingDisjoint = true
+                        } else {
+                            commit(start: window.start, end: window.end)
+                        }
+                    }
+                    .disabled(saving || !canSave)
+                }
             }
         }
-        .padding(NoopMetrics.screenPadding)
-        .frame(minWidth: 360)
-        .background(NoopChromeSurface())
-        // #940 guard 1: a time-only roll that lands the bed in the future, or at/after the night's
-        // wake, almost always means the PREVIOUS evening (23:00 "yesterday", not tonight). Snap the
-        // date back a day so the picker visibly shows the night the user meant. Pure rule + tests:
-        // SleepEditGuard.autoCorrectedBed (Android twin in com.noop.analytics).
+        #if os(macOS)
+        .frame(minWidth: 360, minHeight: 280)
+        #endif
         .onChangeCompat(of: bed) { newBed in
             let corrected = SleepEditGuard.autoCorrectedBed(
                 previousBed: previousBed, candidateBed: newBed,

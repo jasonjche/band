@@ -1,12 +1,29 @@
 import SwiftUI
 import Combine
-import Charts
 import StrandDesign
 import StrandAnalytics
 import WhoopStore
 
 // Native Home: WHOOP order, Apple Health chrome.
 // Sections take plain value models so snapshots can render without Repository.
+//
+// Home content order (WHOOP capture, top to bottom):
+// date stepper + battery, rings, Health Monitor, My Day (Activities, Tonight's Sleep,
+// Journal), My Dashboard rows, Stress Monitor, Strain & Recovery.
+
+enum HomeSectionOrder {
+    static let content = [
+        "rings",
+        "Health Monitor",
+        "My Day",
+        "Activities",
+        "Tonight's Sleep",
+        "Journal",
+        "My Dashboard",
+        "Stress Monitor",
+        "Strain & Recovery",
+    ]
+}
 
 /// Pull-to-refresh on Home: kick the #334 user-initiated strap sync (`BLEManager.syncNow`),
 /// hold the system spinner until that offload ends or 20 s, then re-read. Disconnected → reload only.
@@ -75,6 +92,11 @@ struct NativeHomeView: View {
     @State private var healthSummary: NativeHealthRange.Summary?
     @State private var tonight: NativeTonightSleep.Model?
     @State private var stressLevel: Double?
+    @State private var stressSleepStart: Date?
+    @State private var stressSleepEnd: Date?
+    @State private var stressBouts: [(start: Date, end: Date)] = []
+    @State private var stressScrubValue: Double = 0
+    @State private var stressScrubTime: Date?
     @State private var weekRecovery: [NativeDayPoint] = []
     @State private var weekStrain: [NativeDayPoint] = []
     @State private var dashboardItems: [HomeMetricItem] = []
@@ -132,6 +154,9 @@ struct NativeHomeView: View {
         .onChange(of: smartAlarmMinutes) { _ in rebuildModel() }
         .navigationDestination(for: NativePairRoute.self) { _ in
             DevicesView()
+        }
+        .navigationDestination(for: NativeAlarmRoute.self) { _ in
+            SmartAlarmView()
         }
         .sheet(isPresented: $addingActivity) {
             HomeAddActivitySheet { await reload() }
@@ -203,7 +228,21 @@ struct NativeHomeView: View {
         } else {
             tonight = nil
         }
-        stressLevel = NativeHomeCharts.stressLevel(hours: sampleHours, days: repo.days, todayKey: selectedKey)
+        stressLevel = NativeStressResolver.level(hours: sampleHours, days: repo.days, todayKey: selectedKey)
+        if let latest = stressLevel {
+            stressScrubValue = latest
+        }
+        stressScrubTime = nil
+        let sleep = repo.sleeps.last {
+            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == selectedKey
+        }
+        stressSleepStart = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
+        stressSleepEnd = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
+        stressBouts = workouts.compactMap { row in
+            let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
+            guard NativeDayLogic.sleepSessionDayKey(boutStart) == selectedKey else { return nil }
+            return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
+        }
         weekRecovery = NativeWeek.points(
             kind: .recovery, days: repo.days, todayKey: selectedKey,
             sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
@@ -213,7 +252,9 @@ struct NativeHomeView: View {
             effortScale: scale,
             sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
         )
-        dashboardItems = HomeMetricItem.make(dashboard: model.dashboard, days: repo.days, todayKey: selectedKey)
+        dashboardItems = HomeMetricItem.make(
+            dashboard: model.dashboard, days: repo.days, todayKey: selectedKey, vo2max: vo2max
+        )
     }
 
     /// Same live Effort the classic Today ring reads: `StrainScorer.strain` over today's HR,
@@ -252,19 +293,17 @@ struct NativeHomeView: View {
             onOpen: { path.wrappedValue.append($0) },
             dayKey: selectedKey
         )
-        HomeMonitorPair(
-            hrv: HomeMonitorValue.from(model.dashboard, title: "Heart Rate Variability", unit: "ms"),
-            rhr: HomeMonitorValue.from(model.dashboard, title: "Resting Heart Rate", unit: "BPM"),
-            resp: HomeMonitorValue.from(model.dashboard, title: "Respiratory Rate", unit: "breaths/min"),
-            stressLevel: stressLevel,
-            stressHours: sampleHours,
-            rangeCaption: healthSummary?.headerTrailing,
-            onHealth: { path.wrappedValue.append(TabRoute.healthMonitor) },
-            onStress: { path.wrappedValue.append(TabRoute.stress) }
-        )
-        if let vo2max {
-            HomeVO2Card(value: vo2max)
+        Button {
+            path.wrappedValue.append(TabRoute.healthMonitor)
+        } label: {
+            HomeHealthMonitorCard(
+                hrv: HomeMonitorValue.from(model.dashboard, title: "Heart Rate Variability", unit: "ms"),
+                rhr: HomeMonitorValue.from(model.dashboard, title: "Resting Heart Rate", unit: "BPM"),
+                resp: HomeMonitorValue.from(model.dashboard, title: "Respiratory Rate", unit: "breaths/min"),
+                rangeCaption: healthSummary?.headerTrailing
+            )
         }
+        .buttonStyle(.plain)
         NativeChrome.section("My Day")
         HomeActivitiesCard(
             items: HomeActivityItem.make(from: model),
@@ -273,7 +312,10 @@ struct NativeHomeView: View {
             onAdd: { addingActivity = true }
         )
         if let tonight {
-            HomeTonightSleepCard(model: tonight)
+            HomeTonightSleepCard(
+                model: tonight,
+                onAlarm: { path.wrappedValue.append(NativeAlarmRoute()) }
+            )
         }
         HomeJournalCard(
             dots: NativeHomeCharts.journalDots(filled: model.journalDays, todayKey: selectedKey),
@@ -281,19 +323,37 @@ struct NativeHomeView: View {
             onOpen: { path.wrappedValue.append(TabRoute.journal) },
             onLog: { path.wrappedValue.append(TabRoute.journalLog) }
         )
+        if !dashboardItems.isEmpty {
+            NativeChrome.section("My Dashboard")
+            ForEach(dashboardItems) { item in
+                Button {
+                    path.wrappedValue.append(item.route)
+                } label: {
+                    HomeMetricCard(item: item)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        HomeStressMonitorCard(
+            level: stressLevel,
+            hours: sampleHours,
+            sleepStart: stressSleepStart,
+            sleepEnd: stressSleepEnd,
+            workouts: stressBouts,
+            dayStart: Calendar.current.startOfDay(for: selectedDay),
+            now: min(
+                Date(),
+                Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: selectedDay)) ?? Date()
+            ),
+            scrubValue: $stressScrubValue,
+            scrubTime: $stressScrubTime,
+            onOpen: { path.wrappedValue.append(TabRoute.stress) }
+        )
         HomeWeekCard(
             recovery: weekRecovery,
             strain: weekStrain,
             highlightKey: selectedKey
         )
-        ForEach(dashboardItems) { item in
-            Button {
-                path.wrappedValue.append(item.route)
-            } label: {
-                HomeMetricCard(item: item, highlightKey: selectedKey)
-            }
-            .buttonStyle(.plain)
-        }
     }
 }
 
@@ -438,36 +498,7 @@ struct HomeMonitorValue {
     }
 }
 
-struct HomeMonitorPair: View {
-    var hrv: HomeMonitorValue?
-    var rhr: HomeMonitorValue?
-    var resp: HomeMonitorValue? = nil
-    var stressLevel: Double?
-    var stressHours: [NativeHourPoint]
-    var rangeCaption: String? = nil
-    var onHealth: () -> Void
-    var onStress: () -> Void
-
-    var body: some View {
-        Grid(horizontalSpacing: 10, verticalSpacing: 0) {
-            GridRow(alignment: .top) {
-                Button(action: onHealth) {
-                    HomeHealthMonitorCard(hrv: hrv, rhr: rhr, resp: resp, rangeCaption: rangeCaption)
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-                Button(action: onStress) {
-                    HomeStressMonitorCard(level: stressLevel, hours: stressHours)
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            }
-        }
-    }
-}
-
-private struct HomeHealthMonitorCard: View {
+struct HomeHealthMonitorCard: View {
     var hrv: HomeMonitorValue?
     var rhr: HomeMonitorValue?
     var resp: HomeMonitorValue? = nil
@@ -483,7 +514,7 @@ private struct HomeHealthMonitorCard: View {
     }
 
     var body: some View {
-        NativeChrome.panel(expands: true) {
+        NativeChrome.panel {
             NativeCardHeader(
                 title: "Health Monitor",
                 symbol: "heart.fill",
@@ -493,7 +524,6 @@ private struct HomeHealthMonitorCard: View {
             )
             if rows.isEmpty {
                 NativeEmptyState(text: "No Data", symbol: "heart")
-                    .frame(maxHeight: .infinity)
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
@@ -525,7 +555,6 @@ private struct HomeHealthMonitorCard: View {
         return labeled(item.value, item.unit)
     }
 
-    /// Half-width card: drop long units so "14.7 breaths/min" does not crush the title.
     private func compactValue(_ value: String, unit: String) -> String {
         var text = value
         for token in ["breaths/min", "BPM", "ms", unit] where !token.isEmpty {
@@ -536,70 +565,92 @@ private struct HomeHealthMonitorCard: View {
     }
 }
 
-private struct HomeStressMonitorCard: View {
+struct HomeStressMonitorCard: View {
     var level: Double?
     var hours: [NativeHourPoint]
+    var sleepStart: Date?
+    var sleepEnd: Date?
+    var workouts: [(start: Date, end: Date)]
+    var dayStart: Date
+    var now: Date
+    @Binding var scrubValue: Double
+    @Binding var scrubTime: Date?
+    var onOpen: () -> Void
     @Environment(\.nativeStyle) private var style
 
+    private var shownLevel: Double? {
+        scrubTime == nil ? level : scrubValue
+    }
+
+    private var updatedText: String? {
+        guard let time = scrubTime ?? hours.last?.time else { return nil }
+        return "Updated \(NativeScopeFormat.time(time))"
+    }
+
     var body: some View {
-        NativeChrome.panel(expands: true) {
-            NativeCardHeader(
-                title: "Stress Monitor",
-                symbol: "chart.xyaxis.line",
-                tint: level.map { NativePaint.stressBand($0, style: style) } ?? NativeChrome.stress,
-                chevron: true
-            )
-            if let level {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    NativeValueText(value: String(format: "%.1f", level), size: 22)
-                    Text(NativeHomeCharts.stressBandWord(level))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(NativePaint.stressBand(level, style: style))
-                }
-                if hours.isEmpty {
-                    NativeEmptyState(text: "No Data", symbol: "chart.xyaxis.line")
-                        .frame(maxHeight: .infinity)
-                } else {
-                    HomeStressSparkline(hours: hours, tint: NativePaint.stressBand(level, style: style))
-                        .frame(maxWidth: .infinity, minHeight: 52, maxHeight: .infinity, alignment: .bottom)
-                }
-            } else {
-                NativeValueText(value: "No Data", size: 22)
-                NativeEmptyState(text: "No Data", symbol: "chart.xyaxis.line")
-                    .frame(maxHeight: .infinity)
+        NativeChrome.panel {
+            Button(action: onOpen) {
+                NativeCardHeader(
+                    title: "Stress Monitor",
+                    symbol: "chart.xyaxis.line",
+                    tint: shownLevel.map { NativePaint.stressBand($0, style: style) } ?? NativeChrome.stress,
+                    chevron: true
+                )
             }
+            .buttonStyle(.plain)
+            HomeStressHero(level: shownLevel, updated: updatedText)
+                .frame(height: 56, alignment: .topLeading)
+            NativeStressDayChart(
+                level: shownLevel,
+                hours: hours,
+                sleepStart: sleepStart,
+                sleepEnd: sleepEnd,
+                workouts: workouts,
+                dayStart: dayStart,
+                now: now,
+                height: NativeStressDayChart.heightHome,
+                scrubValue: $scrubValue,
+                scrubTime: $scrubTime
+            )
         }
     }
 }
 
-private struct HomeStressSparkline: View {
-    var hours: [NativeHourPoint]
-    var tint: Color
-
-    private var yDomain: ClosedRange<Double> {
-        let fitted = NativeChartDay.fittedDomain(hours.map(\.value), fallback: 0...3)
-        let lo = min(max(fitted.lowerBound, 0), 2.7)
-        let hi = max(min(fitted.upperBound, 3), lo + 0.3)
-        return lo...hi
-    }
+struct HomeStressHero: View {
+    var level: Double?
+    var updated: String?
+    @Environment(\.nativeStyle) private var style
 
     var body: some View {
-        Chart(hours) { point in
-            LineMark(
-                x: .value("Time", point.time),
-                y: .value("Stress", point.value)
-            )
-            .foregroundStyle(tint)
-            .interpolationMethod(.monotone)
-            .lineStyle(StrokeStyle(lineWidth: 2, lineJoin: .round))
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let level {
+                    NativeValueText(value: String(format: "%.1f", level), size: 28)
+                    Text(NativeHomeCharts.stressBandWord(level))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(NativePaint.stressBand(level, style: style))
+                } else {
+                    NativeValueText(value: "No Data", size: 28)
+                }
+            }
+            Text(updated ?? " ")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .opacity(updated == nil ? 0 : 1)
         }
-        .chartXAxis(.hidden)
-        .chartYAxis(.hidden)
-        .chartYScale(domain: yDomain)
-        .chartPlotStyle { plot in
-            plot.frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibility)
+    }
+
+    private var accessibility: String {
+        if let level {
+            var parts = ["Stress \(String(format: "%.1f", level))", NativeHomeCharts.stressBandWord(level)]
+            if let updated { parts.append(updated) }
+            return parts.joined(separator: ", ")
         }
-        .accessibilityHidden(true)
+        return "No Data"
     }
 }
 
@@ -721,6 +772,15 @@ struct HomeJournalDot: Identifiable, Equatable {
     var id: String { key }
 }
 
+/// WHOOP journal week: filled days are a tinted check, empty days an empty circle.
+enum HomeJournalGlyph {
+    static let filled = "checkmark.circle.fill"
+
+    static func symbol(filled: Bool) -> String? {
+        filled ? Self.filled : nil
+    }
+}
+
 private struct HomeJournalDayDot: View {
     var dot: HomeJournalDot
     @Environment(\.nativeStyle) private var style
@@ -732,7 +792,7 @@ private struct HomeJournalDayDot: View {
                 .font(style == .whoop ? NativeTokens.whoopCaps(9) : .caption2)
                 .foregroundStyle(.secondary)
             if dot.filled {
-                Image(systemName: "checkmark.circle.fill")
+                Image(systemName: HomeJournalGlyph.filled)
                     .font(.body)
                     .foregroundStyle(fill)
             } else if style == .whoop {
@@ -746,6 +806,7 @@ private struct HomeJournalDayDot: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .accessibilityLabel(dot.filled ? "Journal logged" : "No journal")
     }
 }
 
@@ -848,73 +909,72 @@ struct HomeMetricItem: Identifiable {
     var bars: Bool
     var route: TabRoute
 
-    static func make(dashboard: [NativeScore.Row], days: [DailyMetric], todayKey: String) -> [HomeMetricItem] {
-        dashboard.compactMap { row in
+    static func make(dashboard: [NativeScore.Row], days: [DailyMetric], todayKey: String,
+                     vo2max: Double? = nil) -> [HomeMetricItem] {
+        _ = days
+        _ = todayKey
+        var items: [HomeMetricItem] = dashboard.compactMap { row in
             guard NativeScoreMath.hasValue(row.value) else { return nil }
             let prior = NativeScoreMath.hasValue(row.prior) ? row.prior : nil
             switch row.title {
             case "Heart Rate Variability":
-                return HomeMetricItem(
-                    title: row.title,
-                    value: row.value,
-                    unit: "ms",
-                    prior: prior,
-                    delta: row.delta,
-                    symbol: "waveform.path.ecg",
-                    tint: NativeChrome.heart,
-                    points: NativeWeek.series(days, todayKey: todayKey) { $0.avgHrv },
-                    bars: false,
-                    route: row.route
-                )
+                return rowItem(row, unit: "ms", symbol: "waveform.path.ecg", tint: NativeChrome.heart, prior: prior)
             case "Resting Heart Rate":
-                return HomeMetricItem(
-                    title: row.title,
-                    value: row.value,
-                    unit: "BPM",
-                    prior: prior,
-                    delta: row.delta,
-                    symbol: "heart.fill",
-                    tint: NativeChrome.heart,
-                    points: NativeWeek.series(days, todayKey: todayKey) { $0.restingHr.map(Double.init) },
-                    bars: false,
-                    route: row.route
-                )
+                return rowItem(row, unit: "BPM", symbol: "heart.fill", tint: NativeChrome.heart, prior: prior)
             case "Steps":
-                return HomeMetricItem(
-                    title: row.title,
-                    value: row.value,
-                    unit: "steps",
-                    prior: prior,
-                    delta: row.delta,
-                    symbol: "figure.walk",
-                    tint: NativeChrome.activity,
-                    points: NativeWeek.series(days, todayKey: todayKey) { $0.steps.map(Double.init) },
-                    bars: true,
-                    route: row.route
-                )
+                return rowItem(row, unit: "steps", symbol: "figure.walk", tint: NativeChrome.activity, prior: prior)
+            case "Heart Rate Zones 1–3", "Heart Rate Zones 4–5":
+                return rowItem(row, unit: nil, symbol: row.symbol == "heart.fill" ? "heart.fill" : "heart",
+                               tint: NativeChrome.heart, prior: prior)
+            case "Strength Activity Time":
+                return rowItem(row, unit: nil, symbol: "dumbbell.fill", tint: NativeChrome.strain, prior: prior)
             case "Calories":
-                return HomeMetricItem(
-                    title: row.title,
-                    value: row.value,
-                    unit: "cal",
-                    prior: prior,
-                    delta: row.delta,
-                    symbol: "flame.fill",
-                    tint: NativeChrome.activity,
-                    points: NativeWeek.series(days, todayKey: todayKey) { $0.activeKcalEst },
-                    bars: true,
-                    route: row.route
-                )
+                return rowItem(row, unit: "cal", symbol: "flame.fill", tint: NativeChrome.activity, prior: prior)
             default:
                 return nil
             }
         }
+        if let vo2max {
+            let vo2 = HomeMetricItem(
+                title: "VO₂ Max",
+                value: String(format: "%.1f", vo2max),
+                unit: nil,
+                prior: nil,
+                delta: .none,
+                symbol: "lungs.fill",
+                tint: NativeChrome.respiratory,
+                points: [],
+                bars: false,
+                route: .metric("vo2max_est")
+            )
+            if let calories = items.firstIndex(where: { $0.title == "Calories" }) {
+                items.insert(vo2, at: calories)
+            } else {
+                items.append(vo2)
+            }
+        }
+        return items
+    }
+
+    private static func rowItem(_ row: NativeScore.Row, unit: String?, symbol: String,
+                                tint: Color, prior: String?) -> HomeMetricItem {
+        HomeMetricItem(
+            title: row.title,
+            value: row.value,
+            unit: unit,
+            prior: prior,
+            delta: row.delta,
+            symbol: symbol,
+            tint: tint,
+            points: [],
+            bars: false,
+            route: row.route
+        )
     }
 }
 
 struct HomeMetricCard: View {
     var item: HomeMetricItem
-    var highlightKey: String
 
     var body: some View {
         NativeChrome.panel {
@@ -926,33 +986,6 @@ struct HomeMetricCard: View {
                 delta: item.delta,
                 tint: item.tint
             )
-            if item.points.contains(where: { $0.value.isFinite }) {
-                Group {
-                    if item.bars {
-                        NativeScoreWeekBars(
-                            points: item.points,
-                            tint: item.tint,
-                            format: Self.axisFormat,
-                            maxY: max(item.points.compactMap { $0.value.isFinite ? $0.value : nil }.max() ?? 1, 1),
-                            highlightKey: highlightKey,
-                            compactYAxis: true,
-                            showsValueLabels: false
-                        )
-                    } else {
-                        NativeLabeledLine(
-                            points: item.points,
-                            tint: item.tint,
-                            domain: 0...max(item.points.compactMap { $0.value.isFinite ? $0.value : nil }.max() ?? 1, 1),
-                            format: Self.axisFormat,
-                            accessibilityName: item.title,
-                            highlightKey: highlightKey,
-                            compactYAxis: true
-                        )
-                    }
-                }
-                .frame(height: 72)
-                .allowsHitTesting(false)
-            }
         }
     }
 
@@ -961,13 +994,6 @@ struct HomeMetricCard: View {
             return "\(item.value) \(unit)"
         }
         return item.value
-    }
-
-    private static func axisFormat(_ value: Double) -> String {
-        if abs(value) >= 1000 {
-            return "\(Int((value / 1000).rounded()))k"
-        }
-        return "\(Int(value.rounded()))"
     }
 }
 
@@ -1082,6 +1108,8 @@ struct NativeActivityRoute: Hashable {
 }
 
 struct NativePairRoute: Hashable {}
+
+struct NativeAlarmRoute: Hashable {}
 
 /// Strap battery and a sync spinner beside the date stepper.
 /// Observes only battery %, charging, connected and backfilling via `.onReceive` of those
@@ -1257,12 +1285,7 @@ struct HomeLoadingSkeleton: View {
                 }
             }
             .padding(.top, 8)
-            Grid(horizontalSpacing: 10, verticalSpacing: 0) {
-                GridRow {
-                    skeletonCard
-                    skeletonCard
-                }
-            }
+            skeletonCard
         }
         .redacted(reason: .placeholder)
         .nativeShimmer()
@@ -1284,6 +1307,7 @@ struct HomeLoadingSkeleton: View {
 
 struct HomeTonightSleepCard: View {
     var model: NativeTonightSleep.Model
+    var onAlarm: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
@@ -1305,8 +1329,17 @@ struct HomeTonightSleepCard: View {
                 }
                 Spacer(minLength: 0)
             }
+            if let onAlarm {
+                Button("Set Alarm", action: onAlarm)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(NativePaint.sleep(style))
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 4)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Set Alarm")
+            }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibility)
     }
 
@@ -1473,15 +1506,23 @@ enum HomeSnapshot {
                 strain: strainOnlyModel.strain,
                 onOpen: { _ in }
             )
-            HomeMonitorPair(
-                hrv: nil, rhr: nil, resp: nil,
-                stressLevel: nil, stressHours: [],
-                onHealth: {}, onStress: {}
-            )
+            HomeHealthMonitorCard(hrv: nil, rhr: nil, resp: nil)
             NativeChrome.section("My Day")
             HomeActivitiesCard(
                 items: HomeActivityItem.make(from: strainOnlyModel),
                 onSleep: {}, onActivity: { _ in }
+            )
+            HomeStressMonitorCard(
+                level: nil,
+                hours: [],
+                sleepStart: nil,
+                sleepEnd: nil,
+                workouts: [],
+                dayStart: dayStart,
+                now: dayStart.addingTimeInterval(16 * 3600),
+                scrubValue: .constant(0),
+                scrubTime: .constant(nil),
+                onOpen: {}
             )
         }
     }
@@ -1497,34 +1538,51 @@ enum HomeSnapshot {
             ?? NativeTonightSleep.Model(bedtimeClock: "11:00 PM", wakeClock: "7:00 AM", needClock: "8:00")
     }
 
+    static var healthCard: some View {
+        HomeHealthMonitorCard(
+            hrv: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Heart Rate Variability", unit: "ms"),
+            rhr: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Resting Heart Rate", unit: "BPM"),
+            resp: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Respiratory Rate", unit: "breaths/min"),
+            rangeCaption: healthRange
+        )
+    }
+
+    static var homeStressCard: some View {
+        HomeStressMonitorCard(
+            level: 1.2,
+            hours: stressHours,
+            sleepStart: dayStart.addingTimeInterval(37 * 60),
+            sleepEnd: dayStart.addingTimeInterval(8 * 3600),
+            workouts: [(start: dayStart.addingTimeInterval(8.45 * 3600), end: dayStart.addingTimeInterval(8.92 * 3600))],
+            dayStart: dayStart,
+            now: dayStart.addingTimeInterval(16 * 3600),
+            scrubValue: .constant(1.2),
+            scrubTime: .constant(nil),
+            onOpen: {}
+        )
+    }
+
     static var homePage: some View {
         NativeChrome.stack {
             HomeRingsRow(
                 sleep: sleepScore, recovery: recoveryScore, strain: strainScore, onOpen: { _ in }
             )
-            HomeMonitorPair(
-                hrv: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Heart Rate Variability", unit: "ms"),
-                rhr: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Resting Heart Rate", unit: "BPM"),
-                resp: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Respiratory Rate", unit: "breaths/min"),
-                stressLevel: 1.2,
-                stressHours: stressHours,
-                rangeCaption: healthRange,
-                onHealth: {},
-                onStress: {}
-            )
-            HomeVO2Card(value: 48.2)
+            healthCard
             NativeChrome.section("My Day")
             HomeActivitiesCard(items: activities, onSleep: {}, onActivity: { _ in })
-            HomeTonightSleepCard(model: tonightSleep)
+            HomeTonightSleepCard(model: tonightSleep, onAlarm: {})
             HomeJournalCard(dots: journalDots, hasEntry: true, onOpen: {}, onLog: {})
+            NativeChrome.section("My Dashboard")
+            HomeMetricCard(item: hrvMetric)
+            HomeMetricCard(item: stepsMetric)
+            HomeVO2Card(value: 48.2)
+            HomeMetricCard(item: caloriesMetric)
+            homeStressCard
             HomeWeekCard(
                 recovery: NativeGallerySnapshot.recoveryBars,
                 strain: NativeGallerySnapshot.strainBars,
                 highlightKey: highlightKey
             )
-            HomeMetricCard(item: hrvMetric, highlightKey: highlightKey)
-            HomeMetricCard(item: stepsMetric, highlightKey: highlightKey)
-            HomeMetricCard(item: caloriesMetric, highlightKey: highlightKey)
         }
     }
 
@@ -1558,30 +1616,14 @@ enum HomeSnapshot {
                 sleep: sleepScore, recovery: recoveryScore, strain: strainScore, onOpen: { _ in }
             ))),
             Section(name: "myday", view: AnyView(VStack(spacing: 10) {
-                HomeMonitorPair(
-                    hrv: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Heart Rate Variability", unit: "ms"),
-                    rhr: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Resting Heart Rate", unit: "BPM"),
-                    resp: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Respiratory Rate", unit: "breaths/min"),
-                    stressLevel: 1.2,
-                    stressHours: stressHours,
-                    rangeCaption: healthRange,
-                    onHealth: {},
-                    onStress: {}
-                )
                 HomeActivitiesCard(items: activities, onSleep: {}, onActivity: { _ in })
-                HomeTonightSleepCard(model: tonightSleep)
+                HomeTonightSleepCard(model: tonightSleep, onAlarm: {})
                 HomeJournalCard(dots: journalDots, hasEntry: true, onOpen: {}, onLog: {})
             })),
-            Section(name: "monitors", view: AnyView(HomeMonitorPair(
-                hrv: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Heart Rate Variability", unit: "ms"),
-                rhr: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Resting Heart Rate", unit: "BPM"),
-                resp: HomeMonitorValue.from(NativeGallerySnapshot.snapshotModel.dashboard, title: "Respiratory Rate", unit: "breaths/min"),
-                stressLevel: 1.2,
-                stressHours: stressHours,
-                rangeCaption: healthRange,
-                onHealth: {},
-                onStress: {}
-            ))),
+            Section(name: "monitors", view: AnyView(VStack(spacing: 10) {
+                healthCard
+                homeStressCard
+            })),
             Section(name: "activities", view: AnyView(HomeActivitiesCard(
                 items: activities, onSleep: {}, onActivity: { _ in }
             ))),
@@ -1598,9 +1640,9 @@ enum HomeSnapshot {
                 previewSelected: highlightKey
             ))),
             Section(name: "metrics", view: AnyView(VStack(spacing: 10) {
-                HomeMetricCard(item: hrvMetric, highlightKey: highlightKey)
-                HomeMetricCard(item: stepsMetric, highlightKey: highlightKey)
-                HomeMetricCard(item: caloriesMetric, highlightKey: highlightKey)
+                HomeMetricCard(item: hrvMetric)
+                HomeMetricCard(item: stepsMetric)
+                HomeMetricCard(item: caloriesMetric)
             })),
             Section(name: "stress", view: AnyView(HomeStressBody(
                 level: 1.2,

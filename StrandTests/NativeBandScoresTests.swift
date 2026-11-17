@@ -33,9 +33,11 @@ final class NativeBandScoresTests: XCTestCase {
     }
 
     func testStrapDayV3WarmupFallsBackToRound2() throws {
-        let built = strapHistory(days: 12, lastNoopRecovery: 11)
+        // 18 nights → 17 finite-z; v3 warmup is 21, so round-2 is the Band fallback.
+        let built = strapHistory(days: 18, lastNoopRecovery: 11)
         let snap = NativeBandScores.resolve(days: built.days, sleeps: built.sleeps, importedSleep: [:])
         let params = try XCTUnwrap(NativeBandScores.params())
+        XCTAssertEqual(params.recoveryV3.warmupNights, 21)
         let inputs = NativeBandScores.dayInputs(days: built.days, sleeps: built.sleeps, workouts: [], importedSleep: [:])
         let band = BandScores.evaluate(days: inputs, params: params)
         let last = try XCTUnwrap(built.days.last?.day)
@@ -43,6 +45,21 @@ final class NativeBandScoresTests: XCTestCase {
         let round2 = try XCTUnwrap(band.last?.recovery)
         XCTAssertEqual(snap.byDay[last]?.recovery, round2)
         XCTAssertNotEqual(snap.byDay[last]?.recovery, 11)
+        XCTAssertEqual(snap.byDay[last]?.source, .band)
+    }
+
+    func testStrapDayAfterNewWarmupPicksRecoveryV3() throws {
+        // 25 nights → 24 finite-z, above N=21 and below the old N=30.
+        let built = strapHistory(days: 25, lastNoopRecovery: 11)
+        let snap = NativeBandScores.resolve(days: built.days, sleeps: built.sleeps, importedSleep: [:])
+        let params = try XCTUnwrap(NativeBandScores.params())
+        let inputs = NativeBandScores.dayInputs(days: built.days, sleeps: built.sleeps, workouts: [], importedSleep: [:])
+        let band = BandScores.evaluate(days: inputs, params: params)
+        let last = try XCTUnwrap(built.days.last?.day)
+        let v3 = try XCTUnwrap(band.last?.recoveryV3)
+        XCTAssertEqual(snap.byDay[last]?.recovery, v3)
+        XCTAssertNotEqual(snap.byDay[last]?.recovery, 11)
+        XCTAssertNotEqual(snap.byDay[last]?.recovery, band.last?.recovery)
         XCTAssertEqual(snap.byDay[last]?.source, .band)
     }
 

@@ -16,7 +16,7 @@ final class BandScoresRecoveryV3Tests: XCTestCase {
         XCTAssertEqual(params.schemaVersion, 2)
         XCTAssertEqual(params.recoveryV3.schemaVersion, 5)
         XCTAssertEqual(params.recoveryV3.variant, "head_perf_ours_train")
-        XCTAssertEqual(params.recoveryV3.warmupNights, 30)
+        XCTAssertEqual(params.recoveryV3.warmupNights, 21)
         XCTAssertEqual(params.recoveryV3.halfLifeDays, 10, accuracy: 0)
         XCTAssertEqual(params.recoveryV3.zScale, 8.6076235845313, accuracy: 0)
         XCTAssertEqual(params.recoveryV3.b0, 0.5831048802710344, accuracy: 0)
@@ -69,13 +69,80 @@ final class BandScoresRecoveryV3Tests: XCTestCase {
         XCTAssertEqual(got.baseline[12], got.baseline[11], accuracy: 1e-15)
         XCTAssertEqual(got.baseline[13], got.baseline[12], accuracy: 1e-15,
                        "missing nights do not move EWMA; next baseline is the carried value")
+        let warmup = params.warmupNights
+        // t=0 inits EWMA; t=10..12 add no residual, so first publish is t = warmup + 3.
+        let firstPub = warmup + 3
+        for t in 0..<firstPub {
+            XCTAssertTrue(got.recovery[t].isNaN, "missing nights delay publish t=\(t)")
+        }
+        XCTAssertTrue(got.recovery[firstPub].isFinite, "publishes once finite-z count hits N")
         var published = 0
-        for t in 13..<n where got.recovery[t].isFinite {
+        for t in firstPub..<n where got.recovery[t].isFinite {
             published += 1
             XCTAssertGreaterThan(got.recovery[t], 1)
             XCTAssertLessThan(got.recovery[t], 99)
         }
         XCTAssertGreaterThan(published, 0)
+    }
+
+    func testRunWarmupGoldenMatchesTo1e9() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures")
+            .appendingPathComponent("golden_recovery_v3_run.json")
+        let golden = try JSONDecoder().decode(RecoveryV3RunGolden.self, from: Data(contentsOf: url))
+        XCTAssertEqual(golden.warmupNights, 21)
+        var params = try BandScores.Params.bundled().recoveryV3
+        params.b0 = golden.head.b0
+        params.wHrv = golden.head.wHrv
+        params.wSleep = golden.head.wSleep
+        params.warmupNights = golden.warmupNights
+        let sources: [BandScores.DaySource] = golden.sources.map {
+            $0 == "strap" ? .strap : .imported
+        }
+        let hrv = golden.hrv.map { $0 ?? .nan }
+        let got = BandRecoveryV3.run(
+            hrv: hrv, sleepPct: golden.sleepPerf, sources: sources, params: params
+        )
+        XCTAssertEqual(got.recovery.count, golden.recovery.count)
+        var nFin = 0
+        var maxErr = 0.0
+        for t in 0..<golden.recovery.count {
+            let want = golden.recovery[t]
+            let rec = got.recovery[t]
+            if want == nil {
+                XCTAssertTrue(rec.isNaN, "t=\(t) expected null recovery")
+            } else {
+                let w = try XCTUnwrap(want)
+                XCTAssertEqual(rec, w, accuracy: 1e-9, "recovery t=\(t)")
+                maxErr = max(maxErr, abs(rec - w))
+                nFin += 1
+            }
+            if t < golden.z.count {
+                switch (BandScores.finite(got.z[t]), golden.z[t]) {
+                case (nil, nil):
+                    break
+                case let (a?, b?):
+                    XCTAssertEqual(a, b, accuracy: 1e-9, "z t=\(t)")
+                default:
+                    XCTFail("z nil mismatch t=\(t)")
+                }
+            }
+            if t < golden.baseline.count {
+                switch (BandScores.finite(got.baseline[t]), golden.baseline[t]) {
+                case (nil, nil):
+                    break
+                case let (a?, b?):
+                    XCTAssertEqual(a, b, accuracy: 1e-9, "baseline t=\(t)")
+                default:
+                    XCTFail("baseline nil mismatch t=\(t)")
+                }
+            }
+        }
+        XCTAssertEqual(nFin, golden.nPublished)
+        XCTAssertGreaterThan(nFin, 0)
+        XCTAssertLessThanOrEqual(maxErr, 1e-9)
+        XCTAssertTrue(got.recovery[golden.switchIndex].isNaN, "switch night restarts")
     }
 
     func testClipsRecoveryAt1And99() throws {
@@ -100,7 +167,7 @@ final class BandScoresRecoveryV3Tests: XCTestCase {
 
     func testSourceSwitchRestartsAndAfterWarmupStaysWithin3Mae() throws {
         let params = try BandScores.Params.bundled().recoveryV3
-        XCTAssertEqual(params.warmupNights, 30)
+        XCTAssertEqual(params.warmupNights, 21)
         let n = 80
         let tSwitch = 25
         var hrv: [Double] = []
@@ -137,7 +204,8 @@ final class BandScoresRecoveryV3Tests: XCTestCase {
             XCTAssertGreaterThan(count, 10)
             let mae = sum / Double(count)
             maes["k=\(k) p=\(p)"] = mae
-            XCTAssertLessThanOrEqual(mae, 3.0, "k=\(k) p=\(p) mae=\(mae) n=\(count)")
+            // whoopfit6 synthetic at N=21: MAE 1.27–1.35 vs no-switch after warmup.
+            XCTAssertLessThanOrEqual(mae, 2.0, "k=\(k) p=\(p) mae=\(mae) n=\(count)")
         }
         // Keep the measured numbers in the failure message if a later map regresses.
         XCTAssertEqual(maes.count, 4)
@@ -259,5 +327,26 @@ private struct RecoveryV3Golden: Decodable {
             case wHrv = "w_hrv"
             case wSleep = "w_sleep"
         }
+    }
+}
+
+private struct RecoveryV3RunGolden: Decodable {
+    var warmupNights: Int
+    var switchIndex: Int
+    var nPublished: Int
+    var head: RecoveryV3Golden.Head
+    var hrv: [Double?]
+    var sleepPerf: [Double]
+    var sources: [String]
+    var baseline: [Double?]
+    var z: [Double?]
+    var recovery: [Double?]
+
+    enum CodingKeys: String, CodingKey {
+        case hrv, baseline, z, recovery, head, sources
+        case warmupNights = "warmup_nights"
+        case switchIndex = "switch_index"
+        case nPublished = "n_published"
+        case sleepPerf = "sleep_perf"
     }
 }

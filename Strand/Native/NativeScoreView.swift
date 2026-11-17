@@ -11,18 +11,35 @@ import StrandAnalytics
 enum NativeScoreKind { case recovery, strain, sleep }
 
 /// Pushed from Home. Same model as the rings, so the number cannot disagree.
+private struct NativeSleepEditTarget: Identifiable {
+    var session: CachedSleepSession
+    var id: Int { session.startTs }
+}
+
 struct NativeScorePage: View {
     var kind: NativeScoreKind
     @EnvironmentObject private var repo: Repository
+    @EnvironmentObject private var intelligence: IntelligenceEngine
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @State private var workouts: [WorkoutRow] = []
     @State private var overnightHr: [NativeHourPoint] = []
     @State private var highSleepStress: Double?
     @State private var sleepStress: NativeSleepStress.Model?
+    @State private var sleepEdit: NativeSleepEditTarget?
 
     private var selectedDay: Date {
         NativeDaySelection.date(from: selectedDayKey)
+    }
+
+    private var nightSession: CachedSleepSession? {
+        let dayKey = NativeDayLogic.resolvedDayKey(stored: selectedDayKey)
+        return repo.sleeps
+            .filter {
+                NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
+            }
+            .sorted { ($0.endTs - $0.effectiveStartTs) > ($1.endTs - $1.effectiveStartTs) }
+            .first
     }
 
     var body: some View {
@@ -66,9 +83,34 @@ struct NativeScorePage: View {
             dayKey: dayKey,
             needMinutes: NativeSleepNeed.needMinutes(sleepDetail?.need) ?? model.sleepNeedMin,
             debtMinutes: model.sleepDebtMin,
-            sleepDetail: sleepDetail
+            sleepDetail: sleepDetail,
+            onEditSleep: kind == .sleep && nightSession != nil ? { sleepEdit = nightSession.map(NativeSleepEditTarget.init) } : nil
         )
         .nativeDateSubtitle(selectedDay)
+        .sheet(item: $sleepEdit) { target in
+            let session = target.session
+            let coverageLo = min(session.startTs, session.effectiveStartTs)
+            SleepTimeEditor(
+                bedTs: session.effectiveStartTs,
+                wakeTs: session.endTs,
+                coverage: coverageLo...max(session.endTs, coverageLo + 1),
+                suppressesReDetection: !session.userEdited,
+                onSave: { newBedTs, newWakeTs in
+                    await repo.editSleepTimes(
+                        detectedStartTs: session.startTs, oldEndTs: session.endTs,
+                        storedStagesJSON: session.stagesJSON,
+                        newStartTs: newBedTs, newEndTs: newWakeTs
+                    )
+                    await intelligence.analyzeRecent()
+                    await repo.refresh()
+                },
+                onDelete: {
+                    _ = await repo.deleteSleepSession(detectedStartTs: session.startTs, endTs: session.endTs)
+                    await intelligence.analyzeRecent()
+                    await repo.refresh()
+                }
+            )
+        }
         .task(id: repo.refreshSeq) { workouts = await repo.workoutRows(days: 120) }
         .task(id: "\(model.sleepStart?.timeIntervalSince1970 ?? 0)-\(model.sleepEnd?.timeIntervalSince1970 ?? 0)") {
             guard let start = model.sleepStart, let end = model.sleepEnd else {
@@ -129,6 +171,7 @@ struct NativeScoreView: View {
     var debtMinutes: Double? = nil
     var scrolls: Bool = true
     var sleepDetail: NativeSleepPageDetail? = nil
+    var onEditSleep: (() -> Void)? = nil
     @Environment(\.nativeNavigationPath) private var path
 
     private var visibleRows: [NativeScore.Row] {
@@ -220,7 +263,8 @@ struct NativeScoreView: View {
                 sleepEnd: sleepEnd,
                 awakeTypical: awakeTypical,
                 needMinutes: needMinutes,
-                debtMinutes: debtMinutes
+                debtMinutes: debtMinutes,
+                onEdit: onEditSleep
             )
         }
         if kind == .sleep, !overnightHr.isEmpty {
@@ -528,6 +572,7 @@ struct NativeLastNightCard: View {
     var awakeTypical: Double? = nil
     var needMinutes: Double? = nil
     var debtMinutes: Double? = nil
+    var onEdit: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
 
     private var inBedMinutes: Double? {
@@ -555,7 +600,7 @@ struct NativeLastNightCard: View {
 
     private var apple: some View {
         NativeChrome.panel {
-            NativeCardHeader(title: "Last Night", symbol: "bed.double.fill", tint: NativePaint.sleep(style))
+            lastNightHeader(title: "Last Night")
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
                     if let asleepMinutes {
@@ -588,7 +633,7 @@ struct NativeLastNightCard: View {
 
     private var whoop: some View {
         NativeChrome.panel {
-            NativeCardHeader(title: "Last Night's Sleep", symbol: "bed.double.fill", tint: NativePaint.sleep(style))
+            lastNightHeader(title: "Last Night's Sleep")
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("HOURS OF SLEEP")
@@ -636,6 +681,17 @@ struct NativeLastNightCard: View {
                 }
             }
         }
+    }
+
+    private func lastNightHeader(title: String) -> some View {
+        NativeCardHeader(title: title, symbol: "bed.double.fill", tint: NativePaint.sleep(style))
+            .overlay(alignment: .trailing) {
+                if let onEdit {
+                    Button("Edit", action: onEdit)
+                        .font(.footnote)
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
     }
 
     private var lastNightStages: [NativeStage] {
@@ -774,282 +830,4 @@ struct NativeClockHero: View {
     }
 }
 
-struct NativeActivityView: View {
-    var startTs: Int
-    @EnvironmentObject private var repo: Repository
-    @EnvironmentObject private var profile: ProfileStore
-    @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
-    @State private var workout: WorkoutRow?
-    @State private var prior: [WorkoutRow] = []
-    @State private var hr: [NativeHourPoint] = []
 
-    var body: some View {
-        Group {
-            if let workout {
-                let model = NativeActivity.make(workout, prior: prior, scale: UnitPrefs.resolveEffortScale(effortScaleRaw))
-                NativeActivityBody(
-                    model: model,
-                    hr: hr,
-                    zoneSet: HRZones.zones(maxHR: Double(profile.hrMax))
-                )
-            } else {
-                ProgressView("Loading activity")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .background(NativePageFill())
-        .navigationTitle(workout?.sport.localizedCapitalized ?? "Activity")
-        .modifier(NativeInlineTitle())
-        .task { await load() }
-    }
-
-    private func load() async {
-        let rows = await repo.workoutRows(days: 120)
-        workout = rows.first { $0.startTs == startTs }
-        prior = rows
-        guard let workout else { hr = []; return }
-        let raw = await repo.hrSamples(from: workout.startTs, to: workout.endTs, limit: 8_000)
-        hr = raw.enumerated().compactMap { i, sample in
-            guard i % 2 == 0 else { return nil }
-            return NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval(sample.ts)), value: Double(sample.bpm))
-        }
-    }
-}
-
-struct NativeActivityBody: View {
-    var model: NativeActivity.Model
-    var hr: [NativeHourPoint] = []
-    var zoneSet: HRZoneSet? = nil
-    var scrolls: Bool = true
-    @Environment(\.nativeStyle) private var style
-    @State private var selectedZone: Int?
-
-    var body: some View {
-        Group {
-            if scrolls {
-                NativeChrome.screen { activityBody }
-            } else {
-                NativeChrome.stack { activityBody }
-            }
-        }
-    }
-
-    @ViewBuilder private var activityBody: some View {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.sport.localizedCapitalized)
-                    .font(.title2.bold())
-                Text(model.timeRange)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 8)
-
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        NativeValueText(value: model.strainText, size: 34)
-                        NativeDelta(delta: model.strainDelta)
-                    }
-                    Text("Activity strain")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(model.duration)
-                        .font(NativePaint.number(28, style: style))
-                        .monospacedDigit()
-                    Text("Duration")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if !hr.isEmpty {
-                NativeChrome.panel {
-                    NativeActivityHRChart(points: hr, zoneSet: zoneSet, selectedZone: $selectedZone)
-                        .frame(height: 180)
-                }
-            }
-
-            let activeZones = model.zones.filter { $0.minutes > 0 }
-            if !activeZones.isEmpty {
-                NativeChrome.panel {
-                    HStack {
-                        Text("Typical range")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("Duration \(model.duration)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    let total = max(model.zones.reduce(0) { $0 + $1.minutes }, 1)
-                    ForEach(model.zones.reversed()) { zone in
-                        Button {
-                            selectedZone = selectedZone == zone.zone ? nil : zone.zone
-                        } label: {
-                            NativeActivityZoneRow(
-                                zone: zone,
-                                total: total,
-                                bounds: zoneSet?.zones.first { $0.number == zone.zone },
-                                highlighted: selectedZone == zone.zone
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-
-            if !model.stats.isEmpty {
-                NativeChrome.section("Key statistics")
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                    ForEach(model.stats) { stat in
-                        NativeChrome.panel {
-                            Label(stat.title, systemImage: stat.symbol)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(stat.value)
-                                .font(.title3.weight(.semibold))
-                                .monospacedDigit()
-                            if NativeScoreMath.hasValue(stat.comparison) {
-                                Text(stat.comparison)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-            }
-    }
-}
-
-struct NativeActivityHRChart: View {
-    var points: [NativeHourPoint]
-    var zoneSet: HRZoneSet? = nil
-    @Binding var selectedZone: Int?
-    @Environment(\.nativeStyle) private var style
-    @State private var selectedTime: Date?
-
-    private var yDomain: ClosedRange<Double> {
-        let data = NativeChartDay.fittedDomain(points.map(\.value), fallback: 80...180)
-        if let maxHR = zoneSet?.maxHR {
-            return min(data.lowerBound, 50)...max(data.upperBound, maxHR)
-        }
-        return data
-    }
-
-    var body: some View {
-        Chart {
-            if let zoneSet, let first = points.first, let last = points.last, let selectedZone {
-                ForEach(zoneSet.zones.filter { $0.number == selectedZone }, id: \.number) { zone in
-                    RectangleMark(
-                        xStart: .value("Start", first.time),
-                        xEnd: .value("End", last.time),
-                        yStart: .value("Lo", zone.lower),
-                        yEnd: .value("Hi", zone.upper)
-                    )
-                    .foregroundStyle(NativeActivityZoneRow.color(zone.number).opacity(0.28))
-                }
-            }
-            ForEach(points) { point in
-                LineMark(x: .value("Time", point.time), y: .value("HR", point.value))
-                    .foregroundStyle(lineTint)
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2))
-            }
-            if let selectedTime, let point = nearest(to: selectedTime) {
-                RuleMark(x: .value("Scrub", point.time))
-                    .foregroundStyle(Color.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-            }
-        }
-        .chartYScale(domain: yDomain)
-        .chartYAxis {
-            AxisMarks(position: .trailing, values: NativeChartTicks.values(in: yDomain, maxCount: 3)) { _ in
-                AxisGridLine(stroke: NativeChrome.gridStroke)
-                    .foregroundStyle(NativeChrome.hairline)
-                AxisValueLabel()
-                    .font(.caption2)
-                    .foregroundStyle(Color.secondary)
-            }
-        }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 2)) { value in
-                AxisGridLine(stroke: NativeChrome.gridStroke)
-                    .foregroundStyle(NativeChrome.hairline)
-                AxisValueLabel {
-                    if let date = value.as(Date.self) {
-                        Text(date, format: .dateTime.hour().minute())
-                            .font(.caption2)
-                            .foregroundStyle(Color.secondary)
-                    }
-                }
-            }
-        }
-        .modifier(NativeTimeSelect(selected: $selectedTime, onChange: { time in
-            guard let time, let point = nearest(to: time) else { return }
-            if let zoneSet {
-                selectedZone = zoneSet.zoneNumber(forBPM: point.value)
-            }
-        }))
-        .accessibilityLabel("Heart rate")
-    }
-
-    private var lineTint: Color {
-        style == .whoop ? NativeTokens.whoopLabel : Color.primary
-    }
-
-    private func nearest(to time: Date) -> NativeHourPoint? {
-        points.min(by: { abs($0.time.timeIntervalSince(time)) < abs($1.time.timeIntervalSince(time)) })
-    }
-}
-
-struct NativeActivityZoneRow: View {
-    var zone: NativeActivity.Zone
-    var total: Double
-    var bounds: HRZone?
-    var highlighted: Bool = false
-    @Environment(\.nativeStyle) private var style
-
-    var body: some View {
-        let share = total > 0 ? zone.minutes / total : 0
-        let duration = style == .whoop
-            ? NativeScoreMath.durationHMS(zone.minutes)
-            : NativeScoreMath.duration(zone.minutes)
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(Self.color(zone.zone))
-                    .frame(width: 8, height: 8)
-                Text(zone.label)
-                    .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
-                if let bounds {
-                    Text("\(Int(bounds.lower.rounded()))–\(Int(bounds.upper.rounded())) BPM")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Text("\(Int((share * 100).rounded()))%")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Self.color(zone.zone))
-                Spacer(minLength: 8)
-                Text(duration)
-                    .font(style == .whoop ? NativeTokens.whoopNumber(15, weight: .semibold) : StrandFont.rounded(15, weight: .semibold))
-                    .monospacedDigit()
-            }
-            NativeWhoopRangeBar(minutes: zone.minutes, typical: 0, tint: Self.color(zone.zone))
-                .opacity(highlighted ? 1 : 0.55)
-        }
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(zone.label), \(duration)")
-    }
-
-    static func color(_ zone: Int) -> Color {
-        NativeTokens.hrZone(zone)
-    }
-}

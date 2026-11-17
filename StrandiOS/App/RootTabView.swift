@@ -588,53 +588,15 @@ struct RootTabView: View {
                 }
             }
         }
-        let personal = AppBrand.isPersonalBuild
         return List {
-            if personal {
-                row("Strap", "badge.plus.radiowaves.right", .blue, .devices)
-                row("Alarm", "alarm.fill", .orange, .alarms)
-                row("Profile", "person.fill", .blue, .settings)
-                row("Apple Health", "heart.fill", .red, .appleHealth)
-                row("Import WHOOP Export", "square.and.arrow.down.fill", .blue, .dataSources)
-                row("Backup", "externaldrive.fill", Color(white: 0.45), .backup)
-                row("Notifications", "bell.badge.fill", .red, .notifications)
-                row("About", "info.circle.fill", .gray, .about)
-            } else {
-            Section {
-                row("Live", "waveform.path.ecg", .red, .live)
-                row("Workouts", "figure.run", .orange, .workouts)
-                row("Lift Log", "dumbbell.fill", .orange, .liftLog)
-                row("Health", "heart.text.square.fill", .pink, .health)
-                row("Lab Book", "books.vertical.fill", .brown, .labBook)
-                row("Stress", "bolt.heart.fill", .orange, .stress)
-                if coachEnabled {
-                    row("Coach", "sparkles", .purple, .coach)
-                }
-            } header: {
-                Text("Body")
-            }
-
-            Section {
-                row("Apple Health", "heart.fill", .red, .appleHealth)
-                row("Data Sources", "square.and.arrow.down.fill", .blue, .dataSources)
-                row("Backup & Sync", "externaldrive.fill.badge.icloud", .cyan, .backupSync)
-                row("Mi Band", "figure.walk.motion", .orange, .miBand)
-            } header: {
-                Text("Data")
-            }
-
-            Section {
-                row("Devices", "badge.plus.radiowaves.right", .blue, .devices)
-                row("Alarms", "alarm.fill", .orange, .alarms)
-                row("Automations", "wand.and.stars", .purple, .automations)
-                row("Test Centre", "stethoscope", .gray, .testCentre)
-                row("Siri & Shortcuts", "mic.fill", .indigo, .siriShortcuts)
-                row("Power saving", "battery.25", .green, .powerSaving)
-                row("Settings", "gearshape.fill", .gray, .settings)
-            } header: {
-                Text("App")
-            }
-            }
+            row("Strap", "badge.plus.radiowaves.right", .blue, .devices)
+            row("Alarm", "alarm.fill", .orange, .alarms)
+            row("Profile", "person.fill", .blue, .settings)
+            row("Apple Health", "heart.fill", .red, .appleHealth)
+            row("Import WHOOP Export", "square.and.arrow.down.fill", .blue, .dataSources)
+            row("Backup", "externaldrive.fill", Color(white: 0.45), .backup)
+            row("Notifications", "bell.badge.fill", .red, .notifications)
+            row("About", "info.circle.fill", .gray, .about)
         }
         .listStyle(.insetGrouped)
         .navigationTitle("More")

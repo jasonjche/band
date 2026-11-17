@@ -340,11 +340,15 @@ struct NativeSleepDualLineCard: View {
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
-                title: title,
-                symbol: "clock.fill",
-                tint: NativePaint.sleep(style)
-            )
+            HStack(spacing: 6) {
+                Image(systemName: "clock.fill")
+                Text(title)
+                Spacer(minLength: 8)
+                NativeSleepSeriesKey(color: NativeTokens.sleep, name: "Hours of Sleep")
+                NativeSleepSeriesKey(color: Color.secondary, name: "Sleep Needed")
+            }
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(NativePaint.sleep(style))
             hero
             plot.frame(height: 200)
         }
@@ -374,12 +378,12 @@ struct NativeSleepDualLineCard: View {
                     y: .value("Hours", point.value),
                     series: .value("Series", "Slept-\(point.segment)")
                 )
-                .foregroundStyle(NativePaint.sleep(style))
+                .foregroundStyle(NativeTokens.sleep)
                 .interpolationMethod(.linear)
                 .lineStyle(StrokeStyle(lineWidth: 2.5))
                 PointMark(x: .value("Day", point.key), y: .value("Hours", point.value))
-                    .foregroundStyle(NativePaint.sleep(style))
-                    .symbol { NativeSleepVertex(tint: NativePaint.sleep(style)) }
+                    .foregroundStyle(NativeTokens.sleep)
+                    .symbol { NativeSleepVertex(tint: NativeTokens.sleep) }
             }
             ForEach(NativeChartDay.linePoints(needed)) { point in
                 LineMark(
@@ -389,10 +393,7 @@ struct NativeSleepDualLineCard: View {
                 )
                 .foregroundStyle(Color.secondary)
                 .interpolationMethod(.linear)
-                .lineStyle(StrokeStyle(lineWidth: 2.5))
-                PointMark(x: .value("Day", point.key), y: .value("Hours", point.value))
-                    .foregroundStyle(Color.secondary)
-                    .symbol { NativeSleepVertex(tint: Color.secondary) }
+                .lineStyle(StrokeStyle(lineWidth: 2.5, dash: [6, 4]))
             }
         }
         .chartLegend(.hidden)
@@ -424,6 +425,24 @@ struct NativeSleepDualLineCard: View {
             }
         }
         .accessibilityLabel("Hours slept and hours needed")
+    }
+}
+
+private struct NativeSleepSeriesKey: View {
+    var color: Color
+    var name: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(name)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .accessibilityLabel(name)
     }
 }
 
