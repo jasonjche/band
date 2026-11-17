@@ -12,9 +12,42 @@ import WhoopProtocol
 enum NativeStrain {
 
     /// Day strain on the stored 0–100 axis. Imported days ignore a live recompute.
-    static func day(stored: Double?, live: Double?, imported: Bool) -> Double? {
+    ///
+    /// `workoutMax` is the highest workout strain logged that day. A day can never read lower
+    /// than one of its own workouts: when it would, the strap HR for that workout is missing
+    /// (another app took it off the strap), so the workout's load is added to the day's.
+    static func day(stored: Double?, live: Double?, imported: Bool, workoutMax: Double? = nil) -> Double? {
         if imported { return stored }
-        return NativeDayLogic.effectiveStrain(live: live, stored: stored)
+        return withWorkout(day: NativeDayLogic.effectiveStrain(live: live, stored: stored),
+                           workoutMax: workoutMax)
+    }
+
+    static func withWorkout(day: Double?, workoutMax: Double?) -> Double? {
+        guard let w = workoutMax, w > 0 else { return day }
+        guard let d = day, d > 0 else { return w }
+        if d >= w { return d }
+        guard let params = BandStrain.bundledParams(),
+              let ld = load(effort100: d, params: params),
+              let lw = load(effort100: w, params: params) else { return w }
+        return BandStrain.effort100(BandStrain.strain(load: ld + lw, params: params)) ?? w
+    }
+
+    /// Inverse of `BandStrain.strain(load:)` from the stored 0–100 axis.
+    static func load(effort100: Double, params: BandStrain.Params) -> Double? {
+        let s = effort100 / 100 * params.maxStrain
+        guard s > 0, s < params.maxStrain, params.k > 0, params.p > 0 else { return nil }
+        return pow(-log(1 - s / params.maxStrain) / params.k, 1 / params.p)
+    }
+
+    /// Highest workout strain per local day key.
+    static func workoutMaxByDay(_ workouts: [WorkoutRow]) -> [String: Double] {
+        var out: [String: Double] = [:]
+        for w in workouts {
+            guard let s = w.strain, s > 0 else { continue }
+            let key = Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(w.startTs)))
+            out[key] = max(out[key] ?? 0, s)
+        }
+        return out
     }
 
     static func isImportedDay(_ figures: ImportedSleepFigures?) -> Bool {

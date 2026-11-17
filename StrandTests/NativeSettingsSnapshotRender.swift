@@ -69,7 +69,9 @@ final class NativeSettingsSnapshotRender: XCTestCase {
                 onNumeric: { _, _ in }
             ))),
             // More and Data & Backup are Lists, which ImageRenderer cannot draw on macOS.
-            ("profile", AnyView(NativeProfileView().environmentObject(ProfileStore()))),
+            ("profile", AnyView(NativeProfileView()
+                .environmentObject(ProfileStore())
+                .environmentObject(Repository(deviceId: "preview")))),
         ]
 
         for page in pages {

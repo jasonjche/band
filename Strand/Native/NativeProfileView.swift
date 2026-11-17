@@ -3,6 +3,8 @@ import SwiftUI
 /// iPhone Profile: iOS Settings Form. Same ProfileStore fields the personal shell already edits.
 struct NativeProfileView: View {
     @EnvironmentObject private var profile: ProfileStore
+    @EnvironmentObject private var repo: Repository
+    @State private var weightReadings: [NativeWeight.Reading] = []
     @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
 
     private var unitSystem: UnitSystem { UnitSystem(rawValue: unitSystemRaw) ?? .metric }
@@ -27,6 +29,10 @@ struct NativeProfileView: View {
             Section {
                 heightRow
                 weightRow
+            } footer: {
+                if let latest = weightReadings.last {
+                    Text("Weight follows Apple Health. Last weigh-in \(latest.date.formatted(.dateTime.month().day())).")
+                }
             }
 
             Section {
@@ -55,6 +61,7 @@ struct NativeProfileView: View {
             }
         }
         .appleSettingsChrome("Profile")
+        .task { weightReadings = await NativeWeight.sync(repo: repo, profile: profile) }
     }
 
     private var hrMaxLabel: String {
@@ -78,6 +85,20 @@ struct NativeProfileView: View {
     }
 
     @ViewBuilder private var weightRow: some View {
+        if weightReadings.isEmpty {
+            manualWeightRow
+        } else {
+            NavigationLink {
+                NativeWeightPage(readings: weightReadings, unitSystem: unitSystem)
+            } label: {
+                LabeledContent("Weight", value: unitSystem == .imperial
+                    ? "\(Int(weightPounds.wrappedValue.rounded())) lb"
+                    : String(format: "%.1f kg", profile.weightKg))
+            }
+        }
+    }
+
+    @ViewBuilder private var manualWeightRow: some View {
         if unitSystem == .imperial {
             Stepper(value: weightPounds, in: 66...551, step: 1) {
                 LabeledContent("Weight", value: "\(Int(weightPounds.wrappedValue.rounded())) lb")

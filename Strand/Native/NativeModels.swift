@@ -45,12 +45,14 @@ enum NativeWeek {
         let scores = NativeBandScores.resolve(
             days: days, sleeps: sleeps, workouts: workouts, importedSleep: importedSleep
         )
+        let workoutMax = NativeStrain.workoutMaxByDay(workouts)
         return series(days, todayKey: todayKey) { day in
             switch kind {
             case .strain:
                 return NativeStrain.day(
                     stored: day.strain, live: nil,
-                    imported: NativeStrain.isImportedDay(importedSleep[day.day])
+                    imported: NativeStrain.isImportedDay(importedSleep[day.day]),
+                    workoutMax: workoutMax[day.day]
                 ).map { NativeDayLogic.strainDisplayValue($0, scale: effortScale) }
             case .recovery: return scores.byDay[day.day]?.recovery
             case .sleep: return scores.byDay[day.day]?.sleepPerformance
@@ -252,7 +254,8 @@ enum NativeDay {
         let strain = NativeStrain.day(
             stored: today?.strain,
             live: viewingToday ? liveStrain : nil,
-            imported: NativeStrain.isImportedDay(importedSleep[todayKey])
+            imported: NativeStrain.isImportedDay(importedSleep[todayKey]),
+            workoutMax: NativeStrain.workoutMaxByDay(workouts)[todayKey]
         )
         let sleepScore = sleepScoreRow?.sleepPerformance
         let sleepStart = sleepSession.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
