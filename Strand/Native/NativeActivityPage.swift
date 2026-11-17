@@ -30,6 +30,7 @@ enum NativeActivityPageLogic {
         var delta: NativeScore.Delta
         var symbol: String
         var heartFamily: Bool
+        var neutralDelta: Bool = false
     }
 
     struct Model: Equatable {
@@ -142,14 +143,18 @@ enum NativeActivityPageLogic {
         return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
     }
 
-    static func dateTimeRange(startTs: Int, endTs: Int) -> String {
-        let start = Date(timeIntervalSince1970: TimeInterval(startTs))
-        let end = Date(timeIntervalSince1970: TimeInterval(endTs))
+    private static let monthDay: DateFormatter = {
         let day = DateFormatter()
         day.locale = Locale(identifier: "en_US_POSIX")
         day.dateFormat = "MMM d"
+        return day
+    }()
+
+    static func dateTimeRange(startTs: Int, endTs: Int) -> String {
+        let start = Date(timeIntervalSince1970: TimeInterval(startTs))
+        let end = Date(timeIntervalSince1970: TimeInterval(endTs))
         let clock = AppClock.hourMinuteFormatter()
-        return "\(day.string(from: start)) \(clock.string(from: start)) – \(clock.string(from: end))"
+        return "\(monthDay.string(from: start)) \(clock.string(from: start)) – \(clock.string(from: end))"
     }
 
     private static func zones(percents: [Double]?, durationS: Double, zoneSet: HRZoneSet?) -> [Zone] {
@@ -170,14 +175,14 @@ enum NativeActivityPageLogic {
             rows.append(stat(
                 "Average HR", "\(hr) BPM", Double(hr),
                 same.compactMap { $0.avgHr.map(Double.init) },
-                "heart.fill", heart: true, unit: "BPM"
+                "heart.fill", heart: true, unit: "BPM", neutralDelta: true
             ))
         }
         if let hr = workout.maxHr {
             rows.append(stat(
                 "Max HR", "\(hr) BPM", Double(hr),
                 same.compactMap { $0.maxHr.map(Double.init) },
-                "heart", heart: true, unit: "BPM"
+                "heart", heart: true, unit: "BPM", neutralDelta: true
             ))
         }
         if let kcal = workout.energyKcal {
@@ -208,7 +213,8 @@ enum NativeActivityPageLogic {
 
     private static func stat(
         _ title: String, _ value: String, _ current: Double, _ prior: [Double],
-        _ symbol: String, heart: Bool, unit: String, decimals: Int = 0, grouped: Bool = false
+        _ symbol: String, heart: Bool, unit: String, decimals: Int = 0, grouped: Bool = false,
+        neutralDelta: Bool = false
     ) -> Stat {
         let priorText: String?
         if let mean = NativeScoreMath.mean(prior) {
@@ -222,7 +228,8 @@ enum NativeActivityPageLogic {
             prior: priorText,
             delta: NativeScoreMath.delta(current, prior),
             symbol: symbol,
-            heartFamily: heart
+            heartFamily: heart,
+            neutralDelta: neutralDelta
         )
     }
 }
@@ -422,7 +429,8 @@ struct NativeActivityBody: View {
                             value: stat.value,
                             prior: stat.prior,
                             delta: stat.delta,
-                            tint: stat.heartFamily ? NativeChrome.heart : NativeChrome.activity
+                            tint: stat.heartFamily ? NativeChrome.heart : NativeChrome.activity,
+                            neutralDelta: stat.neutralDelta
                         )
                     }
                 }

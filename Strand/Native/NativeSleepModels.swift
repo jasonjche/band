@@ -151,6 +151,20 @@ enum NativeSleepClock {
         -minutesFromEvening
     }
 
+    private static let hourOnly: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "h a"
+        return formatter
+    }()
+
+    private static let hourMinute: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "h:mm a"
+        return formatter
+    }()
+
     static func label(_ minutesFromEvening: Double) -> String {
         var total = (eveningHour * 60 + Int(minutesFromEvening.rounded())) % (24 * 60)
         if total < 0 { total += 24 * 60 }
@@ -161,17 +175,11 @@ enum NativeSleepClock {
         comps.hour = total / 60
         comps.minute = total % 60
         let date = Calendar(identifier: .gregorian).date(from: comps) ?? Date()
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "h a"
-        return formatter.string(from: date).replacingOccurrences(of: " ", with: "")
+        return hourOnly.string(from: date).replacingOccurrences(of: " ", with: "")
     }
 
     static func clock(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "h:mm a"
-        return formatter.string(from: date)
+        hourMinute.string(from: date)
     }
 }
 

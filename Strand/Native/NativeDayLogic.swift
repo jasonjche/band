@@ -125,12 +125,16 @@ enum NativeDayLogic {
         value.count == 10 && value.utf8.allSatisfy { ($0 >= 48 && $0 <= 57) || $0 == 45 }
     }
 
-    private static func startOfLocalDay(_ key: String) -> Date? {
+    private static let localDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
         formatter.dateFormat = "yyyy-MM-dd"
-        guard let date = formatter.date(from: key) else { return nil }
+        return formatter
+    }()
+
+    private static func startOfLocalDay(_ key: String) -> Date? {
+        guard let date = localDayFormatter.date(from: key) else { return nil }
         return Calendar.current.startOfDay(for: date)
     }
 }

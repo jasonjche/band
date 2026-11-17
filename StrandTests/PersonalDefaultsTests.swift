@@ -56,6 +56,10 @@ final class PersonalDefaultsTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: PuffinExperiment.experimentalSleepStressKey))
         XCTAssertEqual(defaults.string(forKey: UnitPrefs.systemKey), UnitSystem.imperial.rawValue)
         XCTAssertTrue(defaults.bool(forKey: BandPowerPolicy.defaultsKey))
+        XCTAssertEqual(defaults.object(forKey: "noop.coachEnabled") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: UnitPrefs.liveActivityKey) as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: UnitPrefs.syncLiveActivityKey) as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: UnitPrefs.liftLiveActivityKey) as? Bool, false)
     }
 
     func testMetricLocalePinsMetricUnits() {

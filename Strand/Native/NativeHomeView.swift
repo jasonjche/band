@@ -360,12 +360,16 @@ struct NativeHomeView: View {
 // MARK: - Date stepper
 
 enum HomeDayTitle {
-    static func text(for date: Date, now: Date = Date()) -> String {
-        if Repository.localDayKey(date) == NativeDayLogic.logicalToday(now: now) { return "Today" }
+    private static let weekdayMonthDay: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "EEE, MMM d"
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    static func text(for date: Date, now: Date = Date()) -> String {
+        if Repository.localDayKey(date) == NativeDayLogic.logicalToday(now: now) { return "Today" }
+        return weekdayMonthDay.string(from: date)
     }
 }
 
@@ -1071,23 +1075,7 @@ enum NativeHomeCharts {
     /// Two-line x-axis label for a `yyyy-MM-dd` key: weekday abbreviation over
     /// day-of-month ("Thu" / "12"). Unique across a week, including Sat/Sun.
     static func axisLabel(_ key: String) -> String {
-        let parser = DateFormatter()
-        parser.locale = Locale(identifier: "en_US_POSIX")
-        parser.timeZone = TimeZone(secondsFromGMT: 0)
-        parser.dateFormat = "yyyy-MM-dd"
-        guard let date = parser.date(from: key) else {
-            let tail = String(key.suffix(2)).drop { $0 == "0" }
-            return tail.isEmpty ? key : String(tail)
-        }
-        let weekday = DateFormatter()
-        weekday.locale = Locale(identifier: "en_US_POSIX")
-        weekday.timeZone = TimeZone(secondsFromGMT: 0)
-        weekday.dateFormat = "EEE"
-        let day = DateFormatter()
-        day.locale = Locale(identifier: "en_US_POSIX")
-        day.timeZone = TimeZone(secondsFromGMT: 0)
-        day.dateFormat = "d"
-        return "\(weekday.string(from: date))\n\(day.string(from: date))"
+        "\(NativeChartDay.weekday(key))\n\(NativeChartDay.dayOfMonth(key))"
     }
 
     static func weekday(_ key: String) -> String { axisLabel(key) }
@@ -1208,21 +1196,6 @@ struct HomeAddActivitySheet: View {
                 await onSaved()
             }
         }
-    }
-}
-
-struct HomeSyncingCaption: View {
-    var body: some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Syncing…")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Syncing")
     }
 }
 

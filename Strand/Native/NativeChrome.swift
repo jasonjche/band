@@ -295,6 +295,7 @@ struct NativeContributorRow: View {
     var delta: NativeScore.Delta = .none
     var tint: Color
     var valueTint: Color = .primary
+    var neutralDelta: Bool = false
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
@@ -318,7 +319,7 @@ struct NativeContributorRow: View {
                         .foregroundStyle(style == .whoop ? Color.primary : valueTint)
                         .lineLimit(1)
                         .monospacedDigit()
-                    NativeDelta(delta: delta)
+                    NativeDelta(delta: delta, neutral: neutralDelta)
                 }
                 if let prior, NativeScoreMath.hasValue(prior) {
                     Text(displayPrior)
@@ -576,6 +577,7 @@ struct NativeRing: View {
 
 struct NativeDelta: View {
     var delta: NativeScore.Delta
+    var neutral: Bool = false
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
@@ -597,6 +599,9 @@ struct NativeDelta: View {
     }
 
     private var deltaTint: Color {
+        if neutral {
+            return style == .whoop ? NativeTokens.whoopLabel : Color.secondary
+        }
         if style == .whoop {
             if delta.symbol.contains("up") || delta == .up { return NativeTokens.whoopPositiveDelta }
             if delta.symbol.contains("down") || delta == .down { return NativeTokens.whoopNegativeDelta }
@@ -744,6 +749,10 @@ enum NativeChartDay {
 
     static func date(from key: String) -> Date? {
         keyParser.date(from: key)
+    }
+
+    static func key(from date: Date) -> String {
+        keyParser.string(from: date)
     }
 
     static func weekday(_ key: String) -> String {

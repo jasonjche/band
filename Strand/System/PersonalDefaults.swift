@@ -22,6 +22,12 @@ enum PersonalDefaults {
         defaults.set(EffortScale.whoop.rawValue, forKey: UnitPrefs.effortScaleKey)
         defaults.set(true, forKey: PuffinExperiment.experimentalSleepStressKey)
         defaults.set(unitSystem(for: locale).rawValue, forKey: UnitPrefs.systemKey)
+        // Pins, not register(): UnitPrefs live-activity readers and CoachBriefScheduler treat a
+        // missing key as ON. Coach, Live HR, sync island, and Lift Log are gone from the Native shell.
+        defaults.set(false, forKey: "noop.coachEnabled")
+        defaults.set(false, forKey: UnitPrefs.liveActivityKey)
+        defaults.set(false, forKey: UnitPrefs.syncLiveActivityKey)
+        defaults.set(false, forKey: UnitPrefs.liftLiveActivityKey)
 
         if defaults.object(forKey: NativeStyle.storageKey) == nil {
             defaults.set(NativeStyle.apple.rawValue, forKey: NativeStyle.storageKey)
@@ -65,9 +71,10 @@ enum PersonalDefaults {
             ScreenIdle.strapSyncKeepAwakeKey: false,
             // Off: the heart-rate banner re-pushes every 10–15 s and the sync banner on every offload
             // slice, which costs battery and reads as constant syncing.
+            "noop.coachEnabled": false,
             UnitPrefs.liveActivityKey: false,
             UnitPrefs.syncLiveActivityKey: false,
-            UnitPrefs.liftLiveActivityKey: true,
+            UnitPrefs.liftLiveActivityKey: false,
             // Hourly offload batches; the strap keeps recording to its own memory in between.
             PuffinExperiment.lowRefreshKey: true,
             "noop.bottomBarAutoHide": false,

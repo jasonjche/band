@@ -78,6 +78,11 @@ final class NativeActivityPageTests: XCTestCase {
             workout, prior: prior, scale: .whoop, zoneSet: nil, percents: nil
         )
         XCTAssertEqual(model.stats.map(\.title), ["Average HR", "Max HR", "Calories", "Distance", "Steps"])
+        XCTAssertEqual(model.stats.first { $0.title == "Average HR" }?.neutralDelta, true)
+        XCTAssertEqual(model.stats.first { $0.title == "Max HR" }?.neutralDelta, true)
+        XCTAssertEqual(model.stats.first { $0.title == "Calories" }?.neutralDelta, false)
+        XCTAssertEqual(model.stats.first { $0.title == "Distance" }?.neutralDelta, false)
+        XCTAssertEqual(model.stats.first { $0.title == "Steps" }?.neutralDelta, false)
         XCTAssertFalse(model.stats.contains { $0.title.localizedCaseInsensitiveContains("pace") })
         XCTAssertFalse(model.stats.contains { $0.title.localizedCaseInsensitiveContains("speed") })
         XCTAssertFalse(model.stats.contains { $0.title.localizedCaseInsensitiveContains("elevation") })

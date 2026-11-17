@@ -175,16 +175,12 @@ enum NativeWeek {
     }
 
     static func lastSevenKeys(ending todayKey: String) -> [String] {
-        let parser = DateFormatter()
-        parser.locale = Locale(identifier: "en_US_POSIX")
-        parser.timeZone = TimeZone(secondsFromGMT: 0)
-        parser.dateFormat = "yyyy-MM-dd"
-        guard let end = parser.date(from: todayKey) else { return [todayKey] }
+        guard let end = NativeChartDay.date(from: todayKey) else { return [todayKey] }
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(secondsFromGMT: 0)!
         return (0..<7).reversed().map { offset in
             let day = cal.date(byAdding: .day, value: -offset, to: end) ?? end
-            return parser.string(from: day)
+            return NativeChartDay.key(from: day)
         }
     }
 }
@@ -317,12 +313,16 @@ enum NativeDay {
         )
     }
 
-    static func dateLine(for key: String, fallback: Date) -> String {
+    private static let localDayKeyParser: DateFormatter = {
         let parser = DateFormatter()
         parser.locale = Locale(identifier: "en_US_POSIX")
         parser.timeZone = TimeZone.current
         parser.dateFormat = "yyyy-MM-dd"
-        let date = parser.date(from: key) ?? fallback
+        return parser
+    }()
+
+    static func dateLine(for key: String, fallback: Date) -> String {
+        let date = localDayKeyParser.date(from: key) ?? fallback
         return date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().locale(AppLanguage.activeLocale)).uppercased()
     }
 
@@ -864,6 +864,13 @@ enum NativeTonightSleep {
         return "\(parts.hours) hr \(parts.minutes) min"
     }
 
+    private static let hourMinute: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "h:mm a"
+        return formatter
+    }()
+
     static func clock(_ minutes: Int) -> String {
         var total = minutes % (24 * 60)
         if total < 0 { total += 24 * 60 }
@@ -874,9 +881,6 @@ enum NativeTonightSleep {
         comps.hour = total / 60
         comps.minute = total % 60
         let date = Calendar(identifier: .gregorian).date(from: comps) ?? Date()
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "h:mm a"
-        return formatter.string(from: date)
+        return hourMinute.string(from: date)
     }
 }

@@ -362,8 +362,12 @@ final class AppModel: ObservableObject {
         $bpm.sink { [weak self] hr in self?.coachZone(hr) }.store(in: &hrCancellables)
         // Illness/strain early-warning recomputes when the daily history changes.
         repo.$days.sink { [weak self] days in
-            self?.evaluateIllness(days)
-            self?.evaluateStrainTarget()
+            // Illness / strain-target nudges only fed Automations and the Health hub, both gone
+            // from the iPhone personal shell. Battery night-guard still needs the bedtime cache.
+            if !AppBrand.isPersonalBuild {
+                self?.evaluateIllness(days)
+                self?.evaluateStrainTarget()
+            }
             // Keep the battery night-guard's learned bedtime warm off the same signal (throttled inside).
             self?.refreshHabitualMidsleep()
         }.store(in: &hrCancellables)
@@ -1147,6 +1151,9 @@ final class AppModel: ObservableObject {
     /// baseline + rate limit), persisted via `BiofeedbackPrefs` so a relaunch can't re-fire. Honest /
     /// non-clinical: "stress" is an autonomic proxy vs the user's own baseline, never a diagnosis.
     private func evaluateStress() {
+        // Off (the default) means Breathe / stress-check-in is unused; skip the R-R buffer work.
+        let cfg = BiofeedbackPrefs.stressConfig()
+        guard cfg.enabled else { return }
         // Once per R-R packet. `ingestHR` runs from both the heart-rate and the R-R sink, so a packet reached
         // this once or twice, its intervals entered `rrBuf` as often, and the detector's slow baseline
         // advanced on every call rather than every packet.
@@ -1156,10 +1163,8 @@ final class AppModel: ObservableObject {
         rrBuf.append(contentsOf: fresh)
         if rrBuf.count > 120 { rrBuf.removeFirst(rrBuf.count - 120) }
 
-        // Inert unless the master toggle is on; the engine owns every gate (auto-nudge, exercise gate,
-        // quiet hours, rate limit, edge).
-        let cfg = BiofeedbackPrefs.stressConfig()
-        guard cfg.enabled, live.bonded, live.worn else { return }
+        // Remaining engine gates (auto-nudge, exercise, quiet hours, rate limit) live in `cfg`.
+        guard live.bonded, live.worn else { return }
         let decision = StressOnsetDetector.evaluate(
             rrBuffer: rrBuf,
             currentHR: bpm.map(Double.init),
@@ -2229,6 +2234,7 @@ final class AppModel: ObservableObject {
     /// Called from the analytics pass and when the cycle opt-in flips. Honest-nil throughout: cycle is
     /// nil unless opted in; circadian is nil unless a usable activity profile exists.
     func refreshV5Signals() async {
+        guard !AppBrand.isPersonalBuild else { return }
         await computeCyclePhase()
         await computeCircadianPhase()
     }

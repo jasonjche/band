@@ -27,14 +27,20 @@ struct NativeScorePage: View {
     @State private var highSleepStress: Double?
     @State private var sleepStress: NativeSleepStress.Model?
     @State private var sleepEdit: NativeSleepEditTarget?
+    @State private var dayModel: NativeDay.Model?
+    @State private var weekCards: [NativeWeek.Card] = []
+    @State private var sleepDetail: NativeSleepPageDetail?
 
     private var selectedDay: Date {
         NativeDaySelection.date(from: selectedDayKey)
     }
 
+    private var dayKey: String {
+        NativeDayLogic.resolvedDayKey(stored: selectedDayKey)
+    }
+
     private var nightSession: CachedSleepSession? {
-        let dayKey = NativeDayLogic.resolvedDayKey(stored: selectedDayKey)
-        return repo.sleeps
+        repo.sleeps
             .filter {
                 NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
             }
@@ -42,35 +48,19 @@ struct NativeScorePage: View {
             .first
     }
 
+    private var rebuildID: String {
+        "\(repo.refreshSeq)-\(dayKey)-\(effortScaleRaw)"
+    }
+
+    private var sleepBoundsID: String {
+        "\(dayModel?.sleepStart?.timeIntervalSince1970 ?? 0)-\(dayModel?.sleepEnd?.timeIntervalSince1970 ?? 0)"
+    }
+
     var body: some View {
-        let dayKey = NativeDayLogic.resolvedDayKey(stored: selectedDayKey)
-        let model = NativeDay.make(
-            days: repo.days, sleeps: repo.sleeps, workouts: workouts,
-            todayKey: dayKey,
-            connected: false,
-            effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
-            importedSleep: repo.importedSleep,
-            highSleepStress: kind == .sleep ? highSleepStress : nil
-        )
-        let score = kind == .recovery ? model.recovery : kind == .strain ? model.strain : model.sleep
-        let baseWeek = NativeWeek.cards(
-            kind: kind, days: repo.days, todayKey: dayKey,
-            effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
-            sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
-        )
-        let weekCards = NativeSleepWeek.cards(
-            kind: kind, base: baseWeek, days: repo.days, todayKey: dayKey,
-            sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
-        )
-        let sleepDetail: NativeSleepPageDetail? = kind == .sleep
-            ? NativeSleepPageDetail.make(
-                dayKey: dayKey, days: repo.days, sleeps: repo.sleeps, workouts: workouts,
-                importedSleep: repo.importedSleep, stress: sleepStress
-            )
-            : nil
+        let model = resolvedModel
         NativeScoreView(
-            score: score,
-            weekCards: weekCards,
+            score: kind == .recovery ? model.recovery : kind == .strain ? model.strain : model.sleep,
+            weekCards: resolvedWeekCards,
             kind: kind,
             sleepHours: model.sleepHours,
             asleepMinutes: model.asleepMinutes,
@@ -81,9 +71,9 @@ struct NativeScorePage: View {
             overnightHr: overnightHr,
             awakeTypical: model.awakeTypical,
             dayKey: dayKey,
-            needMinutes: NativeSleepNeed.needMinutes(sleepDetail?.need) ?? model.sleepNeedMin,
+            needMinutes: NativeSleepNeed.needMinutes(resolvedSleepDetail?.need) ?? model.sleepNeedMin,
             debtMinutes: model.sleepDebtMin,
-            sleepDetail: sleepDetail,
+            sleepDetail: resolvedSleepDetail,
             onEditSleep: kind == .sleep && nightSession != nil ? { sleepEdit = nightSession.map(NativeSleepEditTarget.init) } : nil
         )
         .nativeDateSubtitle(selectedDay)
@@ -111,9 +101,16 @@ struct NativeScorePage: View {
                 }
             )
         }
-        .task(id: repo.refreshSeq) { workouts = await repo.workoutRows(days: 120) }
-        .task(id: "\(model.sleepStart?.timeIntervalSince1970 ?? 0)-\(model.sleepEnd?.timeIntervalSince1970 ?? 0)") {
-            guard let start = model.sleepStart, let end = model.sleepEnd else {
+        .onAppear { if dayModel == nil { rebuild() } }
+        .task(id: rebuildID) {
+            rebuild()
+            workouts = await repo.workoutRows(days: 120)
+            rebuild()
+        }
+        .onChange(of: highSleepStress) { _ in rebuild() }
+        .onChange(of: sleepStress) { _ in rebuild() }
+        .task(id: sleepBoundsID) {
+            guard let start = dayModel?.sleepStart, let end = dayModel?.sleepEnd else {
                 overnightHr = []
                 highSleepStress = nil
                 return
@@ -135,22 +132,64 @@ struct NativeScorePage: View {
             highSleepStress = SleepStressShare.percent(hr: overnightHR, startTs: from, endTs: to)
             sleepStress = NativeSleepStress.make(hr: overnightHR, startTs: from, endTs: to)
         }
-        .task(id: "hrv-sws-\(model.sleepStart?.timeIntervalSince1970 ?? 0)-\(model.sleepEnd?.timeIntervalSince1970 ?? 0)") {
-            guard kind == .recovery, let start = model.sleepStart, let end = model.sleepEnd else { return }
+        .task(id: "hrv-sws-\(sleepBoundsID)") {
+            guard kind == .recovery, let start = dayModel?.sleepStart, let end = dayModel?.sleepEnd else { return }
             let from = Int(start.timeIntervalSince1970)
             let to = Int(end.timeIntervalSince1970)
             let rr = await repo.rrIntervals(from: from, to: to, limit: 50_000)
             let beats = rr.map { BandHrvSws.Beat(tSec: Double($0.ts), rrMs: Double($0.rrMs)) }
             let session = repo.sleeps.last {
                 NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
-                    == NativeDayLogic.resolvedDayKey(stored: selectedDayKey)
+                    == dayKey
             }
             let epochs = NativeBandScores.epochs(from: session?.stagesJSON, sessionStart: session?.effectiveStartTs ?? from)
-            let nightly = repo.days.last { $0.day == NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }?.avgHrv
+            let nightly = repo.days.last { $0.day == dayKey }?.avgHrv
             NativeBandScores.logHrvSws(
                 beats: beats, epochs: epochs, sleepStart: start, sleepEnd: end, nightlyHrv: nightly
             )
         }
+    }
+
+    private var resolvedModel: NativeDay.Model { dayModel ?? buildModel() }
+    private var resolvedWeekCards: [NativeWeek.Card] { dayModel == nil ? buildWeekCards() : weekCards }
+    private var resolvedSleepDetail: NativeSleepPageDetail? { dayModel == nil ? buildSleepDetail() : sleepDetail }
+
+    /// Rings, week cards, sleep detail — once per data change, not per `body` pass.
+    private func rebuild() {
+        dayModel = buildModel()
+        weekCards = buildWeekCards()
+        sleepDetail = buildSleepDetail()
+    }
+
+    private func buildModel() -> NativeDay.Model {
+        NativeDay.make(
+            days: repo.days, sleeps: repo.sleeps, workouts: workouts,
+            todayKey: dayKey,
+            connected: false,
+            effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
+            importedSleep: repo.importedSleep,
+            highSleepStress: kind == .sleep ? highSleepStress : nil
+        )
+    }
+
+    private func buildWeekCards() -> [NativeWeek.Card] {
+        let baseWeek = NativeWeek.cards(
+            kind: kind, days: repo.days, todayKey: dayKey,
+            effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
+            sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
+        )
+        return NativeSleepWeek.cards(
+            kind: kind, base: baseWeek, days: repo.days, todayKey: dayKey,
+            sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
+        )
+    }
+
+    private func buildSleepDetail() -> NativeSleepPageDetail? {
+        guard kind == .sleep else { return nil }
+        return NativeSleepPageDetail.make(
+            dayKey: dayKey, days: repo.days, sleeps: repo.sleeps, workouts: workouts,
+            importedSleep: repo.importedSleep, stress: sleepStress
+        )
     }
 }
 

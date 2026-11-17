@@ -73,6 +73,12 @@ final class WatchSessionBridge: NSObject, ObservableObject {
     /// `async` because Rest (sleep_performance) lives in a computed metric series rather than a
     /// `DailyMetric` column, so it needs an `exploreSeries` read (mirrors `WidgetSnapshot.publish`).
     func sendLatest(from model: AppModel) async {
+        // After activation, a phone with no watch app installed still paid for a snapshot
+        // (exploreSeries + widget-anchor scan). Skip that work; before activation the flag is
+        // undefined so we still build and send as before.
+        if let session, session.activationState == .activated, !session.isWatchAppInstalled {
+            return
+        }
         let snap = await Self.buildSnapshot(from: model)
         // A contentless snapshot (a cold launch races the first repo refresh, so `days` is still empty)
         // must NOT push: it would stomp the watch's last REAL data with the empty state AND burn the

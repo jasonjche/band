@@ -89,16 +89,20 @@ struct StrandiOSApp: App {
         NotificationPresenter.shared.onCoachBriefTapped = { [weak router] in router?.openCoach() }
         let model = AppModel()
         _model = StateObject(wrappedValue: model)
-        CoachBriefScheduler.register(generateBrief: { [weak coach = model.coach] in
-            await coach?.generateBrief()
-        }, log: { [weak model] line in
-            model?.live.append(log: AppModel.stamped(line))
-        })
+        if !AppBrand.isPersonalBuild {
+            CoachBriefScheduler.register(generateBrief: { [weak coach = model.coach] in
+                await coach?.generateBrief()
+            }, log: { [weak model] line in
+                model?.live.append(log: AppModel.stamped(line))
+            })
+        }
         // Settings → "Keep screen on while syncing". Wired once here, not as another modifier on `body`.
         SyncKeepAwake.shared.attach(to: model.live)
         // The strap-sync Live Activity (Lock Screen + Dynamic Island). Same placement, same reason — and
         // it must also run in a process the Sync Strap shortcut launched with no scene.
-        SyncLiveActivityController.shared.attach(to: model.live)
+        if !AppBrand.isPersonalBuild {
+            SyncLiveActivityController.shared.attach(to: model.live)
+        }
         // iOS's own daily report of NOOP's CPU, memory, disk writes, hangs and exits, and its crash/hang reports,
         // one strap-log line each. Registering is the whole cost; iOS gathers and delivers them (MetricKitLog).
         MetricKitLog.shared.attach(to: model.live)
@@ -122,7 +126,9 @@ struct StrandiOSApp: App {
         // The live heart rate banner makes room only for the Lift Log banner actually on screen, which carries the
         // heart rate itself — not for a sync (`LiveHRBannerLifecycle`).
         let liveActivity = LiveActivityController()
-        liveActivity.follow(model, standsAside: { [weak liftActivity] in liftActivity?.isShowing == true })
+        if !AppBrand.isPersonalBuild {
+            liveActivity.follow(model, standsAside: { [weak liftActivity] in liftActivity?.isShowing == true })
+        }
         _liveActivity = State(initialValue: liveActivity)
         // A gym session keeps ONE banner on the Lock Screen, its own — as the live-HR banner already
         // stands aside for it. A sync started in the foreground mid-session starts no sync banner.
@@ -133,7 +139,9 @@ struct StrandiOSApp: App {
         }
         // Before any view or publisher exists: the first push to the Lock Screen banner must find the
         // session already running, or it ends the banner iOS kept alive across the restart.
-        liftSession.resumeSaved()
+        if !AppBrand.isPersonalBuild {
+            liftSession.resumeSaved()
+        }
         // #1538: a strap offload completes while the app is BACKGROUNDED — it stays alive as a
         // bluetooth-central to receive it — and the re-score it triggers took nearly eight minutes on the
         // reporter's install, far longer than that wake survives. The pass is all-or-nothing, so being
@@ -337,7 +345,7 @@ struct StrandiOSApp: App {
                 // supported, so this is safe on every device/simulator combination.
                 .task {
                     watch.activate()
-                    await watch.pushLatest(from: model)
+                    Task(priority: .utility) { await watch.pushLatest(from: model) }
                 }
         }
         // HealthKit authorization is intentionally NOT requested on launch. The system permission
@@ -350,15 +358,19 @@ struct StrandiOSApp: App {
         // safe no-op until the user opts in.
         .onChange(of: scenePhase, initial: true) { _, phase in
             if phase == .active {
-                CoachBriefScheduler.activateIfEnabled { await model.coach.generateBrief() }
+                if !AppBrand.isPersonalBuild {
+                    CoachBriefScheduler.activateIfEnabled { await model.coach.generateBrief() }
+                }
                 model.drainPendingIntents(router: router)
-                // iOS starts a Lift Log banner only for an app on screen, so a banner lost while NOOP was in
-                // the background comes back now, whether or not the strap is sending anything.
-                pushLiftActivity()
-                // Only the foreground may start the live heart rate banner: offer it now.
-                liveActivity.appBecameActive()
-                // End a "Connecting…" sync island whose sync never came, rather than leave it greyed.
-                SyncLiveActivityController.shared.reconcile(live: model.live)
+                if !AppBrand.isPersonalBuild {
+                    // iOS starts a Lift Log banner only for an app on screen, so a banner lost while NOOP was in
+                    // the background comes back now, whether or not the strap is sending anything.
+                    pushLiftActivity()
+                    // Only the foreground may start the live heart rate banner: offer it now.
+                    liveActivity.appBecameActive()
+                    // End a "Connecting…" sync island whose sync never came, rather than leave it greyed.
+                    SyncLiveActivityController.shared.reconcile(live: model.live)
+                }
                 // Re-arm the strap's smart alarm on foreground: the firmware alarm is a single instant
                 // and iOS can't re-arm it while suspended, so it would otherwise fire once and stop.
                 model.applySmartAlarm()
@@ -377,7 +389,7 @@ struct StrandiOSApp: App {
                 // opened, which is a worse regression than the bug being fixed. `analyzeRecent`
                 // serialises itself, so overlapping with the sync this foreground also kicks off is safe.
                 Task { await model.runDeferredRescoreIfOwed() }
-                Task {
+                Task(priority: .utility) {
                     health.refreshAuthIfPreviouslyGranted()
                     HealthWritebackBackgroundScheduler.updateSchedule(
                         isAuthorized: health.auth == .authorized)

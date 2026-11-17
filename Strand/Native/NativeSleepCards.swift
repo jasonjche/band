@@ -342,13 +342,14 @@ struct NativeSleepDualLineCard: View {
         NativeChrome.panel {
             HStack(spacing: 6) {
                 Image(systemName: "clock.fill")
+                    .foregroundStyle(NativePaint.sleep(style))
                 Text(title)
+                    .foregroundStyle(NativePaint.sleep(style))
                 Spacer(minLength: 8)
                 NativeSleepSeriesKey(color: NativeTokens.sleep, name: "Hours of Sleep")
                 NativeSleepSeriesKey(color: Color.secondary, name: "Sleep Needed")
             }
             .font(.footnote.weight(.semibold))
-            .foregroundStyle(NativePaint.sleep(style))
             hero
             plot.frame(height: 200)
         }
