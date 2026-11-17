@@ -52,7 +52,8 @@
     "v48-ecg-waveform",
     "v49-hr-read-indexes",
     "v50-derived-series",
-    "v51-read-covering-indexes"
+    "v51-read-covering-indexes",
+    "v52-hr-minute"
   ],
   "divergenceReasons": {
     "android-orphan-synced-column": "REAL COLUMN DRIFT: `synced` exists on Android only. GRDB's v10 note is explicit that stepSample gets no `synced` column ('unused; see StreamStore'), and v12's ppgHrSample never had one either; the Room entities copied the flag from the older per-second entities. Nothing reads it on Android \u2014 the per-row upload flag belongs to an upload path that does not exist there \u2014 so it is dead width, not divergent data. Removing it needs a Room table rebuild.",
@@ -726,6 +727,53 @@
       "primaryKey": [
         "deviceId",
         "ts"
+      ],
+      "indices": []
+    },
+    "hrMinute": {
+      "platform": "ios_only",
+      "reason": "Band per-minute HR rollup (GRDB v52). Chart hrBuckets for bucketSeconds >= 60 (multiples of 60) SUM/n over these rows instead of GROUP BY 1 Hz. Incremental with StreamStore inserts; chunked backfill in the migration. iOS-first Band fork; no Room twin.",
+      "columns": [
+        {
+          "name": "deviceId",
+          "affinity": "TEXT",
+          "notNull": true,
+          "default": null
+        },
+        {
+          "name": "minuteTs",
+          "affinity": "INTEGER",
+          "notNull": true,
+          "default": null
+        },
+        {
+          "name": "sumBpm",
+          "affinity": "INTEGER",
+          "notNull": true,
+          "default": null
+        },
+        {
+          "name": "n",
+          "affinity": "INTEGER",
+          "notNull": true,
+          "default": null
+        },
+        {
+          "name": "minBpm",
+          "affinity": "INTEGER",
+          "notNull": true,
+          "default": null
+        },
+        {
+          "name": "maxBpm",
+          "affinity": "INTEGER",
+          "notNull": true,
+          "default": null
+        }
+      ],
+      "primaryKey": [
+        "deviceId",
+        "minuteTs"
       ],
       "indices": []
     },

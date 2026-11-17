@@ -121,8 +121,25 @@ private func hexString(_ bytes: ArraySlice<UInt8>) -> String {
     bytes.map { String(format: "%02x", $0) }.joined()
 }
 
+/// Interned `rr[i]` parsed-dict keys. Building `"rr[\(i)]"` on every interval allocated a String
+/// per beat on the ingest fast path (the name is a dictionary key even when `fields` is empty).
+func rrFieldName(_ i: Int) -> String {
+    switch i {
+    case 0: return "rr[0]"
+    case 1: return "rr[1]"
+    case 2: return "rr[2]"
+    case 3: return "rr[3]"
+    case 4: return "rr[4]"
+    case 5: return "rr[5]"
+    case 6: return "rr[6]"
+    case 7: return "rr[7]"
+    default: return "rr[\(i)]"
+    }
+}
+
 /// Field builder: accumulates annotated fields and a flat parsed dict. Port of Python FB.
 ///
+/// Value type so a 1 Hz / offload frame does not heap-allocate a class header on top of `parsed`.
 /// `collectFields` (D#742): the annotated `fields` array, and each field's per-field `raw` hex
 /// string, exist for the inspector surfaces (whoop-decode, the fields-asserting tests), not for
 /// the live BLE stream. When false, `add` writes only the flat `parsed` dict and skips both the
@@ -130,7 +147,7 @@ private func hexString(_ bytes: ArraySlice<UInt8>) -> String {
 /// stop allocating metadata nothing reads. `value:`/`note:` are @autoclosure for the same reason
 /// (the gated zero-cost idiom): a formatted envelope value (crc hex strings etc.) is never built
 /// unless a path that keeps it runs. The `parsed` output is byte-identical on both paths.
-final class FieldBuilder {
+struct FieldBuilder {
     let frame: [UInt8]
     let collectFields: Bool
     var fields: [DecodedField] = []
@@ -145,10 +162,9 @@ final class FieldBuilder {
         if collectFields { fields.reserveCapacity(64) }
     }
 
-    @discardableResult
-    func add(_ off: Int, _ length: Int, _ name: String, _ cat: String,
-             value: @autoclosure () -> ParsedValue? = nil,
-             note: @autoclosure () -> String? = nil) -> FieldBuilder {
+    mutating func add(_ off: Int, _ length: Int, _ name: String, _ cat: String,
+                      value: @autoclosure () -> ParsedValue? = nil,
+                      note: @autoclosure () -> String? = nil) {
         let keepInParsed = cat != "frame" && cat != "unknown"
         if collectFields {
             let end = min(off + length, frame.count)
@@ -162,10 +178,9 @@ final class FieldBuilder {
         } else if keepInParsed, let v = value() {
             parsed[name] = v
         }
-        return self
     }
 
-    func region(_ start: Int, _ end: Int, _ name: String, _ cat: String, note: String? = nil) {
+    mutating func region(_ start: Int, _ end: Int, _ name: String, _ cat: String, note: String? = nil) {
         if start < end && end <= frame.count {
             add(start, end - start, name, cat, value: .string("[\(end - start) bytes]"), note: note)
         }
@@ -206,7 +221,7 @@ public func parseFrame(_ frame: [UInt8], collectFields: Bool = false) -> ParsedF
     let typeName = schema.typeName(t)
     let seq = readU8(frame, 5, limit)
 
-    let fb = FieldBuilder(frame, collectFields: collectFields)
+    var fb = FieldBuilder(frame, collectFields: collectFields)
     // Envelope fields are cat "frame" and never enter `parsed`. Skip building them on the ingest
     // fast path (collectFields: false) — whoop-decode still requests the full path.
     if collectFields {
@@ -236,7 +251,7 @@ public func parseFrame(_ frame: [UInt8], collectFields: Bool = false) -> ParsedF
         }
         // per-type post-hook for irregular fields (populated in PostHooks.swift by B7)
         if let postName = spec!.post, let hook = postHooks[postName] {
-            hook(fb, frame, length, schema)
+            hook(&fb, frame, length, schema)
         }
     }
 
@@ -330,7 +345,7 @@ private func parseFrameWhoop5(_ frame: [UInt8], collectFields: Bool) -> ParsedFr
     let typeName = canonicalTypeName(t, schema: schema)
     let seq = readU8(frame, innerStart + 1, limit)
 
-    let fb = FieldBuilder(frame, collectFields: collectFields)
+    var fb = FieldBuilder(frame, collectFields: collectFields)
     // Envelope fields are cat "frame" and never enter `parsed`. Skip them on the ingest fast path.
     if collectFields {
         fb.add(0, 1, "SOF", "frame", value: .string("0xAA"))
@@ -376,7 +391,7 @@ private func parseFrameWhoop5(_ frame: [UInt8], collectFields: Bool) -> ParsedFr
                 guard off + 2 <= limit else { break }
                 if let v = readDType(frame, off, "u16", limit), v > 0 {
                     let ms = Whoop5RR.milliseconds(ticks: UInt16(v))
-                    fb.add(off, 2, "rr[\(i)]", "rr", value: .int(ms), note: "ms from 1/1024 s ticks")
+                    fb.add(off, 2, rrFieldName(i), "rr", value: .int(ms), note: "ms from 1/1024 s ticks")
                     rawTicks.append(v)
                     rrs.append(ms)
                 }
@@ -385,16 +400,16 @@ private func parseFrameWhoop5(_ frame: [UInt8], collectFields: Bool) -> ParsedFr
             fb.parsed["rr_raw_ticks"] = .intArray(rawTicks)
             fb.parsed["rr_source_channel"] = .int(RRSourceChannel.whoop5Realtime.rawValue)
         } else if spec!.post == "historical_data" {
-            decodeWhoop5Historical(frame, fb: fb, payloadEnd: payloadEnd, limit: limit)
+            decodeWhoop5Historical(frame, fb: &fb, payloadEnd: payloadEnd, limit: limit)
         } else if spec!.post == "metadata" {
-            decodeWhoop5Metadata(frame, fb: fb, limit: limit)
+            decodeWhoop5Metadata(frame, fb: &fb, limit: limit)
         } else if spec!.post == "command_response" {
-            decodeWhoop5CommandResponse(frame, fb: fb, schema: schema, payloadEnd: payloadEnd,
+            decodeWhoop5CommandResponse(frame, fb: &fb, schema: schema, payloadEnd: payloadEnd,
                                         limit: limit)
         } else if spec!.post == "event" {
-            decodeWhoop5Event(frame, fb: fb, schema: schema, limit: limit)
+            decodeWhoop5Event(frame, fb: &fb, schema: schema, limit: limit)
         } else if spec!.post == "console_logs" {
-            decodeWhoop5ConsoleLogs(frame, fb: fb, payloadEnd: payloadEnd, limit: limit)
+            decodeWhoop5ConsoleLogs(frame, fb: &fb, payloadEnd: payloadEnd, limit: limit)
         } else if let payloadEnd = payloadEnd, innerStart + 3 < payloadEnd, payloadEnd <= frame.count {
             // Other types: static fields decoded above; the remaining variable body is kept raw —
             // its 4.0 post-hook awaits per-type 5.0 hardware verification before we apply it at +4.
@@ -456,7 +471,7 @@ public func isUnmappedWhoop5HistoricalRecord(_ frame: [UInt8]) -> Bool {
 /// PPG / SpO₂ / skin-temp live further in the 124-byte record but lack on-device ground truth, so
 /// they are left as a raw region rather than guessed (project rule: real captures, never invented
 /// offsets).
-private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadEnd: Int?,
+private func decodeWhoop5Historical(_ frame: [UInt8], fb: inout FieldBuilder, payloadEnd: Int?,
                                     limit: Int) {
     // The layout version is the inner record's seq slot: a named inner field, so it is bounded like
     // any other. Out of bounds it stays -1, which routes the record to the unmapped branch below.
@@ -468,13 +483,13 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
     // rather than the old if-chain so the mapped versions are readable in one place.
     switch version {
     case 26:
-        decodeWhoop5HistoricalV26(frame, fb: fb, limit: limit)
+        decodeWhoop5HistoricalV26(frame, fb: &fb, limit: limit)
         return
     case 16:
-        decodeWhoop5HistoricalV16(frame, fb: fb, limit: limit)
+        decodeWhoop5HistoricalV16(frame, fb: &fb, limit: limit)
         return
     case 20, 21:
-        decodeWhoop5HistoricalV2021(frame, fb: fb, version: version, payloadEnd: payloadEnd,
+        decodeWhoop5HistoricalV2021(frame, fb: &fb, version: version, payloadEnd: payloadEnd,
                                     limit: limit)
         return
     case 18:
@@ -507,7 +522,7 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
         guard off + 2 <= limit else { break }
         if let v = readDType(frame, off, "u16", limit), v > 0 {
             let ms = Whoop5RR.milliseconds(ticks: UInt16(v))
-            fb.add(off, 2, "rr[\(i)]", "rr", value: .int(ms), note: "ms from 1/1024 s ticks")
+            fb.add(off, 2, rrFieldName(i), "rr", value: .int(ms), note: "ms from 1/1024 s ticks")
             rawTicks.append(v)
             rrs.append(ms)
         }
@@ -754,7 +769,7 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
 /// strap's own session average over an ECG reading, not a per-second wrist rate, so publishing it under
 /// the scoring funnel's name would feed a recovery input from a signal nobody has validated for it.
 /// Under `ecg_avg_hr` it is readable and inert. Kotlin twin: `decodeWhoop5HistoricalV16`.
-private func decodeWhoop5HistoricalV16(_ frame: [UInt8], fb: FieldBuilder, limit: Int) {
+private func decodeWhoop5HistoricalV16(_ frame: [UInt8], fb: inout FieldBuilder, limit: Int) {
     if let unix = readDType(frame, 15, "u32", limit) {
         fb.add(15, 4, "unix", "time", value: .int(unix), note: "real unix seconds (strapSeconds)")
     }
@@ -809,7 +824,7 @@ private func decodeWhoop5HistoricalV16(_ frame: [UInt8], fb: FieldBuilder, limit
 /// The samples are raw AC-coupled ADC counts — PPG has no absolute unit — so they are exposed verbatim
 /// as `ppg_waveform` with NO invented scale. The bytes before [27] (header + a block index) and the
 /// footer after [75] are not mapped; SpO₂/skin-temp have no internal proxy and are left untouched.
-private func decodeWhoop5HistoricalV26(_ frame: [UInt8], fb: FieldBuilder, limit: Int) {
+private func decodeWhoop5HistoricalV26(_ frame: [UInt8], fb: inout FieldBuilder, limit: Int) {
     // @21 is a small per-burst counter (`burst_index`), NOT the optical channel (PR#553). An earlier read
     // labelled it `ppg_channel` and gated it 1…26 because our two original fixtures happened to read 1 and
     // 2 — but a later capture read 65, far outside any 26-channel sweep, so @21 is not a stable channel id.
@@ -898,7 +913,7 @@ private func decodeWhoop5HistoricalV26(_ frame: [UInt8], fb: FieldBuilder, limit
 /// but its measurement wavelengths and channel geometry remain OPEN, so those channels stay neutrally
 /// named. This layer exposes raw i16 (v21) or sign-extended i32 (v20) arrays; `Whoop5RawImu.decode`
 /// applies the v21 physical scales.
-private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: FieldBuilder, version: Int,
+private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: inout FieldBuilder, version: Int,
                                          payloadEnd: Int?, limit: Int) {
     if let marker = readU8(frame, 10, limit) {
         fb.add(10, 1, "layout_marker", "meta", value: .int(marker))
@@ -980,7 +995,7 @@ private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: FieldBuilder, ver
 /// drive the `HISTORICAL_DATA_RESULT` ack. Offsets are the 4.0 metadata post-hook positions + 4,
 /// verified on real WHOOP 5 HISTORY_END frames (trim decodes consistently across a whole capture).
 /// `end_data` to echo back in the ack is `frame[21..29]` (trim u32 + next u32).
-private func decodeWhoop5Metadata(_ frame: [UInt8], fb: FieldBuilder, limit: Int) {
+private func decodeWhoop5Metadata(_ frame: [UInt8], fb: inout FieldBuilder, limit: Int) {
     if let unix = readDType(frame, 11, "u32", limit) { fb.add(11, 4, "unix", "time", value: .int(unix)) }
     if let ss = readDType(frame, 15, "u16", limit) { fb.add(15, 2, "subsec", "time", value: .int(ss)) }
     if let trim = readDType(frame, 21, "u32", limit) {
@@ -1003,7 +1018,7 @@ public func whoop5HistoricalAckFrame(endData: [UInt8], seq: UInt8) -> [UInt8] {
 /// mapped from a real WHOOP 5 capture (firmware 50.38.1.0), not ported on faith. Commands that return
 /// a short stub on this firmware (REPORT_VERSION_INFO / GET_EXTENDED_BATTERY_INFO) or aren't served
 /// (GET_CLOCK — unneeded, since realtime + historical carry real unix) are intentionally left undecoded.
-private func decodeWhoop5CommandResponse(_ frame: [UInt8], fb: FieldBuilder, schema: Schema,
+private func decodeWhoop5CommandResponse(_ frame: [UInt8], fb: inout FieldBuilder, schema: Schema,
                                          payloadEnd: Int?, limit: Int) {
     guard let payloadEnd = payloadEnd, 11 < payloadEnd, payloadEnd <= frame.count else { return }
     guard let respCmd = readU8(frame, 10, limit) else { return }
@@ -1090,7 +1105,7 @@ private func decodeWhoop5CommandResponse(_ frame: [UInt8], fb: FieldBuilder, sch
 /// borrowed from another enum (`CommandNumber` 123 is `SELECT_WRIST`) or invented. Other events'
 /// payloads (EXTENDED_BATTERY_INFORMATION, STRAP_CONDITION_REPORT) lack on-device 5.0 ground truth and
 /// are intentionally left raw rather than ported from 4.0 on faith.
-private func decodeWhoop5Event(_ frame: [UInt8], fb: FieldBuilder, schema: Schema, limit: Int) {
+private func decodeWhoop5Event(_ frame: [UInt8], fb: inout FieldBuilder, schema: Schema, limit: Int) {
     guard let evVal = readDType(frame, 10, "u8", limit) else { return }
     guard schema.enums["EventNumber"]?[String(evVal)] == "BATTERY_LEVEL" else { return }
     if let raw = readDType(frame, 21, "u16", limit), raw <= 1100 {
@@ -1123,7 +1138,7 @@ private func decodeWhoop5Event(_ frame: [UInt8], fb: FieldBuilder, schema: Schem
 /// The text key is "log" — matching the Python
 /// reference decoder that `golden.json` is generated from, which `ParityTests` pins. Kotlin used
 /// "console" for the same field, and the mismatch is why a reader ported from that side got nil.
-private func decodeWhoop5ConsoleLogs(_ frame: [UInt8], fb: FieldBuilder, payloadEnd: Int?,
+private func decodeWhoop5ConsoleLogs(_ frame: [UInt8], fb: inout FieldBuilder, payloadEnd: Int?,
                                      limit: Int) {
     if let sequence = readDType(frame, 9, "u8", limit) {
         fb.add(9, 1, "console_sequence", "meta", value: .int(sequence),
@@ -1153,6 +1168,6 @@ private func hexFrameSlice(_ f: [UInt8], _ start: Int, _ end: Int) -> String {
 }
 
 // Post-hook registry (populated in PostHooks.swift by Task B7).
-// name -> (FieldBuilder, frame, length, schema) -> Void
-typealias PostHook = (FieldBuilder, [UInt8], Int?, Schema) -> Void
+// name -> (inout FieldBuilder, frame, length, schema) -> Void
+typealias PostHook = (inout FieldBuilder, [UInt8], Int?, Schema) -> Void
 var postHooks: [String: PostHook] = [:]

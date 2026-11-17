@@ -680,6 +680,18 @@ final class IntelligenceEngine: ObservableObject {
         !effortDone || !sleepWearDone
     }
 
+    /// Cheap UserDefaults fingerprint: true when launch still owes the 4000-day heal or history
+    /// repair. Callers skip the 6 s delay and the passes themselves when this is false.
+    static func launchHistoryPassesArePending() -> Bool {
+        let d = UserDefaults.standard
+        let healPending = d.bool(forKey: timestampHealPendingKey)
+            || !d.bool(forKey: timestampHealFlagKey)
+        let repairPending = historyRepairIsPending(
+            effortDone: d.bool(forKey: effortRescoreFlagKey),
+            sleepWearDone: d.bool(forKey: sleepWearRescoreFlagKey))
+        return healPending || repairPending
+    }
+
     func runSleepWearRescoreIfNeeded(historyDays: Int = 4000) async {
         await runHistoryRepairIfNeeded(historyDays: historyDays)
     }

@@ -295,4 +295,52 @@ final class MigrationTests: XCTestCase {
         let ppgCols = try await store.columnNamesForTest(table: "ppgHrSample")
         XCTAssertEqual(ppgCols, ["deviceId", "ts", "bpm", "conf"])
     }
+
+    /// v52 adds WITHOUT ROWID `hrMinute` and backfills from existing `hrSample`.
+    /// Additive: no existing table rewritten.
+    func testV52AddsHrMinuteAndBackfills() throws {
+        let dbq = try DatabaseQueue()
+        let migrator = WhoopStore.makeMigrator()
+        try migrator.migrate(dbq, upTo: "v51-read-covering-indexes")
+        try dbq.write { db in
+            XCTAssertFalse(try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'")
+                .contains("hrMinute"))
+            try db.execute(sql: """
+                INSERT INTO hrSample (deviceId, ts, bpm, synced) VALUES
+                ('dev', 100, 60, 0),
+                ('dev', 101, 80, 0),
+                ('dev', 200, 70, 0),
+                ('other', 100, 99, 0)
+                """)
+        }
+        try migrator.migrate(dbq)
+        try dbq.read { db in
+            let sql = try String.fetchOne(
+                db, sql: "SELECT sql FROM sqlite_master WHERE name = 'hrMinute'")
+            XCTAssertTrue(sql?.contains("WITHOUT ROWID") == true, "hrMinute must be WITHOUT ROWID")
+            let pk = try db.primaryKey("hrMinute").columns
+            XCTAssertEqual(pk, ["deviceId", "minuteTs"])
+            let cols = try db.columns(in: "hrMinute").map(\.name)
+            XCTAssertEqual(cols, ["deviceId", "minuteTs", "sumBpm", "n", "minBpm", "maxBpm"])
+            let rows = try Row.fetchAll(
+                db, sql: "SELECT deviceId, minuteTs, sumBpm, n, minBpm, maxBpm FROM hrMinute ORDER BY deviceId, minuteTs")
+            XCTAssertEqual(rows.count, 3)
+            XCTAssertEqual(rows[0]["deviceId"] as String, "dev")
+            XCTAssertEqual(rows[0]["minuteTs"] as Int, 60)
+            XCTAssertEqual(rows[0]["sumBpm"] as Int, 140)
+            XCTAssertEqual(rows[0]["n"] as Int, 2)
+            XCTAssertEqual(rows[0]["minBpm"] as Int, 60)
+            XCTAssertEqual(rows[0]["maxBpm"] as Int, 80)
+            XCTAssertEqual(rows[1]["deviceId"] as String, "dev")
+            XCTAssertEqual(rows[1]["minuteTs"] as Int, 180)
+            XCTAssertEqual(rows[1]["sumBpm"] as Int, 70)
+            XCTAssertEqual(rows[1]["n"] as Int, 1)
+            XCTAssertEqual(rows[2]["deviceId"] as String, "other")
+            XCTAssertEqual(rows[2]["minuteTs"] as Int, 60)
+            XCTAssertEqual(rows[2]["sumBpm"] as Int, 99)
+            let hrCols = try db.columns(in: "hrSample").map(\.name)
+            XCTAssertEqual(hrCols, ["deviceId", "ts", "bpm", "synced"],
+                           "v52 must not alter hrSample")
+        }
+    }
 }

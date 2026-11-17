@@ -73,6 +73,20 @@ final class IngestPerfTests: XCTestCase {
         return Int(st.size_in_use)
     }
 
+    /// Resident set size via `mach_task_basic_info`, for peak-memory benches.
+    private func physFootprint() -> Int {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return 0 }
+        return Int(info.resident_size)
+    }
+
     /// Tile `seed` to `count` frames. Identical copies are valid CRC-checked frames; decode
     /// throughput does not need unique timestamps (insert benches live in WhoopStore).
     private func tile(_ seed: [UInt8], count: Int) -> [[UInt8]] {
@@ -170,11 +184,10 @@ final class IngestPerfTests: XCTestCase {
         var sink = 0
 
         func runOnce() -> Int {
-            var parsed = [ParsedFrame](); parsed.reserveCapacity(frames.count)
-            for f in frames { parsed.append(parseFrame(f, family: .whoop5)) }
-            let streams = extractHistoricalStreams(parsed, deviceClockRef: unix, wallClockRef: unix,
+            // Stream parse→extract so a day's ParsedFrame dictionaries are not retained.
+            let streams = extractHistoricalStreams(frames: frames, deviceClockRef: unix, wallClockRef: unix,
                                                    family: .whoop5, wallNow: unix + 10)
-            return parsed.count + streams.hr.count + streams.rr.count + streams.gravity.count
+            return frames.count + streams.hr.count + streams.rr.count + streams.gravity.count
         }
         sink &+= runOnce() // warm-up
 
@@ -251,5 +264,72 @@ final class IngestPerfTests: XCTestCase {
         XCTAssertGreaterThan(sink, 0)
         report("parseFrame_mixed_tiled", n: Self.dayFrames, bytes: bytes,
                seconds: summarize(times), allocs: nil)
+    }
+
+    // MARK: - memcpy ceiling + peak memory
+
+    func testPerfMemcpyDayOfHistorical() throws {
+        try requirePerf()
+        let seed = Self.hex(Self.whoop5HistoricalHex)
+        let frames = tile(seed, count: Self.dayFrames)
+        let bytes = frames.reduce(0) { $0 + $1.count }
+        var dest = [UInt8](repeating: 0, count: seed.count)
+        var times: [Double] = []
+        var sink = 0
+        for f in frames { dest.withUnsafeMutableBytes { d in
+            f.withUnsafeBytes { s in _ = memcpy(d.baseAddress, s.baseAddress, s.count) }
+        }; sink &+= Int(dest[0]) }
+        for _ in 0..<Self.measuredRuns {
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            for f in frames {
+                dest.withUnsafeMutableBytes { d in
+                    f.withUnsafeBytes { s in _ = memcpy(d.baseAddress, s.baseAddress, s.count) }
+                }
+                sink &+= Int(dest[4])
+            }
+            let t1 = DispatchTime.now().uptimeNanoseconds
+            times.append(Double(t1 - t0) / 1e9)
+        }
+        XCTAssertGreaterThan(sink, 0)
+        report("memcpy_whoop5_hist", n: Self.dayFrames, bytes: bytes,
+               seconds: summarize(times), allocs: nil)
+    }
+
+    func testPerfPeakMemoryParseExtractDayStreamingVsAccumulating() throws {
+        try requirePerf()
+        let seed = Self.hex(Self.whoop5HistoricalHex)
+        let frames = tile(seed, count: Self.dayFrames)
+        let unix = 1_780_916_150
+        _ = extractHistoricalStreams(frames: frames, deviceClockRef: unix, wallClockRef: unix,
+                                     family: .whoop5, wallNow: unix + 10)
+
+        let fp0 = physFootprint()
+        let a0 = mallocInUse()
+        var parsed = [ParsedFrame](); parsed.reserveCapacity(frames.count)
+        for f in frames { parsed.append(parseFrame(f, family: .whoop5)) }
+        let acc = extractHistoricalStreams(parsed, deviceClockRef: unix, wallClockRef: unix,
+                                           family: .whoop5, wallNow: unix + 10)
+        let fpAcc = physFootprint()
+        let aAcc = mallocInUse()
+        parsed.removeAll(keepingCapacity: false)
+
+        let fp1 = physFootprint()
+        let a1 = mallocInUse()
+        let streamed = extractHistoricalStreams(frames: frames, deviceClockRef: unix, wallClockRef: unix,
+                                                family: .whoop5, wallNow: unix + 10)
+        let fpStream = physFootprint()
+        let aStream = mallocInUse()
+
+        XCTAssertEqual(streamed.hr.count, acc.hr.count)
+        XCTAssertEqual(streamed.rr.count, acc.rr.count)
+        print(String(
+            format: "BAND_PERF peak_memory_parse+extract n=%d accum_footprint_delta=%.1f MB stream_footprint_delta=%.1f MB accum_malloc_delta=%.1f MB stream_malloc_delta=%.1f MB (baseline_fp=%.1f MB)",
+            Self.dayFrames,
+            Double(max(0, fpAcc - fp0)) / 1_000_000,
+            Double(max(0, fpStream - fp1)) / 1_000_000,
+            Double(max(0, aAcc - a0)) / 1_000_000,
+            Double(max(0, aStream - a1)) / 1_000_000,
+            Double(fp0) / 1_000_000))
+        fflush(stdout)
     }
 }

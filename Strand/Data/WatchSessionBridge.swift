@@ -32,7 +32,7 @@ final class WatchSessionBridge: NSObject, ObservableObject {
     /// Minimum spacing between pushes (30 minutes). Complication/context transfers ride a system budget
     /// (~50/day for complication updates), so `pushLatest` never sends more often than this, and only
     /// when the headline values actually changed. BOTH checks must pass; see `shouldPush`.
-    static let minPushInterval: TimeInterval = 30 * 60
+    static let minPushInterval: TimeInterval = WatchPushPolicy.minInterval
     /// Whether a watch is currently paired + has the NOOP watch app installed + is reachable enough to
     /// receive context. Application context still queues for delivery when the watch is briefly away, so
     /// this is informational, not a gate on sending.
@@ -79,6 +79,10 @@ final class WatchSessionBridge: NSObject, ObservableObject {
         if let session, session.activationState == .activated, !session.isWatchAppInstalled {
             return
         }
+        // Spacing is independent of the snapshot. Building it runs `exploreSeries` over Rest
+        // history; doing that on every refreshSeq bump (then throwing the result away) was the
+        // cost the 30-minute gate exists to avoid.
+        if !WatchPushPolicy.spacingAllowsPush(lastPushedAt: lastPushedAt, now: Date()) { return }
         let snap = await Self.buildSnapshot(from: model)
         // A contentless snapshot (a cold launch races the first repo refresh, so `days` is still empty)
         // must NOT push: it would stomp the watch's last REAL data with the empty state AND burn the
@@ -107,7 +111,7 @@ final class WatchSessionBridge: NSObject, ObservableObject {
     /// pushed this process, passes). (2) Substance: the snapshot's HEADLINE values differ from the last
     /// pushed one, so an unchanged dashboard never burns a transfer re-stating the same scores.
     private func shouldPush(_ snap: WatchScoreSnapshot, now: Date) -> Bool {
-        if let at = lastPushedAt, now.timeIntervalSince(at) < Self.minPushInterval { return false }
+        guard WatchPushPolicy.spacingAllowsPush(lastPushedAt: lastPushedAt, now: now) else { return false }
         return Self.headlineChanged(from: lastSent, to: snap)
     }
 

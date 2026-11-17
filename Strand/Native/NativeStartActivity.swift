@@ -4,6 +4,9 @@ import CoreLocation
 import StrandDesign
 import StrandAnalytics
 import WhoopStore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// WHOOP-style start screen: live HR circle, Track Route, Strain Target, Start Activity.
 struct NativeStartActivityView: View {
@@ -242,47 +245,98 @@ private struct NativeStartSwiftMap: View {
     }
 }
 
+/// When the start-activity map may ask CoreLocation for a fix. Pure so the
+/// one-shot / wanted-flag rule is testable without a location manager.
+enum NativeStartLocationPolicy {
+    /// The map is a backdrop pin, not a live track. One coarse fix is enough.
+    static let stopsAfterFirstFix = true
+
+    static func shouldRequestFix(wanted: Bool, authorized: Bool) -> Bool {
+        wanted && authorized
+    }
+}
+
 @MainActor
 final class NativeStartLocation: NSObject, ObservableObject {
     @Published var coordinate: CLLocationCoordinate2D?
 
     private let manager = CLLocationManager()
+    /// True only while the start-activity map is on screen. Authorization can land
+    /// after the user has left, and `onDisappear` does not run when the app is
+    /// backgrounded; without this, `startUpdatingLocation` plus the app's
+    /// `location` background mode kept GPS hot behind a map nobody could see.
+    private var wanted = false
+    #if canImport(UIKit) && os(iOS)
+    private var backgroundObserver: NSObjectProtocol?
+    private var foregroundObserver: NSObjectProtocol?
+    #endif
 
     override init() {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         manager.distanceFilter = 25
+        #if canImport(UIKit) && os(iOS)
+        let nc = NotificationCenter.default
+        backgroundObserver = nc.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.manager.stopUpdatingLocation() }
+        }
+        foregroundObserver = nc.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.requestOneShotIfWanted() }
+        }
+        #endif
+    }
+
+    deinit {
+        #if canImport(UIKit) && os(iOS)
+        if let backgroundObserver { NotificationCenter.default.removeObserver(backgroundObserver) }
+        if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
+        #endif
     }
 
     func request() {
+        wanted = true
         switch manager.authorizationStatus {
         case .notDetermined:
             manager.requestWhenInUseAuthorization()
         case .authorizedWhenInUse, .authorizedAlways:
-            manager.startUpdatingLocation()
+            requestOneShotIfWanted()
         default:
             break
         }
     }
 
     func stop() {
+        wanted = false
         manager.stopUpdatingLocation()
+    }
+
+    private func requestOneShotIfWanted() {
+        guard NativeStartLocationPolicy.shouldRequestFix(
+            wanted: wanted,
+            authorized: manager.authorizationStatus == .authorizedWhenInUse
+                || manager.authorizationStatus == .authorizedAlways
+        ) else { return }
+        manager.requestLocation()
     }
 }
 
 extension NativeStartLocation: @preconcurrency CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        switch manager.authorizationStatus {
-        case .authorizedWhenInUse, .authorizedAlways:
-            manager.startUpdatingLocation()
-        default:
-            break
-        }
+        requestOneShotIfWanted()
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         coordinate = locations.last?.coordinate
+        if NativeStartLocationPolicy.stopsAfterFirstFix {
+            manager.stopUpdatingLocation()
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}

@@ -103,6 +103,15 @@ public enum WidgetTelemetry {
         return installedKnown ?? true
     }
 
+    /// Whether a content change should ask WidgetKit for a new timeline.
+    ///
+    /// Unknown presence counts as installed (`widgetsInstalled`'s default), so a cold process still
+    /// reloads until the full publish path learns otherwise. A known-empty home screen skips the
+    /// XPC reload: the snapshot is still saved for the next widget that is placed.
+    public static func shouldReloadTimelines(contentChanged: Bool, widgetsInstalled: Bool) -> Bool {
+        contentChanged && widgetsInstalled
+    }
+
     public static func snapshot(now: Date = Date()) -> Snapshot {
         lock.lock(); defer { lock.unlock() }
         return Snapshot(

@@ -42,7 +42,7 @@ extension WhoopStore {
     ) async throws -> TimestampHealResult {
         let lo = MIN_PLAUSIBLE_UNIX
         let hi = now + FUTURE_MARGIN
-        return try syncWrite { db in
+        let result = try syncWrite { db in
             // (a) Raw, ts-keyed streams. Every one of these is fed by the historical type-47 / EVENT /
             // REALTIME paths the #547 gate now guards, so the same out-of-bounds predicate cleans them.
             // `ppgWaveformSample` / `rawImuSample` / `sleepStateSample` / `v18AuxSample` were landed after
@@ -63,6 +63,12 @@ extension WhoopStore {
                                arguments: [lo, hi])
                 rawDeleted += db.changesCount
             }
+            // hrMinute is derived from hrSample. Garbage-ts minutes sit far from
+            // plausible ones, so dropping implausible minuteTs matches the raw
+            // purge without a rebuild. Not in rawTableKeys: the column is
+            // minuteTs, not ts.
+            try db.execute(sql: "DELETE FROM hrMinute WHERE minuteTs < ? OR minuteTs > ?",
+                           arguments: [lo, hi])
 
             // (b) Computed rows. dailyMetric is keyed by a yyyy-MM-dd `day` text; sleepSession by an
             // integer `startTs`. A FUTURE-dated row is always implausible (a future day/ts can only come
@@ -83,6 +89,8 @@ extension WhoopStore {
             return TimestampHealResult(rawRowsDeleted: rawDeleted,
                                        computedRowsDeleted: computedDeleted)
         }
+        if result.didChange { noteDashboardFullReload() }
+        return result
     }
 
     /// `yyyy-MM-dd` for `date` in the LOCAL calendar — matches how dailyMetric `day` keys are written.

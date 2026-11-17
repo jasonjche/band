@@ -80,7 +80,9 @@ final class LiquidMotion {
     private let motionQueue: OperationQueue = {
         let q = OperationQueue()
         q.name = "com.noop.liquid.motion"
-        q.qualityOfService = .userInteractive
+        // Decorative tilt. `.utility` yields to scrolling and BLE; `.userInteractive` was
+        // pre-empting the UI for a picture.
+        q.qualityOfService = .utility
         q.maxConcurrentOperationCount = 1
         return q
     }()

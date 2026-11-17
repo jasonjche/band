@@ -123,4 +123,11 @@ final class WidgetTelemetryTests: XCTestCase {
         WidgetTelemetry.resetForTest()
         XCTAssertTrue(WidgetTelemetry.widgetsInstalled, "reset returns it to unknown, not to false")
     }
+
+    func testAContentChangeReloadsOnlyWhenAWidgetIsInstalled() {
+        XCTAssertTrue(WidgetTelemetry.shouldReloadTimelines(contentChanged: true, widgetsInstalled: true))
+        XCTAssertFalse(WidgetTelemetry.shouldReloadTimelines(contentChanged: true, widgetsInstalled: false))
+        XCTAssertFalse(WidgetTelemetry.shouldReloadTimelines(contentChanged: false, widgetsInstalled: true))
+        XCTAssertFalse(WidgetTelemetry.shouldReloadTimelines(contentChanged: false, widgetsInstalled: false))
+    }
 }

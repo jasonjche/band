@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 import WhoopProtocol
 @testable import WhoopStore
 
@@ -146,5 +147,57 @@ final class StreamInsertPerfTests: XCTestCase {
             }
         }
         report("insert_mixed_hr_rr_steps_gravity", n: n, seconds: times)
+    }
+
+    private func physFootprint() -> Int {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return 0 }
+        return Int(info.resident_size)
+    }
+
+    /// Decode + persist a day's v18 historical frames in 512-frame chunks so peak memory
+    /// is one chunk of ParsedFrame + one insert transaction, not 86,400 retained frames.
+    func testPerfPeakMemoryDecodeAndPersistDayChunked() async throws {
+        try requirePerf()
+        let hex = "aa01740001003fb12f1280733d8401b69f266a66460066025a0265020000000000007b0a8d656463ff0012163cf6a439bf2924fd3ed763fe3e3200aa000000000000000000f7000901f10b0007010c020c00000000000000000000000000000000000000000000000100656f1e1e0000009d61a7c00000003e862817"
+        var seed = [UInt8](); seed.reserveCapacity(hex.count / 2)
+        var idx = hex.startIndex
+        while idx < hex.endIndex {
+            let next = hex.index(idx, offsetBy: 2)
+            seed.append(UInt8(hex[idx..<next], radix: 16)!)
+            idx = next
+        }
+        XCTAssertTrue(parseFrame(seed, family: .whoop5).ok)
+        let unix = 1_780_916_150
+        let chunk = 512
+        let fp0 = physFootprint()
+        var hr = 0, rr = 0
+        _ = try await withTempStore { store in
+            var i = 0
+            while i < Self.dayRows {
+                let n = min(chunk, Self.dayRows - i)
+                var frames = [[UInt8]](); frames.reserveCapacity(n)
+                for _ in 0..<n { frames.append(seed) }
+                let streams = extractHistoricalStreams(frames: frames, deviceClockRef: unix,
+                                                       wallClockRef: unix, family: .whoop5,
+                                                       wallNow: unix + 10)
+                let r = try await store.insert(streams, deviceId: "perf")
+                hr += r.hr; rr += r.rr
+                i += n
+            }
+        }
+        let fp1 = physFootprint()
+        XCTAssertGreaterThan(hr + rr, 0)
+        print(String(
+            format: "BAND_PERF peak_memory_decode+persist_chunked n=%d footprint_delta=%.1f MB hr=%d rr=%d (baseline=%.1f MB)",
+            Self.dayRows, Double(max(0, fp1 - fp0)) / 1_000_000, hr, rr, Double(fp0) / 1_000_000))
+        fflush(stdout)
     }
 }

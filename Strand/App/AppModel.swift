@@ -107,6 +107,9 @@ final class AppModel: ObservableObject {
     /// True while the active workout is a GPS-type session (drives the End-time route persist). Mirrors
     /// Android's `ActiveWorkout.gpsEnabled`.
     private var activeWorkoutIsGps = false
+    /// Last UserDefaults rewrite of the in-flight workout. Sample ticks are 15 s-floored;
+    /// start / pause / resume persist immediately.
+    private var lastWorkoutPersistAt: Date?
 
     /// A manual workout in progress. `samples` accumulate from the smoothed live `bpm`; `liveStrain`
     /// is recomputed as the window grows so the active card can show strain building in real time.
@@ -469,6 +472,10 @@ final class AppModel: ObservableObject {
         // main thread free for SwiftUI during the deep-history pass right after an import / first launch.
         Task(priority: .utility) { [weak self] in
             guard let self else { return }
+            // First frame: yield a display refresh so SwiftUI can commit the window before the
+            // 4000-day store open + dashboard reload contends for the main actor.
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 16_000_000)
             #if DEBUG
             // DEBUG-only: when launched with `--demo-seed`, populate a deterministic synthetic
             // dataset so an empty simulator/dev build can walk every screen (verification + marketing
@@ -483,7 +490,14 @@ final class AppModel: ObservableObject {
             await self.repo.refresh()                          // surface any imported data at once
             await self.wireSourceCoordinator()                 // dormant unless a generic strap is active
             await self.recordAppVersionChangeIfNeeded()        // #1410: stamp an update transition once
-            try? await Task.sleep(nanoseconds: 6_000_000_000)  // give the first offload a moment
+            // One-shot 4000-day heal/rescore: UserDefaults fingerprint. Skip the 6 s offload grace
+            // and the passes themselves when a previous launch already completed them.
+            let historyPending = await MainActor.run {
+                IntelligenceEngine.launchHistoryPassesArePending()
+            }
+            if historyPending {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)  // give the first offload a moment
+            }
             // FIX 2(a): DEFER the heavy one-shot 4000-day heal/rescore while an import is in flight. A
             // large Apple Health import is the worst-case launch overlap , running a 4000-iteration heal
             // + rescore concurrently with the import's parse+writes is what produced the ~1-minute app-wide
@@ -495,20 +509,24 @@ final class AppModel: ObservableObject {
             // non-throwing import HANG would never reach, permanently starving the one-shot passes AND the
             // cadence loop below for the whole session. Bound it so a wedged import can't disable analysis;
             // the merge reads are off-actor now, so proceeding under a still-flagged import is safe.
-            var importWaited = 0
-            while self.hasActiveImport && !Task.isCancelled && importWaited < 180 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 s, re-check; ~3 min cap then proceed
-                importWaited += 1
+            if historyPending {
+                var importWaited = 0
+                while self.hasActiveImport && !Task.isCancelled && importWaited < 180 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 s, re-check; ~3 min cap then proceed
+                    importWaited += 1
+                }
             }
             // One-shot on-upgrade heal (#547): purge rows a bad-clock strap dated to scattered garbage
             // (far-past / bogus-2027 / FUTURE) from an older build, then rescore the real days. Runs
             // BEFORE the Effort rescore + analyzeRecent loop so both operate on a cleaned DB. Persisted
             // flag → no-op on every subsequent launch; idempotent on a clean DB.
-            await self.intelligence.runTimestampHealIfNeeded()
-            // One-shot on-upgrade Effort rescore (#313): recompute strain from source across the FULL
-            // history and repair sleep rejected by unmatched WRIST_OFF in one pass. Both persisted flags
-            // describe that shared pass; either pending flag triggers it.
-            await self.intelligence.runEffortRescoreIfNeeded()
+            if historyPending {
+                await self.intelligence.runTimestampHealIfNeeded()
+                // One-shot on-upgrade Effort rescore (#313): recompute strain from source across the FULL
+                // history and repair sleep rejected by unmatched WRIST_OFF in one pass. Both persisted flags
+                // describe that shared pass; either pending flag triggers it.
+                await self.intelligence.runEffortRescoreIfNeeded()
+            }
             while !Task.isCancelled {
                 // #547 RE-POLLUTION: a sync since the last tick may have armed a re-heal (its ingest gate
                 // dropped bad-clock records). `runTimestampHealIfNeeded` honours the pending flag even after
@@ -891,7 +909,7 @@ final class AppModel: ObservableObject {
         }
         // Make the session durable from the first instant (#529): persist it now so an OS kill right
         // after Start , before any HR sample lands , can still be rehydrated + ended on relaunch.
-        persistActiveWorkout()
+        persistActiveWorkout(force: true)
         // Workouts & GPS test mode (Test Centre): one session-start line tagged `.workouts`. Zero-cost when
         // off (the gate is one UserDefaults bool read), so the lifecycle of a missing workout is visible.
         emitWorkoutsTrace(WorkoutsTrace.sessionLine(
@@ -939,8 +957,14 @@ final class AppModel: ObservableObject {
     /// analogue of Android's `persistNonGpsWorkout`. A distance workout records a route as well, and its
     /// fixes are banked separately by `ActiveRouteStore`: keeping them out of here is what lets this stay
     /// a small per-sample write instead of rewriting a growing route on every beat.
-    private func persistActiveWorkout() {
+    /// Sample ticks are 15 s-floored (`PersistCadence`); start / pause / resume pass `force` so a kill
+    /// still restores the clock and pause state. At most one window of HR is lost.
+    private func persistActiveWorkout(force: Bool = false) {
         guard let w = activeWorkout else { return }
+        let now = Date()
+        guard ActiveWorkoutPersistence.PersistCadence.due(
+            lastPersistedAt: lastWorkoutPersistAt, now: now, force: force) else { return }
+        lastWorkoutPersistAt = now
         ActiveWorkoutPersistence.store(
             ActiveWorkoutPersistence.Snapshot(
                 startSec: Int(w.start.timeIntervalSince1970),
@@ -995,13 +1019,14 @@ final class AppModel: ObservableObject {
             if activeWorkoutIsGps { gpsRecorder.pause() }
         }
         activeWorkout = w
-        persistActiveWorkout()
+        persistActiveWorkout(force: true)
     }
 
     /// Abort the active session without saving a workout.
     func discardWorkout() {
         guard activeWorkout != nil else { return }
         activeWorkout = nil
+        lastWorkoutPersistAt = nil
         if activeWorkoutIsGps { gpsRecorder.stop() }
         activeWorkoutIsGps = false
         ActiveWorkoutPersistence.clear()
@@ -1026,6 +1051,7 @@ final class AppModel: ObservableObject {
     func endWorkout() {
         guard let w = activeWorkout else { return }
         activeWorkout = nil
+        lastWorkoutPersistAt = nil
         let wasGps = activeWorkoutIsGps
         activeWorkoutIsGps = false
         // Drop the durable snapshot the instant the session ends , whether it saves below or is discarded
@@ -1206,8 +1232,10 @@ final class AppModel: ObservableObject {
             config: cfg,
             nowSec: Int(Date().timeIntervalSince1970),
             tzOffsetSec: TimeZone.current.secondsFromGMT())
+        if decision.nextState != stressState {
+            BiofeedbackPrefs.saveStressState(decision.nextState)
+        }
         stressState = decision.nextState
-        BiofeedbackPrefs.saveStressState(decision.nextState)
         guard decision.shouldNudge else { return }
         if canBuzz { buzz(loops: UInt8(clamping: decision.buzzLoops)) }
         stressNudgeCenter.present(fastRMSSD: decision.fastRMSSD, baselineRMSSD: decision.baselineRMSSD)

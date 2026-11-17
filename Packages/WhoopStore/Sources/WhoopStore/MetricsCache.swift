@@ -232,7 +232,7 @@ extension WhoopStore {
     /// happens to gate behind their own dedup toggle.
     @discardableResult
     public func upsertSleepSessions(_ sessions: [CachedSleepSession], deviceId: String) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             var n = 0
             for s in sessions {
                 if !s.userEdited, let existing = try Self.storedSleepSession(db, deviceId: deviceId, startTs: s.startTs),
@@ -269,6 +269,8 @@ extension WhoopStore {
             }
             return n
         }
+        noteDashboardSleepIfChanged(n, sessions: sessions)
+        return n
     }
 
     /// The stored row at (deviceId, startTs), or nil when there is none yet — the completeness check
@@ -295,7 +297,7 @@ extension WhoopStore {
     @discardableResult
     public func applySleepEdit(deviceId: String, detectedStartTs: Int, newStartTs: Int, newEndTs: Int,
                                stagesJSON: String? = nil) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             try db.execute(sql: """
                 UPDATE sleepSession
                 SET startTsAdjusted = ?, endTs = ?, stagesJSON = COALESCE(?, stagesJSON), userEdited = 1
@@ -303,6 +305,8 @@ extension WhoopStore {
                 """, arguments: [newStartTs, newEndTs, stagesJSON, deviceId, detectedStartTs])
             return db.changesCount
         }
+        noteDashboardSleepWindowIfChanged(n, startTs: min(detectedStartTs, newStartTs), endTs: newEndTs)
+        return n
     }
 
     /// Delete ONE sleep session entirely — the delete half of `applySleepEdit` with no re-insert.
@@ -314,11 +318,13 @@ extension WhoopStore {
     /// store call only removes the row.
     @discardableResult
     public func deleteSleepSession(deviceId: String, startTs: Int) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             try db.execute(sql: "DELETE FROM sleepSession WHERE deviceId = ? AND startTs = ?",
                            arguments: [deviceId, startTs])
             return db.changesCount
         }
+        noteDashboardSleepWindowIfChanged(n, startTs: startTs, endTs: startTs + 12 * 3_600)
+        return n
     }
 
     /// Manually ADD a sleep session the detector missed — typically a daytime NAP (#508). Inserts a NEW
@@ -336,7 +342,7 @@ extension WhoopStore {
     @discardableResult
     public func insertManualSleepSession(deviceId: String, startTs: Int, endTs: Int,
                                          efficiency: Double?, stagesJSON: String?) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             try db.execute(sql: """
                 INSERT INTO sleepSession
                     (deviceId, startTs, endTs, efficiency, restingHr, avgHrv, stagesJSON,
@@ -346,6 +352,8 @@ extension WhoopStore {
                 """, arguments: [deviceId, startTs, endTs, efficiency, stagesJSON])
             return db.changesCount
         }
+        noteDashboardSleepWindowIfChanged(n, startTs: startTs, endTs: endTs)
+        return n
     }
 
     /// Replace ONLY the stage breakdown of an already user-edited night, leaving the corrected bed/wake
@@ -358,7 +366,7 @@ extension WhoopStore {
     /// Returns rows changed (0 when no such edited session exists).
     @discardableResult
     public func updateSleepStages(deviceId: String, detectedStartTs: Int, stagesJSON: String) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             try db.execute(sql: """
                 UPDATE sleepSession
                 SET stagesJSON = ?
@@ -366,6 +374,8 @@ extension WhoopStore {
                 """, arguments: [stagesJSON, deviceId, detectedStartTs])
             return db.changesCount
         }
+        noteDashboardSleepWindowIfChanged(n, startTs: detectedStartTs, endTs: detectedStartTs)
+        return n
     }
 
     // MARK: - Per-epoch sleep analytics (v18: motionJSON / sleepStateJSON)
@@ -533,9 +543,11 @@ extension WhoopStore {
     /// Upsert cached daily metrics. Natural key (deviceId, day). Returns rows changed.
     @discardableResult
     public func upsertDailyMetrics(_ days: [DailyMetric], deviceId: String) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             try Self.upsertDailyMetrics(days, deviceId: deviceId, in: db)
         }
+        noteDashboardDaysIfChanged(n, days: days.map(\.day))
+        return n
     }
 
     /// Transaction-sharing primitive used by computed-score persistence. Keeping the SQL here ensures
@@ -591,13 +603,15 @@ extension WhoopStore {
     /// WhoopDao.deleteComputedDailyInRange.
     @discardableResult
     public func deleteDailyMetrics(deviceId: String, from: String, to: String) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             try db.execute(sql: """
                 DELETE FROM dailyMetric
                 WHERE deviceId = ? AND day >= ? AND day <= ?
                 """, arguments: [deviceId, from, to])
             return db.changesCount
         }
+        if n > 0 { noteDashboardDays([from, to]) }
+        return n
     }
 
     /// #1853: FILL-ONLY write of `skinTempC` for nights the backfill re-derived an absolute for.
@@ -607,7 +621,7 @@ extension WhoopStore {
     /// a full-row upsert would risk clobbering a concurrent scoring pass's write. Returns rows filled.
     @discardableResult
     public func fillSkinTempC(deviceId: String, day: String, skinTempC: Double) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             try db.execute(sql: """
                 UPDATE dailyMetric
                 SET skinTempC = ?
@@ -615,6 +629,8 @@ extension WhoopStore {
                 """, arguments: [skinTempC, deviceId, day])
             return db.changesCount
         }
+        noteDashboardDaysIfChanged(n, days: [day])
+        return n
     }
 
     // MARK: - Reads

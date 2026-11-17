@@ -413,9 +413,80 @@ extension WhoopStore {
             // autocorrelation conf — so a bucket touched by ANY weak-optical estimate reads as weak
             // (conservative), and a purely-measured bucket stays 1.0. Purely additive projection:
             // the bpm aggregate and the anti-join semantics are byte-identical. (ryanAtriumAi #988)
+            let hasPpg = try ReadFetch.hasPpgHr(db: db, deviceId: deviceId, from: from, to: to)
             let sql: String
             let arguments: StatementArguments
-            if try ReadFetch.hasPpgHr(db: db, deviceId: deviceId, from: from, to: to) {
+            if bucket >= 60, bucket % 60 == 0,
+               let complete = WhoopStore.completeHrMinutes(from: from, to: to) {
+                // Weighted SUM/n over whole minutes, plus raw samples on the
+                // partial edge minutes so [from, to] matches the 1 Hz GROUP BY
+                // within 1e-9. A minute is wholly inside one bucket when
+                // bucketSeconds is a multiple of 60. PPG-only seconds are not
+                // in hrMinute; they UNION in with the same anti-join as raw.
+                let firstFull = complete.first
+                let lastFullEnd = complete.last + 59
+                if hasPpg {
+                    sql = """
+                        SELECT (src / ?) * ? AS bucket,
+                               CAST(SUM(sumBpm) AS REAL) / SUM(n) AS avgBpm,
+                               MIN(conf) AS minConf,
+                               MIN(minBpm) AS minBpm, MAX(maxBpm) AS maxBpm FROM (
+                            SELECT minuteTs AS src, sumBpm, n, minBpm, maxBpm, 1.0 AS conf
+                            FROM hrMinute
+                            WHERE deviceId = ? AND minuteTs >= ? AND minuteTs <= ?
+                            UNION ALL
+                            SELECT ts, bpm, 1, bpm, bpm, 1.0
+                            FROM hrSample
+                            WHERE deviceId = ? AND ts >= ? AND ts < ?
+                            UNION ALL
+                            SELECT ts, bpm, 1, bpm, bpm, 1.0
+                            FROM hrSample
+                            WHERE deviceId = ? AND ts > ? AND ts <= ?
+                            UNION ALL
+                            SELECT p.ts, p.bpm, 1, p.bpm, p.bpm, p.conf
+                            FROM ppgHrSample p
+                            WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
+                              AND NOT EXISTS (
+                                SELECT 1 FROM hrSample h
+                                WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
+                        )
+                        GROUP BY src / ?
+                        ORDER BY 1 ASC
+                        """
+                    arguments = [bucket, bucket,
+                                 deviceId, firstFull, complete.last,
+                                 deviceId, from, firstFull,
+                                 deviceId, lastFullEnd, to,
+                                 deviceId, from, to,
+                                 bucket]
+                } else {
+                    sql = """
+                        SELECT (src / ?) * ? AS bucket,
+                               CAST(SUM(sumBpm) AS REAL) / SUM(n) AS avgBpm,
+                               1.0 AS minConf,
+                               MIN(minBpm) AS minBpm, MAX(maxBpm) AS maxBpm FROM (
+                            SELECT minuteTs AS src, sumBpm, n, minBpm, maxBpm
+                            FROM hrMinute
+                            WHERE deviceId = ? AND minuteTs >= ? AND minuteTs <= ?
+                            UNION ALL
+                            SELECT ts, bpm, 1, bpm, bpm
+                            FROM hrSample
+                            WHERE deviceId = ? AND ts >= ? AND ts < ?
+                            UNION ALL
+                            SELECT ts, bpm, 1, bpm, bpm
+                            FROM hrSample
+                            WHERE deviceId = ? AND ts > ? AND ts <= ?
+                        )
+                        GROUP BY src / ?
+                        ORDER BY 1 ASC
+                        """
+                    arguments = [bucket, bucket,
+                                 deviceId, firstFull, complete.last,
+                                 deviceId, from, firstFull,
+                                 deviceId, lastFullEnd, to,
+                                 bucket]
+                }
+            } else if hasPpg {
                 sql = """
                     SELECT (ts / ?) * ? AS bucket, AVG(bpm) AS avgBpm, MIN(conf) AS minConf,
                            MIN(bpm) AS minBpm, MAX(bpm) AS maxBpm FROM (
@@ -450,6 +521,15 @@ extension WhoopStore {
                          conf: (row[2] as Double?) ?? 1.0)
             }
         }
+    }
+
+    /// Minutes wholly contained in inclusive `[from, to]`. Minute `m` covers `[m, m+59]`.
+    static func completeHrMinutes(from: Int, to: Int) -> (first: Int, last: Int)? {
+        guard to >= from, to >= 59 else { return nil }
+        let first = ((from + 59) / 60) * 60
+        let last = ((to - 59) / 60) * 60
+        guard first <= last else { return nil }
+        return (first, last)
     }
 
     /// The Oura beat channels `rrIntervals` chooses between, as a SQL list: `greenQuality` (0x80) on one

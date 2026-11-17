@@ -196,7 +196,7 @@ extension WhoopStore {
     /// Upsert Apple-Health daily aggregates. Natural key (deviceId, day). Returns rows changed.
     @discardableResult
     public func upsertAppleDaily(_ rows: [AppleDaily], deviceId: String) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             var n = 0
             for r in rows {
                 try db.execute(sql: """
@@ -219,6 +219,8 @@ extension WhoopStore {
             }
             return n
         }
+        noteDashboardDaysIfChanged(n, days: rows.map(\.day))
+        return n
     }
 
     // MARK: - Reads

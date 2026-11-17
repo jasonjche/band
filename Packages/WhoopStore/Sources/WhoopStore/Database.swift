@@ -1190,6 +1190,50 @@ extension WhoopStore {
             try db.create(index: "idx_ppgHrSample_device_ts_bpm_conf", on: "ppgHrSample",
                           columns: ["deviceId", "ts", "bpm", "conf"], options: [.ifNotExists])
         }
+        // v52: maintained per-minute HR rollup for chart buckets ≥ 60 s.
+        // `hrBuckets` GROUP BY over months of 1 Hz is a temp B-tree of every sample;
+        // ~1/60th as many minute rows with SUM/n, MIN, MAX is the same mean and
+        // extrema. WITHOUT ROWID clustered PK (deviceId, minuteTs) is the range
+        // scan. Backfill is chunked by day so a phone with months of 1 Hz does
+        // not run one GROUP BY over 15M rows. Incremental inserts in StreamStore
+        // keep the table current; this migration only copies history.
+        migrator.registerMigration("v52-hr-minute") { db in
+            try db.create(table: "hrMinute", options: [.withoutRowID, .ifNotExists]) { t in
+                t.column("deviceId", .text).notNull()
+                t.column("minuteTs", .integer).notNull()
+                t.column("sumBpm", .integer).notNull()
+                t.column("n", .integer).notNull()
+                t.column("minBpm", .integer).notNull()
+                t.column("maxBpm", .integer).notNull()
+                t.primaryKey(["deviceId", "minuteTs"])
+            }
+            try WhoopStore.backfillHrMinute(db: db)
+        }
         return migrator
+    }
+
+    /// One day of 1 Hz. Each backfill statement GROUPs at most ~86k rows so a
+    /// phone with months of history does not build one temp B-tree over 15M rows.
+    static let hrMinuteBackfillChunkSeconds = 86_400
+
+    /// Copy `hrSample` into `hrMinute`, one day at a time. Chunk bounds are
+    /// minute-aligned so a minute is never split across statements (which would
+    /// insert two incomplete rows for the same PK). Empty stores no-op.
+    static func backfillHrMinute(db: Database) throws {
+        guard let lo = try Int.fetchOne(db, sql: "SELECT MIN(ts) FROM hrSample"),
+              let hi = try Int.fetchOne(db, sql: "SELECT MAX(ts) FROM hrSample") else { return }
+        let chunk = hrMinuteBackfillChunkSeconds
+        var start = (lo / 60) * 60
+        while start <= hi {
+            let end = start + chunk
+            try db.execute(sql: """
+                INSERT INTO hrMinute (deviceId, minuteTs, sumBpm, n, minBpm, maxBpm)
+                SELECT deviceId, (ts / 60) * 60, SUM(bpm), COUNT(*), MIN(bpm), MAX(bpm)
+                FROM hrSample
+                WHERE ts >= ? AND ts < ?
+                GROUP BY deviceId, (ts / 60) * 60
+                """, arguments: [start, end])
+            start = end
+        }
     }
 }

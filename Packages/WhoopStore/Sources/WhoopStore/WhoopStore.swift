@@ -75,6 +75,7 @@ public actor WhoopStore {
     /// so a shared counter would let one strap spend another's budget. See `StreamStore`.
     var v18AuxRowsSincePrune: [String: Int] = [:]
     var stepDataRevision = StepDataRevisionIndex()
+    var dashboardChanges = DashboardChangeIndex()
     let revisionInstanceToken = UUID().uuidString
     let dbWriter: any DatabaseWriter
 
@@ -283,6 +284,56 @@ public actor WhoopStore {
         try syncRead { db in
             try Set(db.indexes(on: table).map(\.name))
         }
+    }
+
+    // MARK: - Dashboard cache watermark
+
+    /// Metric-series keys `Repository.refresh()` actually reads. Other keys (hydration, mood, VO₂)
+    /// do not invalidate the dashboard caches.
+    static let dashboardMetricKeys: Set<String> = [
+        "sleep_performance", "sleep_consistency", "sleep_need_min", "sleep_debt_min"
+    ]
+
+    /// Monotonic writer revision of dashboard-cache tables. 0 until the first qualifying write.
+    public func dashboardRevision() -> Int { dashboardChanges.revision }
+
+    /// Pending delta without consuming it. `refresh()` peeks this to skip a no-op reload.
+    public func peekDashboardChanges() -> DashboardChangeSet { dashboardChanges.peek() }
+
+    /// Consume the pending day set so the next writer starts a fresh delta. Revision stays monotonic.
+    public func takeDashboardChanges() -> DashboardChangeSet { dashboardChanges.take() }
+
+    func noteDashboardDays(_ days: some Sequence<String>) {
+        dashboardChanges.record(days: days)
+    }
+
+    func noteDashboardDaysIfChanged(_ n: Int, days: some Sequence<String>) {
+        guard n > 0 else { return }
+        dashboardChanges.record(days: days)
+    }
+
+    func noteDashboardSleepIfChanged(_ n: Int, sessions: [CachedSleepSession]) {
+        guard n > 0 else { return }
+        dashboardChanges.record(days: sessions.flatMap { Self.dashboardDayKeys(startTs: $0.startTs, endTs: $0.endTs) })
+    }
+
+    func noteDashboardSleepWindowIfChanged(_ n: Int, startTs: Int, endTs: Int) {
+        guard n > 0 else { return }
+        dashboardChanges.record(days: Self.dashboardDayKeys(startTs: startTs, endTs: endTs))
+    }
+
+    func noteDashboardFullReloadIfChanged(_ n: Int) {
+        guard n > 0 else { return }
+        dashboardChanges.recordFull()
+    }
+
+    func noteDashboardFullReload() {
+        dashboardChanges.recordFull()
+    }
+
+    static func dashboardDayKeys(startTs: Int, endTs: Int) -> [String] {
+        [localDayKey(Date(timeIntervalSince1970: TimeInterval(startTs))),
+         localDayKey(Date(timeIntervalSince1970: TimeInterval(endTs)))]
     }
 }
 

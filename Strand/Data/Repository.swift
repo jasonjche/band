@@ -263,13 +263,19 @@ final class Repository: ObservableObject {
         let trimmed = id.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, trimmed != deviceId else { return false }
         deviceId = trimmed
+        rawDashboard = nil
+        lastDashboardRevision = -1
         return true
     }
 
     #if DEBUG
     /// Inject a pre-opened store so unit tests can exercise the read facades (e.g. `timelineSeries`)
     /// against an in-memory `WhoopStore` without touching the on-disk path. DEBUG-only test seam.
-    func setStoreForTesting(_ s: WhoopStore) { self.store = s }
+    func setStoreForTesting(_ s: WhoopStore) {
+        self.store = s
+        rawDashboard = nil
+        lastDashboardRevision = -1
+    }
     #endif
 
     // MARK: - Union reads (active strap + canonical)
@@ -891,6 +897,41 @@ final class Repository: ObservableObject {
     /// newer one. Each call captures the token at entry and only publishes if it is still the latest. Not
     /// @Published (pure ordering, never drives the UI); race-free since Repository is @MainActor.
     private var refreshGen = 0
+    /// Coalesce overlapping `refresh()` calls (offload chunk storm, analyze-tail + backfill) into one
+    /// store load. Callers still await the drain that includes their write.
+    private var refreshPending = false
+    private var pendingRefreshDays = 0
+    private var pendingForceFull = false
+    private var refreshInFlight = false
+    private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Last consumed dashboard writer revision. Equal + already loaded → skip SQLite.
+    private var lastDashboardRevision = -1
+    /// Unmerged store snapshot so an incremental refresh can patch changed days without a 4000-day reread.
+    private var rawDashboard: RawDashboard?
+
+    /// How many times `performRefresh` actually ran (including cheap revision no-ops). Test seam.
+    private(set) var refreshPerformCount = 0
+    /// How many of those runs read SQLite (full or incremental). Test seam.
+    private(set) var refreshStoreLoadCount = 0
+    /// Callers that joined an in-flight drain instead of starting another load. Test seam.
+    private(set) var refreshCoalesceSkipCount = 0
+    /// True when the last store load patched a changed-day window instead of rereading all `nDays`.
+    private(set) var lastRefreshUsedIncremental = false
+
+    private struct RawDashboard {
+        var imported: [DailyMetric]
+        var computed: [DailyMetric]
+        var apple: [DailyMetric]
+        var activityFile: [DailyMetric]
+        var impSleep: [CachedSleepSession]
+        var compSleep: [CachedSleepSession]
+        var perf: [MetricPoint]
+        var cons: [MetricPoint]
+        var need: [MetricPoint]
+        var debt: [MetricPoint]
+        var appleSteps: [String: Int]
+        var nDays: Int
+    }
 
     /// #849: the `refreshSeq` value at which Today last ran its heavy history-wide reload (the ~40 reads +
     /// per-day raw-HR pass). Lives HERE, on the long-lived Repository, not in TodayView's `@State`, so it
@@ -957,126 +998,250 @@ final class Repository: ObservableObject {
     var loadFireCounts: [String: Int] = [:]
     #endif
 
+    /// When the last full (non-incremental) dashboard reload ran. See `fullRefreshMaxAge`.
+    private var lastFullRefreshAt: Date = .distantPast
+    /// Longest an incremental-only dashboard may go without a full reload.
+    static let fullRefreshMaxAge: TimeInterval = 300
+
     func refresh(days nDays: Int = 4000) async {
+        await scheduleRefresh(days: nDays, forceFull: false)
+    }
+
+    /// Old full-history reload, kept callable so tests can A/B it against incremental `refresh()`.
+    func refreshFull(days nDays: Int = 4000) async {
+        await scheduleRefresh(days: nDays, forceFull: true)
+    }
+
+    private func scheduleRefresh(days nDays: Int, forceFull: Bool) async {
+        pendingRefreshDays = max(pendingRefreshDays, nDays)
+        if forceFull { pendingForceFull = true }
+        refreshPending = true
+        if refreshInFlight {
+            refreshCoalesceSkipCount += 1
+            await withCheckedContinuation { refreshWaiters.append($0) }
+            return
+        }
+        refreshInFlight = true
+        defer {
+            refreshInFlight = false
+            let waiters = refreshWaiters
+            refreshWaiters.removeAll(keepingCapacity: true)
+            waiters.forEach { $0.resume() }
+        }
+        await drainRefresh()
+    }
+
+    private func drainRefresh() async {
+        while refreshPending {
+            refreshPending = false
+            let days = pendingRefreshDays
+            let full = pendingForceFull
+            pendingRefreshDays = 0
+            pendingForceFull = false
+            await performRefresh(days: max(days, 1), forceFull: full)
+        }
+    }
+
+    private func performRefresh(days nDays: Int, forceFull: Bool) async {
         guard let store = await ensureStore() else { return }
+        refreshPerformCount += 1
         refreshGen &+= 1
         let myGen = refreshGen
+
+        // Safety net: a writer that forgets to note its days would otherwise leave the dashboard stale
+        // until the next noted write. A full reload at most every 5 minutes bounds that.
+        let fullIsStale = Date().timeIntervalSince(lastFullRefreshAt) > Self.fullRefreshMaxAge
+        let peek = await store.peekDashboardChanges()
+        if loaded, rawDashboard != nil, !forceFull, !fullIsStale, peek.revision == lastDashboardRevision {
+            lastRefreshUsedIncremental = false
+            return
+        }
+
+        let taken = await store.takeDashboardChanges()
+        lastDashboardRevision = taken.revision
+
         let now = Date()
         let fromDay = Self.dayString(now.addingTimeInterval(-Double(nDays) * 86_400))
         let toDay = Self.dayString(now.addingTimeInterval(86_400))
         let nowTs = Int(now.timeIntervalSince1970)
         let lo = nowTs - nDays * 86_400, hi = nowTs + 86_400
 
-        // UNION the active strap (live raw, #814) with the canonical "my-whoop" import so a re-added strap's
-        // live data AND the canonical history both surface, deduped per day (active strap wins). Collapses to
-        // a single id on a single-device install (byte-identical to before).
+        let canIncremental = !forceFull
+            && !fullIsStale
+            && loaded
+            && rawDashboard != nil
+            && (rawDashboard?.nDays ?? 0) >= nDays
+            && taken.isIncremental
+        let raw: RawDashboard
+        if canIncremental, let existing = rawDashboard,
+           let patchFrom = taken.days.min(), let patchTo = taken.days.max() {
+            lastRefreshUsedIncremental = true
+            refreshStoreLoadCount += 1
+            raw = await loadRawWindow(store: store, nDays: max(existing.nDays, nDays),
+                                      fromDay: patchFrom, toDay: patchTo,
+                                      lo: Self.sleepLo(for: patchFrom), hi: Self.sleepHi(for: patchTo),
+                                      patching: existing)
+        } else {
+            lastRefreshUsedIncremental = false
+            refreshStoreLoadCount += 1
+            lastFullRefreshAt = Date()
+            raw = await loadRawWindow(store: store, nDays: nDays,
+                                      fromDay: fromDay, toDay: toDay, lo: lo, hi: hi,
+                                      patching: nil)
+        }
+
+        let chargeAnchorDay = AnalyticsEngine.dayString(nowTs, offsetSec: TimeZone.current.secondsFromGMT(for: now))
+        let hrvEpoch = Baselines.hrvBaselineEpoch()
+        let recoveryEpoch = Baselines.recoveryBaselineEpoch()
+        let captured = raw
+        let merged: MergedCaches = await Task.detached(priority: .utility) {
+            Self.mergeCaches(captured, chargeAnchorDay: chargeAnchorDay,
+                             hrvEpoch: hrvEpoch, recoveryEpoch: recoveryEpoch)
+        }.value
+
+        guard myGen == refreshGen else { return }
+        rawDashboard = captured
+        publishMerged(merged)
+    }
+
+    private func loadRawWindow(store: WhoopStore, nDays: Int, fromDay: String, toDay: String,
+                               lo: Int, hi: Int, patching: RawDashboard?) async -> RawDashboard {
         let imported = await unionDailyMetrics(store: store, from: fromDay, to: toDay)
         let computed = await unionComputedDailyMetrics(store: store, from: fromDay, to: toDay)
         let apple = (try? await store.dailyMetrics(deviceId: Self.appleHealthSource, from: fromDay, to: toDay)) ?? []
         let activityFile = (try? await store.dailyMetrics(deviceId: Self.activityFileSource, from: fromDay, to: toDay)) ?? []
         let impSleep = await unionSleepSessions(store: store, from: lo, to: hi)
         let compSleep = await unionComputedSleepSessions(store: store, from: lo, to: hi)
-
-        // #2525: the Charge baselines' inputs, read on the main actor before detaching: today's local day
-        // (the same local-calendar key the engine anchors its fold on) and the two recalibration epochs the
-        // engine reads from the same UserDefaults keys.
-        let chargeAnchorDay = AnalyticsEngine.dayString(nowTs, offsetSec: TimeZone.current.secondsFromGMT(for: now))
-        let hrvEpoch = Baselines.hrvBaselineEpoch()
-        let recoveryEpoch = Baselines.recoveryBaselineEpoch()
-
-        // Export-verbatim sleep figures (long-format metricSeries rows from WhoopImporter).
-        // SleepView prefers these per day over its APPROXIMATE recomputations.
         let perf = await unionMetricSeries(store: store, key: "sleep_performance", from: fromDay, to: toDay)
         let cons = await unionMetricSeries(store: store, key: "sleep_consistency", from: fromDay, to: toDay)
         let need = await unionMetricSeries(store: store, key: "sleep_need_min", from: fromDay, to: toDay)
         let debt = await unionMetricSeries(store: store, key: "sleep_debt_min", from: fromDay, to: toDay)
-
-        // Merge + sort OFF the main actor (FIX 3): the figures build, the two O(n log n) daily/sleep merges,
-        // the source-row sort, and the freshness counts are all pure over the rows just read, so they run in
-        // a detached task and the main actor stays free for SwiftUI during a deep-history refresh.
         var appleSteps: [String: Int] = [:]
         if AppBrand.isPersonalBuild {
-            for row in await appleDailyRows(days: nDays) {
+            let rows = (try? await store.appleDaily(deviceId: "apple-health", from: fromDay, to: toDay)) ?? []
+            for row in rows {
                 if let steps = row.steps, steps > 0 { appleSteps[row.day] = steps }
             }
         }
-        let merged: MergedCaches = await Task.detached(priority: .utility) { [appleSteps] in
-            var fig: [String: ImportedSleepFigures] = [:]
-            for p in perf { fig[p.day, default: ImportedSleepFigures()].performancePct = p.value }
-            for p in cons { fig[p.day, default: ImportedSleepFigures()].consistencyPct = p.value }
-            for p in need { fig[p.day, default: ImportedSleepFigures()].needMin = p.value }
-            for p in debt { fig[p.day, default: ImportedSleepFigures()].debtMin = p.value }
-            // H5 (#509): a night the user hand-edited (userEdited) must keep its corrected sleep figures even
-            // when a WHOOP/Apple import also covers that day. The computed ("-noop") session carries the edit,
-            // and IntelligenceEngine re-keys the computed DAILY row from it; collect those edited days so the
-            // merge lets the computed row's SLEEP fields win there (imports still win on every un-edited day).
-            let editedDays = Self.userEditedDays(compSleep)
-            let sleeps = Self.mergeSleep(imported: impSleep, computed: compSleep)
-            var stages: [String: [ParsedSleepStage]] = [:]
-            stages.reserveCapacity(sleeps.count)
-            for s in sleeps {
-                stages[Self.sleepStageCacheKey(s)] = Self.parseStagesJSON(s.stagesJSON)
-            }
-            return MergedCaches(
-                importedSleep: fig,
-                days: Self.mergeAppleSteps(
-                    into: Self.mergeActivityFileSteps(
-                        into: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
-                        activityFile
-                    ),
-                    appleSteps
+        guard let base = patching else {
+            return RawDashboard(imported: imported, computed: computed, apple: apple,
+                                activityFile: activityFile, impSleep: impSleep, compSleep: compSleep,
+                                perf: perf, cons: cons, need: need, debt: debt,
+                                appleSteps: appleSteps, nDays: nDays)
+        }
+        return RawDashboard(
+            imported: Self.patchDays(base.imported, replacing: imported, from: fromDay, to: toDay),
+            computed: Self.patchDays(base.computed, replacing: computed, from: fromDay, to: toDay),
+            apple: Self.patchDays(base.apple, replacing: apple, from: fromDay, to: toDay),
+            activityFile: Self.patchDays(base.activityFile, replacing: activityFile, from: fromDay, to: toDay),
+            impSleep: Self.patchSleep(base.impSleep, replacing: impSleep, from: lo, to: hi),
+            compSleep: Self.patchSleep(base.compSleep, replacing: compSleep, from: lo, to: hi),
+            perf: Self.patchPoints(base.perf, replacing: perf, from: fromDay, to: toDay),
+            cons: Self.patchPoints(base.cons, replacing: cons, from: fromDay, to: toDay),
+            need: Self.patchPoints(base.need, replacing: need, from: fromDay, to: toDay),
+            debt: Self.patchPoints(base.debt, replacing: debt, from: fromDay, to: toDay),
+            appleSteps: Self.patchSteps(base.appleSteps, replacing: appleSteps, from: fromDay, to: toDay),
+            nDays: max(base.nDays, nDays))
+    }
+
+    nonisolated private static func mergeCaches(_ raw: RawDashboard, chargeAnchorDay: String,
+                                                hrvEpoch: Int, recoveryEpoch: Int) -> MergedCaches {
+        var fig: [String: ImportedSleepFigures] = [:]
+        for p in raw.perf { fig[p.day, default: ImportedSleepFigures()].performancePct = p.value }
+        for p in raw.cons { fig[p.day, default: ImportedSleepFigures()].consistencyPct = p.value }
+        for p in raw.need { fig[p.day, default: ImportedSleepFigures()].needMin = p.value }
+        for p in raw.debt { fig[p.day, default: ImportedSleepFigures()].debtMin = p.value }
+        let editedDays = Self.userEditedDays(raw.compSleep)
+        let sleeps = Self.mergeSleep(imported: raw.impSleep, computed: raw.compSleep)
+        var stages: [String: [ParsedSleepStage]] = [:]
+        stages.reserveCapacity(sleeps.count)
+        for s in sleeps {
+            stages[Self.sleepStageCacheKey(s)] = Self.parseStagesJSON(s.stagesJSON)
+        }
+        return MergedCaches(
+            importedSleep: fig,
+            days: Self.mergeAppleSteps(
+                into: Self.mergeActivityFileSteps(
+                    into: Self.mergeDaily(imported: raw.imported, computed: raw.computed, userEditedDays: editedDays),
+                    raw.activityFile
                 ),
-                // From the two buckets BEFORE `mergeDaily` blends them: the rule needs to know which nights
-                // are imported and which are the wearer's own.
-                chargeBaselines: ChargeBaselines.resolve(imported: imported, own: computed,
-                                                         anchorDay: chargeAnchorDay,
-                                                         hrvEpoch: hrvEpoch, recoveryEpoch: recoveryEpoch),
-                sleeps: sleeps,
-                vitalRows: Self.sourceRows(imported: imported, computed: computed, apple: apple),
-                freshness: Self.computeFreshness(imported: imported, computed: computed, apple: apple,
-                                                 importedSleeps: impSleep, computedSleeps: compSleep),
-                stagesByRowId: stages)
-        }.value
+                raw.appleSteps
+            ),
+            chargeBaselines: ChargeBaselines.resolve(imported: raw.imported, own: raw.computed,
+                                                     anchorDay: chargeAnchorDay,
+                                                     hrvEpoch: hrvEpoch, recoveryEpoch: recoveryEpoch),
+            sleeps: sleeps,
+            vitalRows: Self.sourceRows(imported: raw.imported, computed: raw.computed, apple: raw.apple),
+            freshness: Self.computeFreshness(imported: raw.imported, computed: raw.computed, apple: raw.apple,
+                                             importedSleeps: raw.impSleep, computedSleeps: raw.compSleep),
+            stagesByRowId: stages)
+    }
 
-        // Generation guard (#review): if a newer refresh() started while this one merged off-actor, drop
-        // this now-stale result so it can't clobber the newer caches or re-fire loadAll out of order.
-        guard myGen == refreshGen else { return }
-
-        // DIFF before publishing (FIX 3): if this refresh produced byte-identical caches AND we've already
-        // loaded once, skip the re-publish and the `refreshSeq` bump entirely , assigning an equal value to
-        // an @Published prop still fires objectWillChange, so the skip must cover the assignments too. This
-        // is what stops the analyze-tail's burst of refresh() calls each re-firing TodayView.loadAll().
-        let unchanged = loaded
+    private func publishMerged(_ merged: MergedCaches) {
+        // Cheap count/revision check before walking the full arrays. Assigning an equal value to an
+        // @Published prop still fires objectWillChange, so skip each field independently.
+        let daysSame = loaded && merged.days.count == days.count
+            && merged.days.last?.day == days.last?.day
             && merged.days == days
-            && merged.chargeBaselines == chargeBaselines
+        let sleepsSame = loaded && merged.sleeps.count == sleeps.count
+            && merged.sleeps.last?.endTs == sleeps.last?.endTs
             && merged.sleeps == sleeps
+        let importedSame = loaded && merged.importedSleep.count == importedSleep.count
             && merged.importedSleep == importedSleep
+        let vitalsSame = loaded && merged.vitalRows.count == vitalRows.count
             && merged.vitalRows == vitalRows
-            && merged.freshness == freshness
-        guard !unchanged else { return }
-
-        // One consistent publish per refresh: assign every cache, flip `loaded`, then bump `refreshSeq` so
-        // the intraday-updating views reload exactly once for this real change.
-        self.importedSleep = merged.importedSleep
-        self.days = merged.days
-        self.chargeBaselines = merged.chargeBaselines
-        self.sleeps = merged.sleeps
-        self.vitalRows = merged.vitalRows
-        self.freshness = merged.freshness
+        let baselinesSame = loaded && merged.chargeBaselines == chargeBaselines
+        let freshnessSame = loaded && merged.freshness == freshness
+        if daysSame && sleepsSame && importedSame && vitalsSame && baselinesSame && freshnessSame {
+            return
+        }
+        if !importedSame { self.importedSleep = merged.importedSleep }
+        if !daysSame { self.days = merged.days }
+        if !baselinesSame { self.chargeBaselines = merged.chargeBaselines }
+        if !sleepsSame { self.sleeps = merged.sleeps }
+        if !vitalsSame { self.vitalRows = merged.vitalRows }
+        if !freshnessSame { self.freshness = merged.freshness }
         self.stagesByRowId = merged.stagesByRowId
         self.loaded = true
-        // Drop the Explorer's cross-catalog memo rather than leaving it to be evicted lazily by a key
-        // mismatch: its key is about to go stale, and lazy eviction only frees the memory when the NEXT
-        // scan replaces it — so a user who opens Explore once and never returns keeps a whole catalog of
-        // series resident for the rest of the session. The key check stays; it still guards what this
-        // line cannot, an active-strap re-point with no refresh behind it.
-        //
-        // BEFORE the bump, with the other caches, per this block's own ordering. Nothing can currently
-        // observe the gap — the assignments are synchronous on the main actor and a @Published bump only
-        // schedules SwiftUI work — but "clear every cache, then publish" is the invariant stated above,
-        // and an appended line after the bump is how that invariant quietly stops being true.
         self.exploreAllCache = nil
         self.refreshSeq += 1
+    }
+
+    nonisolated private static func patchDays(_ existing: [DailyMetric], replacing: [DailyMetric],
+                                              from: String, to: String) -> [DailyMetric] {
+        let kept = existing.filter { $0.day < from || $0.day > to }
+        return (kept + replacing).sorted { $0.day < $1.day }
+    }
+
+    nonisolated private static func patchSleep(_ existing: [CachedSleepSession],
+                                               replacing: [CachedSleepSession],
+                                               from: Int, to: Int) -> [CachedSleepSession] {
+        let kept = existing.filter { $0.startTs < from || $0.startTs > to }
+        return (kept + replacing).sorted { $0.startTs < $1.startTs }
+    }
+
+    nonisolated private static func patchPoints(_ existing: [MetricPoint], replacing: [MetricPoint],
+                                                from: String, to: String) -> [MetricPoint] {
+        let kept = existing.filter { $0.day < from || $0.day > to }
+        return (kept + replacing).sorted { $0.day < $1.day }
+    }
+
+    nonisolated private static func patchSteps(_ existing: [String: Int], replacing: [String: Int],
+                                               from: String, to: String) -> [String: Int] {
+        var out = existing
+        for key in out.keys where key >= from && key <= to { out.removeValue(forKey: key) }
+        for (day, steps) in replacing { out[day] = steps }
+        return out
+    }
+
+    private static func sleepLo(for day: String) -> Int {
+        let start = dayFormatter.date(from: day) ?? Date()
+        return Int(start.timeIntervalSince1970) - 12 * 3_600
+    }
+
+    private static func sleepHi(for day: String) -> Int {
+        let start = dayFormatter.date(from: day) ?? Date()
+        return Int(start.timeIntervalSince1970) + 36 * 3_600
     }
 
     /// Per-source coverage counts for the Freshness Pipeline card. Pure over the rows already read.

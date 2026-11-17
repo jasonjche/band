@@ -195,9 +195,31 @@ public func isEmptyRecordFrame(_ frame: [UInt8]) -> Bool {
 /// EVENT and COMMAND_RESPONSE handling is identical to extractStreams.
 /// CRC-failed and non-ok frames are skipped.
 ///
+/// Parse each frame and fold it into `Streams` without retaining the `[ParsedFrame]` array.
+/// Byte-identical to `frames.map { parseFrame($0, family:) }` then `extractHistoricalStreams`.
+public func extractHistoricalStreams(frames: [[UInt8]],
+                                     deviceClockRef: Int, wallClockRef: Int,
+                                     family: DeviceFamily,
+                                     sessionOldestUnix: Int? = nil,
+                                     sessionNewestUnix: Int? = nil,
+                                     subLagInterp: Bool = false,
+                                     wallNow: Int? = nil) -> Streams {
+    extractHistoricalStreams(
+        frames.lazy.map { parseFrame($0, family: family) },
+        deviceClockRef: deviceClockRef, wallClockRef: wallClockRef,
+        family: family,
+        sessionOldestUnix: sessionOldestUnix,
+        sessionNewestUnix: sessionNewestUnix,
+        subLagInterp: subLagInterp,
+        wallNow: wallNow)
+}
+
 /// Twin of Kotlin `extractHistoricalStreams`. Named here because adding `family` re-identified this
 /// function for the parity inventory, which keys on arity: the pair is unchanged, only its key moved.
-public func extractHistoricalStreams(_ parsed: [ParsedFrame],
+///
+/// Generic over `Sequence` so a caller can stream `lazy.map(parseFrame)` without retaining every
+/// `ParsedFrame` (a day's offload is 86,400 dictionaries). `[ParsedFrame]` still matches.
+public func extractHistoricalStreams<S: Sequence>(_ parsed: S,
                                      deviceClockRef: Int, wallClockRef: Int,
                                      family: DeviceFamily? = nil,
                                      // SESSION-RELATIVE bounds (#547): the strap's own GET_DATA_RANGE
@@ -219,7 +241,7 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
                                      // post-2038 (bit-31-set) unix domain at all. Android's
                                      // `extractHistoricalStreams` already had this parameter; this is Swift
                                      // catching up, so the two oracle harnesses can drive the gate identically.
-                                     wallNow wallNowOverride: Int? = nil) -> Streams {
+                                     wallNow wallNowOverride: Int? = nil) -> Streams where S.Element == ParsedFrame {
     func wall(_ deviceTs: Int?) -> Int? {
         guard let d = deviceTs else { return nil }
         return wallClockRef + (d - deviceClockRef)
@@ -290,7 +312,7 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
     var droppedOldest: Int? = nil
     var droppedNewest: Int? = nil
     var out = Streams()
-    let nFrames = parsed.count
+    let nFrames = parsed.underestimatedCount
     if nFrames > 0 {
         out.hr.reserveCapacity(nFrames)
         out.rr.reserveCapacity(nFrames &* 2)

@@ -451,6 +451,7 @@ struct NativeActiveWorkoutView: View {
     @State private var maxHr: Int?
     @State private var kcal: Double?
     @State private var lastMetricsTs = 0
+    @State private var lastPersistAt: Date?
     @State private var pausedAtTs: Int?
     @State private var pausedDuration: TimeInterval
     @State private var targetFired = false
@@ -486,15 +487,13 @@ struct NativeActiveWorkoutView: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: startedAt, by: 1)) { context in
-            NativeActiveWorkoutScreen(
-                snapshot: snapshot(now: context.date),
-                onPause: togglePause,
-                onEnd: { confirmingEnd = true }
-            )
-            .onChangeCompat(of: Int(context.date.timeIntervalSince1970)) { _ in
-                pullGPS()
-                refreshMetrics(now: context.date, force: false)
+        Group {
+            if isPaused {
+                workoutScreen(now: Date())
+            } else {
+                TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                    workoutScreen(now: context.date)
+                }
             }
         }
         .confirmationDialog("End activity?", isPresented: $confirmingEnd, titleVisibility: .visible) {
@@ -614,7 +613,7 @@ struct NativeActiveWorkoutView: View {
             return
         }
         lastMetricsTs = Int(now.timeIntervalSince1970)
-        persistSession()
+        persistSession(force: false)
         if !isRecovery {
             effort100 = NativeLiveActivityLogic.strain(
                 samples: samples,
@@ -649,15 +648,32 @@ struct NativeActiveWorkoutView: View {
             pausedAtTs = Int(Date().timeIntervalSince1970)
             modelHandle?.gpsRecorder.pause()
         }
-        persistSession()
+        persistSession(force: true)
     }
 
-    private func persistSession() {
+    private func persistSession(force: Bool) {
+        let now = Date()
+        guard ActiveWorkoutPersistence.PersistCadence.due(
+            lastPersistedAt: lastPersistAt, now: now, force: force) else { return }
+        lastPersistAt = now
         var next = session
         next.pausedAtTs = pausedAtTs
         next.pausedDuration = pausedDuration
         next.samples = samples
         NativeActiveWorkoutState.persist(next)
+    }
+
+    @ViewBuilder
+    private func workoutScreen(now: Date) -> some View {
+        NativeActiveWorkoutScreen(
+            snapshot: snapshot(now: now),
+            onPause: togglePause,
+            onEnd: { confirmingEnd = true }
+        )
+        .onChangeCompat(of: Int(now.timeIntervalSince1970)) { _ in
+            pullGPS()
+            refreshMetrics(now: now, force: false)
+        }
     }
 
     private func finish(discard: Bool) {

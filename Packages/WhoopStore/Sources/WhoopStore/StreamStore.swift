@@ -84,6 +84,79 @@ extension WhoopStore {
         return out
     }
 
+    /// HR insert twin of `insertChunkedReturning`: only rows that actually landed
+    /// (`ON CONFLICT DO NOTHING`) are returned, so the minute rollup cannot
+    /// double-count a re-ingest.
+    static func insertChunkedReturningTsBpm<T>(
+        db: Database,
+        tableAndColumns: String,
+        conflictSQL: String,
+        valuesPerRow: Int,
+        rows: [T],
+        bind: (T, inout [(any DatabaseValueConvertible)?]) throws -> Void
+    ) throws -> [(ts: Int, bpm: Int)] {
+        guard !rows.isEmpty else { return [] }
+        var out: [(ts: Int, bpm: Int)] = []
+        out.reserveCapacity(rows.count)
+        var i = 0
+        let n = rows.count
+        while i < n {
+            let k = min(bulkInsertChunk, n - i)
+            let sql = bulkInsertSQL(tableAndColumns: tableAndColumns, conflictSQL: conflictSQL,
+                                    valuesPerRow: valuesPerRow, rowCount: k, returning: "ts, bpm")
+            var args: [(any DatabaseValueConvertible)?] = []
+            args.reserveCapacity(k * valuesPerRow)
+            for r in i..<(i + k) { try bind(rows[r], &args) }
+            let stmt = try db.cachedStatement(sql: sql)
+            try stmt.setArguments(StatementArguments(args))
+            let cursor = try Row.fetchCursor(stmt)
+            while let row = try cursor.next() {
+                out.append((ts: row[0], bpm: row[1]))
+            }
+            i += k
+        }
+        return out
+    }
+
+    /// Fold newly inserted 1 Hz HR into `hrMinute`. `ON CONFLICT DO UPDATE`
+    /// accumulates so a minute split across flushes stays exact.
+    static func accumulateHrMinutes(db: Database, deviceId: String,
+                                    samples: [(ts: Int, bpm: Int)]) throws {
+        guard !samples.isEmpty else { return }
+        var acc: [Int: (sum: Int, n: Int, min: Int, max: Int)] = [:]
+        acc.reserveCapacity(max(1, samples.count / 30))
+        for s in samples {
+            let minute = (s.ts / 60) * 60
+            if let cur = acc[minute] {
+                acc[minute] = (cur.sum + s.bpm, cur.n + 1,
+                               min(cur.min, s.bpm), max(cur.max, s.bpm))
+            } else {
+                acc[minute] = (s.bpm, 1, s.bpm, s.bpm)
+            }
+        }
+        let rows = Array(acc)
+        _ = try insertChunked(
+            db: db,
+            tableAndColumns: "hrMinute (deviceId, minuteTs, sumBpm, n, minBpm, maxBpm)",
+            conflictSQL: """
+                ON CONFLICT(deviceId, minuteTs) DO UPDATE SET
+                  sumBpm = hrMinute.sumBpm + excluded.sumBpm,
+                  n = hrMinute.n + excluded.n,
+                  minBpm = MIN(hrMinute.minBpm, excluded.minBpm),
+                  maxBpm = MAX(hrMinute.maxBpm, excluded.maxBpm)
+                """,
+            valuesPerRow: 6,
+            rows: rows
+        ) { r, args in
+            args.append(deviceId)
+            args.append(r.key)
+            args.append(r.value.sum)
+            args.append(r.value.n)
+            args.append(r.value.min)
+            args.append(r.value.max)
+        }
+    }
+
     private static func bulkInsertSQL(tableAndColumns: String, conflictSQL: String,
                                       valuesPerRow: Int, rowCount: Int, returning: String?) -> String {
         let one = "(" + Array(repeating: "?", count: valuesPerRow).joined(separator: ",") + ")"
@@ -92,6 +165,93 @@ extension WhoopStore {
         sql += " \(conflictSQL)"
         if let returning { sql += " RETURNING \(returning)" }
         return sql
+    }
+
+    /// Multi-row RR insert with the same seq/ord assignment and canonical-source promote as the
+    /// previous per-row loop. `RETURNING` identifies which VALUES actually inserted so promote
+    /// still runs only on conflicts, in original order.
+    static func insertRrBulk(db: Database, deviceId: String, rows: [RRInterval]) throws -> Int {
+        struct Prepared {
+            let ts: Int
+            let rrMs: Int
+            let seq: Int
+            let ord: Int
+            let src: Int?
+            let srcChannel: RRSourceChannel?
+        }
+        var seqByTsRr: [RRBatchSecond: [Int: Int]] = [:]
+        var ordByTs: [RRBatchSecond: Int] = [:]
+        var prepared: [Prepared] = []
+        prepared.reserveCapacity(rows.count)
+        for r in rows {
+            let key = RRBatchSecond(ts: r.ts,
+                transport: r.srcChannel?.isWhoop5Transport == true ? r.srcChannel!.rawValue : 0)
+            let seq = seqByTsRr[key]?[r.rrMs] ?? 0
+            seqByTsRr[key, default: [:]][r.rrMs] = seq + 1
+            let ord = ordByTs[key] ?? 0
+            ordByTs[key] = ord + 1
+            prepared.append(Prepared(ts: r.ts, rrMs: r.rrMs, seq: seq, ord: ord,
+                                     src: r.srcChannel?.rawValue, srcChannel: r.srcChannel))
+        }
+
+        let promote = try db.cachedStatement(sql: """
+            UPDATE rrInterval SET srcChannel = :source, ord = :ord
+            WHERE deviceId = :device AND ts = :ts AND rrMs = :rr AND seq = :seq
+            AND ((:source = 5 AND (srcChannel IS NULL OR srcChannel IN (6, 7)))
+              OR (:source = 7 AND (srcChannel IS NULL OR srcChannel = 6)))
+            """)
+        let promoteWhoop4History = try db.cachedStatement(sql: """
+            UPDATE rrInterval SET srcChannel = :source, ord = :ord
+            WHERE deviceId = :device AND ts = :ts AND rrMs = :rr AND seq = :seq
+            AND :source = 8 AND srcChannel IS NULL
+            """)
+
+        var inserted = 0
+        var i = 0
+        let n = prepared.count
+        while i < n {
+            let k = min(bulkInsertChunk, n - i)
+            let sql = bulkInsertSQL(
+                tableAndColumns: "rrInterval (deviceId, ts, rrMs, seq, ord, srcChannel)",
+                conflictSQL: "ON CONFLICT(deviceId, ts, rrMs, seq) DO NOTHING",
+                valuesPerRow: 6, rowCount: k, returning: "ts, rrMs, seq")
+            var args: [(any DatabaseValueConvertible)?] = []
+            args.reserveCapacity(k * 6)
+            for r in i..<(i + k) {
+                let p = prepared[r]
+                args.append(deviceId); args.append(p.ts); args.append(p.rrMs)
+                args.append(p.seq); args.append(p.ord); args.append(p.src)
+            }
+            let got = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+            inserted += got.count
+            if got.count < k {
+                var g = 0
+                for r in i..<(i + k) {
+                    let p = prepared[r]
+                    if g < got.count {
+                        let ts: Int = got[g]["ts"]
+                        let rrMs: Int = got[g]["rrMs"]
+                        let seq: Int = got[g]["seq"]
+                        if ts == p.ts && rrMs == p.rrMs && seq == p.seq {
+                            g += 1
+                            continue
+                        }
+                    }
+                    if let source = p.srcChannel,
+                       source == .whoop5Historical || source == .whoop5Standard {
+                        try promote.execute(arguments: ["source": source.rawValue, "ord": p.ord,
+                            "device": deviceId, "ts": p.ts, "rr": p.rrMs, "seq": p.seq])
+                    }
+                    if p.srcChannel == .whoop4Historical {
+                        try promoteWhoop4History.execute(arguments: [
+                            "source": RRSourceChannel.whoop4Historical.rawValue, "ord": p.ord,
+                            "device": deviceId, "ts": p.ts, "rr": p.rrMs, "seq": p.seq])
+                    }
+                }
+            }
+            i += k
+        }
+        return inserted
     }
 
     /// Pack a decoded v26 PPG waveform's samples as little-endian i16 (2 bytes/sample) — a single
@@ -323,7 +483,7 @@ extension WhoopStore {
             // statement on the connection across insert() calls too. Each loop is guarded so empty
             // streams (the common live case) compile nothing.
             if !streams.hr.isEmpty {
-                hr = try WhoopStore.insertChunked(
+                let inserted = try WhoopStore.insertChunkedReturningTsBpm(
                     db: db,
                     tableAndColumns: "hrSample (deviceId, ts, bpm)",
                     conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
@@ -332,74 +492,14 @@ extension WhoopStore {
                 ) { s, args in
                     args.append(deviceId); args.append(s.ts); args.append(s.bpm)
                 }
+                hr = inserted.count
+                try WhoopStore.accumulateHrMinutes(db: db, deviceId: deviceId, samples: inserted)
             }
             if !streams.rr.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO rrInterval (deviceId, ts, rrMs, seq, ord, srcChannel)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts, rrMs, seq) DO NOTHING
-                    """)
-                // v24 (#163): number EQUAL (ts, rrMs) beats 0, 1, … within this batch so both survive;
-                // distinct beats keep seq 0 and their own (ts, rrMs, 0) key, so a distinct beat is never
-                // dropped even across batches (rrMs stays in the key). Re-syncing identical rows reproduces
-                // the same (ts, rrMs, seq) → still idempotent. Nested dict = (ts, rrMs) occurrence counter.
-                //
-                // v30 (#823): `ord` is the beat's position among ALL beats sharing this ts in this batch —
-                // its emission order. `seq` cannot express it (it keys on (ts, rrMs), so distinct beats in
-                // a second are all 0). Not in the key, never changes which rows survive; it exists so reads
-                // return beats in heart order rather than sorted by value, which biases RMSSD down. Same
-                // batch-local caveat as seq: a second split across two live flushes restarts ord at 0 and
-                // DO NOTHING keeps the first row. The historical path delivers a second atomically.
-                // Twin of Kotlin assignRrSeq.
-                //
-                // `srcChannel` carries Oura optical channels or WHOOP 5 transport provenance. WHOOP 4
-                // and legacy rows stay NULL. Like `ord` it is OUTSIDE the key: two observations of a beat can
-                // yield the same (ts, rrMs), and keying on the label would store both — which is precisely
-                // the double-count this fixes. A collision never inserts another beat. A newly observed
-                // canonical WHOOP 5 transport can promote the existing source and order below; the read
-                // filter separates sources across the full requested interval.
-                let promote = try db.cachedStatement(sql: """
-                    UPDATE rrInterval SET srcChannel = :source, ord = :ord
-                    WHERE deviceId = :device AND ts = :ts AND rrMs = :rr AND seq = :seq
-                    AND ((:source = 5 AND (srcChannel IS NULL OR srcChannel IN (6, 7)))
-                      OR (:source = 7 AND (srcChannel IS NULL OR srcChannel = 6)))
-                    """)
-                let promoteWhoop4History = try db.cachedStatement(sql: """
-                    UPDATE rrInterval SET srcChannel = :source, ord = :ord
-                    WHERE deviceId = :device AND ts = :ts AND rrMs = :rr AND seq = :seq
-                    AND :source = 8 AND srcChannel IS NULL
-                    """)
-                var seqByTsRr: [RRBatchSecond: [Int: Int]] = [:]
-                var ordByTs: [RRBatchSecond: Int] = [:]
-                for r in streams.rr {
-                    // A second's native historical array is atomic. A standard packet in the same
-                    // batch must not change its order or the occurrence number of an equal interval.
-                    let key = RRBatchSecond(ts: r.ts,
-                        transport: r.srcChannel?.isWhoop5Transport == true ? r.srcChannel!.rawValue : 0)
-                    let seq = seqByTsRr[key]?[r.rrMs] ?? 0
-                    seqByTsRr[key, default: [:]][r.rrMs] = seq + 1
-                    let ord = ordByTs[key] ?? 0
-                    ordByTs[key] = ord + 1
-                    try stmt.execute(arguments: [deviceId, r.ts, r.rrMs, seq, ord,
-                                                 r.srcChannel?.rawValue])
-                    let inserted = db.changesCount
-                    rr += inserted
-                    if inserted == 0, let source = r.srcChannel,
-                       source == .whoop5Historical || source == .whoop5Standard {
-                        // Canonical precedence is history > standard > native/legacy. The winning
-                        // observation supplies its order; values/keys and Oura labels remain intact.
-                        // Cache fingerprints witness both canonical-source counts independently of inserts.
-                        try promote.execute(arguments: ["source": source.rawValue, "ord": ord,
-                            "device": deviceId, "ts": r.ts, "rr": r.rrMs, "seq": seq])
-                    }
-                    // The label is the CASE just matched, so name it rather than force-unwrapping the
-                    // optional the match already proved non-nil.
-                    if inserted == 0, r.srcChannel == .whoop4Historical {
-                        try promoteWhoop4History.execute(arguments: [
-                            "source": RRSourceChannel.whoop4Historical.rawValue, "ord": ord,
-                            "device": deviceId, "ts": r.ts, "rr": r.rrMs, "seq": seq])
-                    }
-                }
+                // v24 (#163) seq, v30 (#823) ord, and canonical-source promote: see `insertRrBulk`.
+                // Multi-VALUES INSERT (chunk 64) with ON CONFLICT DO NOTHING; promote still runs
+                // only on conflicts, in original order, so persisted rows stay identical.
+                rr = try WhoopStore.insertRrBulk(db: db, deviceId: deviceId, rows: streams.rr)
                 // #2371: mark the strap's 500 ms fill beats in this batch's window. The batch's heart rate
                 // was written above, so the same-second rate the rule reads is already on disk. Only a batch
                 // that carries a 500 ms WHOOP 5 beat pays for the statement. Android runs the same statement
@@ -1003,6 +1103,20 @@ extension WhoopStore {
                 SELECT rrMs, srcChannel FROM rrInterval WHERE deviceId = ?
                 ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC
                 """, arguments: [deviceId]).map { (rrMs: $0["rrMs"], srcChannel: $0["srcChannel"]) }
+        }
+    }
+
+    /// Full persisted R-R identity for old-vs-new insert proofs. Test-only.
+    public func rrTableDumpForTest(deviceId: String) async throws
+        -> [(ts: Int, rrMs: Int, seq: Int, ord: Int?, srcChannel: Int?)] {
+        try syncRead { db in
+            try Row.fetchAll(db, sql: """
+                SELECT ts, rrMs, seq, ord, srcChannel FROM rrInterval WHERE deviceId = ?
+                ORDER BY ts ASC, rrMs ASC, seq ASC
+                """, arguments: [deviceId]).map {
+                (ts: $0["ts"], rrMs: $0["rrMs"], seq: $0["seq"],
+                 ord: $0["ord"], srcChannel: $0["srcChannel"])
+            }
         }
     }
 

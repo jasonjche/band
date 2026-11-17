@@ -46,6 +46,8 @@ final class ReadPerfBenchTests: XCTestCase {
         if let bytes = await synth.databaseFileSizeBytes() {
             print("PERF synth db bytes=\(bytes)")
         }
+        let minuteN = try await synth.hrMinuteCountForTest(deviceId: Self.deviceId)
+        print("PERF synth hrMinute rows=\(minuteN)")
 
         print("PERF EXPLAIN real")
         try await Self.dumpExplains(store: real, deviceId: Self.deviceId,
@@ -73,7 +75,10 @@ final class ReadPerfBenchTests: XCTestCase {
 
     private static func ensureSyntheticDatabase() async throws {
         if FileManager.default.fileExists(atPath: synthPath) {
+            let t0 = Date()
             let store = try await WhoopStore(path: synthPath)
+            let openS = Date().timeIntervalSince(t0)
+            print("PERF synth open+migrate s=\(String(format: "%.3f", openS))")
             let n = try await store.hrFingerprint(deviceId: deviceId, from: 0, to: Int.max).count
             let want = synthDays * secondsPerDay
             if n >= want {
@@ -237,6 +242,9 @@ final class ReadPerfBenchTests: XCTestCase {
     }
 
     private static func dumpExplains(store: WhoopStore, deviceId: String, from: Int, to: Int) async throws {
+        let complete = WhoopStore.completeHrMinutes(from: from, to: to)
+        let firstFull = complete?.first ?? from
+        let lastFull = complete?.last ?? to
         let cases: [(String, String, StatementArguments)] = [
             ("hrSamples", """
                 SELECT ts, bpm FROM (
@@ -279,6 +287,28 @@ final class ReadPerfBenchTests: XCTestCase {
                 GROUP BY ts / ?
                 ORDER BY 1 ASC
                 """, [300, 300, deviceId, from, to, 300]),
+            ("hrBucketsMinute", """
+                SELECT (src / ?) * ? AS bucket,
+                       CAST(SUM(sumBpm) AS REAL) / SUM(n) AS avgBpm,
+                       1.0 AS minConf,
+                       MIN(minBpm) AS minBpm, MAX(maxBpm) AS maxBpm FROM (
+                    SELECT minuteTs AS src, sumBpm, n, minBpm, maxBpm
+                    FROM hrMinute
+                    WHERE deviceId = ? AND minuteTs >= ? AND minuteTs <= ?
+                    UNION ALL
+                    SELECT ts, bpm, 1, bpm, bpm
+                    FROM hrSample
+                    WHERE deviceId = ? AND ts >= ? AND ts < ?
+                    UNION ALL
+                    SELECT ts, bpm, 1, bpm, bpm
+                    FROM hrSample
+                    WHERE deviceId = ? AND ts > ? AND ts <= ?
+                )
+                GROUP BY src / ?
+                ORDER BY 1 ASC
+                """, [300, 300, deviceId, firstFull, lastFull,
+                      deviceId, from, firstFull,
+                      deviceId, lastFull + 59, to, 300]),
             ("rrIntervals", """
                 SELECT ts, rrMs, srcChannel, ord, seq FROM rrInterval
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -340,6 +370,13 @@ extension WhoopStore {
     func minHrTsForTest(deviceId: String) throws -> Int {
         try syncRead { db in
             try Int.fetchOne(db, sql: "SELECT COALESCE(MIN(ts), 0) FROM hrSample WHERE deviceId = ?",
+                             arguments: [deviceId]) ?? 0
+        }
+    }
+
+    func hrMinuteCountForTest(deviceId: String) throws -> Int {
+        try syncRead { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM hrMinute WHERE deviceId = ?",
                              arguments: [deviceId]) ?? 0
         }
     }
