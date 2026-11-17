@@ -6,8 +6,6 @@ import StrandAnalytics
 
 /// Compact live heart-rate sheet. Arms the strap stream only while visible.
 struct NativeLiveHeartRate: View {
-    @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var live: LiveState
     @EnvironmentObject private var profile: ProfileStore
     @Environment(\.nativeStyle) private var style
     @Environment(\.dismiss) private var dismiss
@@ -45,17 +43,32 @@ struct NativeLiveHeartRate: View {
         #if os(iOS)
         .presentationDetents([.medium, .large])
         #endif
-        .onAppear { model.startRealtimeHR() }
-        .onDisappear { model.stopRealtimeHR() }
-        .onReceive(
-            live.$heartRate.throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
-        ) { value in
-            bpm = value
-            let now = Date()
-            if let value {
-                samples.append(Sample(time: now, bpm: value))
-            }
-            samples.removeAll { now.timeIntervalSince($0.time) > 60 }
+        .background { LiveHRArm(bpm: $bpm, samples: $samples) }
+    }
+
+    /// Holds AppModel + LiveState so RR packets do not rebuild the sparkline. BPM is throttled to 1 Hz.
+    private struct LiveHRArm: View {
+        @EnvironmentObject private var model: AppModel
+        @EnvironmentObject private var live: LiveState
+        @Binding var bpm: Int?
+        @Binding var samples: [Sample]
+
+        var body: some View {
+            Color.clear
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+                .onAppear { model.startRealtimeHR() }
+                .onDisappear { model.stopRealtimeHR() }
+                .onReceive(
+                    live.$heartRate.throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
+                ) { value in
+                    bpm = value
+                    let now = Date()
+                    if let value {
+                        samples.append(Sample(time: now, bpm: value))
+                    }
+                    samples.removeAll { now.timeIntervalSince($0.time) > 60 }
+                }
         }
     }
 

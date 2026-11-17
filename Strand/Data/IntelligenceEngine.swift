@@ -898,7 +898,8 @@ final class IntelligenceEngine: ObservableObject {
                              age: Double(profile.age), sex: profile.sex,
                              stepTicksPerStep: profile.stepTicksPerStep)
 
-        let maxHR = profile.hrMaxOverride > 0 ? Double(profile.hrMaxOverride) : nil
+        let maxHR = profile.resolvedMaxHROverride
+        let hrmaxSource = profile.hrMaxSource
         let now = Int(Date().timeIntervalSince1970)
         // Device wall-clock offset (seconds east of UTC) for the sleep detector's daytime
         // false-sleep guard (#90): the stager places each window's center on the LOCAL clock
@@ -1533,6 +1534,7 @@ final class IntelligenceEngine: ObservableObject {
                                                      skinTempWornToleranceSec: skinWornToleranceSec,   // #1467
                                                      spo2: spo2,                   // #93
                                                      profile: up, baselines: baselines1, maxHROverride: maxHR,
+                                                     hrmaxSource: hrmaxSource,
                                                      tzOffsetSeconds: tzOffset, wristOff: wristOff,
                                                      sleepNeedHours: sleepNeedHours,
                                                      sleepConsistency: sleepConsistency,
@@ -3203,7 +3205,7 @@ final class IntelligenceEngine: ObservableObject {
         let since = now - 14 * 86_400
         guard let rows = try? await store.workouts(deviceId: deviceId, from: since, to: now, limit: 200)
         else { return }
-        let hrMax = Double(profile.hrMax)
+        let hrMax = profile.effortHRmax ?? Double(profile.hrMax)
         var updated: [WorkoutRow] = []
         // A manual row is eligible when it looks under-scored (negligible kcal, #137) OR it's missing
         // strain (the merged-workout case, where kcal is the SUM of inputs so it never looks under-scored

@@ -5,10 +5,13 @@ import WhoopStore
 /// WHOOP Health Monitor: every vital for the selected day, judged by `NativeHealthRange.report`.
 /// Home's "N/M" header is that report's `summary`. Rows without data are hidden.
 struct NativeHealthMonitorPage: View {
-    @EnvironmentObject private var repo: Repository
     @Environment(\.nativeNavigationPath) private var path
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
+    @State private var repoHandle: Repository?
+    @State private var refreshSeq = 0
+    @State private var handlesReady = false
     @State private var report = NativeHealthRange.Report(vitals: [])
+    @State private var firstDay: String?
 
     private var selectedDay: Date {
         get { NativeDaySelection.date(from: selectedDayKey) }
@@ -17,14 +20,16 @@ struct NativeHealthMonitorPage: View {
 
     private var dayKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
 
-    private var taskID: String { "\(dayKey)|\(repo.refreshSeq)" }
+    private var taskID: String {
+        handlesReady ? "\(dayKey)|\(refreshSeq)" : "boot"
+    }
 
     var body: some View {
         NativeChrome.screen {
             NativeHealthMonitorBody(
                 report: report,
                 selectedDay: selectedDay,
-                firstDay: repo.days.first?.day,
+                firstDay: firstDay,
                 onBack: { shiftDay(-1) },
                 onForward: { shiftDay(1) },
                 onSelect: { path.wrappedValue.append($0) }
@@ -33,13 +38,18 @@ struct NativeHealthMonitorPage: View {
         .navigationTitle("Health Monitor")
         .modifier(NativeInlineTitle())
         .nativeDateSubtitle(selectedDay)
+        .background {
+            NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
+        }
         .task(id: taskID) {
+            guard handlesReady, let repo = repoHandle else { return }
+            firstDay = repo.days.first?.day
             report = NativeHealthRange.report(days: repo.days, todayKey: dayKey)
         }
     }
 
     private func shiftDay(_ delta: Int) {
-        guard let next = HomeDayNav.shift(from: selectedDay, delta: delta, firstDay: repo.days.first?.day) else { return }
+        guard let next = HomeDayNav.shift(from: selectedDay, delta: delta, firstDay: firstDay) else { return }
         selectedDay = next
     }
 }

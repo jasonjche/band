@@ -46,6 +46,78 @@ final class EffortHRmaxOverrideTests: XCTestCase {
         }
     }
 
+    /// A manual override beats a higher observed peak.
+    @MainActor
+    func testOverrideBeatsObserved() {
+        withProfile(age: 30, hrMaxOverride: 195, hrMaxObserved: 205) { p in
+            XCTAssertEqual(p.effortHRmax ?? -1, 195.0, accuracy: 1e-9)
+            XCTAssertEqual(p.resolvedMaxHROverride ?? -1, 195.0, accuracy: 1e-9)
+            XCTAssertEqual(p.hrMax, 195)
+            XCTAssertEqual(p.hrMaxSource, "override")
+        }
+    }
+
+    /// Observed above Tanaka is the auto value, unrounded Int identity, and the engine override.
+    @MainActor
+    func testObservedAboveTanakaBeatsTheFormula() {
+        withProfile(age: 30, hrMaxOverride: 0, hrMaxObserved: 198) { p in
+            let tanaka = StrainScorer.tanakaHRmax(age: Double(p.age))
+            XCTAssertGreaterThan(198, tanaka)
+            XCTAssertEqual(p.effortHRmax ?? -1, 198.0, accuracy: 1e-9)
+            XCTAssertEqual(p.resolvedMaxHROverride ?? -1, 198.0, accuracy: 1e-9)
+            XCTAssertEqual(p.hrMax, 198)
+            XCTAssertEqual(p.hrMaxSource, "observed")
+        }
+    }
+
+    /// Observed at or below Tanaka leaves the formula in charge, so live and stored stay unrounded.
+    @MainActor
+    func testObservedBelowTanakaLeavesTheFormula() {
+        withProfile(age: 30, hrMaxOverride: 0, hrMaxObserved: 180) { p in
+            let tanaka = StrainScorer.tanakaHRmax(age: Double(p.age))
+            XCTAssertEqual(p.effortHRmax ?? -1, tanaka, accuracy: 1e-9)
+            XCTAssertNil(p.resolvedMaxHROverride)
+            XCTAssertEqual(p.hrMax, Int(tanaka.rounded()))
+            XCTAssertEqual(p.hrMaxSource, "tanaka")
+        }
+    }
+
+    /// Live scoring and `AnalyticsEngine` agree when the yardstick is observed, not the formula.
+    @MainActor
+    func testLiveAndStoredAgreeForAnObservedProfile() {
+        withProfile(age: 30, hrMaxOverride: 0, hrMaxObserved: 198) { p in
+            let hr = dayHR()
+            let live = StrainScorer.strain(hr, maxHR: p.effortHRmax,
+                                           restingHR: StrainScorer.defaultRestingHR,
+                                           method: .edwards, sex: p.sex)
+            let stored = AnalyticsEngine.analyzeDay(day: Self.day, hr: hr, dayHr: hr,
+                                                    profile: engineProfile(p),
+                                                    maxHROverride: p.resolvedMaxHROverride,
+                                                    hrmaxSource: p.hrMaxSource,
+                                                    effortMethod: .edwards).daily.strain
+
+            XCTAssertNotNil(live)
+            XCTAssertEqual(live ?? -1, stored ?? -2, accuracy: 1e-9)
+        }
+    }
+
+    /// The calibration line names the observed branch, not override.
+    @MainActor
+    func testObservedIsNamedObservedOnTheCalibLine() {
+        withProfile(age: 30, hrMaxOverride: 0, hrMaxObserved: 198) { p in
+            var emitted: [String] = []
+            _ = AnalyticsEngine.analyzeDay(day: Self.day, strainDiag: { emitted.append($0) },
+                                           hr: dayHR(), dayHr: dayHR(),
+                                           profile: engineProfile(p),
+                                           maxHROverride: p.resolvedMaxHROverride,
+                                           hrmaxSource: p.hrMaxSource,
+                                           effortMethod: .edwards)
+            let calib = emitted.first { $0.hasPrefix("effort calib ") } ?? ""
+            XCTAssertTrue(calib.contains(" src=observed "), calib)
+            XCTAssertTrue(calib.contains(" hrmax=198 "), calib)
+        }
+    }
+
     // MARK: the day, scored both ways
 
     /// The test the bug needed. One day, one profile with an override above the formula, scored by the
@@ -128,10 +200,12 @@ final class EffortHRmaxOverrideTests: XCTestCase {
     /// fixtures, and the failure would look like anything except this file. Same save-and-restore shape
     /// as `DetectedWorkoutReconciliationTests.withPreferences`, narrowed to the keys touched here.
     @MainActor
-    private func withProfile(age: Int, hrMaxOverride: Int, sex: String = "male",
+    private func withProfile(age: Int, hrMaxOverride: Int, hrMaxObserved: Int = 0,
+                             sex: String = "male",
                              _ body: (ProfileStore) -> Void) {
         let defaults = UserDefaults.standard
-        let keys = ["profile.dateOfBirth", "profile.age", "profile.sex", "profile.hrMaxOverride"]
+        let keys = ["profile.dateOfBirth", "profile.age", "profile.sex",
+                    "profile.hrMaxOverride", "profile.hrMaxObserved"]
         let saved = keys.map { ($0, defaults.object(forKey: $0)) }
         defer {
             for (key, value) in saved {
@@ -143,6 +217,7 @@ final class EffortHRmaxOverrideTests: XCTestCase {
         p.dateOfBirth = ProfileStore.dateOfBirth(forAge: age)
         p.sex = sex
         p.hrMaxOverride = hrMaxOverride
+        p.hrMaxObserved = hrMaxObserved
         body(p)
     }
 

@@ -57,15 +57,29 @@ struct NativeProfileView: View {
                     }
                 }
             } footer: {
-                Text("Max heart rate drives HR zones.")
+                Text(hrMaxFooter)
             }
         }
         .appleSettingsChrome("Profile")
-        .task { weightReadings = await NativeWeight.sync(repo: repo, profile: profile) }
+        .task {
+            weightReadings = await NativeWeight.sync(repo: repo, profile: profile)
+            await profile.syncObservedHRMax(from: repo)
+        }
     }
 
     private var hrMaxLabel: String {
         profile.hrMaxOverride > 0 ? "\(profile.hrMaxOverride) bpm" : "Auto · \(profile.hrMax) bpm"
+    }
+
+    private var hrMaxFooter: String {
+        var text = "Max heart rate drives HR zones."
+        if profile.hrMaxOverride > 0 { return text }
+        if profile.hrMaxSource == "observed" {
+            text += " From your highest recorded workouts."
+        } else {
+            text += " Estimated from age."
+        }
+        return text
     }
 
     private func zoneStart(_ index: Int) -> Int {

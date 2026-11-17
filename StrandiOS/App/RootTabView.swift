@@ -29,7 +29,9 @@ struct RootTabView: View {
     /// that state; keeping it explicit here prevents this shell's window-level sheet from covering a gate.
     let homeScreenQuickActionsEnabled: Bool
 
-    @EnvironmentObject private var repo: Repository
+    /// Unobserved handle. The TabView must not `@EnvironmentObject` Repository: hydrationSeq /
+    /// cycleTrackingSeq would re-diff every tab root. Refresh still runs from the sink.
+    @State private var repoHandle: Repository?
     /// Cross-screen navigation requests (e.g. Live → "Manage devices"). Devices isn't a tab — it lives
     /// behind the More list — so a request presents it as a sheet, matching the quick-action screens.
     @EnvironmentObject private var router: NavRouter
@@ -114,7 +116,7 @@ struct RootTabView: View {
     }
 
     private func reselectTab(_ tag: Int) {
-        Task { await repo.refresh() }
+        Task { await repoHandle?.refresh() }
         if !tabPaths[tag].isEmpty {
             tabPaths[tag] = NavigationPath()
         } else {
@@ -198,14 +200,8 @@ struct RootTabView: View {
             // interactive-pop itself: far worse than the bug being fixed.
             .simultaneousGesture(tabSwipeGesture,
                                  including: (nativeTodayEnabled || !tabPaths[selectedTab].isEmpty) ? .subviews : .all)
-        .task {
-            await repo.refresh()
-            // Backup & Sync: on-launch catch-up (see RootView). Detached + utility priority so a
-            // 100MB+ whole-DB ZIP never blocks startup; gated on the auto toggle (default OFF). (Must-fix #4.)
-            let backupRepo = repo
-            Task.detached(priority: .utility) {
-                await FolderBackup.catchUpIfDue(checkpoint: { await backupRepo.checkpointForBackup() })
-            }
+        .background {
+            RootTabRepoSink(repoHandle: $repoHandle)
         }
         // Quick-action sheet presents with the calm easing (~0.42s) per the README sheet spec —
         // the easing is applied where `quickAction` is set (see `presentQuickAction`), keeping the
@@ -466,11 +462,14 @@ struct RootTabView: View {
         // TabRoute values, registered here ONCE per stack (a double registration double-pushes, #38).
         NavigationStack(path: path) {
             view
-                .environment(\.nativeNavigationPath, path)
                 .background(StrandPalette.surfaceBase.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
                 .tabRouteDestinations()
         }
+        // On the STACK, not the root view: a pushed destination inherits the stack's environment
+        // only. Set on the root, score pages got the default no-op binding and their rows and
+        // charts appended to nothing.
+        .environment(\.nativeNavigationPath, path)
         // Drive this tab's root scroll-to-top on an at-root re-tap (#198 follow-up); read by ScreenScaffold
         // / LiquidTodayView inside. Only THIS tab's token changes on its reselect, so the others don't scroll.
         .environment(\.scrollToTopSignal, scrollSignal)
@@ -493,7 +492,7 @@ struct RootTabView: View {
                 } else {
             ScreenScaffold(title: "More",
                            subtitle: "Everything else, one tap away",
-                           onRefresh: { await repo.refresh() },
+                           onRefresh: { await repoHandle?.refresh() },
                            topBackground: liquidScaffoldSky()) {
                 moreSection("Insights") {
                     moreRow("What Moves You", "wand.and.sparkles", .insightsHub)
@@ -554,7 +553,6 @@ struct RootTabView: View {
             // sky; an opaque surfaceBase nav-bar band sat over it and clipped the top on scroll. A hidden
             // bar background keeps the sky edge-to-edge. On the flat (no-sky) screens this is visually
             // identical at rest — the destination's own surfaceBase background shows through the bar.
-            .environment(\.moreNavigationPath, path)
             .navigationDestination(for: MoreDestination.self) { route in
                 if nativeTodayEnabled && route.usesAppleSettingsChrome {
                     route.destination
@@ -567,6 +565,8 @@ struct RootTabView: View {
                 }
             }
         }
+        // On the stack so pushed More pages get the real path, not the default.
+        .environment(\.moreNavigationPath, path)
         // Scroll the More index to the top on an at-root re-tap (#198 follow-up); read by its ScreenScaffold.
         .environment(\.scrollToTopSignal, scrollSignal)
         .tabItem { Label("More", systemImage: nativeTodayEnabled ? "line.3.horizontal" : "ellipsis") }
@@ -721,7 +721,7 @@ private enum MoreDestination: Hashable {
 private struct MoreNavigationPathKey: EnvironmentKey {
     static let defaultValue = Binding<NavigationPath>(
         get: { NavigationPath() },
-        set: { _ in }
+        set: { _ in assertionFailure("moreNavigationPath used outside the More stack: the push is dropped") }
     )
 }
 
@@ -859,6 +859,26 @@ private struct QuickActionSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Holds Repository so RootTabView itself does not. Launch refresh + backup catch-up live here.
+private struct RootTabRepoSink: View {
+    @EnvironmentObject private var repo: Repository
+    @Binding var repoHandle: Repository?
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onAppear { repoHandle = repo }
+            .task {
+                await repo.refresh()
+                let backupRepo = repo
+                Task.detached(priority: .utility) {
+                    await FolderBackup.catchUpIfDue(checkpoint: { await backupRepo.checkpointForBackup() })
+                }
+            }
     }
 }
 

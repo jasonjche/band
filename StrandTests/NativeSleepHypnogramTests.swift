@@ -103,6 +103,7 @@ final class NativeSleepHypnogramTests: XCTestCase {
         XCTAssertGreaterThan(lightW, wakeW)
         XCTAssertTrue(NativeSleepGallery.sections.contains { $0.name == "sleep-last-night" })
         XCTAssertTrue(NativeSleepGallery.sections.contains { $0.name == "sleep-stage-detail" })
+        XCTAssertTrue(NativeSleepGallery.sections.contains { $0.name == "sleep-hypnogram-page" })
     }
 
     func testHoursTypicalRangeNeedsThirtyDayHistory() {

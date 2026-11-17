@@ -69,6 +69,12 @@ enum NativeLiveStrainMemo {
         return Optional.some(value)
     }
 
+    /// The live strain Home last showed for `day`. Pushed pages pass this to `NativeDay.make`
+    /// so the Strain page opens on the number the ring had, not the older stored one.
+    static func latest(day: String) -> Double? {
+        stored && day == self.day ? value : nil
+    }
+
     static func store(seq: Int, day: String, value: Double?) {
         self.seq = seq
         self.day = day
@@ -78,10 +84,8 @@ enum NativeLiveStrainMemo {
 }
 
 struct NativeHomeView: View {
-    @EnvironmentObject private var repo: Repository
-    @EnvironmentObject private var ble: BLEManager
-    @EnvironmentObject private var profile: ProfileStore
     @Environment(\.nativeNavigationPath) private var path
+    @State private var showingCalendar = false
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @State private var workouts: [WorkoutRow] = []
     @State private var journalEntries: [JournalEntry] = []
@@ -103,6 +107,16 @@ struct NativeHomeView: View {
     @State private var addingActivity = false
     @State private var editingDashboard = false
     @State private var sleepStreak = 0
+    /// Unobserved handles. Home must not `@EnvironmentObject` Repository / BLE / Profile:
+    /// hydrationSeq, scan RSSI, and steps-calibration publishes would re-diff the whole scroll.
+    @State private var repoHandle: Repository?
+    @State private var bleHandle: BLEManager?
+    @State private var profileHandle: ProfileStore?
+    @State private var refreshSeq = 0
+    @State private var loaded = false
+    @State private var firstDay: String?
+    @State private var storeEmpty = false
+    @State private var handlesReady = false
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @AppStorage("behavior.smartAlarmEnabled") private var smartAlarmEnabled = false
     @AppStorage("behavior.smartAlarmMinutes") private var smartAlarmMinutes = 7 * 60
@@ -115,12 +129,6 @@ struct NativeHomeView: View {
 
     private var selectedKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
 
-    private var storeEmpty: Bool {
-        NativeDayLogic.isEmptyStore(
-            days: repo.days, sleeps: repo.sleeps, importedSleep: repo.importedSleep
-        )
-    }
-
     var body: some View {
         ScrollView {
             NativeChrome.stack {
@@ -130,12 +138,18 @@ struct NativeHomeView: View {
                     canGoBack: canGoBack,
                     canGoForward: canGoForward,
                     onBack: { shiftDay(-1) },
-                    onForward: { shiftDay(1) }
+                    onForward: { shiftDay(1) },
+                    onTitleTap: { showingCalendar = true }
                 )
                 .frame(maxWidth: .infinity)
+                .sheet(isPresented: $showingCalendar) {
+                    HomeCalendarSheet(selected: selectedDay, range: calendarRange) { picked in
+                        selectedDay = Calendar.current.startOfDay(for: picked)
+                    }
+                }
                 .overlay(alignment: .trailing) { HomeStrapStatus() }
                 #endif
-                if !repo.loaded {
+                if !loaded {
                     HomeLoadingSkeleton()
                 } else if storeEmpty {
                     NativeNoDataCard(
@@ -151,11 +165,29 @@ struct NativeHomeView: View {
             .padding(.bottom, 136)
         }
         .background(NativePageFill().ignoresSafeArea())
-        .refreshable { await NativeHomeSync.pull(ble: ble, repo: repo, reload: reload) }
+        .background {
+            NativeHomeEnvSink(
+                refreshSeq: $refreshSeq,
+                loaded: $loaded,
+                handlesReady: $handlesReady,
+                onHandles: { repo, ble, profile in
+                    repoHandle = repo
+                    bleHandle = ble
+                    profileHandle = profile
+                }
+            )
+        }
+        .refreshable {
+            guard let ble = bleHandle, let repo = repoHandle else { return }
+            await NativeHomeSync.pull(ble: ble, repo: repo, reload: reload)
+        }
         .navigationTitle("Home")
         .environment(\.nativeSelectedDay, selectedDay)
         .nativeStyleBridge()
-        .task(id: "\(repo.refreshSeq)-\(selectedKey)") { await reload() }
+        .task(id: handlesReady ? "\(refreshSeq)-\(selectedKey)" : "boot") {
+            guard handlesReady else { return }
+            await reload()
+        }
         .onChange(of: effortScaleRaw) { _ in rebuildModel() }
         .onChange(of: smartAlarmEnabled) { _ in rebuildModel() }
         .onChange(of: smartAlarmMinutes) { _ in rebuildModel() }
@@ -209,7 +241,15 @@ struct NativeHomeView: View {
     }
 
     private var canGoBack: Bool {
-        HomeDayNav.canGoBack(selectedKey: selectedKey, firstDay: repo.days.first?.day)
+        HomeDayNav.canGoBack(selectedKey: selectedKey, firstDay: firstDay)
+    }
+
+    /// First stored day through logical today: the same bounds the arrows use.
+    private var calendarRange: ClosedRange<Date> {
+        let today = NativeDayLogic.startOfLocalDay(NativeDayLogic.logicalToday(now: Date()))
+            ?? Calendar.current.startOfDay(for: Date())
+        let first = firstDay.flatMap { NativeDayLogic.startOfLocalDay($0) } ?? today
+        return min(first, today)...today
     }
 
     private var canGoForward: Bool {
@@ -217,11 +257,12 @@ struct NativeHomeView: View {
     }
 
     private func shiftDay(_ delta: Int) {
-        guard let next = HomeDayNav.shift(from: selectedDay, delta: delta, firstDay: repo.days.first?.day) else { return }
+        guard let next = HomeDayNav.shift(from: selectedDay, delta: delta, firstDay: firstDay) else { return }
         selectedDay = next
     }
 
     private func reload() async {
+        guard let repo = repoHandle else { return }
         workouts = await repo.workoutRows(days: 120)
         journalEntries = await repo.journalEntries(days: 40)
         let start = Calendar.current.startOfDay(for: selectedDay)
@@ -236,6 +277,11 @@ struct NativeHomeView: View {
 
     /// Rings, dashboard, tonight, week — once per data change, not per `body` pass.
     private func rebuildModel() {
+        guard let repo = repoHandle else { return }
+        firstDay = repo.days.first?.day
+        storeEmpty = NativeDayLogic.isEmptyStore(
+            days: repo.days, sleeps: repo.sleeps, importedSleep: repo.importedSleep
+        )
         let scale = UnitPrefs.resolveEffortScale(effortScaleRaw)
         let model = NativeDay.make(
             days: repo.days,
@@ -303,6 +349,7 @@ struct NativeHomeView: View {
     /// Uses the 300 s buckets already read for the stress chart (within 0.05 of per-sample on the
     /// golden vectors). Recomputes only when `refreshSeq` or the selected day changed.
     private func refreshLiveStrain(from: Int, buckets: [HRBucket]) async {
+        guard let repo = repoHandle, let profile = profileHandle else { return }
         let seq = repo.refreshSeq
         let day = selectedKey
         if let cached = NativeLiveStrainMemo.read(seq: seq, day: day) {
@@ -452,6 +499,7 @@ struct HomeDateStepper: View {
     var canGoForward: Bool
     var onBack: () -> Void
     var onForward: () -> Void
+    var onTitleTap: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -464,10 +512,14 @@ struct HomeDateStepper: View {
             .disabled(!canGoBack)
             .opacity(canGoBack ? 1 : 0.35)
 
-            Text(title)
-                .font(.headline)
-                .monospacedDigit()
-                .frame(minWidth: 120)
+            Button { onTitleTap?() } label: {
+                Text(title)
+                    .font(.headline)
+                    .monospacedDigit()
+                    .frame(minWidth: 120, minHeight: 32)
+                    .contentShape(Rectangle())
+            }
+            .disabled(onTitleTap == nil)
 
             Button(action: onForward) {
                 Image(systemName: "chevron.right")
@@ -479,6 +531,8 @@ struct HomeDateStepper: View {
             .opacity(canGoForward ? 1 : 0.35)
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, 4)
+        .homeStepperGlass()
         .accessibilityElement(children: .combine)
         .accessibilityLabel(title)
         .accessibilityHint("Steps through days")
@@ -489,6 +543,57 @@ struct HomeDateStepper: View {
             @unknown default: break
             }
         }
+    }
+}
+
+/// Calendar for jumping straight to a day. Picking a date selects it and closes the sheet.
+struct HomeCalendarSheet: View {
+    var range: ClosedRange<Date>
+    var onPick: (Date) -> Void
+    @State private var date: Date
+    @Environment(\.dismiss) private var dismiss
+
+    init(selected: Date, range: ClosedRange<Date>, onPick: @escaping (Date) -> Void) {
+        self.range = range
+        self.onPick = onPick
+        _date = State(initialValue: min(max(selected, range.lowerBound), range.upperBound))
+    }
+
+    var body: some View {
+        NavigationStack {
+            DatePicker("Day", selection: $date, in: range, displayedComponents: .date)
+                .datePickerStyle(.graphical)
+                .padding(.horizontal)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Today") { onPick(range.upperBound); dismiss() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+                .onChangeCompat(of: date) { picked in
+                    onPick(picked)
+                    dismiss()
+                }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+private extension View {
+    /// Trial: the day stepper as one Liquid Glass capsule on iOS 26. Older systems and macOS
+    /// keep the bare stepper.
+    @ViewBuilder func homeStepperGlass() -> some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            self.glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
     }
 }
 
@@ -1252,6 +1357,33 @@ struct NativeActivityRoute: Hashable {
 struct NativePairRoute: Hashable {}
 
 struct NativeAlarmRoute: Hashable {}
+
+/// Holds Repository / BLE / Profile so NativeHomeView itself does not. Forwards only
+/// `refreshSeq` and `loaded` — hydration, cycle, scan RSSI, and profile calibration
+/// publishes stay in this Color.clear leaf.
+private struct NativeHomeEnvSink: View {
+    @EnvironmentObject private var repo: Repository
+    @EnvironmentObject private var ble: BLEManager
+    @EnvironmentObject private var profile: ProfileStore
+    @Binding var refreshSeq: Int
+    @Binding var loaded: Bool
+    @Binding var handlesReady: Bool
+    var onHandles: (Repository, BLEManager, ProfileStore) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onAppear {
+                onHandles(repo, ble, profile)
+                refreshSeq = repo.refreshSeq
+                loaded = repo.loaded
+                handlesReady = true
+            }
+            .onReceive(repo.$refreshSeq.removeDuplicates()) { refreshSeq = $0 }
+            .onReceive(repo.$loaded.removeDuplicates()) { loaded = $0 }
+    }
+}
 
 /// Strap battery and a sync spinner beside the date stepper.
 /// Observes only battery %, charging, connected and backfilling via `.onReceive` of those

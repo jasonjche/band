@@ -1,12 +1,16 @@
 import SwiftUI
+import Combine
 import WhoopStore
 
 /// Journal: inset grouped list of the day's real answers, plus an Apple Form to log them.
 struct NativeJournalView: View {
     var startsLogging: Bool = false
-    @EnvironmentObject private var repo: Repository
     @StateObject private var catalog = JournalCatalogStore()
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
+    @State private var repoHandle: Repository?
+    @State private var firstDay: String?
+    @State private var refreshSeq = 0
+    @State private var handlesReady = false
 
     private var selectedDay: Date {
         get { NativeDaySelection.date(from: selectedDayKey) }
@@ -79,7 +83,16 @@ struct NativeJournalView: View {
                 }
             }
         }
-        .task(id: dayKey) {
+        .background {
+            NativeJournalRepoSink(
+                repoHandle: $repoHandle,
+                firstDay: $firstDay,
+                refreshSeq: $refreshSeq,
+                handlesReady: $handlesReady
+            )
+        }
+        .task(id: handlesReady ? "\(dayKey)-\(refreshSeq)" : "boot") {
+            guard handlesReady else { return }
             await reload()
             if logging { seedDraft() }
         }
@@ -91,7 +104,7 @@ struct NativeJournalView: View {
             Section {
                 HomeDateStepper(
                     title: HomeDayTitle.text(for: selectedDay),
-                    canGoBack: HomeDayNav.canGoBack(selectedKey: dayKey, firstDay: repo.days.first?.day),
+                    canGoBack: HomeDayNav.canGoBack(selectedKey: dayKey, firstDay: firstDay),
                     canGoForward: HomeDayNav.canGoForward(selectedKey: dayKey),
                     onBack: { shiftDay(-1) },
                     onForward: { shiftDay(1) }
@@ -126,7 +139,7 @@ struct NativeJournalView: View {
         NativeChrome.screen {
             HomeDateStepper(
                 title: HomeDayTitle.text(for: selectedDay),
-                canGoBack: HomeDayNav.canGoBack(selectedKey: dayKey, firstDay: repo.days.first?.day),
+                canGoBack: HomeDayNav.canGoBack(selectedKey: dayKey, firstDay: firstDay),
                 canGoForward: HomeDayNav.canGoForward(selectedKey: dayKey),
                 onBack: { shiftDay(-1) },
                 onForward: { shiftDay(1) }
@@ -142,7 +155,7 @@ struct NativeJournalView: View {
     @State private var seededTime: [String: Date] = [:]
 
     private func shiftDay(_ delta: Int) {
-        guard let next = HomeDayNav.shift(from: selectedDay, delta: delta, firstDay: repo.days.first?.day) else { return }
+        guard let next = HomeDayNav.shift(from: selectedDay, delta: delta, firstDay: firstDay) else { return }
         selectedDay = next
     }
 
@@ -192,9 +205,9 @@ struct NativeJournalView: View {
             )
             if yes, follow.hasQuantity {
                 let value = draftNumeric[item.canonical] ?? follow.defaultQuantity
-                await repo.saveJournalNumeric(day: dayKey, question: item.canonical, value: value, notes: notes)
+                await repoHandle?.saveJournalNumeric(day: dayKey, question: item.canonical, value: value, notes: notes)
             } else {
-                await repo.saveJournalAnswer(day: dayKey, question: item.canonical, answeredYes: yes, notes: notes)
+                await repoHandle?.saveJournalAnswer(day: dayKey, question: item.canonical, answeredYes: yes, notes: notes)
             }
         }
         logging = false
@@ -202,11 +215,35 @@ struct NativeJournalView: View {
     }
 
     private func reload() async {
+        guard let repo = repoHandle else { return }
+        firstDay = repo.days.first?.day
         entries = await repo.journalEntries(days: 40)
         let imported = await repo.importedJournalEntries(days: 400)
         importedQuestions = Array(Set(imported.map(\.question))).sorted()
         nativeAnswers = await repo.nativeJournalAnswers(day: dayKey)
         nativeNumeric = await repo.nativeJournalNumeric(day: dayKey)
+    }
+}
+
+/// Holds Repository so the journal list does not re-render on hydration / cycle seq.
+private struct NativeJournalRepoSink: View {
+    @EnvironmentObject private var repo: Repository
+    @Binding var repoHandle: Repository?
+    @Binding var firstDay: String?
+    @Binding var refreshSeq: Int
+    @Binding var handlesReady: Bool
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onAppear {
+                repoHandle = repo
+                firstDay = repo.days.first?.day
+                refreshSeq = repo.refreshSeq
+                handlesReady = true
+            }
+            .onReceive(repo.$refreshSeq.removeDuplicates()) { refreshSeq = $0 }
     }
 }
 

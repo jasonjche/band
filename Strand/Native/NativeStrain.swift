@@ -40,15 +40,26 @@ enum NativeStrain {
     }
 
     /// Highest workout strain per local day key.
+    /// Home `rebuildModel` calls this from `NativeDay.make` and twice from `NativeWeek.points`.
+    /// Cache the last input so those three walks share one pass. Full array equality, so numbers match.
     static func workoutMaxByDay(_ workouts: [WorkoutRow]) -> [String: Double] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if cachedWorkouts == workouts { return cachedMaxByDay }
         var out: [String: Double] = [:]
         for w in workouts {
             guard let s = w.strain, s > 0 else { continue }
             let key = Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(w.startTs)))
             out[key] = max(out[key] ?? 0, s)
         }
+        cachedWorkouts = workouts
+        cachedMaxByDay = out
         return out
     }
+
+    private static let cacheLock = NSLock()
+    private static var cachedWorkouts: [WorkoutRow] = []
+    private static var cachedMaxByDay: [String: Double] = [:]
 
     static func isImportedDay(_ figures: ImportedSleepFigures?) -> Bool {
         NativeBandScores.isImported(figures)

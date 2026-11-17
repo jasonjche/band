@@ -8,12 +8,22 @@ import WhoopStore
 enum NativeAddActivityLogic {
     static let recentLimit = 5
 
+    /// Catalogue keyed by `WorkoutSource.sportKey`, first match wins (same as `all.first(where:)`).
+    static let sportsByKey: [String: WorkoutCatalog.Sport] = {
+        var map: [String: WorkoutCatalog.Sport] = [:]
+        map.reserveCapacity(WorkoutCatalog.all.count)
+        for sport in WorkoutCatalog.all {
+            let key = WorkoutSource.sportKey(sport.name)
+            if map[key] == nil { map[key] = sport }
+        }
+        return map
+    }()
+
     /// Most-used catalogue sports from stored workouts, top `limit`, count then recency.
     static func recentSports(from workouts: [WorkoutRow], limit: Int = recentLimit) -> [WorkoutCatalog.Sport] {
         var counts: [String: (count: Int, lastStart: Int)] = [:]
         for row in workouts {
-            let key = WorkoutSource.sportKey(row.sport)
-            guard let sport = WorkoutCatalog.all.first(where: { WorkoutSource.sportKey($0.name) == key }) else {
+            guard let sport = sportsByKey[WorkoutSource.sportKey(row.sport)] else {
                 continue
             }
             let current = counts[sport.name] ?? (0, 0)
@@ -230,9 +240,21 @@ struct NativeSportPicker: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var recents: [WorkoutCatalog.Sport]
 
-    private var recents: [WorkoutCatalog.Sport] {
-        NativeAddActivityLogic.recentSports(from: workouts)
+    init(
+        workouts: [WorkoutRow],
+        selected: String?,
+        title: String = "Sport",
+        popsOnSelect: Bool = false,
+        onSelect: @escaping (WorkoutCatalog.Sport) -> Void
+    ) {
+        self.workouts = workouts
+        self.selected = selected
+        self.title = title
+        self.popsOnSelect = popsOnSelect
+        self.onSelect = onSelect
+        _recents = State(initialValue: NativeAddActivityLogic.recentSports(from: workouts))
     }
 
     private var allSports: [WorkoutCatalog.Sport] {
@@ -261,6 +283,9 @@ struct NativeSportPicker: View {
         .searchable(text: $query, prompt: "Search")
         .navigationTitle(title)
         .modifier(NativeInlineTitle())
+        .onChangeCompat(of: workouts) { rows in
+            recents = NativeAddActivityLogic.recentSports(from: rows)
+        }
         #if os(iOS)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -302,9 +327,13 @@ struct NativeAddPastActivityForm: View {
     var embedded: Bool = false
 
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var repo: Repository
     @State private var sport: String
     @State private var start: Date
     @State private var end: Date
+    @State private var hrSamples: [NativeAddActivityChartLogic.Sample] = []
+    @State private var storedWorkouts: [WorkoutRow]
+    @State private var hrLoadedDay: Int?
 
     init(
         editing: WorkoutRow? = nil,
@@ -322,6 +351,7 @@ struct NativeAddPastActivityForm: View {
         _end = State(initialValue: editing.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
                      ?? defaultEnd)
         _sport = State(initialValue: editing.map { WorkoutSource.editableSport($0.sport) } ?? "")
+        _storedWorkouts = State(initialValue: workouts)
     }
 
     var body: some View {
@@ -364,6 +394,11 @@ struct NativeAddPastActivityForm: View {
                         }
                     }
                 }
+            }
+            Section {
+                heartRateSection
+            }
+            Section {
                 DatePicker("Start", selection: $start, in: ...Date(), displayedComponents: [.date, .hourAndMinute])
                 DatePicker("End", selection: $end, in: ...Date(), displayedComponents: [.date, .hourAndMinute])
                 HStack {
@@ -386,13 +421,86 @@ struct NativeAddPastActivityForm: View {
                     .disabled(builtRow == nil)
             }
         }
+        .task(id: dayKey) {
+            await loadHeartRate(for: dayKey)
+        }
         #if os(iOS)
         .scrollContentBackground(.hidden)
         .background(NativePageFill())
         #endif
         #if os(macOS)
-        .frame(minWidth: 420, minHeight: 420)
+        .frame(minWidth: 420, minHeight: 560)
         #endif
+    }
+
+    @ViewBuilder private var heartRateSection: some View {
+        if hrLoadedDay != dayKey {
+            ProgressView()
+                .frame(maxWidth: .infinity)
+        } else if hrSamples.isEmpty {
+            Text(NativeAddActivityChartLogic.emptyDayMessage)
+                .foregroundStyle(.secondary)
+        } else {
+            NativeAddActivityDayChart(
+                samples: hrSamples,
+                windowStart: start,
+                windowEnd: end,
+                dayStart: dayStart,
+                dayEnd: dayEnd,
+                otherWorkouts: otherWorkouts,
+                onMoveStart: moveWindow(to:)
+            )
+        }
+    }
+
+    private var dayStart: Date {
+        NativeAddActivityChartLogic.dayBounds(for: start).start
+    }
+
+    private var dayEnd: Date {
+        NativeAddActivityChartLogic.dayBounds(for: start).end
+    }
+
+    private var dayKey: Int {
+        Int(dayStart.timeIntervalSince1970)
+    }
+
+    private var otherWorkouts: [NativeAddActivityChartLogic.WorkoutBand] {
+        NativeAddActivityChartLogic.overlappingWorkouts(
+            workouts: storedWorkouts,
+            dayStart: dayKey,
+            dayEnd: Int(dayEnd.timeIntervalSince1970),
+            excludingStartTs: editing?.startTs
+        )
+    }
+
+    @MainActor
+    private func loadHeartRate(for key: Int) async {
+        let from = key
+        let to = Int(NativeAddActivityChartLogic.dayBounds(
+            for: Date(timeIntervalSince1970: TimeInterval(key))
+        ).end.timeIntervalSince1970)
+        let buckets = await repo.hrSamples(
+            from: from, to: to,
+            bucketSeconds: NativeAddActivityChartLogic.bucketSeconds
+        )
+        let rows = await repo.workoutRows(days: 120)
+        guard !Task.isCancelled else { return }
+        hrSamples = buckets.map(NativeAddActivityChartLogic.Sample.init)
+        storedWorkouts = rows
+        hrLoadedDay = key
+    }
+
+    private func moveWindow(to proposed: Date) {
+        let duration = max(end.timeIntervalSince(start), 60)
+        let clamped = NativeAddActivityChartLogic.clampedWindow(
+            start: proposed,
+            duration: duration,
+            dayStart: dayStart,
+            now: Date()
+        )
+        start = clamped.start
+        end = clamped.end
     }
 
     private var builtRow: WorkoutRow? {

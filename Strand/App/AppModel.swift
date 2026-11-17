@@ -277,12 +277,14 @@ final class AppModel: ObservableObject {
         // Seed it now and keep it in step with any profile edit (objectWillChange fires just before a
         // @Published setter lands, so read the CURRENT values , they're already committed by the time the
         // next reconcile reads `strainProfile`). Display-only; the score itself is unchanged.
-        self.repo.strainProfile = Repository.StrainProfile(hrMax: Double(profile.hrMax), sex: profile.sex)
+        self.repo.strainProfile = Repository.StrainProfile(
+            hrMax: profile.effortHRmax ?? Double(profile.hrMax), sex: profile.sex)
         profile.objectWillChange.sink { [weak self] in
             guard let self else { return }
             DispatchQueue.main.async {
                 self.repo.strainProfile = Repository.StrainProfile(
-                    hrMax: Double(self.profile.hrMax), sex: self.profile.sex)
+                    hrMax: self.profile.effortHRmax ?? Double(self.profile.hrMax),
+                    sex: self.profile.sex)
             }
         }.store(in: &hrCancellables)
         // Smooth HR centrally so it's solid everywhere it's shown.
@@ -765,7 +767,10 @@ final class AppModel: ObservableObject {
     private func refreshAfterCompletedBackfill() async {
         live.append(log: "Backfill: refreshing dashboard cache from completed sync")
         await repo.refresh(days: 120)
-        if AppBrand.isPersonalBuild { _ = await NativeWeight.sync(repo: repo, profile: profile) }
+        if AppBrand.isPersonalBuild {
+            _ = await NativeWeight.sync(repo: repo, profile: profile)
+            await profile.syncObservedHRMax(from: repo)
+        }
         // Score the freshly-offloaded raw data RIGHT NOW rather than waiting for the next 15-minute
         // analyzeRecent tick , otherwise a just-synced night's Charge / Effort / Rest can take up to
         // 15 minutes to appear on a strap-only (no-import) dashboard. analyzeRecent no-ops if a tick is
@@ -1074,12 +1079,13 @@ final class AppModel: ObservableObject {
         // disagree with its own re-score. Read once here, at save time; the live readout during the
         // session is a transient running estimate and deliberately left alone.
         let restingHR = repo.today?.restingHr.map(Double.init) ?? BandStrain.defaultRestingHR
+        let scoringHRmax = profile.effortHRmax ?? Double(profile.hrMax)
         let strain: Double?
         if samples.count >= 2 {
             if AppBrand.isPersonalBuild {
-                strain = NativeStrain.score(samples, maxHR: Double(profile.hrMax), restingHR: restingHR)
+                strain = NativeStrain.score(samples, maxHR: scoringHRmax, restingHR: restingHR)
             } else {
-                strain = StrainScorer.strain(samples, maxHR: Double(profile.hrMax),
+                strain = StrainScorer.strain(samples, maxHR: scoringHRmax,
                                       restingHR: restingHR,
                                       method: PuffinExperiment.effortMethod, sex: profile.sex)
             }
@@ -1095,7 +1101,7 @@ final class AppModel: ObservableObject {
             // active-vs-resting threshold sits at resting + 30% HRR, so the default silently shifts what
             // counts as active — and #972 already threads it in the rescore path, so leaving it nil here
             // meant a saved workout's kcal disagreed with its own re-score just as its Effort did.
-            ? Calories.estimateBoutCalories(samples, profile: up, hrmax: Double(profile.hrMax),
+            ? Calories.estimateBoutCalories(samples, profile: up, hrmax: scoringHRmax,
                                             restingHR: restingHR).0
             : 0
         let startTs = Int(w.start.timeIntervalSince1970)
@@ -1145,10 +1151,12 @@ final class AppModel: ObservableObject {
         w.avgHr = Int((Double(w.samples.map(\.bpm).reduce(0, +)) / Double(w.samples.count)).rounded())
         if AppBrand.isPersonalBuild {
             let rest = repo.today?.restingHr.map(Double.init) ?? BandStrain.defaultRestingHR
-            w.liveStrain = NativeStrain.score(w.samples, maxHR: Double(profile.hrMax),
+            w.liveStrain = NativeStrain.score(w.samples,
+                                              maxHR: profile.effortHRmax ?? Double(profile.hrMax),
                                               restingHR: rest) ?? 0
         } else {
-            w.liveStrain = StrainScorer.strain(w.samples, maxHR: Double(profile.hrMax),
+            w.liveStrain = StrainScorer.strain(w.samples,
+                                              maxHR: profile.effortHRmax ?? Double(profile.hrMax),
                                               method: PuffinExperiment.effortMethod, sex: profile.sex) ?? 0
         }
         activeWorkout = w

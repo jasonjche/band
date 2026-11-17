@@ -133,7 +133,7 @@ enum NativeDayLogic {
         return formatter
     }()
 
-    private static func startOfLocalDay(_ key: String) -> Date? {
+    static func startOfLocalDay(_ key: String) -> Date? {
         guard let date = localDayFormatter.date(from: key) else { return nil }
         return Calendar.current.startOfDay(for: date)
     }

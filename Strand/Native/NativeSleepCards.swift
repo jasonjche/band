@@ -7,15 +7,23 @@ import StrandAnalytics
 
 struct NativeSleepHoursVsNeededCard: View {
     var model: NativeSleepNeed.Resolved
+    var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
+            let header = NativeCardHeader(
                 title: "Hours vs. Needed",
                 symbol: "clock.fill",
-                tint: NativePaint.sleep(style)
+                tint: NativePaint.sleep(style),
+                chevron: onOpen != nil
             )
+            if let onOpen {
+                Button(action: onOpen) { header }
+                    .buttonStyle(.plain)
+            } else {
+                header
+            }
             if let percent = model.percent {
                 NativeHeroValue(
                     caption: "Last night",
@@ -51,8 +59,11 @@ struct NativeSleepHoursVsNeededCard: View {
                 }
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { onOpen?() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Hours vs. Needed")
+        .accessibilityAddTraits(onOpen == nil ? [] : .isButton)
     }
 }
 
@@ -116,7 +127,8 @@ struct NativeSleepConsistencyCard: View {
             NativeSleepConsistencyChart(
                 nights: nights,
                 tint: NativePaint.sleep(style),
-                selectedKey: $selectedKey
+                selectedKey: $selectedKey,
+                onOpen: onOpen
             )
             .frame(height: 220)
         }
@@ -164,6 +176,7 @@ struct NativeSleepConsistencyChart: View {
     var nights: [NativeSleepNight]
     var tint: Color
     var selectedKey: Binding<String?>? = nil
+    var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
 
     private var avgBed: Double? { NativeSleepConsistency.averageBed(nights) }
@@ -195,11 +208,6 @@ struct NativeSleepConsistencyChart: View {
                     .foregroundStyle(Color.secondary)
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [6, 4]))
                     .accessibilityLabel("Average wake")
-            }
-            if let selected {
-                RuleMark(x: .value("Day", selected))
-                    .foregroundStyle(Color.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: 1))
             }
         }
         .chartYScale(domain: NativeSleepClock.plotY(1140)...NativeSleepClock.plotY(180))
@@ -233,23 +241,32 @@ struct NativeSleepConsistencyChart: View {
 
         if #available(iOS 17.0, macOS 14.0, *), let selectedKey {
             chart.chartXSelection(value: selectedKey)
+                .onTapGesture { onOpen?() }
         } else {
-            chart
+            chart.onTapGesture { onOpen?() }
         }
     }
 }
 
 struct NativeSleepEfficiencyCard: View {
     var model: NativeSleepEfficiency.Model
+    var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
+            let header = NativeCardHeader(
                 title: "Sleep Efficiency",
                 symbol: "bed.double.fill",
-                tint: NativePaint.sleep(style)
+                tint: NativePaint.sleep(style),
+                chevron: onOpen != nil
             )
+            if let onOpen {
+                Button(action: onOpen) { header }
+                    .buttonStyle(.plain)
+            } else {
+                header
+            }
             NativeHeroValue(
                 caption: "Last night",
                 value: "\(Int(model.percent.rounded()))",
@@ -270,6 +287,9 @@ struct NativeSleepEfficiencyCard: View {
                 )
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { onOpen?() }
+        .accessibilityAddTraits(onOpen == nil ? [] : .isButton)
     }
 }
 
@@ -296,22 +316,37 @@ struct NativeSleepStageStrip: View {
 
 struct NativeSleepStressCard: View {
     var model: NativeSleepStress.Model
+    var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
+    @State private var scrub = NativeScopeScrub()
+
+    private var average: Double {
+        NativeScoreMath.mean(model.points.map(\.value)) ?? 0
+    }
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
+            let header = NativeCardHeader(
                 title: "Sleep Stress",
                 symbol: "waveform.path",
-                tint: NativePaint.sleep(style)
+                tint: NativePaint.sleep(style),
+                chevron: onOpen != nil
             )
-            NativeHeroValue(
-                caption: "Average",
-                value: String(format: "%.1f", model.points.map(\.value).reduce(0, +) / Double(max(model.points.count, 1))),
-                unit: nil
+            if let onOpen {
+                Button(action: onOpen) { header }
+                    .buttonStyle(.plain)
+            } else {
+                header
+            }
+            NativeSleepStressHero(scrub: scrub, points: model.points, average: average)
+                .frame(height: 76, alignment: .topLeading)
+            NativeSleepStressPlot(
+                points: model.points,
+                tint: NativePaint.sleep(style),
+                scrub: scrub,
+                onOpen: onOpen
             )
-            NativeSleepStressPlot(points: model.points, tint: NativePaint.sleep(style))
-                .frame(height: 160)
+            .frame(height: 160)
             VStack(spacing: 0) {
                 bandRow(model.high, symbol: "arrow.up.circle.fill")
                 Divider().padding(.leading, 34)
@@ -332,12 +367,50 @@ struct NativeSleepStressCard: View {
     }
 }
 
+private struct NativeSleepStressHero: View {
+    @ObservedObject var scrub: NativeScopeScrub
+    var points: [NativeHourPoint]
+    var average: Double
+
+    var body: some View {
+        if let time = scrub.time,
+           let point = NativeChartScrubMath.nearestHour(
+            to: time,
+            in: points,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+           ) {
+            NativeHeroValue(
+                caption: "Stress",
+                value: String(format: "%.1f", point.value),
+                date: NativeScopeFormat.time(point.time)
+            )
+        } else {
+            NativeHeroValue(
+                caption: "Average",
+                value: String(format: "%.1f", average)
+            )
+        }
+    }
+}
+
 struct NativeSleepStressPlot: View {
     var points: [NativeHourPoint]
     var tint: Color
+    var scrub: NativeScopeScrub? = nil
+    var onOpen: (() -> Void)? = nil
+    @State private var localScrub = NativeScopeScrub()
+
+    private var box: NativeScopeScrub { scrub ?? localScrub }
+
+    private var timeBinding: Binding<Date?> {
+        Binding(
+            get: { box.time },
+            set: { box.time = $0 }
+        )
+    }
 
     var body: some View {
-        Chart {
+        let marks = Chart {
             ForEach(points) { point in
                 LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
                     .foregroundStyle(tint)
@@ -371,6 +444,43 @@ struct NativeSleepStressPlot: View {
             }
         }
         .accessibilityLabel("Overnight sleep stress")
+
+        Group {
+            if #available(iOS 17.0, macOS 14.0, *) {
+                marks
+                    .chartXSelection(value: timeBinding)
+                    .chartOverlay { proxy in
+                        NativeSleepStressMarker(proxy: proxy, points: points, tint: tint, scrub: box)
+                    }
+            } else {
+                marks
+            }
+        }
+        .onTapGesture { onOpen?() }
+    }
+}
+
+private struct NativeSleepStressMarker: View {
+    var proxy: ChartProxy
+    var points: [NativeHourPoint]
+    var tint: Color
+    @ObservedObject var scrub: NativeScopeScrub
+
+    var body: some View {
+        GeometryReader { _ in
+            if let time = scrub.time,
+               let point = NativeChartScrubMath.nearestHour(
+                to: time,
+                in: points,
+                maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+               ),
+               let x = proxy.position(forX: point.time),
+               let y = proxy.position(forY: point.value) {
+                NativeSelectedVertex(tint: tint)
+                    .position(x: x, y: y)
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -382,6 +492,7 @@ struct NativeSleepDualLineCard: View {
     var typical: ClosedRange<Double>? = nil
     var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
+    @State private var selectedKey: String?
 
     private var knownSlept: [NativeDayPoint] { slept.filter { $0.value.isFinite } }
     private var knownNeeded: [NativeDayPoint] { needed.filter { $0.value.isFinite } }
@@ -401,8 +512,10 @@ struct NativeSleepDualLineCard: View {
         NativeChrome.panel {
             header
             hero
+                .frame(height: 76, alignment: .topLeading)
             plot.frame(height: 200)
         }
+        .modifier(NativeSelectionFeedback(trigger: selectedKey ?? ""))
     }
 
     @ViewBuilder private var header: some View {
@@ -426,7 +539,15 @@ struct NativeSleepDualLineCard: View {
     }
 
     @ViewBuilder private var hero: some View {
-        if let average = NativeScoreMath.mean(knownSlept.map(\.value)) {
+        if let selectedKey, let sleptPoint = NativeChartScrubMath.finitePoint(key: selectedKey, in: slept) {
+            NativeClockHero(caption: NativeChartDay.longLabel(selectedKey), minutes: sleptPoint.value)
+            if let neededPoint = NativeChartScrubMath.finitePoint(key: selectedKey, in: needed) {
+                Text("Needed \(NativeScoreMath.duration(neededPoint.value))")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        } else if let average = NativeScoreMath.mean(knownSlept.map(\.value)) {
             NativeClockHero(caption: "Average", minutes: average)
             if let first = slept.first?.key, let last = slept.last?.key {
                 Text(NativeChartDay.rangeLabel(from: first, to: last))
@@ -463,7 +584,13 @@ struct NativeSleepDualLineCard: View {
                 .lineStyle(StrokeStyle(lineWidth: 2.5))
                 PointMark(x: .value("Day", point.key), y: .value("Hours", point.value))
                     .foregroundStyle(NativeTokens.sleep)
-                    .symbol { NativeSleepVertex(tint: NativeTokens.sleep) }
+                    .symbol {
+                        if point.key == selectedKey {
+                            NativeSelectedVertex(tint: NativeTokens.sleep)
+                        } else {
+                            NativeSleepVertex(tint: NativeTokens.sleep)
+                        }
+                    }
             }
             ForEach(NativeChartDay.linePoints(needed)) { point in
                 LineMark(
@@ -505,6 +632,19 @@ struct NativeSleepDualLineCard: View {
             }
         }
         .accessibilityLabel("Hours slept and hours needed")
+        .modifier(NativeSleepDaySelect(selected: $selectedKey))
+        .onTapGesture { onOpen?() }
+    }
+}
+
+private struct NativeSleepDaySelect: ViewModifier {
+    @Binding var selected: String?
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            content.chartXSelection(value: $selected)
+        } else {
+            content
+        }
     }
 }
 
@@ -545,6 +685,7 @@ struct NativeSleepTimeInBedWeekCard: View {
     var highlightKey: String?
     var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
+    @State private var selectedKey: String?
 
     private var known: [NativeDayPoint] {
         points.filter { $0.value.isFinite || ($0.low != nil && $0.high != nil) }
@@ -565,12 +706,16 @@ struct NativeSleepTimeInBedWeekCard: View {
                 header
             }
             hero
+                .frame(height: 76, alignment: .topLeading)
             plot.frame(height: 200)
         }
+        .modifier(NativeSelectionFeedback(trigger: selectedKey ?? ""))
     }
 
     @ViewBuilder private var hero: some View {
-        if let average = NativeScoreMath.mean(known.compactMap { $0.value.isFinite ? $0.value : nil }) {
+        if let selectedKey, let point = NativeChartScrubMath.finitePoint(key: selectedKey, in: points) {
+            NativeClockHero(caption: NativeChartDay.longLabel(selectedKey), minutes: point.value)
+        } else if let average = NativeScoreMath.mean(known.compactMap { $0.value.isFinite ? $0.value : nil }) {
             NativeClockHero(caption: "Average", minutes: average)
             if let first = points.first?.key, let last = points.last?.key {
                 Text(NativeChartDay.rangeLabel(from: first, to: last))
@@ -593,7 +738,15 @@ struct NativeSleepTimeInBedWeekCard: View {
                         yEnd: .value("Bed", NativeSleepClock.plotY(low)),
                         width: 14
                     )
-                    .foregroundStyle(point.key == highlightKey ? NativePaint.sleep(style) : Color.secondary.opacity(0.45))
+                    .foregroundStyle(
+                        point.key == selectedKey || (selectedKey == nil && point.key == highlightKey)
+                            ? NativePaint.sleep(style)
+                            : Color.secondary.opacity(0.45)
+                    )
+                    .opacity(NativeChartScrubMath.barOpacity(
+                        isSelected: point.key == selectedKey,
+                        hasSelection: selectedKey != nil && known.contains(where: { $0.key == selectedKey })
+                    ))
                     .clipShape(Capsule())
                     .accessibilityLabel(NativeChartDay.longLabel(point.key))
                     .accessibilityValue(NativeScoreMath.duration(point.value))
@@ -628,6 +781,8 @@ struct NativeSleepTimeInBedWeekCard: View {
             }
         }
         .accessibilityLabel("Time in bed, last 7 days")
+        .modifier(NativeSleepDaySelect(selected: $selectedKey))
+        .onTapGesture { onOpen?() }
     }
 }
 
@@ -650,6 +805,7 @@ enum NativeSleepGallery {
             Section(name: "sleep-week-time-in-bed", padded: true, view: AnyView(weekInBed)),
             Section(name: "sleep-last-night", padded: true, view: AnyView(lastNight)),
             Section(name: "sleep-stage-detail", padded: true, view: AnyView(stageDetail)),
+            Section(name: "sleep-hypnogram-page", padded: true, view: AnyView(hypnogramPage)),
         ]
     }
 
@@ -718,6 +874,18 @@ enum NativeSleepGallery {
             nightStart: NativeSleepSnapshot.sleepStart,
             nightEnd: NativeSleepSnapshot.sleepEnd,
             dayKey: NativeSleepSnapshot.highlightKey,
+            scrolls: false
+        )
+    }
+
+    private static var hypnogramPage: some View {
+        NativeSleepHypnogramPage(
+            spans: NativeSleepSnapshot.hypnogram,
+            nightStart: NativeSleepSnapshot.sleepStart,
+            nightEnd: NativeSleepSnapshot.sleepEnd,
+            stages: NativeSleepSnapshot.stages,
+            asleepMinutes: 410,
+            awakeTypical: 45,
             scrolls: false
         )
     }

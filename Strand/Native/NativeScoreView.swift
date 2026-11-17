@@ -18,10 +18,12 @@ private struct NativeSleepEditTarget: Identifiable {
 
 struct NativeScorePage: View {
     var kind: NativeScoreKind
-    @EnvironmentObject private var repo: Repository
-    @EnvironmentObject private var intelligence: IntelligenceEngine
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
+    @State private var repoHandle: Repository?
+    @State private var intelligenceHandle: IntelligenceEngine?
+    @State private var refreshSeq = 0
+    @State private var handlesReady = false
     @State private var workouts: [WorkoutRow] = []
     @State private var overnightHr: [NativeHourPoint] = []
     @State private var highSleepStress: Double?
@@ -30,6 +32,7 @@ struct NativeScorePage: View {
     @State private var dayModel: NativeDay.Model?
     @State private var weekCards: [NativeWeek.Card] = []
     @State private var sleepDetail: NativeSleepPageDetail?
+    @State private var nightSession: CachedSleepSession?
 
     private var selectedDay: Date {
         NativeDaySelection.date(from: selectedDayKey)
@@ -39,17 +42,8 @@ struct NativeScorePage: View {
         NativeDayLogic.resolvedDayKey(stored: selectedDayKey)
     }
 
-    private var nightSession: CachedSleepSession? {
-        repo.sleeps
-            .filter {
-                NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
-            }
-            .sorted { ($0.endTs - $0.effectiveStartTs) > ($1.endTs - $1.effectiveStartTs) }
-            .first
-    }
-
     private var rebuildID: String {
-        "\(repo.refreshSeq)-\(dayKey)-\(effortScaleRaw)"
+        handlesReady ? "\(refreshSeq)-\(dayKey)-\(effortScaleRaw)" : "boot"
     }
 
     private var sleepBoundsID: String {
@@ -57,26 +51,37 @@ struct NativeScorePage: View {
     }
 
     var body: some View {
-        let model = resolvedModel
-        NativeScoreView(
-            score: kind == .recovery ? model.recovery : kind == .strain ? model.strain : model.sleep,
-            weekCards: resolvedWeekCards,
-            kind: kind,
-            sleepHours: model.sleepHours,
-            asleepMinutes: model.asleepMinutes,
-            stages: model.sleepStages,
-            activities: model.activities,
-            sleepStart: model.sleepStart,
-            sleepEnd: model.sleepEnd,
-            overnightHr: overnightHr,
-            awakeTypical: model.awakeTypical,
-            dayKey: dayKey,
-            needMinutes: NativeSleepNeed.needMinutes(resolvedSleepDetail?.need) ?? model.sleepNeedMin,
-            debtMinutes: model.sleepDebtMin,
-            sleepDetail: resolvedSleepDetail,
-            onEditSleep: kind == .sleep && nightSession != nil ? { sleepEdit = nightSession.map(NativeSleepEditTarget.init) } : nil
-        )
+        Group {
+            if let model = dayModel {
+                NativeScoreView(
+                    score: kind == .recovery ? model.recovery : kind == .strain ? model.strain : model.sleep,
+                    weekCards: weekCards,
+                    kind: kind,
+                    sleepHours: model.sleepHours,
+                    asleepMinutes: model.asleepMinutes,
+                    stages: model.sleepStages,
+                    activities: model.activities,
+                    sleepStart: model.sleepStart,
+                    sleepEnd: model.sleepEnd,
+                    overnightHr: overnightHr,
+                    awakeTypical: model.awakeTypical,
+                    dayKey: dayKey,
+                    needMinutes: NativeSleepNeed.needMinutes(sleepDetail?.need) ?? model.sleepNeedMin,
+                    debtMinutes: model.sleepDebtMin,
+                    sleepDetail: sleepDetail,
+                    onEditSleep: kind == .sleep && nightSession != nil ? { sleepEdit = nightSession.map(NativeSleepEditTarget.init) } : nil
+                )
+            } else {
+                NativeChrome.screen { ProgressView() }
+                    .navigationTitle(kind == .recovery ? "Recovery" : kind == .strain ? "Strain" : "Sleep")
+                    .modifier(NativeInlineTitle())
+            }
+        }
         .nativeDateSubtitle(selectedDay)
+        .background {
+            NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
+            NativeIntelligenceSink { intelligenceHandle = $0 }
+        }
         .sheet(item: $sleepEdit) { target in
             let session = target.session
             let coverageLo = min(session.startTs, session.effectiveStartTs)
@@ -86,39 +91,41 @@ struct NativeScorePage: View {
                 coverage: coverageLo...max(session.endTs, coverageLo + 1),
                 suppressesReDetection: !session.userEdited,
                 onSave: { newBedTs, newWakeTs in
-                    await repo.editSleepTimes(
+                    await repoHandle?.editSleepTimes(
                         detectedStartTs: session.startTs, oldEndTs: session.endTs,
                         storedStagesJSON: session.stagesJSON,
                         newStartTs: newBedTs, newEndTs: newWakeTs
                     )
-                    await intelligence.analyzeRecent()
-                    await repo.refresh()
+                    await intelligenceHandle?.analyzeRecent()
+                    await repoHandle?.refresh()
                 },
                 onDelete: {
-                    _ = await repo.deleteSleepSession(detectedStartTs: session.startTs, endTs: session.endTs)
-                    await intelligence.analyzeRecent()
-                    await repo.refresh()
+                    _ = await repoHandle?.deleteSleepSession(detectedStartTs: session.startTs, endTs: session.endTs)
+                    await intelligenceHandle?.analyzeRecent()
+                    await repoHandle?.refresh()
                 }
             )
         }
-        .onAppear { if dayModel == nil { rebuild() } }
         .task(id: rebuildID) {
+            guard handlesReady else { return }
             rebuild()
-            workouts = await repo.workoutRows(days: 120)
+            workouts = await repoHandle?.workoutRows(days: 120) ?? workouts
             rebuild()
         }
         .onChange(of: highSleepStress) { _ in rebuild() }
         .onChange(of: sleepStress) { _ in rebuild() }
         .task(id: sleepBoundsID) {
-            guard let start = dayModel?.sleepStart, let end = dayModel?.sleepEnd else {
+            guard handlesReady else { return }
+            guard let repo = repoHandle, let start = dayModel?.sleepStart, let end = dayModel?.sleepEnd else {
                 overnightHr = []
                 highSleepStress = nil
                 return
             }
             let from = Int(start.timeIntervalSince1970)
             let to = Int(end.timeIntervalSince1970)
-            let raw = await repo.hrSamples(from: from, to: to, limit: 8_000)
-            overnightHr = raw.enumerated().compactMap { i, sample in
+            let limit = kind == .sleep ? 200_000 : 8_000
+            let overnightHR = await repo.hrSamples(from: from, to: to, limit: limit)
+            overnightHr = overnightHR.prefix(8_000).enumerated().compactMap { i, sample in
                 guard i % 2 == 0 else { return nil }
                 return NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval(sample.ts)), value: Double(sample.bpm))
             }
@@ -127,13 +134,13 @@ struct NativeScorePage: View {
                 sleepStress = nil
                 return
             }
-            // Overnight scoring needs the full night of HR (the sparkline above is capped at 8_000).
-            let overnightHR = await repo.hrSamples(from: from, to: to, limit: 200_000)
             highSleepStress = SleepStressShare.percent(hr: overnightHR, startTs: from, endTs: to)
             sleepStress = NativeSleepStress.make(hr: overnightHR, startTs: from, endTs: to)
         }
         .task(id: "hrv-sws-\(sleepBoundsID)") {
-            guard kind == .recovery, let start = dayModel?.sleepStart, let end = dayModel?.sleepEnd else { return }
+            guard handlesReady, kind == .recovery,
+                  let repo = repoHandle,
+                  let start = dayModel?.sleepStart, let end = dayModel?.sleepEnd else { return }
             let from = Int(start.timeIntervalSince1970)
             let to = Int(end.timeIntervalSince1970)
             let rr = await repo.rrIntervals(from: from, to: to, limit: 50_000)
@@ -150,29 +157,33 @@ struct NativeScorePage: View {
         }
     }
 
-    private var resolvedModel: NativeDay.Model { dayModel ?? buildModel() }
-    private var resolvedWeekCards: [NativeWeek.Card] { dayModel == nil ? buildWeekCards() : weekCards }
-    private var resolvedSleepDetail: NativeSleepPageDetail? { dayModel == nil ? buildSleepDetail() : sleepDetail }
-
     /// Rings, week cards, sleep detail — once per data change, not per `body` pass.
     private func rebuild() {
-        dayModel = buildModel()
-        weekCards = buildWeekCards()
-        sleepDetail = buildSleepDetail()
+        guard let repo = repoHandle else { return }
+        nightSession = repo.sleeps
+            .filter {
+                NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
+            }
+            .sorted { ($0.endTs - $0.effectiveStartTs) > ($1.endTs - $1.effectiveStartTs) }
+            .first
+        dayModel = buildModel(repo)
+        weekCards = buildWeekCards(repo)
+        sleepDetail = buildSleepDetail(repo)
     }
 
-    private func buildModel() -> NativeDay.Model {
+    private func buildModel(_ repo: Repository) -> NativeDay.Model {
         NativeDay.make(
             days: repo.days, sleeps: repo.sleeps, workouts: workouts,
             todayKey: dayKey,
             connected: false,
             effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
             importedSleep: repo.importedSleep,
-            highSleepStress: kind == .sleep ? highSleepStress : nil
+            highSleepStress: kind == .sleep ? highSleepStress : nil,
+            liveStrain: NativeLiveStrainMemo.latest(day: dayKey)
         )
     }
 
-    private func buildWeekCards() -> [NativeWeek.Card] {
+    private func buildWeekCards(_ repo: Repository) -> [NativeWeek.Card] {
         let baseWeek = NativeWeek.cards(
             kind: kind, days: repo.days, todayKey: dayKey,
             effortScale: UnitPrefs.resolveEffortScale(effortScaleRaw),
@@ -184,7 +195,7 @@ struct NativeScorePage: View {
         )
     }
 
-    private func buildSleepDetail() -> NativeSleepPageDetail? {
+    private func buildSleepDetail(_ repo: Repository) -> NativeSleepPageDetail? {
         guard kind == .sleep else { return nil }
         let parsed = nightSession.map { repo.parsedStages(for: $0) } ?? []
         return NativeSleepPageDetail.make(
@@ -264,6 +275,16 @@ struct NativeScoreView: View {
                 )
             }
         }
+        .navigationDestination(for: NativeSleepHypnogramRoute.self) { _ in
+            NativeSleepHypnogramPage(
+                spans: sleepDetail?.hypnogram ?? [],
+                nightStart: sleepStart,
+                nightEnd: sleepEnd,
+                stages: stages,
+                asleepMinutes: asleepMinutes,
+                awakeTypical: awakeTypical
+            )
+        }
     }
 
     @Environment(\.nativeStyle) private var style
@@ -337,11 +358,15 @@ struct NativeScoreView: View {
                 debtMinutes: debtMinutes,
                 onEdit: onEditSleep,
                 spans: sleepDetail?.hypnogram ?? [],
-                onStage: { path.wrappedValue.append(NativeSleepStageRoute(kind: $0)) }
+                onStage: { path.wrappedValue.append(NativeSleepStageRoute(kind: $0)) },
+                onHypnogram: { path.wrappedValue.append(NativeSleepHypnogramRoute()) }
             )
         }
         if kind == .sleep, !overnightHr.isEmpty {
-            NativeOvernightHeartCard(points: overnightHr)
+            NativeOvernightHeartCard(
+                points: overnightHr,
+                onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "avg_hr")) }
+            )
         }
         if kind == .sleep {
             sleepDetailCards
@@ -400,18 +425,9 @@ struct NativeScoreView: View {
         }
     }
 
+    /// Contributor values are all drawn the same; the arrow carries the comparison.
     private func valueTint(_ row: NativeScore.Row) -> Color {
-        guard let percent = NativeScoreMath.percentValue(row.value) else { return .primary }
-        switch kind {
-        case .sleep:
-            return NativePaint.sleepBand(percent, style: style)
-        case .recovery where row.title == "Sleep Performance":
-            return NativePaint.sleepBand(percent, style: style)
-        case .recovery:
-            return .primary
-        case .strain:
-            return .primary
-        }
+        .primary
     }
 
     private func weekLabel(_ card: NativeWeek.Card, _ value: Double) -> String {
@@ -547,6 +563,7 @@ struct NativeScoreView: View {
                 yTicks: card.format == .strain ? NativeDayLogic.strainYTicks(maxY: card.maxY) : nil,
                 stacks: card.stacks
             )
+            .onTapGesture { openCard(card) }
         }
     }
 
@@ -623,7 +640,10 @@ struct NativeScoreView: View {
     @ViewBuilder private var sleepDetailCards: some View {
         if let need = sleepDetail?.need ?? hoursNeededFromPage,
            need.percent != nil || need.hoursSleptMin != nil {
-            NativeSleepHoursVsNeededCard(model: need)
+            NativeSleepHoursVsNeededCard(
+                model: need,
+                onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "hours_vs_needed_pct")) }
+            )
         }
         if let nights = sleepDetail?.consistencyNights, !nights.isEmpty {
             NativeSleepConsistencyCard(
@@ -635,10 +655,16 @@ struct NativeScoreView: View {
             )
         }
         if let efficiency = sleepDetail?.efficiency {
-            NativeSleepEfficiencyCard(model: efficiency)
+            NativeSleepEfficiencyCard(
+                model: efficiency,
+                onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "sleep_efficiency")) }
+            )
         }
         if let stress = sleepDetail?.stress {
-            NativeSleepStressCard(model: stress)
+            NativeSleepStressCard(
+                model: stress,
+                onOpen: { path.wrappedValue.append(TabRoute.stress) }
+            )
         }
     }
 
@@ -722,6 +748,7 @@ struct NativeLastNightCard: View {
     var onEdit: (() -> Void)? = nil
     var spans: [NativeSleepStageSpan] = []
     var onStage: ((NativeSleepStageKind) -> Void)? = nil
+    var onHypnogram: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
 
     private var inBedMinutes: Double? {
@@ -872,7 +899,8 @@ struct NativeLastNightCard: View {
             NativeSleepHypnogram(
                 spans: spans,
                 nightStart: sleepStart,
-                nightEnd: sleepEnd
+                nightEnd: sleepEnd,
+                onOpen: onHypnogram
             )
         }
     }
@@ -922,24 +950,54 @@ struct NativeLastNightCard: View {
 
 struct NativeOvernightHeartCard: View {
     var points: [NativeHourPoint]
+    var onOpen: (() -> Void)? = nil
     @Environment(\.nativeStyle) private var style
+    @State private var selectedTime: Date?
 
     private var average: Double? {
         NativeScoreMath.mean(points.map(\.value).filter(\.isFinite))
     }
 
+    private var selectedPoint: NativeHourPoint? {
+        guard let selectedTime else { return nil }
+        return NativeChartScrubMath.nearestHour(
+            to: selectedTime,
+            in: points,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+        )
+    }
+
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
+            let header = NativeCardHeader(
                 title: "Heart Rate",
                 symbol: "heart.fill",
-                tint: NativePaint.heart(style)
+                tint: NativePaint.heart(style),
+                chevron: onOpen != nil
             )
-            if let average {
+            if let onOpen {
+                Button(action: onOpen) { header }
+                    .buttonStyle(.plain)
+            } else {
+                header
+            }
+            if let point = selectedPoint {
+                NativeHeroValue(
+                    caption: "Heart Rate",
+                    value: "\(Int(point.value.rounded()))",
+                    unit: "BPM",
+                    date: NativeScopeFormat.time(point.time)
+                )
+            } else if let average {
                 NativeHeroValue(caption: "Average", value: "\(Int(average.rounded()))", unit: "BPM")
             }
-            NativeOvernightLine(points: points, tint: NativePaint.heart(style))
-                .frame(height: 160)
+            NativeOvernightLine(
+                points: points,
+                tint: NativePaint.heart(style),
+                selectedTime: $selectedTime
+            )
+            .frame(height: 160)
+            .onTapGesture { onOpen?() }
         }
     }
 }

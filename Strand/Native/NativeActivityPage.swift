@@ -13,6 +13,22 @@ enum NativeActivityPageLogic {
     static let statsWindowDays = 30
     static let hrBucketSeconds = 20
 
+    /// Mean bpm per `seconds` bucket, in time order. Empty buckets are absent, so gaps stay gaps.
+    static func bucketed(_ samples: [(ts: Int, bpm: Double)], seconds: Int) -> [NativeHourPoint] {
+        guard seconds > 0 else { return [] }
+        var sums: [Int: (total: Double, n: Int)] = [:]
+        for s in samples {
+            let key = s.ts / seconds
+            let cur = sums[key] ?? (0, 0)
+            sums[key] = (cur.total + s.bpm, cur.n + 1)
+        }
+        return sums.keys.sorted().map { key in
+            let b = sums[key]!
+            return NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval(key * seconds)),
+                                   value: b.total / Double(b.n))
+        }
+    }
+
     struct Zone: Equatable, Identifiable {
         var id: Int { number }
         var number: Int
@@ -246,17 +262,21 @@ enum NativeActivityPageLogic {
 }
 
 struct NativeActivityView: View {
-    @EnvironmentObject private var repo: Repository
-    @EnvironmentObject private var profile: ProfileStore
-    @EnvironmentObject private var intelligence: IntelligenceEngine
     @Environment(\.dismiss) private var dismiss
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
+    @State private var repoHandle: Repository?
+    @State private var profileHandle: ProfileStore?
+    @State private var intelligenceHandle: IntelligenceEngine?
+    @State private var refreshSeq = 0
+    @State private var handlesReady = false
     @State private var keyTs: Int
     @State private var workout: WorkoutRow?
     @State private var prior: [WorkoutRow] = []
     @State private var percents: [Double]?
     @State private var hr: [NativeHourPoint] = []
+    @State private var hrFromAppleHealth = false
     @State private var route: [RouteMath.LatLng] = []
+    @State private var zoneSet: HRZoneSet?
     @State private var showEdit = false
     @State private var confirmDelete = false
 
@@ -271,13 +291,14 @@ struct NativeActivityView: View {
                     workout,
                     prior: prior,
                     scale: UnitPrefs.resolveEffortScale(effortScaleRaw),
-                    zoneSet: profile.hrZoneSet,
+                    zoneSet: zoneSet,
                     percents: percents
                 )
                 NativeActivityBody(
                     model: model,
                     hr: hr,
-                    zoneSet: profile.hrZoneSet,
+                    hrFromAppleHealth: hrFromAppleHealth,
+                    zoneSet: zoneSet,
                     route: route
                 )
                 .toolbar {
@@ -293,8 +314,8 @@ struct NativeActivityView: View {
                 .sheet(isPresented: $showEdit) {
                     NativeAddPastActivityForm(editing: workout, workouts: prior) { row, replacing in
                         Task {
-                            await repo.saveManualWorkout(row, replacing: replacing)
-                            await intelligence.analyzeRecent()
+                            await repoHandle?.saveManualWorkout(row, replacing: replacing)
+                            await intelligenceHandle?.analyzeRecent()
                             keyTs = row.startTs
                             await load()
                         }
@@ -305,7 +326,7 @@ struct NativeActivityView: View {
                     Button("Delete", role: .destructive) {
                         Task {
                             RouteStore.remove(startTs: workout.startTs, sport: workout.sport)
-                            await repo.deleteWorkout(workout)
+                            await repoHandle?.deleteWorkout(workout)
                             dismiss()
                         }
                     }
@@ -323,10 +344,20 @@ struct NativeActivityView: View {
         .modifier(NativeActivitySubtitle(text: workout.map {
             NativeActivityPageLogic.dateTimeRange(startTs: $0.startTs, endTs: $0.endTs)
         } ?? ""))
-        .task(id: keyTs) { await load() }
+        .background {
+            NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
+            NativeProfileSink { profileHandle = $0 }
+            NativeIntelligenceSink { intelligenceHandle = $0 }
+        }
+        .task(id: handlesReady ? "\(refreshSeq)-\(keyTs)" : "boot") {
+            guard handlesReady else { return }
+            await load()
+        }
     }
 
     private func load() async {
+        guard let repo = repoHandle else { return }
+        zoneSet = profileHandle?.hrZoneSet
         let rows = await repo.workoutRows(days: 120)
         let found = rows.first { $0.startTs == keyTs }
         workout = found
@@ -338,13 +369,16 @@ struct NativeActivityView: View {
             return
         }
         percents = repo.parsedZones(for: workout) ?? WorkoutZones.percents(workout.zonesJSON)
-        let buckets = await repo.hrSamples(
-            from: workout.startTs, to: workout.endTs,
-            bucketSeconds: NativeActivityPageLogic.hrBucketSeconds
+        // Strap samples when they cover the workout, else the Apple Health samples stored for it.
+        let series = await repo.workoutHeartRate(
+            startTs: workout.startTs, endTs: workout.endTs,
+            sport: workout.sport, source: workout.source
         )
-        hr = buckets.map {
-            NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval($0.ts)), value: $0.bpm)
-        }
+        hrFromAppleHealth = series.origin == .appleHealth
+        hr = NativeActivityPageLogic.bucketed(
+            series.samples.map { (ts: $0.ts, bpm: Double($0.bpm)) },
+            seconds: NativeActivityPageLogic.hrBucketSeconds
+        )
         if let stored = RouteStore.load(startTs: workout.startTs, sport: workout.sport) {
             let pts = RouteMath.decode(stored.polyline)
             route = pts.count >= 2 ? pts : []
@@ -357,6 +391,7 @@ struct NativeActivityView: View {
 struct NativeActivityBody: View {
     var model: NativeActivityPageLogic.Model
     var hr: [NativeHourPoint] = []
+    var hrFromAppleHealth: Bool = false
     var zoneSet: HRZoneSet? = nil
     var route: [RouteMath.LatLng] = []
     var scrolls: Bool = true
@@ -409,6 +444,13 @@ struct NativeActivityBody: View {
         if awaitingHeartRate {
             Text("Heart rate appears after the next sync")
                 .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+        }
+
+        if hrFromAppleHealth, !hr.isEmpty {
+            Text("Heart rate from Apple Health")
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
         }
@@ -479,26 +521,43 @@ struct NativeActivityHRChart: View {
     var points: [NativeHourPoint]
     var zoneSet: HRZoneSet? = nil
     @Environment(\.nativeStyle) private var style
-    @State private var selectedTime: Date?
+    @State private var scrub = NativeScopeScrub()
 
     private var yDomain: ClosedRange<Double> {
         NativeChartDay.fittedDomain(points.map(\.value), fallback: 80...180)
     }
 
-    private var selectedPoint: NativeHourPoint? {
-        guard let selectedTime else { return nil }
-        return nearest(to: selectedTime)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            hero.frame(height: 76, alignment: .topLeading)
-            plot.frame(height: 180)
+            NativeActivityHRHero(scrub: scrub, points: points)
+                .frame(height: 76, alignment: .topLeading)
+            NativeActivityHRPlot(
+                points: points,
+                yDomain: yDomain,
+                lineTint: lineTint,
+                zoneSet: zoneSet,
+                scrub: scrub
+            )
+            .frame(height: 180)
         }
     }
 
-    @ViewBuilder private var hero: some View {
-        if let point = selectedPoint {
+    private var lineTint: Color {
+        style == .whoop ? NativeTokens.whoopLabel : Color.primary
+    }
+}
+
+private struct NativeActivityHRHero: View {
+    @ObservedObject var scrub: NativeScopeScrub
+    var points: [NativeHourPoint]
+
+    var body: some View {
+        if let time = scrub.time,
+           let point = NativeChartScrubMath.nearestHour(
+            to: time,
+            in: points,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+           ) {
             NativeHeroValue(
                 caption: "Heart Rate",
                 value: "\(Int(point.value.rounded()))",
@@ -513,22 +572,29 @@ struct NativeActivityHRChart: View {
             )
         }
     }
+}
 
-    private var plot: some View {
+private struct NativeActivityHRPlot: View {
+    var points: [NativeHourPoint]
+    var yDomain: ClosedRange<Double>
+    var lineTint: Color
+    var zoneSet: HRZoneSet?
+    var scrub: NativeScopeScrub
+
+    private var timeBinding: Binding<Date?> {
+        Binding(
+            get: { scrub.time },
+            set: { scrub.time = $0 }
+        )
+    }
+
+    var body: some View {
         Chart {
             ForEach(points) { point in
                 LineMark(x: .value("Time", point.time), y: .value("HR", point.value))
                     .foregroundStyle(lineTint)
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2.5))
-            }
-            if let point = selectedPoint {
-                RuleMark(x: .value("Scrub", point.time))
-                    .foregroundStyle(Color.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                PointMark(x: .value("Scrub", point.time), y: .value("HR", point.value))
-                    .foregroundStyle(scrubTint(for: point.value))
-                    .symbolSize(64)
             }
         }
         .chartYScale(domain: yDomain)
@@ -554,21 +620,40 @@ struct NativeActivityHRChart: View {
                 }
             }
         }
-        .modifier(NativeTimeSelect(selected: $selectedTime, onChange: { _ in }))
+        .modifier(NativeTimeSelect(selected: timeBinding, onChange: { _ in }))
+        .chartOverlay { proxy in
+            NativeActivityHRMarker(proxy: proxy, points: points, zoneSet: zoneSet, scrub: scrub)
+        }
         .accessibilityLabel("Heart rate")
     }
+}
 
-    private var lineTint: Color {
-        style == .whoop ? NativeTokens.whoopLabel : Color.primary
+private struct NativeActivityHRMarker: View {
+    var proxy: ChartProxy
+    var points: [NativeHourPoint]
+    var zoneSet: HRZoneSet?
+    @ObservedObject var scrub: NativeScopeScrub
+
+    var body: some View {
+        GeometryReader { _ in
+            if let time = scrub.time,
+               let point = NativeChartScrubMath.nearestHour(
+                to: time,
+                in: points,
+                maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+               ),
+               let x = proxy.position(forX: point.time),
+               let y = proxy.position(forY: point.value) {
+                NativeSelectedVertex(tint: scrubTint(for: point.value))
+                    .position(x: x, y: y)
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     private func scrubTint(for bpm: Double) -> Color {
         guard let zoneSet else { return NativeTokens.heart }
         return NativeTokens.hrZone(zoneSet.zoneNumber(forBPM: bpm))
-    }
-
-    private func nearest(to time: Date) -> NativeHourPoint? {
-        points.min(by: { abs($0.time.timeIntervalSince(time)) < abs($1.time.timeIntervalSince(time)) })
     }
 }
 

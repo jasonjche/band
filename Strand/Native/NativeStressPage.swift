@@ -4,8 +4,10 @@ import StrandDesign
 
 /// Stress Monitor. D/W/M/6M like Apple Health. Small gauge. No Sessions.
 struct NativeStressPage: View {
-    @EnvironmentObject private var repo: Repository
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
+    @State private var repoHandle: Repository?
+    @State private var refreshSeq = 0
+    @State private var handlesReady = false
 
     private var selectedDay: Date {
         get { NativeDaySelection.date(from: selectedDayKey) }
@@ -26,7 +28,9 @@ struct NativeStressPage: View {
 
     private var dayKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
 
-    private var taskID: String { "\(scope.rawValue)|\(dayKey)|\(repo.refreshSeq)" }
+    private var taskID: String {
+        handlesReady ? "\(scope.rawValue)|\(dayKey)|\(refreshSeq)" : "boot"
+    }
 
     var body: some View {
         let dayStart = Calendar.current.startOfDay(for: selectedDay)
@@ -53,10 +57,17 @@ struct NativeStressPage: View {
         .navigationTitle("Stress Monitor")
         .modifier(NativeInlineTitle())
         .nativeDateSubtitle(selectedDay)
-        .task(id: taskID) { await reload() }
+        .background {
+            NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
+        }
+        .task(id: taskID) {
+            guard handlesReady else { return }
+            await reload()
+        }
     }
 
     private func reload() async {
+        guard let repo = repoHandle else { return }
         workouts = await repo.workoutRows(days: 14)
         let calendar = Calendar.current
         let ending = NativeScopeSeries.date(from: dayKey, calendar: calendar) ?? selectedDay

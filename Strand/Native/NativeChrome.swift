@@ -616,7 +616,7 @@ struct NativeDelta: View {
 private struct NativeNavigationPathKey: EnvironmentKey {
     static let defaultValue = Binding<NavigationPath>(
         get: { NavigationPath() },
-        set: { _ in }
+        set: { _ in assertionFailure("nativeNavigationPath used outside a tab stack: the push is dropped") }
     )
 }
 
@@ -1034,10 +1034,11 @@ struct NativeLabeledLine: View {
                     PointMark(x: .value("Day", point.key), y: .value("Value", point.value))
                     .foregroundStyle(tint)
                     .symbol {
-                        NativeHollowVertex(
-                            tint: tint,
-                            size: point.key == selectedDay?.wrappedValue ? 10 : 8
-                        )
+                        if point.key == selectedDay?.wrappedValue {
+                            NativeSelectedVertex(tint: tint, size: 10)
+                        } else {
+                            NativeHollowVertex(tint: tint, size: 8)
+                        }
                     }
                     .annotation(position: .top, spacing: 4) {
                         if showsValueLabels && (whoop || point.key == selectedDay?.wrappedValue) {
@@ -1048,13 +1049,6 @@ struct NativeLabeledLine: View {
                     }
                     .accessibilityLabel(NativeChartDay.longLabel(point.key))
                     .accessibilityValue(format(point.value))
-                }
-                if let selected = selectedDay?.wrappedValue,
-                   known.contains(where: { $0.key == selected || $0.day == selected }) {
-                    RuleMark(x: .value("Day", selected))
-                        .foregroundStyle(Color.secondary)
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                        .accessibilityHidden(true)
                 }
             }
             .chartYScale(domain: yDomain)
@@ -1166,7 +1160,13 @@ struct NativeStrainRecoveryChart: View {
                 .lineStyle(StrokeStyle(lineWidth: 2.5))
                 PointMark(x: .value("Day", point.day), y: .value("Value", point.value))
                     .foregroundStyle(point.dotTint)
-                    .symbol { NativeStrainRecoveryVertex(tint: point.dotTint) }
+                    .symbol {
+                        if point.day == selectedDay {
+                            NativeSelectedVertex(tint: point.dotTint, size: 10)
+                        } else {
+                            NativeStrainRecoveryVertex(tint: point.dotTint)
+                        }
+                    }
                     .annotation(position: .top, spacing: 4) {
                         if point.day == selectedDay {
                             Text(label(point))
@@ -1175,11 +1175,6 @@ struct NativeStrainRecoveryChart: View {
                                 .monospacedDigit()
                         }
                     }
-            }
-            if let selectedDay {
-                RuleMark(x: .value("Day", selectedDay))
-                    .foregroundStyle(Color.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: 1))
             }
         }
         .chartLegend(.hidden)
@@ -1343,6 +1338,12 @@ struct NativeScoreWeekBars: View {
                         )
                         .foregroundStyle(barColor(point.value))
                         .cornerRadius(whoop ? 3 : 4)
+                        .opacity(NativeChartScrubMath.barOpacity(
+                            isSelected: point.key == selectedDay?.wrappedValue || point.day == selectedDay?.wrappedValue,
+                            hasSelection: known.contains(where: {
+                                $0.key == selectedDay?.wrappedValue || $0.day == selectedDay?.wrappedValue
+                            })
+                        ))
                         .annotation(position: .top, spacing: 4) {
                             if showsValueLabels && (whoop || point.key == selectedDay?.wrappedValue) {
                                 Text(format(point.value))
@@ -1362,13 +1363,6 @@ struct NativeScoreWeekBars: View {
                         .foregroundStyle(Color.clear)
                         .accessibilityHidden(true)
                     }
-                }
-                if let selected = selectedDay?.wrappedValue,
-                   known.contains(where: { $0.key == selected || $0.day == selected }) {
-                    RuleMark(x: .value("Day", selected))
-                        .foregroundStyle(Color.secondary)
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                        .accessibilityHidden(true)
                 }
             }
             .chartYScale(domain: 0...plotCeiling)
@@ -1421,16 +1415,15 @@ struct NativeRangeChart: View {
                         )
                         .foregroundStyle(tint)
                         .clipShape(Capsule())
+                        .opacity(NativeChartScrubMath.barOpacity(
+                            isSelected: point.key == selectedDay?.wrappedValue || point.day == selectedDay?.wrappedValue,
+                            hasSelection: known.contains(where: {
+                                $0.key == selectedDay?.wrappedValue || $0.day == selectedDay?.wrappedValue
+                            })
+                        ))
                         .accessibilityLabel(NativeChartDay.longLabel(point.key))
                         .accessibilityValue("\(format(low)) to \(format(high))")
                     }
-                }
-                if let selected = selectedDay?.wrappedValue,
-                   known.contains(where: { $0.key == selected || $0.day == selected }) {
-                    RuleMark(x: .value("Day", selected))
-                        .foregroundStyle(Color.secondary)
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                        .accessibilityHidden(true)
                 }
             }
             .chartYScale(domain: yDomain)
@@ -1534,6 +1527,10 @@ struct NativeStackedWeekBars: View {
                     )
                     .foregroundStyle(by: .value("Zone", slice.series))
                     .cornerRadius(whoop ? 3 : 4)
+                    .opacity(NativeChartScrubMath.barOpacity(
+                        isSelected: slice.key == selectedDay?.wrappedValue,
+                        hasSelection: slices.contains(where: { $0.key == selectedDay?.wrappedValue })
+                    ))
                 }
             }
             .chartForegroundStyleScale([
@@ -1675,14 +1672,15 @@ struct NativeOvernightLine: View {
                         .accessibilityLabel(NativeScopeFormat.time(point.time))
                         .accessibilityValue("\(Int(point.value.rounded()))")
                 }
-                if let selected = selection.wrappedValue, let point = nearest(to: selected) {
-                    RuleMark(x: .value("Scrub", point.time))
-                        .foregroundStyle(Color.secondary)
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                        .accessibilityHidden(true)
+                if let selected = selection.wrappedValue,
+                   let point = NativeChartScrubMath.nearestHour(
+                    to: selected,
+                    in: points,
+                    maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+                   ) {
                     PointMark(x: .value("Scrub", point.time), y: .value("HR", point.value))
                         .foregroundStyle(tint)
-                        .symbolSize(64)
+                        .symbol { NativeSelectedVertex(tint: tint) }
                         .accessibilityHidden(true)
                 }
             }
@@ -1713,10 +1711,6 @@ struct NativeOvernightLine: View {
             .onAppear { if selection.wrappedValue == nil { selection.wrappedValue = previewSelected } }
             .modifier(NativeSelectionFeedback(trigger: selection.wrappedValue ?? .distantPast))
         }
-    }
-
-    private func nearest(to time: Date) -> NativeHourPoint? {
-        points.min(by: { abs($0.time.timeIntervalSince(time)) < abs($1.time.timeIntervalSince(time)) })
     }
 }
 
@@ -1802,14 +1796,15 @@ struct NativeStressMonitor: View {
                     .accessibilityLabel(NativeScopeFormat.time(point.time))
                     .accessibilityValue(String(format: "%.1f", point.value))
             }
-            if let selectedTime, let point = nearest(to: selectedTime) {
-                RuleMark(x: .value("Scrub", point.time))
-                    .foregroundStyle(Color.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: 1))
-                    .accessibilityHidden(true)
+            if let selectedTime,
+               let point = NativeChartScrubMath.nearestHour(
+                to: selectedTime,
+                in: hours,
+                maxGap: NativeChartScrubMath.inferredMaxGap(in: hours)
+               ) {
                 PointMark(x: .value("Scrub", point.time), y: .value("Stress", point.value))
                     .foregroundStyle(NativeChrome.stressBandColor(point.value))
-                    .symbolSize(70)
+                    .symbol { NativeSelectedVertex(tint: NativeChrome.stressBandColor(point.value)) }
                     .accessibilityHidden(true)
             }
         }
@@ -1841,7 +1836,11 @@ struct NativeStressMonitor: View {
             }
         }
         .modifier(NativeTimeSelect(selected: $selectedTime, onChange: { time in
-            if let time, let point = nearest(to: time) {
+            if let time, let point = NativeChartScrubMath.nearestHour(
+                to: time,
+                in: hours,
+                maxGap: NativeChartScrubMath.inferredMaxGap(in: hours)
+            ) {
                 scrubTime = point.time
                 scrubValue = point.value
             } else {
@@ -1861,9 +1860,6 @@ struct NativeStressMonitor: View {
         return ""
     }
 
-    private func nearest(to time: Date) -> NativeHourPoint? {
-        hours.min(by: { abs($0.time.timeIntervalSince(time)) < abs($1.time.timeIntervalSince(time)) })
-    }
 }
 
 struct NativeSelectionFeedback<Value: Equatable>: ViewModifier {
@@ -2002,13 +1998,25 @@ enum NativeScoreMath {
     /// Grouped integer. Home steps hero and Strain steps row both call this.
     static func count(_ value: Double?) -> String? {
         guard let value else { return nil }
+        countLock.lock()
+        defer { countLock.unlock() }
+        let locale = AppLanguage.activeLocale
+        if countLocale != locale {
+            countFormatter.locale = locale
+            countLocale = locale
+        }
+        return countFormatter.string(from: NSNumber(value: value.rounded()))
+    }
+
+    private static let countLock = NSLock()
+    private static var countLocale: Locale?
+    private static let countFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
-        formatter.locale = AppLanguage.activeLocale
         formatter.numberStyle = .decimal
         formatter.maximumFractionDigits = 0
         formatter.roundingMode = .halfUp
-        return formatter.string(from: NSNumber(value: value.rounded()))
-    }
+        return formatter
+    }()
 
     static func count(_ value: Double) -> String {
         count(Optional(value)) ?? "\(Int(value.rounded()))"
@@ -2039,9 +2047,11 @@ enum NativeScoreMath {
 
     static func delta(_ value: Double?, _ prior: [Double]) -> NativeScore.Delta {
         guard let value, let mean = mean(prior), mean != 0 else { return .none }
+        // Half a percent: enough that a value shown as 89 against 88 gets its arrow like its
+        // neighbours, while a true tie stays flat.
         let change = (value - mean) / abs(mean)
-        if change > 0.03 { return .up }
-        if change < -0.03 { return .down }
+        if change > 0.005 { return .up }
+        if change < -0.005 { return .down }
         return .flat
     }
 

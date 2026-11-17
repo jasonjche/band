@@ -5,9 +5,11 @@ import StrandDesign
 /// Apple Health chart page: D/W/M/6M aggregation, AVERAGE hero, chart, Latest capsule, Trend.
 struct NativeMetricPage: View {
     var key: String
-    @EnvironmentObject private var repo: Repository
     @AppStorage(NativeDaySelection.storageKey) private var nativeDayKey = ""
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
+    @State private var repoHandle: Repository?
+    @State private var refreshSeq = 0
+    @State private var handlesReady = false
     @State private var scope: NativeMetricScope = .week
     @State private var series: NativeScopeSeries = .empty
     @State private var hourPoints: [NativeHourPoint] = []
@@ -27,7 +29,9 @@ struct NativeMetricPage: View {
         metric?.title ?? key.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
-    private var taskID: String { "\(key)|\(scope.rawValue)|\(dayKey)|\(repo.days.count)" }
+    private var taskID: String {
+        handlesReady ? "\(key)|\(scope.rawValue)|\(dayKey)|\(refreshSeq)" : "boot"
+    }
 
     var body: some View {
         let pageTitle = title
@@ -50,7 +54,13 @@ struct NativeMetricPage: View {
             latest: latest,
             color: pageColor
         )
-        .task(id: taskID) { await reload() }
+        .background {
+            NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
+        }
+        .task(id: taskID) {
+            guard handlesReady else { return }
+            await reload()
+        }
     }
 
     private var usesBars: Bool {
@@ -88,6 +98,7 @@ struct NativeMetricPage: View {
     }
 
     private func reload() async {
+        guard let repo = repoHandle else { return }
         let scores = NativeBandScores.resolve(
             days: repo.days, sleeps: repo.sleeps, importedSleep: repo.importedSleep
         )

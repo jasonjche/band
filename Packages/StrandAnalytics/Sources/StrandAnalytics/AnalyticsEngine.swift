@@ -428,6 +428,10 @@ public enum AnalyticsEngine {
                                   profile: UserProfile,
                                   baselines: ProfileBaselines = ProfileBaselines(),
                                   maxHROverride: Double? = nil,
+                                  // Nil → derive from `maxHROverride` / age (`override` / `tanaka` / `default`).
+                                  // Pass `"observed"` when the caller is feeding a learned workout-peak HRmax
+                                  // through `maxHROverride`.
+                                  hrmaxSource: String? = nil,
                                   // Wall-clock UTC offset (seconds) for the sleep detector's daytime
                                   // false-sleep guard (#90). Default 0 keeps pure-function callers/tests
                                   // on UTC; IntelligenceEngine passes the device's real offset.
@@ -995,7 +999,7 @@ public enum AnalyticsEngine {
                 // this line in direct contradiction with the `effort score` line above it, which prints
                 // that substituted number, about the same day.
                 day: day, hrmax: effMaxHR ?? Double(StrainScorer.defaultMaxHR()),
-                hrmaxSource: maxHROverride != nil ? "override" : (profile.age > 0 ? "tanaka" : "default"),
+                hrmaxSource: hrmaxSource ?? (maxHROverride != nil ? "override" : (profile.age > 0 ? "tanaka" : "default")),
                 tanaka: profile.age > 0 ? StrainScorer.tanakaHRmax(age: profile.age) : nil,
                 observedPeak: hrForPeak.max(by: { $0.bpm < $1.bpm }).map { Double($0.bpm) },
                 restingHR: restForStrain)

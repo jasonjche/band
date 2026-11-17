@@ -983,7 +983,13 @@ final class Repository: ObservableObject {
         // Merge + sort OFF the main actor (FIX 3): the figures build, the two O(n log n) daily/sleep merges,
         // the source-row sort, and the freshness counts are all pure over the rows just read, so they run in
         // a detached task and the main actor stays free for SwiftUI during a deep-history refresh.
-        let merged: MergedCaches = await Task.detached(priority: .utility) {
+        var appleSteps: [String: Int] = [:]
+        if AppBrand.isPersonalBuild {
+            for row in await appleDailyRows(days: nDays) {
+                if let steps = row.steps, steps > 0 { appleSteps[row.day] = steps }
+            }
+        }
+        let merged: MergedCaches = await Task.detached(priority: .utility) { [appleSteps] in
             var fig: [String: ImportedSleepFigures] = [:]
             for p in perf { fig[p.day, default: ImportedSleepFigures()].performancePct = p.value }
             for p in cons { fig[p.day, default: ImportedSleepFigures()].consistencyPct = p.value }
@@ -1002,9 +1008,12 @@ final class Repository: ObservableObject {
             }
             return MergedCaches(
                 importedSleep: fig,
-                days: Self.mergeActivityFileSteps(
-                    into: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
-                    activityFile
+                days: Self.mergeAppleSteps(
+                    into: Self.mergeActivityFileSteps(
+                        into: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
+                        activityFile
+                    ),
+                    appleSteps
                 ),
                 // From the two buckets BEFORE `mergeDaily` blends them: the rule needs to know which nights
                 // are imported and which are the wearer's own.
@@ -1100,6 +1109,26 @@ final class Repository: ObservableObject {
             }
         }
         return byDay.values.sorted { $0.day < $1.day }
+    }
+
+    /// Personal build: a day's steps are the larger of the strap's count and Apple Health's.
+    /// The strap count only covers the history this app managed to pull, so when another app
+    /// took records off the strap first it reads far too low (98 against 8,202 on the day this
+    /// was written). Step counts only grow, so the larger figure is the more complete one.
+    nonisolated static func mergeAppleSteps(into base: [DailyMetric],
+                                            _ appleSteps: [String: Int]) -> [DailyMetric] {
+        guard !appleSteps.isEmpty else { return base }
+        return base.map { d in
+            guard let apple = appleSteps[d.day], apple > (d.steps ?? 0) else { return d }
+            return DailyMetric(
+                day: d.day, totalSleepMin: d.totalSleepMin, efficiency: d.efficiency, deepMin: d.deepMin,
+                remMin: d.remMin, lightMin: d.lightMin, disturbances: d.disturbances, restingHr: d.restingHr,
+                avgHrv: d.avgHrv, recovery: d.recovery, strain: d.strain, exerciseCount: d.exerciseCount,
+                spo2Pct: d.spo2Pct, skinTempDevC: d.skinTempDevC, respRateBpm: d.respRateBpm,
+                steps: apple, activeKcalEst: d.activeKcalEst,
+                spo2Red: d.spo2Red, spo2Ir: d.spo2Ir, avgSdnn: d.avgSdnn, skinTempC: d.skinTempC,
+                sleepHrOnly: d.sleepHrOnly)
+        }
     }
 
     nonisolated static func mergeActivityFileSteps(into base: [DailyMetric],
@@ -3484,6 +3513,22 @@ final class Repository: ObservableObject {
         let samples = await hrSamples(deviceIds: ids, from: readFrom, to: readTo, limit: 2_000)
         return HeartRateRecovery.calculate(samples: samples, workoutStart: from, workoutEnd: to,
                                            maxHR: maxHR)
+    }
+
+    /// Heart-rate series for the workout page: strap samples when they cover at least half the
+    /// minutes, otherwise the Apple Health samples stored for this natural key, otherwise nothing.
+    /// Apple rows live in `AppleWorkoutHRStore`, not `hrSample`, so sleep/recovery/strain never see them.
+    func workoutHeartRate(startTs: Int, endTs: Int, sport: String, source: String) async -> WorkoutHeartRate {
+        let ids = Self.workoutHrDeviceIds(source: source, activeStrapId: deviceId,
+                                          importedIds: importedReadIds)
+        let strap = await hrSamples(deviceIds: ids, from: startTs, to: endTs,
+                                    limit: AppleWorkoutHRStore.maxSamples)
+        let coverage = WorkoutHeartRateSelection.minuteCoverage(samples: strap, from: startTs, to: endTs)
+        if coverage >= WorkoutHeartRateSelection.coverageThreshold {
+            return WorkoutHeartRate(samples: strap, origin: .strap)
+        }
+        let apple = AppleWorkoutHRStore.load(startTs: startTs, sport: sport) ?? []
+        return WorkoutHeartRateSelection.select(strap: strap, apple: apple, from: startTs, to: endTs)
     }
 
     /// Apple Health daily aggregates (steps/energy/vo2/hr).

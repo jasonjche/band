@@ -127,13 +127,24 @@ enum NativeJournalNotes {
     }
 
     static func formatTime(_ minutes: Int, locale: Locale = .current) -> String {
+        timeLock.lock()
+        defer { timeLock.unlock() }
+        if timeLocale != locale {
+            timeFormatter.locale = locale
+            timeLocale = locale
+        }
+        let day = Date(timeIntervalSince1970: 0)
+        return timeFormatter.string(from: date(minutes: minutes, on: day))
+    }
+
+    private static let timeLock = NSLock()
+    private static var timeLocale: Locale?
+    private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = locale
         formatter.timeStyle = .short
         formatter.dateStyle = .none
-        let day = Date(timeIntervalSince1970: 0)
-        return formatter.string(from: date(minutes: minutes, on: day))
-    }
+        return formatter
+    }()
 
     static func hhmm(_ minutes: Int) -> String {
         let clamped = clampMinutes(minutes)

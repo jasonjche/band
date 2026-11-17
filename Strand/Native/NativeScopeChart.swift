@@ -4,9 +4,10 @@ import StrandDesign
 
 /// Apple Health-style metric plot: fixed-height hero, D/W/M/6M aggregation, scrub, scroll.
 ///
-/// Scrub lives on a reference-type box the hero (and hairline) observe. The chart marks
+/// Scrub lives on a reference-type box the hero (and selected marker) observe. The chart marks
 /// do not, so dragging does not rebuild LineMarks. Dense scopes are LineMark-only;
 /// hollow vertices are week-scale. 6M is weekly buckets from `NativeScopeSeries.make`.
+/// Selection is a filled vertex (or dimmed bars). There is no vertical rule.
 struct NativeScopeChart: View {
     var series: NativeScopeSeries
     var hourPoints: [NativeHourPoint] = []
@@ -92,13 +93,6 @@ struct NativeScopeChart: View {
     }
 }
 
-/// Selection box. `@Published` updates observers (hero, hairline) without
-/// invalidating the `NativeScopeChart` that holds this in `@State`.
-private final class NativeScopeScrub: ObservableObject {
-    @Published var key: String?
-    @Published var time: Date?
-}
-
 private struct NativeScopeResetOnScope: ViewModifier {
     var scope: NativeMetricScope
     var onReset: () -> Void
@@ -135,9 +129,11 @@ private struct NativeScopeHeroView: View {
 
     private var selectedHour: NativeHourPoint? {
         guard let time = scrub.time else { return nil }
-        return hourPoints.min(by: {
-            abs($0.time.timeIntervalSince(time)) < abs($1.time.timeIntervalSince(time))
-        })
+        return NativeChartScrubMath.nearestHour(
+            to: time,
+            in: hourPoints,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: hourPoints)
+        )
     }
 
     private var isScrubbing: Bool {
@@ -307,7 +303,7 @@ private struct NativeScopePlotHost: View {
                 .chartXSelection(value: timeBinding)
                 .chartOverlay { proxy in
                     NativeScopeHairline(
-                        proxy: proxy, series: series, scrub: scrub, tint: tint, color: color
+                        proxy: proxy, series: series, scrub: scrub, tint: tint, color: color, bars: bars
                     )
                 }
         } else if #available(iOS 17.0, macOS 14.0, *) {
@@ -315,7 +311,7 @@ private struct NativeScopePlotHost: View {
                 .chartXSelection(value: timeBinding)
                 .chartOverlay { proxy in
                     NativeScopeHairline(
-                        proxy: proxy, series: series, scrub: scrub, tint: tint, color: color
+                        proxy: proxy, series: series, scrub: scrub, tint: tint, color: color, bars: bars
                     )
                 }
         } else {
@@ -324,19 +320,18 @@ private struct NativeScopePlotHost: View {
     }
 
     private func nearestBucket(to date: Date) -> NativeScopeBucket? {
-        series.buckets.min(by: {
-            abs($0.start.timeIntervalSince(date)) < abs($1.start.timeIntervalSince(date))
-        }).flatMap { $0.value == nil ? nil : $0 }
+        NativeChartScrubMath.nearestBucket(to: date, in: series.buckets)
     }
 }
 
-/// Vertical scrub rule + one selected point. Observes `scrub`; the LineMarks do not.
+/// Selected vertex (line) or dimmed neighbours (bars). Observes `scrub`; the LineMarks do not.
 private struct NativeScopeHairline: View {
     var proxy: ChartProxy
     var series: NativeScopeSeries
     @ObservedObject var scrub: NativeScopeScrub
     var tint: Color
     var color: ((Double) -> Color)?
+    var bars: Bool
 
     var body: some View {
         GeometryReader { geo in
@@ -344,17 +339,37 @@ private struct NativeScopeHairline: View {
                let bucket = series.buckets.first(where: { $0.key == key && $0.value != nil }),
                let value = bucket.value,
                let x = proxy.position(forX: bucket.start) {
-                Rectangle()
-                    .fill(Color.secondary)
-                    .frame(width: 1, height: geo.size.height)
-                    .position(x: x, y: geo.size.height / 2)
-                if let y = proxy.position(forY: value) {
-                    Circle()
-                        .fill(color?(value) ?? tint)
-                        .frame(width: 8, height: 8)
+                if bars {
+                    NativeScopeBarDim(x: x, height: geo.size.height, width: geo.size.width)
+                } else if let y = proxy.position(forY: value) {
+                    NativeSelectedVertex(tint: color?(value) ?? tint)
                         .position(x: x, y: y)
                 }
             }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct NativeScopeBarDim: View {
+    var x: CGFloat
+    var height: CGFloat
+    var width: CGFloat
+    @Environment(\.nativeStyle) private var style
+
+    private let half: CGFloat = 8
+
+    var body: some View {
+        let left = max(x - half, 0)
+        let right = max(width - x - half, 0)
+        ZStack(alignment: .topLeading) {
+            NativePaint.card(style)
+                .opacity(0.55)
+                .frame(width: left, height: height)
+            NativePaint.card(style)
+                .opacity(0.55)
+                .frame(width: right, height: height)
+                .offset(x: x + half)
         }
         .allowsHitTesting(false)
     }

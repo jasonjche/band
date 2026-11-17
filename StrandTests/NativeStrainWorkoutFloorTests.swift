@@ -1,5 +1,6 @@
 import XCTest
 import StrandAnalytics
+import WhoopStore
 @testable import Strand
 
 final class NativeStrainWorkoutFloorTests: XCTestCase {
@@ -33,5 +34,21 @@ final class NativeStrainWorkoutFloorTests: XCTestCase {
         XCTAssertNil(NativeWeight.weightToApply(readings: readings, lastAppliedDay: "2026-11-04"))
         XCTAssertEqual(NativeWeight.weightToApply(readings: readings, lastAppliedDay: "2026-10-30")?.day,
                        "2026-11-04")
+    }
+}
+
+final class AppleStepsMergeTests: XCTestCase {
+    private func day(_ key: String, steps: Int?) -> DailyMetric {
+        DailyMetric(day: key, totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil,
+                    lightMin: nil, disturbances: nil, restingHr: nil, avgHrv: nil, recovery: nil,
+                    strain: nil, exerciseCount: nil, spo2Pct: nil, skinTempDevC: nil,
+                    respRateBpm: nil, steps: steps)
+    }
+
+    func testTakesTheLargerOfStrapAndAppleSteps() {
+        let merged = Repository.mergeAppleSteps(
+            into: [day("2026-11-16", steps: 9_000), day("2026-11-17", steps: 98), day("2026-11-18", steps: nil)],
+            ["2026-11-16": 2_717, "2026-11-17": 8_202, "2026-11-18": 40])
+        XCTAssertEqual(merged.map(\.steps), [9_000, 8_202, 40])
     }
 }

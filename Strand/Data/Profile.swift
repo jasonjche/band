@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import SwiftUI
 import StrandAnalytics
+import WhoopStore
 
 /// User profile (age/sex/body metrics/HR-max) persisted in UserDefaults.
 /// Powers HR zones, calories and recovery baselines.
@@ -27,6 +28,8 @@ final class ProfileStore: ObservableObject {
     @Published var waistCm: Double { didSet { d.set(waistCm, forKey: K.waist) } }
     /// 0 = auto-estimate from age.
     @Published var hrMaxOverride: Int { didSet { d.set(hrMaxOverride, forKey: K.hrMax) } }
+    /// 0 = none. 99th-percentile of stored workout peaks; not part of the `.noopbak` whitelist.
+    @Published var hrMaxObserved: Int { didSet { d.set(hrMaxObserved, forKey: K.hrMaxObserved) } }
     /// Five personalized inclusive zone starts in BPM; empty = conventional %HRmax zones.
     @Published var hrZoneThresholds: [Int] {
         didSet {
@@ -87,6 +90,7 @@ final class ProfileStore: ObservableObject {
         static let legacyAge = "profile.age"
         static let sex = "profile.sex", weight = "profile.weightKg"
         static let height = "profile.heightCm", hrMax = "profile.hrMaxOverride"
+        static let hrMaxObserved = "profile.hrMaxObserved"
         static let hrZoneThresholds = "profile.hrZoneThresholds"
         static let stepScale = "profile.stepTicksPerStep"
         static let waist = "profile.waistCm"
@@ -126,6 +130,7 @@ final class ProfileStore: ObservableObject {
         heightCm = d.object(forKey: K.height) as? Double ?? 178
         waistCm = d.object(forKey: K.waist) as? Double ?? 0
         hrMaxOverride = d.object(forKey: K.hrMax) as? Int ?? 0
+        hrMaxObserved = d.object(forKey: K.hrMaxObserved) as? Int ?? 0
         let storedThresholds = d.string(forKey: K.hrZoneThresholds)?
             .split(separator: ",").compactMap { Int($0) } ?? []
         hrZoneThresholds = Self.validZoneThresholds(storedThresholds) ? storedThresholds : []
@@ -184,8 +189,29 @@ final class ProfileStore: ObservableObject {
         dateOfBirth(forAge: 100)...dateOfBirth(forAge: 13)
     }
 
+    /// Value to pass as `AnalyticsEngine.maxHROverride`: manual override, else observed when it
+    /// exceeds Tanaka, else nil so the engine uses Tanaka (or its default).
+    ///
+    /// Precedence: override > max(observed, Tanaka) > Tanaka > existing default.
+    var resolvedMaxHROverride: Double? {
+        if hrMaxOverride > 0 { return Double(hrMaxOverride) }
+        guard hrMaxObserved > 0 else { return nil }
+        if age > 0 {
+            return Double(hrMaxObserved) > StrainScorer.tanakaHRmax(age: Double(age))
+                ? Double(hrMaxObserved) : nil
+        }
+        return Double(hrMaxObserved)
+    }
+
+    /// `"override"` | `"observed"` | `"tanaka"` | `"default"` — same branch the engine logs.
+    var hrMaxSource: String {
+        if hrMaxOverride > 0 { return "override" }
+        if resolvedMaxHROverride != nil { return "observed" }
+        return age > 0 ? "tanaka" : "default"
+    }
+
     /// The effective HRmax an EFFORT score is computed against, resolved exactly as `AnalyticsEngine`
-    /// resolves it: the manual override when one is set, else Tanaka from age, else nil.
+    /// resolves it: `resolvedMaxHROverride` when set, else Tanaka from age, else nil.
     ///
     /// Deliberately not `hrMax` below, which answers a different question and differs from this one in
     /// two ways: it rounds Tanaka to an Int, and for an age-less profile it returns 208 rather than nil.
@@ -199,12 +225,22 @@ final class ProfileStore: ObservableObject {
     /// therefore did nothing until the day stopped being today. Both views now read this, so the live
     /// value and the stored day are scored against one number.
     var effortHRmax: Double? {
-        if hrMaxOverride > 0 { return Double(hrMaxOverride) }
+        if let resolved = resolvedMaxHROverride { return resolved }
         return age > 0 ? StrainScorer.tanakaHRmax(age: Double(age)) : nil
     }
 
-    /// Tanaka estimate unless overridden.
-    var hrMax: Int { hrMaxOverride > 0 ? hrMaxOverride : Int((208 - 0.7 * Double(age)).rounded()) }
+    /// Override, else max(observed, Tanaka), else Tanaka (rounded). Age-less with no observed → 208.
+    var hrMax: Int {
+        if hrMaxOverride > 0 { return hrMaxOverride }
+        let tanaka = Int((208 - 0.7 * Double(age)).rounded())
+        return hrMaxObserved > 0 ? max(hrMaxObserved, tanaka) : tanaka
+    }
+
+    /// Recompute `hrMaxObserved` from every stored workout peak. Writes only when the value changed.
+    func syncObservedHRMax(from repo: Repository) async {
+        let estimated = ObservedHRMax.estimate(await repo.workoutRows().compactMap(\.maxHr)) ?? 0
+        if hrMaxObserved != estimated { hrMaxObserved = estimated }
+    }
 
     /// Personalized zone starts after enforcing the same five-value invariant as `HRZones`.
     var customHRZoneLowerBounds: [Double]? {

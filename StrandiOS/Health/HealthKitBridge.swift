@@ -673,6 +673,7 @@ final class HealthKitBridge: ObservableObject {
         // reads them live on-device too, so the platforms reach parity. ON-DEVICE ONLY: this is a plain
         // HealthKit read of workouts NOOP did NOT author, never any cloud/3rd-party API. (#835)
         let workoutRows = await collectWorkouts(start: start, end: end)
+        await importAppleWorkoutHeartRate(rows: workoutRows)
 
         // Persist all the apple-health rows AND write back, advancing lastSync only when the WHOLE
         // round-trip succeeds. The three read-side upserts used to be swallowed by `try?`, so a failed
@@ -1428,7 +1429,7 @@ final class HealthKitBridge: ObservableObject {
     /// output back in as "apple-health" data — which would make the strap and "Apple Health" plot the
     /// same line for a strap-only user, and bias the apple-health average for someone who also has a
     /// watch. `HKSource.default()` is this app's own source. (Reimplemented from @vulnix0x4's PR #375.)
-    private static var notNoopAuthored: NSPredicate {
+    nonisolated private static var notNoopAuthored: NSPredicate {
         NSCompoundPredicate(notPredicateWithSubpredicate: HKQuery.predicateForObjects(from: [HKSource.default()]))
     }
 
@@ -1773,6 +1774,60 @@ final class HealthKitBridge: ObservableObject {
                 cont.resume(returning: Int(total.rounded()))
             }
             store.execute(query)
+        }
+    }
+
+    /// Heart-rate samples in `[start, end]`, not just samples HealthKit attached to an HKWorkout.
+    /// Another app can own the workout object while Watch (or Health) still holds the beats for the
+    /// window; the associated-object query then returns empty and the workout page has no chart.
+    /// nil on query failure so the incremental import retries rather than storing a false empty.
+    nonisolated static func fetchHeartRateSamples(from start: Date, to end: Date,
+                                                  store: HKHealthStore,
+                                                  limit: Int = AppleWorkoutHRStore.maxSamples) async -> [HRSample]? {
+        guard end > start, let type = HKQuantityType.quantityType(forIdentifier: .heartRate) else { return [] }
+        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate),
+            Self.notNoopAuthored,
+        ])
+        return await withCheckedContinuation { (cont: CheckedContinuation<[HRSample]?, Never>) in
+            let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
+            let query = HKSampleQuery(sampleType: type, predicate: predicate,
+                                      limit: limit, sortDescriptors: [sort]) { _, samples, error in
+                guard error == nil, let samples = samples as? [HKQuantitySample] else {
+                    cont.resume(returning: nil); return
+                }
+                let unit = HKUnit.count().unitDivided(by: .minute())
+                let result = samples.compactMap { sample -> HRSample? in
+                    let bpm = sample.quantity.doubleValue(for: unit)
+                    guard bpm.isFinite, bpm >= 25, bpm <= 240 else { return nil }
+                    return HRSample(ts: Int(sample.startDate.timeIntervalSince1970), bpm: Int(bpm.rounded()))
+                }
+                cont.resume(returning: result)
+            }
+            store.execute(query)
+        }
+    }
+
+    /// Fetch and persist time-range HR for Apple Health workouts in the last 30 days that have no
+    /// stored series yet. Incremental: a file (including an empty one) means "already fetched".
+    /// Runs at utility priority off the main actor.
+    private func importAppleWorkoutHeartRate(rows: [WorkoutRow]) async {
+        let cutoff = Int(Date().timeIntervalSince1970) - 30 * 86_400
+        let needed = rows.filter {
+            $0.startTs >= cutoff && !AppleWorkoutHRStore.contains(startTs: $0.startTs, sport: $0.sport)
+        }
+        guard !needed.isEmpty else { return }
+        let hkStore = store
+        await runUnescalated(priority: .utility) {
+            for row in needed {
+                if AppleWorkoutHRStore.contains(startTs: row.startTs, sport: row.sport) { continue }
+                let start = Date(timeIntervalSince1970: TimeInterval(row.startTs))
+                let end = Date(timeIntervalSince1970: TimeInterval(row.endTs))
+                let samples = await HealthKitBridge.fetchHeartRateSamples(from: start, to: end, store: hkStore)
+                if let samples {
+                    AppleWorkoutHRStore.store(samples, startTs: row.startTs, sport: row.sport)
+                }
+            }
         }
     }
 

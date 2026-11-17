@@ -265,6 +265,21 @@ enum NativeSleepHypnogramMath {
             ?? spans.last { ts >= $0.startTs && ts <= $0.endTs }
     }
 
+    /// Full opacity for the selected (or highlighted) segment; others dim while a selection is active.
+    static func spanOpacity(
+        span: NativeSleepStageSpan,
+        selected: NativeSleepStageSpan?,
+        highlight: NativeSleepStageKind?
+    ) -> Double {
+        if let selected {
+            return span.startTs == selected.startTs && span.endTs == selected.endTs ? 1 : 0.18
+        }
+        if let highlight {
+            return span.kind == highlight ? 1 : 0.18
+        }
+        return 1
+    }
+
     static func axisTimes(start: Date, end: Date, count: Int = 4) -> [Date] {
         let span = end.timeIntervalSince(start)
         guard span > 0, count > 1 else { return [start] }

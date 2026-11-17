@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import StrandDesign
 
 // Live Start Activity. GPS is skipped: GpsWorkoutRecorder is wired through AppModel's
@@ -99,11 +100,11 @@ struct NativeActiveWorkoutView: View {
     var startedAt: Date
     var onEnd: (TimeInterval) -> Void
 
-    @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var profile: ProfileStore
-    @Environment(\.scenePhase) private var scenePhase
     @State private var holdingHR = false
     @State private var confirmingEnd = false
+    @State private var bpm: Int?
+    @State private var modelHandle: AppModel?
 
     var body: some View {
         TimelineView(.periodic(from: startedAt, by: 1)) { context in
@@ -111,8 +112,8 @@ struct NativeActiveWorkoutView: View {
                 sport: sport,
                 startedAt: startedAt,
                 now: context.date,
-                bpm: model.bpm,
-                zone: zone(for: model.bpm),
+                bpm: bpm,
+                zone: zone(for: bpm),
                 onEnd: { confirmingEnd = true }
             )
         }
@@ -124,15 +125,10 @@ struct NativeActiveWorkoutView: View {
         }
         .nativeStyleBridge()
         .interactiveDismissDisabled()
-        .onAppear { armHR() }
-        .onDisappear { releaseHR() }
-        .onChangeCompat(of: scenePhase) { phase in
-            if phase == .background {
-                releaseHR()
-            } else if phase == .active {
-                armHR()
-            }
+        .background {
+            WorkoutHRArm(holdingHR: $holdingHR, bpm: $bpm, modelHandle: $modelHandle)
         }
+        .onDisappear { releaseHR() }
     }
 
     private func zone(for bpm: Int?) -> Int? {
@@ -146,13 +142,45 @@ struct NativeActiveWorkoutView: View {
         onEnd(elapsed)
     }
 
-    private func armHR() {
+    private func releaseHR() {
+        guard holdingHR else { return }
+        modelHandle?.stopRealtimeHR()
+        holdingHR = false
+    }
+}
+
+/// Holds AppModel so TimelineView does not rebuild on import/cycle/illness publishes.
+/// Forwards BPM and arms realtime HR while this screen is visible.
+private struct WorkoutHRArm: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
+    @Binding var holdingHR: Bool
+    @Binding var bpm: Int?
+    @Binding var modelHandle: AppModel?
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onAppear { modelHandle = model; arm() }
+            .onDisappear { release() }
+            .onChangeCompat(of: scenePhase) { phase in
+                if phase == .background {
+                    release()
+                } else if phase == .active {
+                    arm()
+                }
+            }
+            .onReceive(model.$bpm.removeDuplicates()) { bpm = $0 }
+    }
+
+    private func arm() {
         guard !holdingHR else { return }
         model.startRealtimeHR()
         holdingHR = true
     }
 
-    private func releaseHR() {
+    private func release() {
         guard holdingHR else { return }
         model.stopRealtimeHR()
         holdingHR = false
