@@ -1066,11 +1066,19 @@ final class AppModel: ObservableObject {
         // Effort and the manual rescore (#972) already thread this, so the stored number used to
         // disagree with its own re-score. Read once here, at save time; the live readout during the
         // session is a transient running estimate and deliberately left alone.
-        let restingHR = repo.today?.restingHr.map(Double.init) ?? StrainScorer.defaultRestingHR
-        let strain = samples.count >= 2
-            ? StrainScorer.strain(samples, maxHR: Double(profile.hrMax),
-                                  restingHR: restingHR,
-                                  method: PuffinExperiment.effortMethod, sex: profile.sex) : nil
+        let restingHR = repo.today?.restingHr.map(Double.init) ?? BandStrain.defaultRestingHR
+        let strain: Double?
+        if samples.count >= 2 {
+            if AppBrand.isPersonalBuild {
+                strain = NativeStrain.score(samples, maxHR: Double(profile.hrMax), restingHR: restingHR)
+            } else {
+                strain = StrainScorer.strain(samples, maxHR: Double(profile.hrMax),
+                                      restingHR: restingHR,
+                                      method: PuffinExperiment.effortMethod, sex: profile.sex)
+            }
+        } else {
+            strain = nil
+        }
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         let up = UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,
@@ -1128,8 +1136,14 @@ final class AppModel: ObservableObject {
         }
         w.peakHr = max(w.peakHr, hr)
         w.avgHr = Int((Double(w.samples.map(\.bpm).reduce(0, +)) / Double(w.samples.count)).rounded())
-        w.liveStrain = StrainScorer.strain(w.samples, maxHR: Double(profile.hrMax),
+        if AppBrand.isPersonalBuild {
+            let rest = repo.today?.restingHr.map(Double.init) ?? BandStrain.defaultRestingHR
+            w.liveStrain = NativeStrain.score(w.samples, maxHR: Double(profile.hrMax),
+                                              restingHR: rest) ?? 0
+        } else {
+            w.liveStrain = StrainScorer.strain(w.samples, maxHR: Double(profile.hrMax),
                                               method: PuffinExperiment.effortMethod, sex: profile.sex) ?? 0
+        }
         activeWorkout = w
         // Re-snapshot the durable session so a kill keeps the latest accumulated HR window (#529).
         persistActiveWorkout()

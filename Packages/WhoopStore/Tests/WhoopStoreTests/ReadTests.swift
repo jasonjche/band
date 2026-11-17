@@ -80,7 +80,7 @@ final class ReadTests: XCTestCase {
         let withGravity = try await store.analysisFingerprint()
         XCTAssertNotEqual(hrOnly, withGravity)
         XCTAssertTrue(withGravity.contains("|g1|"))
-        XCTAssertTrue(withGravity.hasPrefix("v6|"), "HR frontier encoding is v6 (rowid+max ts)")
+        XCTAssertTrue(withGravity.hasPrefix("v7|"), "HR frontier encoding is v7 (rowid+max ts)")
     }
 
     /// `analysisFingerprint`'s HR half used to be COUNT(*)+MAX(ts). COUNT(*) over millions of 1 Hz

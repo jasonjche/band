@@ -11,6 +11,7 @@ extension BandScores {
         public var sleepPerformance: BandSleepPerformance.Params
         public var recovery: BandRecovery.Params
         public var recoveryV3: BandRecoveryV3.Params
+        public var strain: BandStrain.Params
         public var baselinesMinP: Int
         public var schemaVersion: Int
         /// Frozen local-level Kalman for HRV at a source change. Default EWMA is unchanged.
@@ -32,6 +33,10 @@ extension BandScores {
             guard v3.schemaVersion == BandRecoveryV3.expectedSchemaVersion else {
                 throw ParamsError.unsupportedRecoveryV3Schema(v3.schemaVersion)
             }
+            let st = raw.bandStrain
+            guard st.schemaVersion == BandStrain.expectedSchemaVersion else {
+                throw ParamsError.unsupportedStrainSchema(st.schemaVersion)
+            }
             let recoveryV3 = BandRecoveryV3.Params(
                 schemaVersion: v3.schemaVersion,
                 variant: v3.variant,
@@ -48,6 +53,17 @@ extension BandScores {
                 etaClip: v3.etaClip,
                 recLo: v3.recClip[0],
                 recHi: v3.recClip[1]
+            )
+            let strain = BandStrain.Params(
+                schemaVersion: st.schemaVersion,
+                maxStrain: st.maxStrain,
+                k: st.k,
+                p: st.p,
+                zoneLoHrmax: st.zoneLoHrmax,
+                wZones: st.wZones,
+                wSed: st.wSed,
+                qSed: st.qSed,
+                defaultRhr: st.defaultRhr
             )
             return Params(
                 loadIndex: BandLoadIndex.Params(
@@ -110,6 +126,7 @@ extension BandScores {
                     spo2Deadzone: raw.recovery.params.spo2Deadzone
                 ),
                 recoveryV3: recoveryV3,
+                strain: strain,
                 baselinesMinP: raw.baselinesMinP,
                 schemaVersion: raw.schemaVersion,
                 hrvKalman: .bundled,
@@ -120,6 +137,7 @@ extension BandScores {
         public enum ParamsError: Error {
             case missingResource
             case unsupportedRecoveryV3Schema(Int)
+            case unsupportedStrainSchema(Int)
         }
     }
 }
@@ -133,6 +151,7 @@ private struct File: Decodable {
     var sleepPerformance: SleepPerf
     var recovery: Recovery
     var recoveryV3: RecoveryV3
+    var bandStrain: BandStrainFile
     var baselinesMinP: Int
 
     enum CodingKeys: String, CodingKey {
@@ -143,6 +162,7 @@ private struct File: Decodable {
         case sleepPerformance = "sleep_performance"
         case recovery
         case recoveryV3 = "recovery_v3"
+        case bandStrain = "band_strain"
         case baselinesMinP = "baselines_min_p"
     }
 
@@ -300,6 +320,28 @@ private struct File: Decodable {
                 case wHrv = "w_hrv"
                 case wSleep = "w_sleep"
             }
+        }
+    }
+
+    struct BandStrainFile: Decodable {
+        var schemaVersion: Int
+        var maxStrain: Double
+        var k: Double
+        var p: Double
+        var zoneLoHrmax: [Double]
+        var wZones: [Double]
+        var wSed: Double
+        var qSed: Double
+        var defaultRhr: Double
+        enum CodingKeys: String, CodingKey {
+            case k, p
+            case schemaVersion = "schema_version"
+            case maxStrain = "max_strain"
+            case zoneLoHrmax = "zone_lo_hrmax"
+            case wZones = "w_zones"
+            case wSed = "w_sed"
+            case qSed = "q_sed"
+            case defaultRhr = "default_rhr"
         }
     }
 }

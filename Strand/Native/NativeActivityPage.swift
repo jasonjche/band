@@ -55,18 +55,19 @@ enum NativeActivityPageLogic {
     ) -> Model {
         let sameAll = sameSport(as: workout, in: prior, windowDays: nil)
         let sameWindow = sameSport(as: workout, in: prior, windowDays: statsWindowDays)
-        let strainValues = sameAll.compactMap(\.strain)
+        let strainValues = sameAll.compactMap(NativeStrain.workout)
+        let strain = NativeStrain.workout(workout)
         return Model(
             sport: WorkoutSource.displaySport(workout.sport),
             timeRange: dateTimeRange(startTs: workout.startTs, endTs: workout.endTs),
             sourceLine: importSourceLine(workout.source),
-            strainText: NativeDayLogic.strainText(workout.strain, scale: scale),
-            strainDelta: strainDelta(current: workout.strain, prior: strainValues),
+            strainText: NativeDayLogic.strainText(strain, scale: scale),
+            strainDelta: strainDelta(current: strain, prior: strainValues),
             duration: durationClock(workout),
             zones: zones(percents: percents, durationS: durationSeconds(workout), zoneSet: zoneSet),
             stats: stats(workout, same: sameWindow),
             isManual: WorkoutSource.classify(workout.source) == .manual,
-            hasStrain: workout.strain != nil
+            hasStrain: strain != nil
         )
     }
 

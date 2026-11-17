@@ -429,6 +429,7 @@ public enum WorkoutDetector {
                               // choice so a bout and the day it sits in are never scored by different
                               // recipes, which would be worse than either one being "wrong".
                               effortMethod: StrainScorer.Method = .edwards,
+                              useBandStrain: Bool = false,
                               // #1545: receives the gate-by-gate counts for THIS call. nil (the default)
                               // keeps every existing caller and test byte-identical — nothing is computed
                               // that the detector was not already computing, the counters just record it.
@@ -548,8 +549,16 @@ public enum WorkoutDetector {
             guard !bpms.isEmpty else { f.droppedNoHR += 1; continue }   // degenerate bout, no HR samples
             let avg = bpms.reduce(0, +) / Double(bpms.count)
             let peak = Int(bpms.max()!.rounded())
-            let strain = StrainScorer.strain(hrSamples, maxHR: effMaxHR, restingHR: restHR,
+            let strain: Double?
+            if useBandStrain, let bandParams = BandStrain.bundledParams() {
+                let hrmax = effMaxHR ?? Double(StrainScorer.defaultMaxHR())
+                strain = BandStrain.effort100(
+                    BandStrain.strain(hrSamples, maxHR: hrmax, restingHR: restHR, params: bandParams)
+                )
+            } else {
+                strain = StrainScorer.strain(hrSamples, maxHR: effMaxHR, restingHR: restHR,
                                              method: effortMethod, sex: profile?.sex ?? "male")
+            }
 
             sessions.append(ExerciseSession(
                 start: effStart, end: end, avgHR: avg, peakHR: peak, strain: strain,

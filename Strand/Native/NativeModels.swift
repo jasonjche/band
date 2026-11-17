@@ -47,7 +47,11 @@ enum NativeWeek {
         )
         return series(days, todayKey: todayKey) { day in
             switch kind {
-            case .strain: return day.strain.map { NativeDayLogic.strainDisplayValue($0, scale: effortScale) }
+            case .strain:
+                return NativeStrain.day(
+                    stored: day.strain, live: nil,
+                    imported: NativeStrain.isImportedDay(importedSleep[day.day])
+                ).map { NativeDayLogic.strainDisplayValue($0, scale: effortScale) }
             case .recovery: return scores.byDay[day.day]?.recovery
             case .sleep: return scores.byDay[day.day]?.sleepPerformance
             }
@@ -245,9 +249,10 @@ enum NativeDay {
         let prior = Array(days.filter { $0.day < todayKey }.suffix(30))
         let source = days.last { $0.day == recoveryKey } ?? hrvDay ?? sleepDay
         let recovery = recoveryKey.flatMap { scores.byDay[$0]?.recovery }
-        let strain = NativeDayLogic.effectiveStrain(
+        let strain = NativeStrain.day(
+            stored: today?.strain,
             live: viewingToday ? liveStrain : nil,
-            stored: today?.strain
+            imported: NativeStrain.isImportedDay(importedSleep[todayKey])
         )
         let sleepScore = sleepScoreRow?.sleepPerformance
         let sleepStart = sleepSession.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
@@ -534,7 +539,7 @@ enum NativeDay {
                 Activity(
                     startTs: workout.startTs,
                     sport: workout.sport.uppercased(),
-                    strainText: NativeDayLogic.strainText(workout.strain, scale: scale),
+                    strainText: NativeDayLogic.strainText(NativeStrain.workout(workout), scale: scale),
                     timeRange: timeRange(workout.startTs, workout.endTs),
                     startClock: clockTime(workout.startTs),
                     endClock: clockTime(workout.endTs),
@@ -613,13 +618,13 @@ enum NativeActivity {
 
     static func make(_ workout: WorkoutRow, prior: [WorkoutRow], scale: EffortScale) -> Model {
         let same = prior.filter { $0.sport == workout.sport && $0.startTs != workout.startTs }
-        let strain = workout.strain
+        let strain = NativeStrain.workout(workout)
         return Model(
             sport: workout.sport.uppercased(),
             symbol: NativeDay.symbol(for: workout.sport),
             timeRange: NativeDay.timeRange(workout.startTs, workout.endTs),
             strainText: NativeDayLogic.strainText(strain, scale: scale),
-            strainDelta: NativeScoreMath.delta(strain, same.compactMap(\.strain)),
+            strainDelta: NativeScoreMath.delta(strain, same.compactMap(NativeStrain.workout)),
             duration: duration(workout),
             zones: zones(workout.zonesJSON, durationS: workout.durationS ?? Double(max(0, workout.endTs - workout.startTs))),
             stats: stats(workout, same: same),

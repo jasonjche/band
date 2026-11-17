@@ -230,7 +230,7 @@ struct NativeHomeView: View {
         sampleHours = NativeHomeCharts.stressSeries(buckets: buckets)
         let vo2 = await repo.exploreSeries(key: "vo2max_est", source: "my-whoop")
         vo2max = vo2.last?.value
-        await refreshLiveStrain(from: from)
+        await refreshLiveStrain(from: from, buckets: buckets)
         rebuildModel()
     }
 
@@ -299,10 +299,10 @@ struct NativeHomeView: View {
         )
     }
 
-    /// Same live Effort the classic Today ring reads: `StrainScorer.strain` over today's HR,
-    /// then `NativeDayLogic.effectiveStrain` with the stored row. Past days stay stored-only.
-    /// Recomputes only when `refreshSeq` or the selected day changed — a Home re-appear is a cache hit.
-    private func refreshLiveStrain(from: Int) async {
+    /// Live day strain via `BandStrain` on today's HR, then `NativeStrain.day` with the stored row.
+    /// Uses the 300 s buckets already read for the stress chart (within 0.05 of per-sample on the
+    /// golden vectors). Recomputes only when `refreshSeq` or the selected day changed.
+    private func refreshLiveStrain(from: Int, buckets: [HRBucket]) async {
         let seq = repo.refreshSeq
         let day = selectedKey
         if let cached = NativeLiveStrainMemo.read(seq: seq, day: day) {
@@ -314,14 +314,16 @@ struct NativeHomeView: View {
             NativeLiveStrainMemo.store(seq: seq, day: day, value: nil)
             return
         }
-        let todayHr = await repo.hrSamples(from: from, to: from + 86_400, limit: 200_000)
         let maxHR = profile.effortHRmax
-        let restHR = repo.days.last { $0.day == day }?.restingHr.map(Double.init)
-            ?? StrainScorer.defaultRestingHR
-        let method = PuffinExperiment.effortMethod
-        let sex = profile.sex
+        let restHR = NativeStrain.restingHR(
+            day: repo.days.last { $0.day == day },
+            days: repo.days,
+            dayKey: day
+        )
+        let times = buckets.map { Double($0.ts) }
+        let hr = buckets.map(\.bpm)
         let scored = await Task.detached(priority: .utility) {
-            StrainScorer.strain(todayHr, maxHR: maxHR, restingHR: restHR, method: method, sex: sex)
+            NativeStrain.score(times: times, hr: hr, maxHR: maxHR, restingHR: restHR)
         }.value
         liveTodayStrain = scored
         NativeLiveStrainMemo.store(seq: seq, day: day, value: scored)

@@ -557,5 +557,26 @@
       "transfer_69_to_our_mae": 5.94
     },
     "note": "Recursive causal EWMA on raw HRV ms + round-2 perf_ours sleep term. RHR/RR/temp/SpO2 omitted. Publish after warmup_nights=21 finite-z observations on the current source (whoopfit6: shortest N within ~1 MAE of fully-warmed without large early errors); expanding MAD from the new source only; restart EWMA and MAD at a source change. score() golden path unchanged."
+  },
+  "band_strain": {
+    "schema_version": 1,
+    "max_strain": 21.0,
+    "map": "sat_exp",
+    "k": 0.08011972378384052,
+    "p": 0.4396708723454066,
+    "axis": "hrmax",
+    "zone_lo_hrmax": [0.0, 0.5, 0.6, 0.7, 0.8, 0.9],
+    "w_zones": [
+      0.38171990940526646,
+      0.9707111909958075,
+      4.188927163345829,
+      4.247104789190801,
+      4.3248556546608725,
+      5.221773376556997
+    ],
+    "w_sed": 0.09704433288568518,
+    "q_sed": 1.5728628122368362,
+    "default_rhr": 60.0,
+    "gap_cap_rule": "dt_i = min(t_{i+1}-t_i, max(2*median_positive_interval, 60 s)); last sample reuses previous dt; empty → nil"
   }
 }

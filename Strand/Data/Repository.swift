@@ -2951,8 +2951,13 @@ final class Repository: ObservableObject {
                             let samples = (try? await store.hrSamples(deviceId: hrIds[0],
                                                                       from: startTs, to: endTs,
                                                                       limit: 8000)) ?? []
-                            strain = StrainScorer.strain(samples, maxHR: p.hrMax,
+                            if AppBrand.isPersonalBuild {
+                                strain = NativeStrain.score(samples, maxHR: p.hrMax,
+                                                            restingHR: BandStrain.defaultRestingHR)
+                            } else {
+                                strain = StrainScorer.strain(samples, maxHR: p.hrMax,
                                                 method: PuffinExperiment.effortMethod, sex: p.sex)
+                            }
                         } else {
                             strain = nil
                         }

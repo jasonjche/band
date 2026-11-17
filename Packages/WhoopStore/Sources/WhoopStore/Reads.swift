@@ -201,7 +201,7 @@ extension WhoopStore {
     /// never reuses one while the table lives), including a backfilled OLD ts that would leave
     /// `MAX(ts)` unmoved; `ON CONFLICT DO NOTHING` inserts nothing, so neither frontier moves.
     /// `hrSample` is never pruned in place (only whole-device `DELETE`s, which empty the table and
-    /// make `MAX(rowid)` NULL → 0, matching COUNT). Version prefix `v6` invalidates persisted
+    /// make `MAX(rowid)` NULL → 0, matching COUNT). Version prefix `v7` invalidates persisted
     /// watermarks once so the recent window is recomputed against the new encoding.
     ///
     /// Other streams keep SQLite's monotonic rowid frontier. WHOOP 5 RR promotions still use the
@@ -239,7 +239,7 @@ extension WhoopStore {
             }
             let historyCount: Int = row["w5"]
             let registry: String = row["registry"]
-            return "v6|h\(hc):\(hm)|" + tails.joined(separator: "|")
+            return "v7|h\(hc):\(hm)|" + tails.joined(separator: "|")
                 + "|w5\(historyCount)|w7\(row["w7"] as Int)|tagged\(row["w5tagged"] as Int)"
                 + "|w4history\(row["w4history"] as Int)|registry\(registry)"
         }

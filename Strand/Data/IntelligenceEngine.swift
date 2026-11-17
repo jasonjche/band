@@ -1043,6 +1043,7 @@ final class IntelligenceEngine: ObservableObject {
         // #1545: the Effort TRIMP recipe, read ONCE per pass. Global (same for every day), so it folds
         // into the config signature below rather than the per-day key.
         let effortMethodGlobal = PuffinExperiment.effortMethod
+        let useBandStrain = AppBrand.isPersonalBuild
         let dayCycleMode = DayCycleMode.persisted(UserDefaults.standard.string(forKey: DayCycleMode.storageKey))
 
         // Zero the per-day probe counters so the line emitted after the steps phase describes THIS pass
@@ -1105,7 +1106,7 @@ final class IntelligenceEngine: ObservableObject {
             // #1545: MUST be here. The Effort recipe changes every day's strain, so a cached scan
             // produced under one method is stale the moment the user switches — serving it would show a
             // window of days scored by a recipe the user just turned off, with nothing to explain it.
-            "\(effortMethodGlobal)",
+            "\(effortMethodGlobal)|bandStrain=\(useBandStrain)",
             dayCycleMode.rawValue,
         ].joined(separator: "|")
         // Drop the whole cache on a config change, then snapshot it into a Sendable `let` for the detached
@@ -1553,7 +1554,8 @@ final class IntelligenceEngine: ObservableObject {
                                                      // ring buffer isn't flooded; every night keeps the summary.
                                                      hrvWindowDetail: dayStart == nowLocalMidnight,
                                                      deepHrvWindow: deepHrvWindow,
-                                                     effortMethod: effortMethodGlobal)
+                                                     effortMethod: effortMethodGlobal,
+                                                     useBandStrain: useBandStrain)
                 dayScoreSeconds += Date().timeIntervalSince(tScore0)
                 // #195: whole-night HRV cleaning-pipeline summary for the always-on strap log, so a "reads ~2x
                 // too high" report is triageable without the HRV test mode: RMSSD vs SDNN (rmssd >> sdnn =
@@ -3012,7 +3014,7 @@ final class IntelligenceEngine: ObservableObject {
         // today's workout against a resting HR up to `maxDays` old.
         let measuredResting = out.first(where: { $0.rhr != nil })?.rhr.map(Double.init)
         await rescoreManualWorkouts(store: store, profile: up, restingHR: measuredResting,
-                                    effortMethod: effortMethodGlobal)
+                                    effortMethod: effortMethodGlobal, useBandStrain: useBandStrain)
 
         results = out
         note = out.isEmpty
@@ -3195,7 +3197,8 @@ final class IntelligenceEngine: ObservableObject {
                                        // mid-pass score a manual workout by one recipe and the day it
                                        // sits in by the other — the exact day-vs-bout contradiction the
                                        // threading exists to prevent. Twin of the Kotlin parameter.
-                                       effortMethod: StrainScorer.Method = .edwards) async {
+                                       effortMethod: StrainScorer.Method = .edwards,
+                                       useBandStrain: Bool = false) async {
         let now = Int(Date().timeIntervalSince1970)
         let since = now - 14 * 86_400
         guard let rows = try? await store.workouts(deviceId: deviceId, from: since, to: now, limit: 200)
@@ -3211,7 +3214,8 @@ final class IntelligenceEngine: ObservableObject {
                                                            to: row.endTs, limit: 20_000),
                   let s = ManualWorkoutRescore.scored(windowSamples: samples, profile: up, hrMax: hrMax,
                                                       restingHR: restingHR,
-                                                      effortMethod: effortMethod),
+                                                      effortMethod: effortMethod,
+                                                      useBandStrain: useBandStrain),
                   ManualWorkoutRescore.improves(s, over: row.energyKcal, currentStrain: row.strain,
                                                 allowStrainOnlyFill: true)
             else { continue }

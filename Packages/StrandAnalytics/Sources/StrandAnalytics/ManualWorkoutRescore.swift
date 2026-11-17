@@ -50,14 +50,23 @@ public enum ManualWorkoutRescore {
     public static func scored(windowSamples: [HRSample], profile: UserProfile, hrMax: Double,
                               restingHR: Double? = nil,
                               // #1545: see WorkoutDetector.detect — Edwards by default, threaded by the app.
-                              effortMethod: StrainScorer.Method = .edwards) -> Scored? {
+                              effortMethod: StrainScorer.Method = .edwards,
+                              useBandStrain: Bool = false) -> Scored? {
         guard windowSamples.count >= 2 else { return nil }
         let bpms = windowSamples.map(\.bpm)
         let avg = Int((Double(bpms.reduce(0, +)) / Double(bpms.count)).rounded())
         let peak = bpms.max() ?? 0
-        let strain = StrainScorer.strain(windowSamples, maxHR: hrMax,
-                                         restingHR: restingHR ?? StrainScorer.defaultRestingHR,
+        let rest = restingHR ?? (useBandStrain ? BandStrain.defaultRestingHR : StrainScorer.defaultRestingHR)
+        let strain: Double?
+        if useBandStrain, let bandParams = BandStrain.bundledParams() {
+            strain = BandStrain.effort100(
+                BandStrain.strain(windowSamples, maxHR: hrMax, restingHR: rest, params: bandParams)
+            )
+        } else {
+            strain = StrainScorer.strain(windowSamples, maxHR: hrMax,
+                                         restingHR: rest,
                                          method: effortMethod, sex: profile.sex)
+        }
         let kcalRaw = Calories.estimateBoutCalories(windowSamples, profile: profile,
                                                     hrmax: hrMax, restingHR: restingHR).0
         return Scored(avgHr: avg, maxHr: peak, strain: strain, kcal: kcalRaw > 0 ? kcalRaw : nil)

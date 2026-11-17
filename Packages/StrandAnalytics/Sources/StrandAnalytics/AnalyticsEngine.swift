@@ -530,7 +530,11 @@ public enum AnalyticsEngine {
                                   // %HRR with no floor. Threaded rather than read from a global so this
                                   // stays a pure function, and defaulted so every existing caller and
                                   // test is byte-identical.
-                                  effortMethod: StrainScorer.Method = .edwards) -> DayResult {
+                                  effortMethod: StrainScorer.Method = .edwards,
+                                  // Personal Native path: fitted BandStrain (0–21 → stored 0–100) instead
+                                  // of Edwards/Banister. Default false so classic/macOS and existing tests
+                                  // stay on StrainScorer.
+                                  useBandStrain: Bool = false) -> DayResult {
 
         // Precompute the day's UTC bounds ONCE (#996). `dayString(ts, offsetSec:)` formats the UTC
         // calendar day of (ts + offset) with a FIXED offset, so "== day" is exactly membership in
@@ -957,13 +961,26 @@ public enum AnalyticsEngine {
         // the prior evening's HR (the night window's −30h tail) no longer bleeds in. Falls back to the
         // night `hr` for pure-function callers/tests.
         let effMaxHR: Double? = maxHROverride ?? (profile.age > 0 ? StrainScorer.tanakaHRmax(age: profile.age) : nil)
-        let restForStrain = restingHRDaily.map(Double.init) ?? StrainScorer.defaultRestingHR
+        let restForStrain: Double = {
+            if let rhr = restingHRDaily.map(Double.init) { return rhr }
+            if useBandStrain, let base = baselines.restingHR, base.usable { return base.baseline }
+            return useBandStrain ? BandStrain.defaultRestingHR : StrainScorer.defaultRestingHR
+        }()
         // The Effort ring's own funnel. A nil sink builds nothing at all, so a caller that does not want
         // diagnostics pays nothing; IntelligenceEngine passes its per-day recorder, the same one the
         // `workout detect` and `sleep-detect` lines beside it already use.
-        let strain = StrainScorer.strain(dayHr ?? hr, maxHR: effMaxHR, restingHR: restForStrain,
+        let hrForStrain = dayHr ?? hr
+        let strain: Double?
+        if useBandStrain, let bandParams = BandStrain.bundledParams() {
+            let hrmax = effMaxHR ?? Double(StrainScorer.defaultMaxHR())
+            strain = BandStrain.effort100(
+                BandStrain.strain(hrForStrain, maxHR: hrmax, restingHR: restForStrain, params: bandParams)
+            )
+        } else {
+            strain = StrainScorer.strain(hrForStrain, maxHR: effMaxHR, restingHR: restForStrain,
                                          method: effortMethod, sex: profile.sex,
                                          diag: strainDiag, day: day)
+        }
         // #2438 step 0 asks two things of a contributed log: whether the day was scored against the
         // user's own setting or against the age formula, and how far the day's own heart rate ran above
         // that. The `effort score` line above answers neither — it collapses override and Tanaka into
@@ -1017,6 +1034,7 @@ public enum AnalyticsEngine {
             // A day on Banister whose workouts were still on Edwards would show a session scoring
             // less than the day it sits inside, which is a worse inconsistency than either method.
             effortMethod: effortMethod,
+            useBandStrain: useBandStrain,
             funnel: { detectionFunnel = $0 })
 
         // ── Steps (APPROXIMATE) ───────────────────────────────────────────────
