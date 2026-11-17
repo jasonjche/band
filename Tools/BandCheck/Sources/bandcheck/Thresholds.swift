@@ -37,6 +37,7 @@ struct Thresholds: Equatable, Codable {
         var maxJournalDuplicateTitles: Int
         var maxMetricsWithoutSource: Int
         var maxUnresolvedStepsDays: Int
+        var maxStressGateWorse: Int
         enum CodingKeys: String, CodingKey {
             case maxStepsUndercountDays = "max_steps_undercount_days"
             case maxDuplicateDailyMetric = "max_duplicate_daily_metric"
@@ -45,6 +46,32 @@ struct Thresholds: Equatable, Codable {
             case maxJournalDuplicateTitles = "max_journal_duplicate_titles"
             case maxMetricsWithoutSource = "max_metrics_without_source"
             case maxUnresolvedStepsDays = "max_unresolved_steps_days"
+            case maxStressGateWorse = "max_stress_gate_worse"
+        }
+
+        init(maxStepsUndercountDays: Int, maxDuplicateDailyMetric: Int, maxAutoOverlap: Int,
+             maxWorkoutsWithoutHR: Int, maxJournalDuplicateTitles: Int, maxMetricsWithoutSource: Int,
+             maxUnresolvedStepsDays: Int, maxStressGateWorse: Int = 0) {
+            self.maxStepsUndercountDays = maxStepsUndercountDays
+            self.maxDuplicateDailyMetric = maxDuplicateDailyMetric
+            self.maxAutoOverlap = maxAutoOverlap
+            self.maxWorkoutsWithoutHR = maxWorkoutsWithoutHR
+            self.maxJournalDuplicateTitles = maxJournalDuplicateTitles
+            self.maxMetricsWithoutSource = maxMetricsWithoutSource
+            self.maxUnresolvedStepsDays = maxUnresolvedStepsDays
+            self.maxStressGateWorse = maxStressGateWorse
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            maxStepsUndercountDays = try c.decode(Int.self, forKey: .maxStepsUndercountDays)
+            maxDuplicateDailyMetric = try c.decode(Int.self, forKey: .maxDuplicateDailyMetric)
+            maxAutoOverlap = try c.decode(Int.self, forKey: .maxAutoOverlap)
+            maxWorkoutsWithoutHR = try c.decode(Int.self, forKey: .maxWorkoutsWithoutHR)
+            maxJournalDuplicateTitles = try c.decode(Int.self, forKey: .maxJournalDuplicateTitles)
+            maxMetricsWithoutSource = try c.decode(Int.self, forKey: .maxMetricsWithoutSource)
+            maxUnresolvedStepsDays = try c.decode(Int.self, forKey: .maxUnresolvedStepsDays)
+            maxStressGateWorse = try c.decodeIfPresent(Int.self, forKey: .maxStressGateWorse) ?? 0
         }
     }
 
@@ -58,7 +85,8 @@ struct Thresholds: Equatable, Codable {
             maxWorkoutsWithoutHR: 0,
             maxJournalDuplicateTitles: 0,
             maxMetricsWithoutSource: 0,
-            maxUnresolvedStepsDays: 0)
+            maxUnresolvedStepsDays: 0,
+            maxStressGateWorse: 0)
     )
 
     static func load(path: String) throws -> Thresholds {
@@ -121,6 +149,7 @@ func evaluateGates(agreements: [SeriesAgreement],
         case "journal_duplicate_titles": cap(r, inv.maxJournalDuplicateTitles)
         case "metrics_without_source": cap(r, inv.maxMetricsWithoutSource)
         case "unresolved_steps": cap(r, inv.maxUnresolvedStepsDays)
+        case "stress_activity_gate": cap(r, inv.maxStressGateWorse)
         default: break
         }
     }

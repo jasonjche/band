@@ -394,6 +394,10 @@ public enum AnalyticsEngine {
                                   dayHr: [HRSample]? = nil,
                                   daySteps: [StepSample]? = nil,
                                   dayGravity: [GravitySample]? = nil,
+                                  // Seconds of the calendar day that have elapsed, for prorating BMR in the
+                                  // total-energy estimate. Nil = a complete day (86 400 s). Only today's
+                                  // pass supplies it; kept a parameter so the engine stays clock-free.
+                                  dayElapsedSeconds: Double? = nil,
                                   // Wear-gated nightly skin-temp mean is harvested here
                                   // (baseline-independent); IntelligenceEngine seeds a personal
                                   // baseline from these means across nights and re-derives
@@ -1080,9 +1084,15 @@ public enum AnalyticsEngine {
         // night-window hr for pure-function callers that don't supply dayHr. Strain keeps the full
         // window (bounded log).
         let dayHrFiltered = (dayHr ?? hr).filter { tsInDay($0.ts) }
+        // BMR over the elapsed part of the calendar day plus Keytel extra on in-day HR. Metabolism
+        // does not stop when the strap misses a sample; WHOOP's Energy burned is total daily energy
+        // that accumulates through the day. Past days get the full 86 400 s; for today the caller
+        // passes the seconds since local midnight (`dayElapsedSeconds`), so noon reads half a day.
+        let dayElapsed: Double = min(86_400, max(0, dayElapsedSeconds ?? 86_400))
         let activeKcalEst: Double? = dayHrFiltered.isEmpty ? nil : Calories.estimateDayCalories(
             dayHrFiltered, profile: profile, hrmax: effMaxHR,
-            restingHR: restingHRDaily.map(Double.init))
+            restingHR: restingHRDaily.map(Double.init),
+            elapsedSeconds: dayElapsed)
 
         // ── Assemble DailyMetric ──────────────────────────────────────────────
         let daily = DailyMetric(

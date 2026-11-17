@@ -124,4 +124,75 @@ final class BandStressTests: XCTestCase {
         XCTAssertEqual(BandStress.score(bpm: 200, isAsleep: false, baselines: rhr55), 3, accuracy: 1e-9)
         XCTAssertEqual(BandStress.score(bpm: 40, isAsleep: false, baselines: rhr55), 0, accuracy: 1e-9)
     }
+
+    func testActivityAndRecoveryAreExcluded() {
+        XCTAssertEqual(
+            BandStress.evaluate(bpm: 110, isWorkout: false, isAsleep: false, baselines: rhr55,
+                                isActivity: true),
+            .excluded)
+        XCTAssertEqual(
+            BandStress.evaluate(bpm: 110, isWorkout: false, isAsleep: false, baselines: rhr55,
+                                isRecovery: true),
+            .excluded)
+        XCTAssertEqual(
+            BandStress.exclusionKind(isWorkout: true, isRecovery: true, isActivity: true),
+            .workout)
+        XCTAssertEqual(
+            BandStress.exclusionKind(isWorkout: false, isRecovery: true, isActivity: true),
+            .recovery)
+    }
+
+    func testRecoveryWindowEndsWhenHRReturns() {
+        let start = 1_000
+        let end = 1_000 + 20 * 60
+        var samples: [(ts: Int, bpm: Double)] = []
+        for t in stride(from: start - 600, to: start, by: 60) { samples.append((t, 60)) }
+        for t in stride(from: start, to: end, by: 60) { samples.append((t, 150)) }
+        for t in stride(from: end, to: end + 3_600, by: 60) {
+            let bpm = t < end + 10 * 60 ? 120.0 : 70.0
+            samples.append((t, bpm))
+        }
+        let window = BandStress.recoveryWindow(workoutStart: start, workoutEnd: end, samples: samples)
+        XCTAssertEqual(window?.start, end)
+        XCTAssertEqual(window?.end, end + 10 * 60)
+    }
+
+    func testRecoveryWindowCapsAtSixtyMinutes() {
+        let start = 2_000
+        let end = 2_000 + 30 * 60
+        var samples: [(ts: Int, bpm: Double)] = []
+        for t in stride(from: start - 600, to: start, by: 60) { samples.append((t, 60)) }
+        for t in stride(from: start, to: end + 4_000, by: 60) { samples.append((t, 140)) }
+        let window = BandStress.recoveryWindow(workoutStart: start, workoutEnd: end, samples: samples)
+        XCTAssertEqual(window?.end, end + BandStress.recoveryMaxSeconds)
+    }
+
+    func testWalkBucketsAreActivityNotStill() {
+        let t0 = 3_000
+        var steps: [(ts: Int, activityClass: Int)] = []
+        for i in 0..<20 { steps.append((t0 + i, 1)) }
+        var still: [(ts: Int, activityClass: Int)] = []
+        for i in 0..<20 { still.append((t0 + 600 + i, 0)) }
+        let walk = BandStress.activityBuckets(bucketStarts: [t0], steps: steps)
+        let sit = BandStress.activityBuckets(bucketStarts: [t0 + 600], steps: still)
+        XCTAssertTrue(walk.contains(t0))
+        XCTAssertTrue(sit.isEmpty)
+    }
+
+    func testGravityWalkFloorMarksActivity() {
+        let t0 = 9_000
+        let moving = (0..<20).map { (ts: t0 + $0, intensity: 0.25) }
+        let desk = (0..<20).map { (ts: t0 + 600 + $0, intensity: 0.04) }
+        XCTAssertTrue(BandStress.activityBuckets(bucketStarts: [t0], motion: moving).contains(t0))
+        XCTAssertTrue(BandStress.activityBuckets(bucketStarts: [t0 + 600], motion: desk).isEmpty)
+    }
+
+    func testActivitySpansMergeAdjacentBuckets() {
+        let spans = BandStress.spans(fromBuckets: [0, 300, 900], bucketSeconds: 300)
+        XCTAssertEqual(spans.count, 2)
+        XCTAssertEqual(spans[0].startTs, 0)
+        XCTAssertEqual(spans[0].endTs, 600)
+        XCTAssertEqual(spans[1].startTs, 900)
+        XCTAssertEqual(spans[1].kind, .activity)
+    }
 }

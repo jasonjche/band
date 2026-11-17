@@ -23,6 +23,9 @@ struct Args {
     var tz = TimeZone.current.identifier
     var age: Double?
     var hrMax: Double?
+    var weightKg: Double?
+    var heightCm: Double?
+    var sex: String?
     var verbose = false
     var json: String?
     var labels: String?
@@ -47,6 +50,9 @@ func parseArgs() -> Args {
         case "--tz": a.tz = it.next() ?? a.tz
         case "--age": a.age = Double(it.next() ?? "")
         case "--hr-max": a.hrMax = Double(it.next() ?? "")
+        case "--weight-kg": a.weightKg = Double(it.next() ?? "")
+        case "--height-cm": a.heightCm = Double(it.next() ?? "")
+        case "--sex": a.sex = it.next() ?? a.sex
         case "--verbose": a.verbose = true
         case "--json": a.json = it.next()
         case "--labels": a.labels = it.next()
@@ -62,7 +68,9 @@ func parseArgs() -> Args {
 let usage = """
 usage: bandcheck --db <sqlite> --export <whoop-csv-dir> [--thresholds <json>]
                  [--stream-device <id>] [--imported-device <id>] [--computed-device <id>]
-                 [--tz <iana>] [--age <y>] [--hr-max <bpm>] [--verbose] [--json <path>] [--labels <json>]
+                 [--tz <iana>] [--age <y>] [--hr-max <bpm>]
+                 [--weight-kg <kg>] [--height-cm <cm>] [--sex male|female|nonbinary]
+                 [--verbose] [--json <path>] [--labels <json>]
 
   One command that, before every install, says whether Band still agrees with WHOOP
   and with itself on this wearer's real data. Paths are arguments or env vars
@@ -101,19 +109,24 @@ let sleeps = try db.sleepSessions()
 let workouts = try db.workouts()
 let apple = try db.appleDaily()
 let journal = try db.journal()
-let series = try db.metricSeries(keys: ["vo2max", "vo2max_est", "steps", "sleep_performance"])
+let series = try db.metricSeries(keys: ["vo2max", "vo2max_est", "steps", "sleep_performance", "energy_kcal"])
 let hrSpan = try db.hrSpan()
 
 var hrByDay: [String: [HRSample]] = [:]
 var gravByDay: [String: [GravitySample]] = [:]
+var stepsByDay: [String: [StepSample]] = [:]
 if let span = hrSpan {
     let hr = try db.coalescedHR(device: args.streamDevice, from: span.from, to: span.to)
     let grav = try db.gravity(device: args.streamDevice, from: span.from, to: span.to)
+    let steps = try db.steps(device: args.streamDevice, from: span.from, to: span.to)
     for s in hr {
         hrByDay[DayKey.logical(s.ts, calendar: calendar), default: []].append(s)
     }
     for g in grav {
         gravByDay[DayKey.logical(g.ts, calendar: calendar), default: []].append(g)
+    }
+    for s in steps {
+        stepsByDay[DayKey.logical(s.ts, calendar: calendar), default: []].append(s)
     }
 }
 
@@ -129,15 +142,22 @@ guard let strainParams = BandStrain.bundledParams() else {
 }
 let scoreParams = try BandScores.Params.bundled()
 
+let profile = UserProfile(
+    weightKg: args.weightKg ?? 70,
+    heightCm: args.heightCm ?? 170,
+    age: args.age ?? 30,
+    sex: args.sex ?? "nonbinary")
+
 let cfg = CheckConfig(
     verbose: args.verbose, calendar: calendar,
     streamDevice: args.streamDevice, importedDevice: args.importedDevice,
     computedDevice: args.computedDevice, hrMax: hrMax,
-    strainParams: strainParams, scoreParams: scoreParams)
+    strainParams: strainParams, scoreParams: scoreParams, profile: profile)
 
 let (agreements, _) = agreementChecks(
     whoopDays: whoopDays, whoopWorkouts: whoopWorkouts, whoopSleeps: whoopSleeps,
-    daily: daily, sleeps: sleeps, workouts: workouts, hrByDay: hrByDay, cfg: cfg)
+    daily: daily, sleeps: sleeps, workouts: workouts, hrByDay: hrByDay,
+    energySeries: series, cfg: cfg)
 
 var rhrByDay: [String: Double] = [:]
 for d in whoopDays { if let v = d.rhr { rhrByDay[d.day] = v } }
@@ -149,12 +169,16 @@ let detection = detectionChecks(
     whoopWorkouts: whoopWorkouts, dbWorkouts: workouts,
     hrByDay: hrByDay, gravByDay: gravByDay, rhrByDay: rhrByDay, labels: labels, cfg: cfg)
 
-let invariants = try invariantChecks(
+var invariants = try invariantChecks(
     daily: daily, apple: apple, workouts: workouts, journal: journal, series: series,
     whoopQuestions: whoopQuestions, hrSpan: hrSpan, db: db,
     appleHRDir: URL(fileURLWithPath: args.db).deletingLastPathComponent()
         .appendingPathComponent("apple-workout-hr"),
     cfg: cfg)
+let stressGate = stressGateCheck(
+    hrByDay: hrByDay, gravByDay: gravByDay, stepsByDay: stepsByDay,
+    workouts: workouts, rhrByDay: rhrByDay, cfg: cfg)
+invariants.append(stressGate.result)
 
 let thresholds: Thresholds
 if FileManager.default.fileExists(atPath: args.thresholds) {
@@ -228,6 +252,7 @@ for r in invariants {
     let label = r.name.padding(toLength: 28, withPad: " ", startingAt: 0)
     print("  \(mark)  \(label)  fail \(r.failCount) / checked \(r.checked)  \(r.note)")
 }
+print("  stress gate  \(stressGate.latest)")
 
 print("""
 

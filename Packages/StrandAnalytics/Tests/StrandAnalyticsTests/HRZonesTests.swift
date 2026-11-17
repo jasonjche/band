@@ -109,6 +109,33 @@ final class HRZonesTests: XCTestCase {
         XCTAssertEqual(tiz.total, 3.0, accuracy: 1e-9)  // all time accounted for
     }
 
+    func testHRRZoneStartsMatchWhoopSettings() {
+        let zs = HRZones.zones(maxHR: 198, restingHR: 63)
+        XCTAssertEqual(zs.source, "hrr")
+        XCTAssertEqual(zs.zones.map { Int($0.lower) }, [117, 145, 158, 172, 185])
+        XCTAssertEqual(zs.zoneNumber(forBPM: 116), 0)
+        XCTAssertEqual(zs.zoneNumber(forBPM: 117), 1)
+        XCTAssertEqual(zs.zoneNumber(forBPM: 144), 1)
+        XCTAssertEqual(zs.zoneNumber(forBPM: 145), 2)
+        XCTAssertEqual(zs.zoneNumber(forBPM: 157), 2)
+        XCTAssertEqual(zs.zoneNumber(forBPM: 158), 3)
+        XCTAssertEqual(zs.zoneNumber(forBPM: 171), 3)
+        XCTAssertEqual(zs.zoneNumber(forBPM: 172), 4)
+        XCTAssertEqual(zs.zoneNumber(forBPM: 184), 4)
+        XCTAssertEqual(zs.zoneNumber(forBPM: 185), 5)
+        XCTAssertEqual(HRZones.hrrLowerBounds(restingHR: 63, maxHR: 63), nil)
+    }
+
+    func testMedianRestingHRUsesLastFourteenUpperMedian() {
+        XCTAssertNil(HRZones.medianRestingHR([]))
+        XCTAssertEqual(HRZones.medianRestingHR([63]), 63)
+        // Newest-last copy of the user's last 14 WHOOP-export nights; upper median is 63.
+        let nights = [64, 80, 73, 63, 60, 61, 62, 62, 82, 73, 66, 60, 60, 60]
+        XCTAssertEqual(HRZones.medianRestingHR(nights), 63)
+        let older = Array(repeating: 50, count: 10) + nights
+        XCTAssertEqual(HRZones.medianRestingHR(older), 63)
+    }
+
     func testTimeInZoneCapsHugePositiveGap() {
         let zs = HRZones.zones(maxHR: 200)
         // Three 1 Hz zone-1 samples (median gap 1 s), then one sample an HOUR later. The 3600 s

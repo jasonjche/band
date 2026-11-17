@@ -3503,6 +3503,12 @@ final class Repository: ObservableObject {
         return changed
     }
 
+    /// Strap gait-class ticks (0 still / 1 walk / 2 run) for stress motion gating and
+    /// auto-detect. Active strap first so it wins a timestamp tie.
+    func stepTicks(from: Int, to: Int) async -> [AutoWorkoutDetector.StepTick] {
+        await autoDetectStepTicks(from: from, to: to)
+    }
+
     /// Strap gait-class ticks for the detector, active strap first so it wins a timestamp tie.
     private func autoDetectStepTicks(from: Int, to: Int) async -> [AutoWorkoutDetector.StepTick] {
         guard let store = await ensureStore() else { return [] }

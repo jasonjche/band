@@ -11,6 +11,7 @@ struct CheckConfig {
     var hrMax: Double
     var strainParams: BandStrain.Params
     var scoreParams: BandScores.Params
+    var profile: UserProfile
 }
 
 func pair(_ name: String, whoop: [String: Double], band: [String: Double],
@@ -49,6 +50,7 @@ func whoopMap(_ days: [WhoopDay], _ pick: (WhoopDay) -> Double?) -> [String: Dou
 func agreementChecks(whoopDays: [WhoopDay], whoopWorkouts: [WhoopWorkout],
                      whoopSleeps: [WhoopSleep], daily: [DailyRow], sleeps: [SleepRow],
                      workouts: [WorkoutDBRow], hrByDay: [String: [HRSample]],
+                     energySeries: [MetricPointRow],
                      cfg: CheckConfig) -> ([SeriesAgreement], [Pair]) {
     var out: [SeriesAgreement] = []
     var verbosePairs: [Pair] = []
@@ -175,7 +177,56 @@ func agreementChecks(whoopDays: [WhoopDay], whoopWorkouts: [WhoopWorkout],
     add("stored.sleep_awake", whoop: wAwake, band: stageMap(\.awake), tol: 20)
     add("stored.sleep_asleep_stages", whoop: wAsleep, band: stageMap(\.asleep), tol: 20)
     add("stored.sleep_inbed_stages", whoop: wInbed, band: stageMap(\.inBed), tol: 25)
+
+    // Imported WHOOP energy_kcal series vs export Energy burned (cal).
+    let wEnergy = whoopMap(whoopDays, \.energyKcal)
+    var importedEnergy: [String: Double] = [:]
+    for row in energySeries where row.deviceId == cfg.importedDevice && row.key == "energy_kcal" {
+        importedEnergy[row.day] = row.value
+    }
+    add("stored_imported.energy", whoop: wEnergy, band: importedEnergy, tol: 1)
+
+    // Export-only replay: Mifflin–St Jeor × cycle duration + Keytel extra on workouts.
+    // Inputs are the CSV columns (duration, avg/max HR, RHR, workouts) — no 1 Hz HR.
+    let woByDay = Dictionary(grouping: whoopWorkouts, by: \.day)
+    var summaryEnergy: [String: Double] = [:]
+    for d in whoopDays {
+        let bouts = (woByDay[d.day] ?? []).compactMap { w -> Calories.SteadyBout? in
+            guard let avg = w.avgHR, w.durationMin > 0 else { return nil }
+            return Calories.SteadyBout(durationSec: w.durationMin * 60, avgHR: avg, maxHR: w.maxHR)
+        }
+        let est = Calories.estimateSummaryEnergy(
+            elapsedSeconds: d.durationSec, profile: cfg.profile, hrmax: d.maxHR ?? cfg.hrMax,
+            restingHR: d.rhr, workouts: bouts)
+        summaryEnergy[d.day] = est.totalKcal
+    }
+    add("replay.day_calories", whoop: wEnergy, band: summaryEnergy, tol: 400)
+
+    // 1 Hz HR replay on days the phone DB actually has samples.
+    var hrEnergy: [String: Double] = [:]
+    for (day, samples) in hrByDay {
+        let rhr = rhrByDayFromWhoop(whoopDays)[day]
+        hrEnergy[day] = Calories.estimateDayCalories(
+            samples, profile: cfg.profile, hrmax: cfg.hrMax, restingHR: rhr, elapsedSeconds: 86_400)
+    }
+    add("replay.day_calories_hr", whoop: wEnergy, band: hrEnergy, tol: 400)
+
+    var kcalPairs: [Pair] = []
+    for (i, w) in whoopWorkouts.enumerated() {
+        guard let whoopE = w.energyKcal, let avg = w.avgHR, w.durationMin > 0 else { continue }
+        let bandE = Calories.estimateSteadyCalories(
+            durationSec: w.durationMin * 60, avgHR: avg, profile: cfg.profile,
+            hrmax: w.maxHR ?? cfg.hrMax, restingHR: rhrByDayFromWhoop(whoopDays)[w.day])
+        kcalPairs.append(Pair(day: w.day + "#\(i)", band: bandE, whoop: whoopE))
+    }
+    out.append(agree("replay.workout_calories", kcalPairs, tolerance: 80))
+    if cfg.verbose { print("  replay.workout_calories"); printPairs(kcalPairs, verbose: true) }
+
     return (out, verbosePairs)
+}
+
+func rhrByDayFromWhoop(_ days: [WhoopDay]) -> [String: Double] {
+    whoopMap(days, \.rhr)
 }
 
 func detectionChecks(whoopWorkouts: [WhoopWorkout], dbWorkouts: [WorkoutDBRow],
@@ -324,4 +375,75 @@ func invariantChecks(daily: [DailyRow], apple: [AppleDailyRow], workouts: [Worko
         }
     }
     return results
+}
+
+/// Time-in-High with vs without post-workout recovery and walk/run gating.
+/// Gated high minutes must not exceed ungated. Prints aggregates only.
+func stressGateCheck(hrByDay: [String: [HRSample]],
+                     gravByDay: [String: [GravitySample]],
+                     stepsByDay: [String: [StepSample]],
+                     workouts: [WorkoutDBRow],
+                     rhrByDay: [String: Double],
+                     cfg: CheckConfig) -> (result: InvariantResult, latest: String) {
+    let bucket = BandStress.bucketSeconds
+    var checked = 0
+    var worse = 0
+    var latestNote = "no HR days"
+    for (day, hr) in hrByDay.sorted(by: { $0.key < $1.key }) {
+        guard !hr.isEmpty else { continue }
+        let rhr = rhrByDay[day] ?? BandStress.defaultRestingHR
+        let baselines = BandStress.Baselines(wakeRestingHR: rhr, sleepRestingHR: rhr, rmssd: nil)
+        let lo = hr.map(\.ts).min()!
+        let hi = hr.map(\.ts).max()! + 1
+        var mean: [Int: (sum: Double, n: Int)] = [:]
+        for s in hr {
+            let key = (s.ts / bucket) * bucket
+            var e = mean[key] ?? (0, 0)
+            e.sum += Double(s.bpm)
+            e.n += 1
+            mean[key] = e
+        }
+        let bucketTs = mean.keys.sorted()
+        let samples = hr.map { (ts: $0.ts, bpm: Double($0.bpm)) }
+        let bouts = workouts.filter { $0.startTs < hi && $0.endTs > lo }.map { (start: $0.startTs, end: $0.endTs) }
+        let recovery = BandStress.recoveryWindows(workouts: bouts, samples: samples)
+        let steps = (stepsByDay[day] ?? []).compactMap { s -> (ts: Int, activityClass: Int)? in
+            guard let cls = s.activityClass else { return nil }
+            return (s.ts, cls)
+        }
+        let motion = AutoWorkoutDetector.motionPoints(gravByDay[day] ?? []).map {
+            (ts: $0.ts, intensity: $0.intensity)
+        }
+        let activity = BandStress.activityBuckets(bucketStarts: bucketTs, steps: steps, motion: motion)
+        var ungated: [Double?] = []
+        var gated: [Double?] = []
+        for ts in bucketTs {
+            let bpm = mean[ts]!.sum / Double(mean[ts]!.n)
+            let workout = bouts.contains { BandStress.overlaps(bucketTs: ts, start: $0.start, end: $0.end) }
+            let rec = recovery.contains { BandStress.overlaps(bucketTs: ts, start: $0.start, end: $0.end) }
+            let moving = activity.contains(ts)
+            switch BandStress.evaluate(bpm: bpm, isWorkout: workout, isAsleep: false, baselines: baselines) {
+            case .value(let v): ungated.append(v)
+            default: ungated.append(nil)
+            }
+            switch BandStress.evaluate(bpm: bpm, isWorkout: workout, isAsleep: false, baselines: baselines,
+                                       isActivity: moving, isRecovery: rec) {
+            case .value(let v): gated.append(v)
+            default: gated.append(nil)
+            }
+        }
+        let u = BandStress.highMinutes(levels: ungated)
+        let g = BandStress.highMinutes(levels: gated)
+        checked += 1
+        if g > u + 0.01 { worse += 1 }
+        latestNote = String(format: "%@  ungated_high=%.1f min  gated_high=%.1f min  Δ=%.1f  activity_buckets=%d  recovery_spans=%d",
+                            day, u, g, g - u, activity.count, recovery.count)
+    }
+    let result = InvariantResult(
+        name: "stress_activity_gate",
+        pass: worse == 0,
+        failCount: worse,
+        checked: checked,
+        note: "gated time-in-High must not exceed workout-only exclusion")
+    return (result, latestNote)
 }

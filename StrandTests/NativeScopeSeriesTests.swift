@@ -383,4 +383,126 @@ final class NativeScopeSeriesTests: XCTestCase {
         let start = cal.date(from: DateComponents(year: 2026, month: 11, day: 17))!
         XCTAssertEqual(NativeCountTicks.hourLabelDates(dayStart: start, calendar: cal).count, 4)
     }
+
+    func testStepMadBandGoesNegativeWithoutDisplayGuard() {
+        var values: [Double?] = Array(repeating: 4_000, count: 15)
+        values += Array(repeating: 20_000, count: 15)
+        let band = NativeTypicalRange.band(values: values)
+        XCTAssertNotNil(band)
+        XCTAssertLessThan(band?.lowerBound ?? 0, 0)
+        XCTAssertNil(NativeTypicalRange.display(band, kind: .total))
+        XCTAssertEqual(NativeTypicalRange.display(band, kind: .rate)?.lowerBound ?? -1, 0, accuracy: 1e-9)
+    }
+
+    func testTotalsDoNotAttachTypicalRange() {
+        let cal = calendar(firstWeekday: 1)
+        let points = (1...20).map { day -> NativeDayPoint in
+            let steps = day == 18 ? 50_000.0 : 8_000.0
+            return point(String(format: "2026-11-%02d", day), steps)
+        }
+        let now = NativeScopeSeries.date(from: "2026-11-20", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .week, kind: .total, calendar: cal, now: now, ending: now
+        )
+        XCTAssertNil(series.typical)
+        XCTAssertNil(NativeTypicalRange.display((-6_273)...35_137, kind: .total))
+        XCTAssertEqual(NativeTypicalRange.display((-5)...40, kind: .rate)?.lowerBound ?? -1, 0, accuracy: 1e-9)
+        XCTAssertEqual(
+            NativeTypicalRange.caption(range: (-6_273)...35_137, format: { NativeCountFormat.integer($0) }, unit: "steps"),
+            "Typical range 0–35,137 steps"
+        )
+    }
+
+    func testWeekWindowPadsToVisibleCountWithSparseTotals() {
+        let cal = calendar(firstWeekday: 1)
+        let points = [
+            point("2026-11-16", 300),
+            point("2026-11-17", 364),
+        ]
+        let now = NativeScopeSeries.date(from: "2026-11-17", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .week, kind: .total, calendar: cal, now: now, ending: now
+        )
+        XCTAssertEqual(series.latestWindow().count, 7)
+        XCTAssertEqual(series.buckets.count, 7)
+        XCTAssertEqual(series.known.count, 2)
+        XCTAssertNil(series.typical)
+        XCTAssertEqual(series.aggregate(of: series.latestWindow()) ?? -1, 332, accuracy: 0.5)
+        XCTAssertEqual(
+            series.heroDateText(of: series.latestWindow(), calendar: cal),
+            "Nov 11–17, 2026"
+        )
+    }
+
+    func testLineSegmentsJoinShortGapsAndBreakLongOnes() {
+        let cal = calendar(firstWeekday: 1)
+        func bucket(_ key: String, _ value: Double?) -> NativeScopeBucket {
+            let start = NativeScopeSeries.date(from: key, calendar: cal)!
+            return NativeScopeBucket(
+                start: start,
+                end: cal.date(byAdding: .day, value: 1, to: start)!,
+                value: value,
+                low: nil, high: nil, isPartial: false,
+                sampleCount: value == nil ? 0 : 1,
+                key: key
+            )
+        }
+        let buckets = [
+            bucket("2026-10-01", 52),
+            bucket("2026-10-02", nil),
+            bucket("2026-10-04", 51),
+            bucket("2026-10-20", 52),
+        ]
+        let segments = NativeScopePlotMath.lineSegments(buckets)
+        XCTAssertEqual(segments.map(\.segment), [0, 0, 1])
+        XCTAssertEqual(segments.map(\.key), ["2026-10-01", "2026-10-04", "2026-10-20"])
+        XCTAssertEqual(NativeScopePlotMath.barUnit(scope: .week), .day)
+        XCTAssertEqual(NativeScopePlotMath.barUnit(scope: .sixMonths), .weekOfYear)
+        XCTAssertTrue(NativeScopePlotMath.showsVertices(scope: .week, knownCount: 2))
+        let clipped = NativeScopePlotMath.clippedTypical((-6_273)...35_137, yDomain: 0...10_000)
+        XCTAssertEqual(clipped?.lowerBound ?? -1, 0, accuracy: 1e-9)
+        XCTAssertEqual(clipped?.upperBound ?? -1, 10_000, accuracy: 1e-9)
+        XCTAssertNil(NativeScopePlotMath.clippedTypical(40...55, yDomain: 80...100))
+    }
+
+    func testSummarySentenceMatchesTrendView() {
+        let text = NativeScopeSummary.sentence(
+            title: "HRV",
+            scope: .month,
+            kind: .rate,
+            current: 46,
+            previous: 49,
+            format: { "\(Int($0.rounded()))" },
+            higherIsBetter: true
+        )
+        XCTAssertEqual(
+            text,
+            "Your average HRV this month (46) was below your previous 30-day average of 49."
+        )
+        let even = NativeScopeSummary.sentence(
+            title: "VO₂ Max",
+            scope: .week,
+            kind: .rate,
+            current: 52,
+            previous: 51.5,
+            format: { String(format: "%.1f", $0) },
+            higherIsBetter: true
+        )
+        XCTAssertEqual(
+            even,
+            "Your average VO₂ Max this week (52.0) was about the same as your previous week average of 51.5."
+        )
+        XCTAssertEqual(NativeScopeSummary.periodPhrase(.month), "this month")
+        XCTAssertEqual(NativeScopeSummary.priorPhrase(.month), "30-day")
+    }
+
+    func testLineYTicksAreRoundNumbers() {
+        let ticks = NativeScopeYTicks.values(in: 14...78)
+        XCTAssertGreaterThanOrEqual(ticks.count, 2)
+        XCTAssertEqual(ticks.first ?? -1, 20, accuracy: 0.01)
+        XCTAssertTrue(ticks.allSatisfy { abs($0.rounded() - $0) < 0.01 })
+        let domain = NativeScopeYTicks.niceDomain([46, 52, 48], fallback: 0...1)
+        XCTAssertLessThanOrEqual(domain.lowerBound, 46)
+        XCTAssertGreaterThanOrEqual(domain.upperBound, 52)
+    }
 }

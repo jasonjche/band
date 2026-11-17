@@ -214,7 +214,7 @@ import WhoopStore
                 }
             }
             let loadKey = "\(window.onset)-\(window.endExclusive)|\(hrWitness.joined(separator: ","))"
-                + "|rhr=\(restingHR)|max=\(effectiveMaxHR.map { "\($0)" } ?? "nil")|\(effortMethod)|\(profile.cacheKey)"
+                + "|rhr=\(restingHR)|max=\(effectiveMaxHR.map { "\($0)" } ?? "nil")|\(effortMethod)|\(profile.cacheKey)|kcal=msj1"
             let load: CachedLoad
             if let hit = cache.loads[window.sleepId], hit.key == loadKey, !hrWitness.contains(where: { $0.hasSuffix("=unread") }) {
                 load = hit
@@ -233,7 +233,8 @@ import WhoopStore
                     strain: StrainScorer.strain(cycleHR, maxHR: effectiveMaxHR, restingHR: restingHR,
                                                 method: effortMethod, sex: profile.sex),
                     calories: cycleHR.isEmpty ? nil : Calories.estimateDayCalories(
-                        cycleHR, profile: profile, hrmax: effectiveMaxHR, restingHR: restingHR))
+                        cycleHR, profile: profile, hrmax: effectiveMaxHR, restingHR: restingHR,
+                        elapsedSeconds: Double(max(0, window.endExclusive - window.onset))))
                 cache.loads[window.sleepId] = load
             }
             if let strain = load.strain { strains[day] = strain }

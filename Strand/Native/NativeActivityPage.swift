@@ -7,7 +7,7 @@ import StrandDesign
 import StrandAnalytics
 
 // WHOOP activity page drawn in Apple Health chrome.
-// Sport + time in the nav, strain/duration hero, HR chart, zones 5→0, stored stats, route if stored.
+// Sport + time in the nav, strain/steps hero, HR chart, zones 5→0, compact stats, route if stored.
 
 enum NativeActivityPageLogic {
     static let priorSameSportMinimum = 3
@@ -39,11 +39,18 @@ enum NativeActivityPageLogic {
         var bpmRange: String?
     }
 
+    struct Typical: Equatable {
+        var delta: NativeScore.Delta
+        var valueText: String
+        var accessibilityLabel: String
+    }
+
     struct Stat: Equatable, Identifiable {
         var id: String { title }
         var title: String
         var value: String
-        var prior: String?
+        var unit: String
+        var typical: Typical?
         var delta: NativeScore.Delta
         var symbol: String
         var heartFamily: Bool
@@ -55,8 +62,10 @@ enum NativeActivityPageLogic {
         var timeRange: String
         var sourceLine: String?
         var strainText: String
-        var strainDelta: NativeScore.Delta
+        var strainTypical: Typical?
         var duration: String
+        var stepsText: String?
+        var stepsTypical: Typical?
         var zones: [Zone]
         var stats: [Stat]
         var isManual: Bool
@@ -76,17 +85,27 @@ enum NativeActivityPageLogic {
         let sameWindow = sameSport(as: workout, in: prior, windowDays: statsWindowDays)
         let strainValues = sameAll.compactMap(NativeStrain.workout)
         let strain = NativeStrain.workout(workout)
+        let sport = WorkoutSource.displaySport(workout.sport)
+        let steps = workout.steps.map(Double.init)
+        let priorSteps = sameAll.compactMap { $0.steps.map(Double.init) }
         return Model(
-            sport: WorkoutSource.displaySport(workout.sport),
+            sport: sport,
             timeRange: dateTimeRange(startTs: workout.startTs, endTs: workout.endTs),
             sourceLine: importSourceLine(workout.source),
             strainText: NativeDayLogic.strainText(strain, scale: scale),
-            strainDelta: strainDelta(current: strain, prior: strainValues),
+            strainTypical: typical(
+                current: strain, prior: strainValues, sport: sport, metric: "strain"
+            ) { NativeDayLogic.strainText($0, scale: scale) },
             duration: durationClock(workout),
+            stepsText: steps.map { NativeScoreMath.count($0) },
+            stepsTypical: typical(
+                current: steps, prior: priorSteps, sport: sport, metric: "steps"
+            ) { NativeScoreMath.count($0) },
             zones: zones(percents: percents, durationS: durationSeconds(workout), zoneSet: zoneSet),
             stats: stats(
                 workout,
                 same: sameWindow,
+                sport: sport,
                 heartRateRecovery: heartRateRecovery,
                 priorHeartRateRecovery: priorHeartRateRecovery
             ),
@@ -102,8 +121,50 @@ enum NativeActivityPageLogic {
 
     /// Strain delta vs the average of prior same-sport workouts, only when at least three exist.
     static func strainDelta(current: Double?, prior: [Double]) -> NativeScore.Delta {
-        guard prior.count >= priorSameSportMinimum else { return .none }
-        return NativeScoreMath.delta(current, prior)
+        typical(current: current, prior: prior, sport: "sport", metric: "strain") { "\($0)" }?.delta ?? .none
+    }
+
+    /// Typical-value chip vs prior same-sport workouts. Hidden until at least three exist.
+    static func typical(
+        current: Double?,
+        prior: [Double],
+        sport: String,
+        metric: String,
+        format: (Double) -> String
+    ) -> Typical? {
+        guard prior.count >= priorSameSportMinimum, current != nil,
+              let mean = NativeScoreMath.mean(prior) else { return nil }
+        let text = format(mean)
+        let delta = NativeScoreMath.delta(current, prior)
+        let direction: String
+        if delta == .up { direction = "Above" }
+        else if delta == .down { direction = "Below" }
+        else { direction = "In line with" }
+        return Typical(
+            delta: delta,
+            valueText: text,
+            accessibilityLabel: "\(direction) your typical \(sport) \(metric) of \(text)"
+        )
+    }
+
+    static func toggleZone(_ current: Int?, tapped: Int) -> Int? {
+        current == tapped ? nil : tapped
+    }
+
+    /// Contiguous in-zone samples, for dimming the rest of the HR chart.
+    static func zoneRuns(_ points: [NativeHourPoint], zone: Int, zoneSet: HRZoneSet) -> [[NativeHourPoint]] {
+        var runs: [[NativeHourPoint]] = []
+        var current: [NativeHourPoint] = []
+        for point in points {
+            if zoneSet.zoneNumber(forBPM: point.value) == zone {
+                current.append(point)
+            } else if !current.isEmpty {
+                runs.append(current)
+                current = []
+            }
+        }
+        if !current.isEmpty { runs.append(current) }
+        return runs
     }
 
     static func sameSport(as workout: WorkoutRow, in rows: [WorkoutRow], windowDays: Int?) -> [WorkoutRow] {
@@ -213,35 +274,40 @@ enum NativeActivityPageLogic {
     private static func stats(
         _ workout: WorkoutRow,
         same: [WorkoutRow],
+        sport: String,
         heartRateRecovery: Int?,
         priorHeartRateRecovery: [Double]
     ) -> [Stat] {
         var rows: [Stat] = []
         if let hr = workout.avgHr {
             rows.append(stat(
-                "Average HR", "\(hr) BPM", Double(hr),
+                "Avg HR", "\(hr)", Double(hr),
                 same.compactMap { $0.avgHr.map(Double.init) },
+                sport, "heart rate",
                 "heart.fill", heart: true, unit: "BPM", neutralDelta: true
             ))
         }
         if let hr = workout.maxHr {
             rows.append(stat(
-                "Max HR", "\(hr) BPM", Double(hr),
+                "Max HR", "\(hr)", Double(hr),
                 same.compactMap { $0.maxHr.map(Double.init) },
+                sport, "max heart rate",
                 "heart", heart: true, unit: "BPM", neutralDelta: true
             ))
         }
         if let recovery = heartRateRecovery {
             rows.append(stat(
-                "Heart Rate Recovery", "\(recovery) BPM", Double(recovery),
+                "HR Recovery", "\(recovery)", Double(recovery),
                 priorHeartRateRecovery,
+                sport, "heart rate recovery",
                 "heart.circle", heart: true, unit: "BPM", neutralDelta: true
             ))
         }
         if let kcal = workout.energyKcal {
             rows.append(stat(
-                "Calories", "\(Int(kcal.rounded())) cal", kcal,
+                "Calories", "\(Int(kcal.rounded()))", kcal,
                 same.compactMap(\.energyKcal),
+                sport, "calories",
                 "flame.fill", heart: false, unit: "cal"
             ))
         }
@@ -251,17 +317,11 @@ enum NativeActivityPageLogic {
             let unit = imperial ? "mi" : "km"
             let shown = meters / perUnit
             rows.append(stat(
-                "Distance", String(format: "%.2f \(unit)", shown), shown,
+                "Distance", String(format: "%.2f", shown), shown,
                 same.compactMap(\.distanceM).filter { $0 > 0 }.map { $0 / perUnit },
+                sport, "distance",
                 "point.topleft.down.to.point.bottomright.curvepath",
                 heart: false, unit: unit, decimals: 2
-            ))
-        }
-        if let steps = workout.steps {
-            rows.append(stat(
-                "Steps", NativeScoreMath.count(Double(steps)), Double(steps),
-                same.compactMap { $0.steps.map(Double.init) },
-                "figure.walk", heart: false, unit: "steps", grouped: true
             ))
         }
         return rows
@@ -269,20 +329,20 @@ enum NativeActivityPageLogic {
 
     private static func stat(
         _ title: String, _ value: String, _ current: Double, _ prior: [Double],
-        _ symbol: String, heart: Bool, unit: String, decimals: Int = 0, grouped: Bool = false,
+        _ sport: String, _ metric: String,
+        _ symbol: String, heart: Bool, unit: String, decimals: Int = 0,
         neutralDelta: Bool = false
     ) -> Stat {
-        let priorText: String?
-        if let mean = NativeScoreMath.mean(prior) {
-            priorText = NativeScoreMath.labeled(mean, unit: unit, decimals: decimals, grouped: grouped)
-        } else {
-            priorText = nil
+        let chip = typical(current: current, prior: prior, sport: sport, metric: metric) { mean in
+            if decimals == 0 { return "\(Int(mean.rounded()))" }
+            return String(format: "%.\(decimals)f", mean)
         }
         return Stat(
             title: title,
             value: value,
-            prior: priorText,
-            delta: NativeScoreMath.delta(current, prior),
+            unit: unit,
+            typical: chip,
+            delta: chip?.delta ?? .none,
             symbol: symbol,
             heartFamily: heart,
             neutralDelta: neutralDelta
@@ -303,7 +363,6 @@ struct NativeActivityView: View {
     @State private var prior: [WorkoutRow] = []
     @State private var percents: [Double]?
     @State private var hr: [NativeHourPoint] = []
-    @State private var hrFromAppleHealth = false
     @State private var heartRateRecoveryBpm: Int?
     @State private var priorHeartRateRecovery: [Double] = []
     @State private var route: [RouteMath.LatLng] = []
@@ -330,7 +389,6 @@ struct NativeActivityView: View {
                 NativeActivityBody(
                     model: model,
                     hr: hr,
-                    hrFromAppleHealth: hrFromAppleHealth,
                     zoneSet: zoneSet,
                     route: route
                 )
@@ -390,7 +448,8 @@ struct NativeActivityView: View {
 
     private func load() async {
         guard let repo = repoHandle else { return }
-        zoneSet = profileHandle?.hrZoneSet
+        let restingHR = HRZones.medianRestingHR(repo.days.compactMap(\.restingHr))
+        zoneSet = profileHandle?.displayZoneSet(restingHR: restingHR)
         let rows = await repo.workoutRows(days: 120)
         let found = rows.first { $0.startTs == keyTs }
         workout = found
@@ -409,13 +468,15 @@ struct NativeActivityView: View {
             startTs: workout.startTs, endTs: workout.endTs,
             sport: workout.sport, source: workout.source
         )
-        hrFromAppleHealth = series.origin == .appleHealth
         let rawPoints = NativeActivityPageLogic.bucketed(
             series.samples.map { (ts: $0.ts, bpm: Double($0.bpm)) },
             seconds: NativeActivityPageLogic.hrBucketSeconds
         )
         hr = NativeHRSmoothing.smooth(rawPoints)
-        let zones = zoneSet ?? HRZones.zones(maxHR: profileHandle?.effortHRmax ?? 197)
+        let zones = zoneSet ?? HRZones.zones(
+            maxHR: profileHandle?.effortHRmax ?? 197,
+            restingHR: restingHR ?? BandStrain.defaultRestingHR
+        )
         if percents == nil, !series.samples.isEmpty {
             percents = NativeActivityPageLogic.zonePercents(from: series.samples, zoneSet: zones)
             if zoneSet == nil { zoneSet = zones }
@@ -454,10 +515,11 @@ struct NativeActivityView: View {
 struct NativeActivityBody: View {
     var model: NativeActivityPageLogic.Model
     var hr: [NativeHourPoint] = []
-    var hrFromAppleHealth: Bool = false
     var zoneSet: HRZoneSet? = nil
     var route: [RouteMath.LatLng] = []
     var scrolls: Bool = true
+    @State private var selectedZone: Int?
+    @State private var hapticTick = 0
 
     var body: some View {
         Group {
@@ -467,6 +529,7 @@ struct NativeActivityBody: View {
                 NativeChrome.stack { activityBody }
             }
         }
+        .modifier(NativeActivityLightHaptic(trigger: hapticTick))
     }
 
     @ViewBuilder private var activityBody: some View {
@@ -477,32 +540,8 @@ struct NativeActivityBody: View {
                 .padding(.top, 4)
         }
 
-        HStack(alignment: .firstTextBaseline) {
-            if model.hasStrain {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        NativeValueText(value: model.strainText, size: 34)
-                        NativeDelta(delta: model.strainDelta)
-                    }
-                    Text("Activity Strain")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                }
-                Spacer()
-            }
-            if !model.hasStrain { Spacer() }
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(model.duration)
-                    .font(StrandFont.rounded(28, weight: .semibold))
-                    .monospacedDigit()
-                Text("Duration")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-            }
-        }
-        .padding(.top, model.sourceLine == nil ? 8 : 0)
+        heroRow
+            .padding(.top, model.sourceLine == nil ? 8 : 0)
 
         if awaitingHeartRate {
             Text("Heart rate appears after the next sync")
@@ -511,24 +550,42 @@ struct NativeActivityBody: View {
                 .padding(.top, 4)
         }
 
-        if hrFromAppleHealth, !hr.isEmpty {
-            Text("Heart rate from Apple Health")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.top, 4)
-        }
-
         if !hr.isEmpty {
             NativeChrome.panel {
-                NativeActivityHRChart(points: hr, zoneSet: zoneSet)
-                    .frame(minHeight: 256)
+                NativeActivityHRChart(
+                    points: hr,
+                    zoneSet: zoneSet,
+                    selectedZone: selectedZone,
+                    onClearZone: { selectZone(nil) }
+                )
+                .frame(minHeight: 220)
             }
         }
 
         if !model.zones.isEmpty {
             NativeChrome.panel {
+                HStack {
+                    Text("Heart Rate Zones")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    Spacer()
+                    Text(model.duration)
+                        .font(.caption.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Duration \(model.duration)")
+                }
+                .padding(.bottom, 4)
                 ForEach(model.zones) { zone in
-                    NativeActivityZoneRow(zone: zone, totalMinutes: totalZoneMinutes)
+                    NativeActivityZoneRow(
+                        zone: zone,
+                        totalMinutes: totalZoneMinutes,
+                        isSelected: selectedZone == zone.number,
+                        dimmed: selectedZone != nil && selectedZone != zone.number
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture { selectZone(NativeActivityPageLogic.toggleZone(selectedZone, tapped: zone.number)) }
                 }
             }
         }
@@ -543,28 +600,57 @@ struct NativeActivityBody: View {
 
         if !model.stats.isEmpty {
             NativeChrome.section("Key Statistics")
-            NativeChrome.panel {
-                VStack(spacing: 0) {
-                    ForEach(Array(model.stats.enumerated()), id: \.element.id) { index, stat in
-                        if index > 0 {
-                            Divider().padding(.leading, 34)
-                        }
-                        NativeContributorRow(
-                            symbol: stat.symbol,
-                            title: stat.title,
-                            value: stat.value,
-                            prior: stat.prior,
-                            delta: stat.delta,
-                            tint: stat.heartFamily ? NativeChrome.heart : NativeChrome.activity,
-                            neutralDelta: stat.neutralDelta
-                        )
-                    }
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)],
+                alignment: .leading,
+                spacing: 14
+            ) {
+                ForEach(model.stats) { stat in
+                    NativeActivityStatCell(stat: stat)
                 }
             }
-            if model.stats.contains(where: { $0.prior != nil }) {
-                NativeChrome.footnote("Compared with your last 30 days")
+        }
+    }
+
+    @ViewBuilder private var heroRow: some View {
+        let showStrain = model.hasStrain
+        let showSteps = model.stepsText != nil
+        if showStrain || showSteps {
+            HStack(alignment: .firstTextBaseline, spacing: 24) {
+                if showStrain {
+                    NativeActivityHeroMetric(
+                        value: model.strainText,
+                        caption: "Activity Strain",
+                        typical: model.strainTypical,
+                        accessibilityValue: "\(model.strainText) activity strain"
+                    )
+                }
+                if let steps = model.stepsText {
+                    NativeActivityHeroMetric(
+                        value: steps,
+                        caption: "Activity Steps",
+                        typical: model.stepsTypical,
+                        accessibilityValue: "\(steps) activity steps"
+                    )
+                }
+                Spacer(minLength: 0)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.duration)
+                    .font(StrandFont.rounded(28, weight: .semibold))
+                    .monospacedDigit()
+                Text("Duration")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
             }
         }
+    }
+
+    private func selectZone(_ zone: Int?) {
+        selectedZone = zone
+        hapticTick += 1
     }
 
     private var totalZoneMinutes: Double {
@@ -580,9 +666,97 @@ struct NativeActivityBody: View {
     }
 }
 
+private struct NativeActivityHeroMetric: View {
+    var value: String
+    var caption: String
+    var typical: NativeActivityPageLogic.Typical?
+    var accessibilityValue: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                NativeValueText(value: value, size: 34)
+                if let typical {
+                    NativeTypicalValueChip(typical: typical)
+                }
+            }
+            Text(caption)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(caption)
+        .accessibilityValue(typical.map { "\(accessibilityValue). \($0.accessibilityLabel)" } ?? accessibilityValue)
+    }
+}
+
+private struct NativeTypicalValueChip: View {
+    var typical: NativeActivityPageLogic.Typical
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: triangle)
+                .font(.caption2.weight(.bold))
+            Text(typical.valueText)
+                .font(.caption.weight(.semibold))
+                .monospacedDigit()
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(Color.secondary.opacity(0.12)))
+        .accessibilityLabel(typical.accessibilityLabel)
+    }
+
+    private var triangle: String {
+        if typical.delta == .up { return "arrowtriangle.up.fill" }
+        if typical.delta == .down { return "arrowtriangle.down.fill" }
+        return "minus"
+    }
+}
+
+private struct NativeActivityStatCell: View {
+    var stat: NativeActivityPageLogic.Stat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(stat.title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                NativeValueText(value: stat.value, unit: stat.unit, size: 22)
+                if let typical = stat.typical {
+                    NativeTypicalValueChip(typical: typical)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(stat.title)
+        .accessibilityValue(
+            stat.typical.map { "\(stat.value) \(stat.unit). \($0.accessibilityLabel)" }
+            ?? "\(stat.value) \(stat.unit)"
+        )
+    }
+}
+
+private struct NativeActivityLightHaptic: ViewModifier {
+    var trigger: Int
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            content.sensoryFeedback(.impact(weight: .light), trigger: trigger)
+        } else {
+            content
+        }
+    }
+}
+
 struct NativeActivityHRChart: View {
     var points: [NativeHourPoint]
     var zoneSet: HRZoneSet? = nil
+    var selectedZone: Int? = nil
+    var onClearZone: () -> Void = {}
     @Environment(\.nativeStyle) private var style
     @State private var scrub = NativeScopeScrub()
 
@@ -599,14 +773,16 @@ struct NativeActivityHRChart: View {
                 yDomain: yDomain,
                 lineTint: lineTint,
                 zoneSet: zoneSet,
-                scrub: scrub
+                selectedZone: selectedZone,
+                scrub: scrub,
+                onClearZone: onClearZone
             )
             .frame(height: 180)
         }
     }
 
     private var lineTint: Color {
-        style == .whoop ? NativeTokens.whoopLabel : Color.primary
+        style == .whoop ? NativeTokens.whoopLabel : NativeTokens.heart
     }
 }
 
@@ -642,7 +818,9 @@ private struct NativeActivityHRPlot: View {
     var yDomain: ClosedRange<Double>
     var lineTint: Color
     var zoneSet: HRZoneSet?
+    var selectedZone: Int?
     var scrub: NativeScopeScrub
+    var onClearZone: () -> Void
 
     private var timeBinding: Binding<Date?> {
         Binding(
@@ -651,13 +829,67 @@ private struct NativeActivityHRPlot: View {
         )
     }
 
+    private var highlightTint: Color {
+        guard let selectedZone else { return lineTint }
+        return NativeTokens.hrZone(selectedZone)
+    }
+
+    private var zoneRuns: [[NativeHourPoint]] {
+        guard let selectedZone, let zoneSet else { return [] }
+        return NativeActivityPageLogic.zoneRuns(points, zone: selectedZone, zoneSet: zoneSet)
+    }
+
     var body: some View {
         Chart {
+            if let first = points.first {
+                RuleMark(x: .value("Start", first.time))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .foregroundStyle(Color.secondary.opacity(0.7))
+                    .accessibilityHidden(true)
+            }
+            if let last = points.last, points.count > 1 {
+                RuleMark(x: .value("End", last.time))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .foregroundStyle(Color.secondary.opacity(0.7))
+                    .accessibilityHidden(true)
+            }
             ForEach(points) { point in
+                AreaMark(
+                    x: .value("Time", point.time),
+                    yStart: .value("Low", yDomain.lowerBound),
+                    yEnd: .value("HR", point.value)
+                )
+                .foregroundStyle(lineTint.opacity(selectedZone == nil ? 0.18 : 0.05))
+                .interpolationMethod(.linear)
                 LineMark(x: .value("Time", point.time), y: .value("HR", point.value))
-                    .foregroundStyle(lineTint)
+                    .foregroundStyle(lineTint.opacity(selectedZone == nil ? 1 : 0.18))
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2.5))
+            }
+            ForEach(Array(zoneRuns.enumerated()), id: \.offset) { offset, run in
+                ForEach(run) { point in
+                    AreaMark(
+                        x: .value("Time", point.time),
+                        yStart: .value("Low", yDomain.lowerBound),
+                        yEnd: .value("HR", point.value),
+                        series: .value("Zone", "z\(offset)")
+                    )
+                    .foregroundStyle(highlightTint.opacity(0.28))
+                    .interpolationMethod(.linear)
+                    LineMark(
+                        x: .value("Time", point.time),
+                        y: .value("HR", point.value),
+                        series: .value("Zone", "z\(offset)")
+                    )
+                    .foregroundStyle(highlightTint)
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5))
+                }
+                if run.count == 1, let point = run.first {
+                    PointMark(x: .value("Time", point.time), y: .value("HR", point.value))
+                        .foregroundStyle(highlightTint)
+                        .symbolSize(24)
+                }
             }
         }
         .chartYScale(domain: yDomain)
@@ -687,7 +919,12 @@ private struct NativeActivityHRPlot: View {
         .chartOverlay { proxy in
             NativeActivityHRMarker(proxy: proxy, points: points, zoneSet: zoneSet, scrub: scrub)
         }
+        .onTapGesture { if selectedZone != nil { onClearZone() } }
         .accessibilityLabel("Heart rate")
+        .accessibilityValue(selectedZone.map { "Showing zone \($0)" } ?? "Full workout")
+        .accessibilityHint(selectedZone == nil ? "" : "Clears the zone highlight")
+        .accessibilityAddTraits(selectedZone == nil ? AccessibilityTraits() : .isSelected)
+        .animation(.easeInOut(duration: 0.18), value: selectedZone)
     }
 }
 
@@ -723,6 +960,8 @@ private struct NativeActivityHRMarker: View {
 struct NativeActivityZoneRow: View {
     var zone: NativeActivityPageLogic.Zone
     var totalMinutes: Double
+    var isSelected: Bool = false
+    var dimmed: Bool = false
 
     var body: some View {
         let share = totalMinutes > 0 ? zone.minutes / totalMinutes : 0
@@ -757,8 +996,12 @@ struct NativeActivityZoneRow: View {
             .frame(height: 10)
         }
         .padding(.vertical, 4)
+        .opacity(dimmed ? 0.4 : 1)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(zone.label), \(NativeActivityPageLogic.zoneClock(zone.minutes))")
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityLabel("\(zone.label), \(zone.bpmRange ?? ""), \(Int(zone.percent.rounded())) percent, \(NativeActivityPageLogic.zoneClock(zone.minutes))")
+        .accessibilityHint(isSelected ? "Clears the heart rate chart highlight" : "Highlights this zone on the heart rate chart")
+        .accessibilityValue(isSelected ? "Selected" : "")
     }
 }
 

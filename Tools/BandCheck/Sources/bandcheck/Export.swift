@@ -25,6 +25,9 @@ struct WhoopDay {
     var sleepOnset: Date?
     var wakeOnset: Date?
     var tzOffsetMin: Int
+    var durationSec: Double
+    var avgHR: Double?
+    var maxHR: Double?
 }
 
 struct WhoopWorkout {
@@ -41,6 +44,9 @@ struct WhoopWorkout {
     var z4: Double
     var z5: Double
     var activity: String
+    var energyKcal: Double?
+    var avgHR: Double?
+    var maxHR: Double?
 }
 
 struct WhoopSleep {
@@ -86,7 +92,13 @@ func loadWhoopExport(path: String) throws -> (days: [WhoopDay], workouts: [Whoop
             sleepConsistency: c.sleepConsistencyPct,
             sleepOnset: c.sleepOnset,
             wakeOnset: c.wakeOnset,
-            tzOffsetMin: c.tzOffsetMin)
+            tzOffsetMin: c.tzOffsetMin,
+            durationSec: {
+                guard let a = c.cycleStart, let b = c.cycleEnd, b > a else { return 86_400 }
+                return b.timeIntervalSince(a)
+            }(),
+            avgHR: c.avgHeartRate,
+            maxHR: c.maxHeartRate)
     }
     var workouts: [WhoopWorkout] = []
     for w in result.workouts {
@@ -104,7 +116,10 @@ func loadWhoopExport(path: String) throws -> (days: [WhoopDay], workouts: [Whoop
             durationMin: dur,
             z1: w.hrZone1Pct ?? 0, z2: w.hrZone2Pct ?? 0, z3: w.hrZone3Pct ?? 0,
             z4: w.hrZone4Pct ?? 0, z5: w.hrZone5Pct ?? 0,
-            activity: w.activityName ?? ""))
+            activity: w.activityName ?? "",
+            energyKcal: w.energyKcal,
+            avgHR: w.avgHeartRate,
+            maxHR: w.maxHeartRate))
     }
     var sleeps: [WhoopSleep] = []
     for s in result.sleeps {

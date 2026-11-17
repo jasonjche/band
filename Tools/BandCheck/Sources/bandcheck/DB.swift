@@ -247,6 +247,22 @@ extension ReadOnlyDB {
         return out
     }
 
+    func steps(device: String, from: Int, to: Int) throws -> [StepSample] {
+        var out: [StepSample] = []
+        let d = device.replacingOccurrences(of: "'", with: "''")
+        try query("""
+            SELECT ts, counter, activityClass FROM stepSample
+            WHERE deviceId = '\(d)' AND ts >= \(from) AND ts <= \(to)
+            ORDER BY ts
+            """) { s in
+            out.append(StepSample(
+                ts: ReadOnlyDB.int(s, 0),
+                counter: ReadOnlyDB.int(s, 1),
+                activityClass: ReadOnlyDB.isNull(s, 2) ? nil : ReadOnlyDB.int(s, 2)))
+        }
+        return out
+    }
+
     func gravity(device: String, from: Int, to: Int) throws -> [GravitySample] {
         var out: [GravitySample] = []
         let d = device.replacingOccurrences(of: "'", with: "''")

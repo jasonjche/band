@@ -1528,6 +1528,8 @@ final class IntelligenceEngine: ObservableObject {
                                                      vendorResp: vendorResp, gravity: grav,
                                                      steps: steps, dayHr: dayHr, daySteps: daySteps,
                                                      dayGravity: dayGrav,
+                                                     dayElapsedSeconds: dayStart == nowLocalMidnight
+                                                        ? Double(max(0, now - nowLocalMidnight)) : nil,
                                                      skinTemp: skin,
                                                      skinTempFamily: skinFamily,   // #938
                                                      skinTempAnchorRaw: skinAnchorRaw,   // #938 second capture

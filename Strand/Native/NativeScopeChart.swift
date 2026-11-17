@@ -24,6 +24,7 @@ struct NativeScopeChart: View {
     var color: ((Double) -> Color)? = nil
     var plotHeight: CGFloat = 280
     var scrolls: Bool = true
+    var title: String = ""
 
     /// Class in `@State` so publishes do not rebuild this view (or the Chart).
     @State private var scrub = NativeScopeScrub()
@@ -53,8 +54,22 @@ struct NativeScopeChart: View {
                 unit: unit,
                 higherIsBetter: higherIsBetter,
                 calendar: calendar,
-                color: color
+                color: color,
+                title: title
             )
+            if series.typical != nil, !usesHours {
+                HStack(spacing: 6) {
+                    Spacer(minLength: 0)
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Color.secondary.opacity(0.35))
+                        .frame(width: 14, height: 8)
+                    Text("Typical range")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Typical range")
+            }
             NativeScopePlotHost(
                 series: series,
                 visible: window,
@@ -108,8 +123,8 @@ private struct NativeScopeResetOnScope: ViewModifier {
     }
 }
 
-/// Caption / value / date / period-delta / typical range. Height depends on the
-/// series (typical + trend), never on the scrub tick.
+/// Caption / value / date / period-delta chip / one-sentence summary.
+/// Height depends on the series (delta + summary), never on the scrub tick.
 private struct NativeScopeHeroView: View {
     var series: NativeScopeSeries
     var visible: [NativeScopeBucket]
@@ -121,8 +136,10 @@ private struct NativeScopeHeroView: View {
     var higherIsBetter: Bool?
     var calendar: Calendar
     var color: ((Double) -> Color)?
+    var title: String
 
-    private let footnoteHeight: CGFloat = 18
+    private let footnoteHeight: CGFloat = 22
+    private let summaryHeight: CGFloat = 44
 
     private var selectedBucket: NativeScopeBucket? {
         guard let key = scrub.key else { return nil }
@@ -142,19 +159,30 @@ private struct NativeScopeHeroView: View {
         selectedBucket != nil || (usesHours && selectedHour != nil)
     }
 
+    private var trend: NativeScopeTrend? {
+        series.trend(visible: visible, higherIsBetter: higherIsBetter)
+    }
+
     private var deltaCaption: String? {
         series.periodDeltaCaption(of: visible, higherIsBetter: higherIsBetter)
     }
 
-    private var typicalCaption: String? {
-        guard let typical = series.typical else { return nil }
-        return NativeTypicalRange.caption(range: typical, format: format, unit: unit)
+    private var summaryText: String? {
+        NativeScopeSummary.sentence(
+            title: title,
+            scope: series.scope,
+            kind: series.kind,
+            current: series.aggregate(of: visible),
+            previous: trend?.previousMean,
+            format: format,
+            higherIsBetter: higherIsBetter
+        )
     }
 
     private var heroHeight: CGFloat {
         var height: CGFloat = 76
-        if deltaCaption != nil { height += footnoteHeight }
-        if typicalCaption != nil { height += footnoteHeight }
+        if deltaCaption != nil { height += 6 + footnoteHeight }
+        if summaryText != nil { height += 6 + summaryHeight }
         return height
     }
 
@@ -166,7 +194,7 @@ private struct NativeScopeHeroView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
             NativeHeroValue(
                 caption: isScrubbing ? nil : series.caption,
                 value: valueText,
@@ -178,12 +206,9 @@ private struct NativeScopeHeroView: View {
                 periodDeltaRow
                     .frame(height: footnoteHeight, alignment: .leading)
             }
-            if let typicalCaption {
-                Text(typicalCaption)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(height: footnoteHeight, alignment: .leading)
-                    .accessibilityLabel(typicalCaption)
+            if summaryText != nil {
+                summaryRow
+                    .frame(minHeight: summaryHeight, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, minHeight: heroHeight, maxHeight: heroHeight, alignment: .topLeading)
@@ -220,14 +245,34 @@ private struct NativeScopeHeroView: View {
     }
 
     @ViewBuilder private var periodDeltaRow: some View {
-        if let deltaCaption, !isScrubbing, let trend = series.trend(visible: visible, higherIsBetter: higherIsBetter) {
+        if let deltaCaption, !isScrubbing, let trend {
             HStack(spacing: 4) {
                 NativeDelta(delta: trend.delta)
                 Text(deltaCaption)
-                    .font(.footnote.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(trend.delta == .flat ? Color.secondary : trend.delta.tint)
                     .monospacedDigit()
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule().fill(
+                    (trend.delta == .flat ? Color.secondary : trend.delta.tint).opacity(0.14)
+                )
+            )
+            .accessibilityLabel(deltaCaption)
+        } else {
+            Color.clear
+        }
+    }
+
+    @ViewBuilder private var summaryRow: some View {
+        if let summaryText, !isScrubbing {
+            Text(summaryText)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(summaryText)
         } else {
             Color.clear
         }
@@ -408,45 +453,51 @@ private struct NativeScopeStaticChart: View {
         let barCeiling = max(values.max() ?? known.compactMap(\.value).max() ?? 1, 1)
         let barTop = NativeCountTicks.niceCeiling(barCeiling)
         let domainValues: [Double] = {
-            var list = values
-            if let typical = series.typical {
+            var list = values.isEmpty ? known.compactMap(\.value) : values
+            if let typical = series.typical, !bars {
                 list.append(typical.lowerBound)
                 list.append(typical.upperBound)
             }
             return list
         }()
-        let lineDomain = NativeChartDay.fittedDomain(domainValues, fallback: 0...1)
-        let yDomain: ClosedRange<Double> = bars ? 0...barTop : lineDomain
+        let yDomain: ClosedRange<Double> = bars
+            ? 0...barTop
+            : NativeScopeYTicks.niceDomain(domainValues, fallback: 0...1)
         let yTicks = bars
             ? NativeCountTicks.values(ceiling: barCeiling)
-            : NativeChartTicks.values(in: lineDomain, maxCount: 3)
-        let segments = lineSegments(plotBuckets)
+            : NativeScopeYTicks.values(in: yDomain)
+        let segments = NativeScopePlotMath.lineSegments(plotBuckets)
         let visibleKeys = Set(visibleKnown.map(\.key))
-        let showVertices = series.scope == .week || series.scope == .day
+        let showVertices = NativeScopePlotMath.showsVertices(
+            scope: series.scope, knownCount: visibleKnown.count
+        )
         let average = series.showsTrendLine ? series.aggregate(of: visible) : nil
         let lineTint = color == nil ? tint : Color.secondary
+        let band = NativeScopePlotMath.clippedTypical(series.typical, yDomain: yDomain)
+        let lastKnown = segments.last
+        let barUnit = NativeScopePlotMath.barUnit(scope: series.scope)
         return Chart {
-            if let typical = series.typical, let first = plotBuckets.first, let last = plotBuckets.last {
+            if let band, let first = plotBuckets.first, let last = plotBuckets.last {
                 RectangleMark(
                     xStart: .value("Range start", first.start),
                     xEnd: .value("Range end", last.end),
-                    yStart: .value("Typical low", typical.lowerBound),
-                    yEnd: .value("Typical high", typical.upperBound)
+                    yStart: .value("Typical low", band.lowerBound),
+                    yEnd: .value("Typical high", band.upperBound)
                 )
-                .foregroundStyle(tint.opacity(0.14))
+                .foregroundStyle(Color.secondary.opacity(0.12))
                 .accessibilityLabel("Typical range")
-                .accessibilityValue(NativeTypicalRange.caption(range: typical, format: format, unit: nil))
+                .accessibilityValue(NativeTypicalRange.caption(range: band, format: format, unit: nil))
             }
             if bars {
                 ForEach(plotBuckets) { bucket in
                     if let value = bucket.value {
                         BarMark(
-                            x: .value("Day", bucket.start),
+                            x: .value("Day", bucket.start, unit: barUnit),
                             y: .value("Value", value),
-                            width: .ratio(0.6)
+                            width: .ratio(0.62)
                         )
                         .foregroundStyle(color?(value) ?? tint)
-                        .cornerRadius(4)
+                        .cornerRadius(3)
                         .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
                         .accessibilityValue(format(value))
                     }
@@ -455,10 +506,9 @@ private struct NativeScopeStaticChart: View {
                 ForEach(plotBuckets) { bucket in
                     if let low = bucket.low, let high = bucket.high, let value = bucket.value {
                         BarMark(
-                            x: .value("Day", bucket.start),
+                            x: .value("Day", bucket.start, unit: barUnit),
                             yStart: .value("Low", low),
-                            yEnd: .value("High", high),
-                            width: 7
+                            yEnd: .value("High", high)
                         )
                         .foregroundStyle(tint)
                         .clipShape(Capsule())
@@ -475,19 +525,34 @@ private struct NativeScopeStaticChart: View {
                     )
                     .foregroundStyle(lineTint)
                     .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5))
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
                     .accessibilityHidden(true)
                 }
                 if showVertices {
-                    ForEach(segments.filter { visibleKeys.contains($0.key) }) { point in
+                    ForEach(segments.filter { visibleKeys.contains($0.key) || $0.key == lastKnown?.key }) { point in
                         PointMark(x: .value("Day", point.date), y: .value("Value", point.value))
                             .foregroundStyle(color?(point.value) ?? tint)
                             .symbol {
-                                NativeScopeVertex(tint: color?(point.value) ?? tint)
+                                NativeScopeVertex(
+                                    tint: color?(point.value) ?? tint,
+                                    size: visibleKnown.count <= 4 ? 10 : 8
+                                )
                             }
                             .accessibilityLabel(NativeChartDay.longLabel(point.key))
                             .accessibilityValue(format(point.value))
                     }
+                }
+                if let lastKnown {
+                    PointMark(x: .value("Day", lastKnown.date), y: .value("Value", lastKnown.value))
+                        .foregroundStyle(.clear)
+                        .annotation(position: .top, spacing: 4) {
+                            Text(format(lastKnown.value))
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.primary)
+                                .monospacedDigit()
+                                .padding(.horizontal, 2)
+                        }
+                        .accessibilityHidden(true)
                 }
             }
             if let average {
@@ -522,34 +587,15 @@ private struct NativeScopeStaticChart: View {
                         Text(axisLabel(date))
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                     }
                 }
             }
         }
-    }
-
-    private struct LinePoint: Identifiable {
-        var date: Date
-        var value: Double
-        var segment: Int
-        var key: String
-        var id: String { "\(segment)-\(key)" }
-    }
-
-    private func lineSegments(_ buckets: [NativeScopeBucket]) -> [LinePoint] {
-        var segment = 0
-        var lastFinite = false
-        var result: [LinePoint] = []
-        for bucket in buckets {
-            if let value = bucket.value, value.isFinite {
-                if !lastFinite, !result.isEmpty { segment += 1 }
-                result.append(LinePoint(date: bucket.start, value: value, segment: segment, key: bucket.key))
-                lastFinite = true
-            } else {
-                lastFinite = false
-            }
+        .chartPlotStyle { plot in
+            plot.padding(.leading, 12).padding(.trailing, 16).padding(.top, 16).clipped()
         }
-        return result
     }
 
     private func labelDates(in buckets: [NativeScopeBucket]) -> [Date] {
@@ -687,12 +733,13 @@ private struct NativeScopeEmptyChart: View {
 
 private struct NativeScopeVertex: View {
     var tint: Color
+    var size: CGFloat = 8
     var body: some View {
         ZStack {
             Circle().fill(NativeTokens.card)
             Circle().strokeBorder(tint, lineWidth: 2)
         }
-        .frame(width: 8, height: 8)
+        .frame(width: size, height: size)
     }
 }
 
@@ -789,7 +836,8 @@ struct NativeMetricChartPage: View {
                 calendar: calendar,
                 accessibilityName: title,
                 color: color,
-                scrolls: scrolls
+                scrolls: scrolls,
+                title: title
             )
 
             if let latest, latest.value.isFinite {

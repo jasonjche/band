@@ -112,6 +112,8 @@ struct NativeHomeView: View {
     @State private var stressSleepStart: Date?
     @State private var stressSleepEnd: Date?
     @State private var stressBouts: [(start: Date, end: Date)] = []
+    /// Walking/running and post-workout recovery windows, drawn as excluded spans.
+    @State private var stressExtraExclusions: [(start: Date, end: Date)] = []
     @State private var stressScrubValue: Double = 0
     @State private var stressScrubTime: Date?
     @State private var weekRecovery: [NativeDayPoint] = []
@@ -148,7 +150,8 @@ struct NativeHomeView: View {
         ScrollView {
             NativeChrome.stack {
                 #if os(iOS)
-                HStack(alignment: .center, spacing: 8) {
+                // Stepper centred on the screen (WHOOP layout); strap status pinned trailing.
+                ZStack {
                     HomeDateStepper(
                         title: HomeDayTitle.text(for: selectedDay),
                         canGoBack: canGoBack,
@@ -157,8 +160,10 @@ struct NativeHomeView: View {
                         onForward: { shiftDay(1) },
                         onTitleTap: { showingCalendar = true }
                     )
-                    Spacer(minLength: 8)
-                    HomeStrapStatus()
+                    HStack {
+                        Spacer(minLength: 0)
+                        HomeStrapStatus()
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .sheet(isPresented: $showingCalendar) {
@@ -299,9 +304,14 @@ struct NativeHomeView: View {
 
         let start = Calendar.current.startOfDay(for: viewingDay)
         let from = Int(start.timeIntervalSince1970)
-        let buckets = await repo.hrSamples(from: from, to: from + 86_400, bucketSeconds: 300)
+        let to = from + 86_400
+        let buckets = await repo.hrSamples(from: from, to: to, bucketSeconds: 300)
         if Task.isCancelled { return }
-        let rr = await repo.rrIntervals(from: from, to: from + 86_400, limit: 50_000)
+        let rr = await repo.rrIntervals(from: from, to: to, limit: 50_000)
+        if Task.isCancelled { return }
+        let ticks = await repo.stepTicks(from: from, to: to)
+        if Task.isCancelled { return }
+        let grav = await repo.gravitySamplesUnion(from: from, to: to)
         if Task.isCancelled { return }
         guard day == selectedKey else { return }
 
@@ -317,18 +327,38 @@ struct NativeHomeView: View {
         }
         let rrPairs = rr.map { (ts: $0.ts, ms: Double($0.rrMs)) }
         let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: day)
+        let samples = buckets.map { (ts: $0.ts, bpm: $0.bpm) }
+        let unixBouts = boutsLocal.map {
+            (start: Int($0.start.timeIntervalSince1970), end: Int($0.end.timeIntervalSince1970))
+        }
+        let recovery = BandStress.recoveryWindows(workouts: unixBouts, samples: samples)
+        let motion = AutoWorkoutDetector.motionPoints(grav)
+        let activity = BandStress.activityBuckets(
+            bucketStarts: buckets.map(\.ts),
+            steps: ticks.map { (ts: $0.ts, activityClass: $0.activityClass) },
+            motion: motion.map { (ts: $0.ts, intensity: $0.intensity) }
+        )
         let rmssd = await Task.detached(priority: .utility) {
             BandStress.rmssdByBucket(rr: rrPairs)
         }.value
         if Task.isCancelled { return }
-        let series = NativeHomeCharts.stressSeries(
+        let timeline = NativeHomeCharts.stressTimeline(
             buckets: buckets,
             baselines: baselines,
             sleepStart: sleepStartLocal,
             sleepEnd: sleepEndLocal,
             workouts: boutsLocal,
-            rmssdByBucket: rmssd
+            rmssdByBucket: rmssd,
+            activityBuckets: activity,
+            recovery: recovery
         )
+        let series = timeline.hours
+        let extraExclusions = timeline.exclusions
+            .filter { $0.kind != .workout }
+            .map {
+                (start: Date(timeIntervalSince1970: TimeInterval($0.startTs)),
+                 end: Date(timeIntervalSince1970: TimeInterval($0.endTs)))
+            }
         guard day == selectedKey else { return }
 
         let liveStrain = await liveStrainValue(buckets: buckets, day: day, seq: seq)
@@ -339,6 +369,7 @@ struct NativeHomeView: View {
         journalEntries = nextJournal
         vo2max = nextVO2
         sampleHours = series
+        stressExtraExclusions = extraExclusions
         liveTodayStrain = liveStrain
         sharedFetchSeq = seq
         NativeHomeLoadMetrics.applyCount += 1
@@ -405,7 +436,7 @@ struct NativeHomeView: View {
             let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
             guard NativeDayLogic.sleepSessionDayKey(boutStart) == selectedKey else { return nil }
             return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
-        }
+        } + stressExtraExclusions
         weekRecovery = NativeWeek.points(
             kind: .recovery, days: repo.days, todayKey: selectedKey,
             sleeps: repo.sleeps, workouts: workouts, importedSleep: repo.importedSleep
@@ -1378,15 +1409,51 @@ enum NativeHomeCharts {
         }
     }
 
-    /// Chart-width buckets (300 s). Workout buckets are omitted. Gaps stay omitted.
-    /// Level is the last scored bucket, matching the drawn series.
+    /// Chart-width buckets (300 s). Workout, post-workout recovery, and walking/running
+    /// buckets are omitted so the line breaks. Gaps stay omitted.
     static func stressSeries(buckets: [HRBucket],
                              baselines: BandStress.Baselines = .fallback,
                              sleepStart: Date? = nil,
                              sleepEnd: Date? = nil,
                              workouts: [(start: Date, end: Date)] = [],
-                             rmssdByBucket: [Int: Double] = [:]) -> [NativeHourPoint] {
-        buckets.compactMap { bucket in
+                             rmssdByBucket: [Int: Double] = [:],
+                             activityBuckets: Set<Int> = [],
+                             recovery: [(start: Int, end: Int)] = []) -> [NativeHourPoint] {
+        stressTimeline(
+            buckets: buckets, baselines: baselines, sleepStart: sleepStart, sleepEnd: sleepEnd,
+            workouts: workouts, rmssdByBucket: rmssdByBucket,
+            activityBuckets: activityBuckets, recovery: recovery
+        ).hours
+    }
+
+    /// Hours plus the excluded spans the chart can draw (workout / recovery / walker).
+    static func stressTimeline(buckets: [HRBucket],
+                               baselines: BandStress.Baselines = .fallback,
+                               sleepStart: Date? = nil,
+                               sleepEnd: Date? = nil,
+                               workouts: [(start: Date, end: Date)] = [],
+                               rmssdByBucket: [Int: Double] = [:],
+                               activityBuckets: Set<Int> = [],
+                               recovery: [(start: Int, end: Int)] = []) -> (
+                                hours: [NativeHourPoint],
+                                exclusions: [BandStress.ExclusionSpan]
+                               ) {
+        var exclusions: [BandStress.ExclusionSpan] = []
+        for bout in workouts {
+            let start = Int(bout.start.timeIntervalSince1970)
+            let end = Int(bout.end.timeIntervalSince1970)
+            if end > start {
+                exclusions.append(BandStress.ExclusionSpan(startTs: start, endTs: end, kind: .workout))
+            }
+        }
+        for window in recovery {
+            if window.end > window.start {
+                exclusions.append(BandStress.ExclusionSpan(startTs: window.start, endTs: window.end,
+                                                           kind: .recovery))
+            }
+        }
+        exclusions.append(contentsOf: BandStress.spans(fromBuckets: activityBuckets))
+        let hours: [NativeHourPoint] = buckets.compactMap { bucket in
             let asleep: Bool = {
                 guard let sleepStart, let sleepEnd else { return false }
                 return BandStress.overlaps(
@@ -1402,12 +1469,18 @@ enum NativeHomeCharts {
                     end: Int(bout.end.timeIntervalSince1970)
                 )
             }
+            let recovering = recovery.contains { window in
+                BandStress.overlaps(bucketTs: bucket.ts, start: window.start, end: window.end)
+            }
+            let moving = activityBuckets.contains(bucket.ts)
             switch BandStress.evaluate(
                 bpm: bucket.bpm,
                 rmssd: rmssdByBucket[bucket.ts],
                 isWorkout: workout,
                 isAsleep: asleep,
-                baselines: baselines
+                baselines: baselines,
+                isActivity: moving,
+                isRecovery: recovering
             ) {
             case .value(let value):
                 return NativeHourPoint(
@@ -1418,6 +1491,7 @@ enum NativeHomeCharts {
                 return nil
             }
         }
+        return (hours, exclusions)
     }
 
     static func stressValue(bpm: Double,
@@ -1542,8 +1616,10 @@ struct HomeStrapStatus: View {
             }
             Button { showingLiveHR = true } label: {
                 HStack(spacing: 3) {
+                    // Opens live heart rate. Red when a live reading is streaming, grey otherwise.
                     Image(systemName: "heart.fill")
                         .font(.footnote)
+                        .foregroundStyle(liveFeedActive && liveBpm != nil ? NativeTokens.heart : Color.secondary)
                     if liveFeedActive, let liveBpm {
                         Text("\(liveBpm)")
                             .font(.footnote.weight(.medium))

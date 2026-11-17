@@ -1788,7 +1788,7 @@ struct NativeHourPoint: Identifiable, Equatable {
     var id: Date { time }
 }
 
-/// 24-hour stress as Swift Charts: Low/Medium/High bands, sleep shade, line+area, scrubbing.
+/// 24-hour stress as Swift Charts: value-coloured line, sleep/activity spans above the plot, scrubbing.
 struct NativeStressMonitor: View {
     var score: Double
     var sleepStart: Date?
@@ -1811,19 +1811,11 @@ struct NativeStressMonitor: View {
     /// Break the line at holes (including omitted workout buckets) so Charts does not
     /// interpolate a spike through an excluded window.
     private var hourSegments: [[NativeHourPoint]] {
-        var segments: [[NativeHourPoint]] = []
-        var current: [NativeHourPoint] = []
-        for point in hours {
-            if let last = current.last,
-               point.time.timeIntervalSince(last.time) > NativeStressHistory.highBucketMaxGap {
-                segments.append(current)
-                current = [point]
-            } else {
-                current.append(point)
-            }
-        }
-        if !current.isEmpty { segments.append(current) }
-        return segments
+        NativeStressMonitorMath.segments(hours)
+    }
+
+    private var lineGradient: LinearGradient {
+        NativeStressMonitorMath.lineGradient(style: style)
     }
 
     @Binding var scrubValue: Double
@@ -1836,58 +1828,52 @@ struct NativeStressMonitor: View {
 
     var body: some View {
         Chart {
-            RectangleMark(
-                xStart: .value("Start", dayStart),
-                xEnd: .value("End", dayEnd),
-                yStart: .value("Low", 0),
-                yEnd: .value("High", 1)
-            )
-            .foregroundStyle(NativeTokens.stressLow.opacity(0.16))
-            .accessibilityHidden(true)
-            RectangleMark(
-                xStart: .value("Start", dayStart),
-                xEnd: .value("End", dayEnd),
-                yStart: .value("Low", 1),
-                yEnd: .value("High", 2)
-            )
-            .foregroundStyle(NativeTokens.stressMid.opacity(0.16))
-            .accessibilityHidden(true)
-            RectangleMark(
-                xStart: .value("Start", dayStart),
-                xEnd: .value("End", dayEnd),
-                yStart: .value("Low", 2),
-                yEnd: .value("High", 3)
-            )
-            .foregroundStyle(NativeTokens.stressHigh.opacity(0.16))
-            .accessibilityHidden(true)
             if let sleepStart, let sleepEnd {
                 RectangleMark(
                     xStart: .value("Sleep start", sleepStart),
                     xEnd: .value("Sleep end", sleepEnd),
-                    yStart: .value("Low", 0),
-                    yEnd: .value("High", 3)
+                    yStart: .value("Lane", NativeStressMonitorMath.spanBarLow),
+                    yEnd: .value("Lane top", NativeStressMonitorMath.spanBarHigh)
                 )
-                .foregroundStyle(Color.primary.opacity(0.10))
+                .foregroundStyle(Color.secondary.opacity(0.55))
+                .accessibilityLabel("Sleep")
+                PointMark(
+                    x: .value("Sleep icon", NativeStressMonitorMath.midpoint(sleepStart, sleepEnd)),
+                    y: .value("Lane icon", NativeStressMonitorMath.spanIconY)
+                )
+                .foregroundStyle(Color.secondary)
+                .symbol {
+                    Image(systemName: "moon.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.secondary)
+                }
                 .accessibilityHidden(true)
             }
-            ForEach(Array(workouts.enumerated()), id: \.offset) { _, bout in
+            ForEach(Array(workouts.enumerated()), id: \.offset) { index, bout in
                 RectangleMark(
                     xStart: .value("Activity start", bout.start),
                     xEnd: .value("Activity end", bout.end),
-                    yStart: .value("Low", 0),
-                    yEnd: .value("High", 3)
+                    yStart: .value("Lane", NativeStressMonitorMath.spanBarLow),
+                    yEnd: .value("Lane top", NativeStressMonitorMath.spanBarHigh)
                 )
-                .foregroundStyle(Color.secondary.opacity(0.18))
+                .foregroundStyle(Color.secondary.opacity(0.55))
+                .accessibilityLabel("Activity")
+                PointMark(
+                    x: .value("Activity icon \(index)", NativeStressMonitorMath.midpoint(bout.start, bout.end)),
+                    y: .value("Lane icon", NativeStressMonitorMath.spanIconY)
+                )
+                .foregroundStyle(Color.secondary)
+                .symbol {
+                    Image(systemName: "figure.walk")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.secondary)
+                }
                 .accessibilityHidden(true)
             }
             ForEach(Array(hourSegments.enumerated()), id: \.offset) { _, segment in
                 ForEach(segment) { point in
-                    AreaMark(x: .value("Time", point.time), y: .value("Stress", point.value))
-                        .foregroundStyle(NativeChrome.stressBandColor(point.value).opacity(0.22))
-                        .interpolationMethod(.linear)
-                        .accessibilityHidden(true)
                     LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
-                        .foregroundStyle(NativeChrome.stressBandColor(point.value))
+                        .foregroundStyle(lineGradient)
                         .interpolationMethod(.linear)
                         .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
                         .accessibilityLabel(NativeScopeFormat.time(point.time))
@@ -1906,7 +1892,8 @@ struct NativeStressMonitor: View {
                     .accessibilityHidden(true)
             }
         }
-        .chartYScale(domain: 0...3)
+        .chartYScale(domain: 0...NativeStressMonitorMath.yTop)
+        .chartXScale(domain: dayStart...dayEnd)
         .chartYAxis {
             AxisMarks(position: .trailing, values: [0, 1, 2, 3]) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
@@ -1933,6 +1920,9 @@ struct NativeStressMonitor: View {
                 }
             }
         }
+        .chartPlotStyle { plot in
+            plot.padding(.top, 2).clipped()
+        }
         .modifier(NativeTimeSelect(selected: $selectedTime, onChange: { time in
             if let time, let point = NativeChartScrubMath.nearestHour(
                 to: time,
@@ -1958,6 +1948,50 @@ struct NativeStressMonitor: View {
         return ""
     }
 
+}
+
+enum NativeStressMonitorMath {
+    static let yTop: Double = 3.35
+    static let spanBarLow: Double = 3.10
+    static let spanBarHigh: Double = 3.16
+    static let spanIconY: Double = 3.28
+
+    static func midpoint(_ start: Date, _ end: Date) -> Date {
+        start.addingTimeInterval(end.timeIntervalSince(start) / 2)
+    }
+
+    static func segments(_ hours: [NativeHourPoint]) -> [[NativeHourPoint]] {
+        var segments: [[NativeHourPoint]] = []
+        var current: [NativeHourPoint] = []
+        for point in hours {
+            if let last = current.last,
+               point.time.timeIntervalSince(last.time) > NativeStressHistory.highBucketMaxGap {
+                segments.append(current)
+                current = [point]
+            } else {
+                current.append(point)
+            }
+        }
+        if !current.isEmpty { segments.append(current) }
+        return segments
+    }
+
+    static func lineGradient(style: NativeStyle) -> LinearGradient {
+        let low = NativePaint.stressBand(0.4, style: style)
+        let mid = NativePaint.stressBand(1.4, style: style)
+        let yellow = style == .whoop ? NativeTokens.whoopRecoveryMid : NativeTokens.recoveryMid
+        let high = NativePaint.stressBand(2.6, style: style)
+        return LinearGradient(
+            stops: [
+                .init(color: low, location: 0),
+                .init(color: mid, location: 1.0 / yTop),
+                .init(color: yellow, location: 2.0 / yTop),
+                .init(color: high, location: 3.0 / yTop),
+            ],
+            startPoint: .bottom,
+            endPoint: .top
+        )
+    }
 }
 
 struct NativeSelectionFeedback<Value: Equatable>: ViewModifier {

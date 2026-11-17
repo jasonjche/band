@@ -29,11 +29,24 @@ final class ObservedHRMaxTests: XCTestCase {
         XCTAssertEqual(ObservedHRMax.estimate(values), 218)
     }
 
-    /// The user's stored peaks (highest first) among ~700 workouts.
-    /// 99th nearest-rank of 700 is index 692, which is 197 on this list.
-    func testUserWorkoutPeaksAmong700Give197() {
+    /// WHOOP workout-export max-HR column (aggregates only): 202…198 each once,
+    /// 197 three times. Confirmed cluster is 197; 198 sits 1 bpm above it.
+    func testWhoopExportPeaksGive198() {
+        let peaks = [202, 201, 200, 199, 198, 197, 197, 197, 196, 196]
+        let rest = Array(repeating: 160, count: 20)
+        XCTAssertEqual(ObservedHRMax.estimate(peaks + rest), 198)
+    }
+
+    func testIsolatedSpikeAboveTheRepeatedClusterIsIgnored() {
+        let peaks = [208, 202, 201, 200, 198, 197, 197, 197, 196, 196]
+        let rest = Array(repeating: 160, count: 20)
+        XCTAssertEqual(ObservedHRMax.estimate(peaks + rest), 198)
+        XCTAssertNotEqual(ObservedHRMax.estimate(peaks + rest), 208)
+    }
+
+    func testRepeatedPeakLiftsOneBpmWhenThatNeighbourExists() {
         let peaks = [208, 202, 201, 200, 199, 199, 198, 197, 197, 197, 196, 196]
-        let rest = Array(repeating: 160, count: 688)
-        XCTAssertEqual(ObservedHRMax.estimate(peaks + rest), 197)
+        let rest = Array(repeating: 160, count: 20)
+        XCTAssertEqual(ObservedHRMax.estimate(peaks + rest), 200)
     }
 }

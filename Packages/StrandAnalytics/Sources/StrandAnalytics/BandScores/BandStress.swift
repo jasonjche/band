@@ -82,13 +82,60 @@ public enum BandStress {
         case gap
     }
 
-    /// Workout windows are excluded. Missing HR is a gap. Otherwise 0–3.
+    /// Why a bucket is omitted from the 0–3 series. The chart draws these as
+    /// excluded spans (WHOOP uses a walker icon for activity).
+    public enum ExclusionKind: Equatable, Sendable {
+        case workout
+        case recovery
+        case activity
+    }
+
+    public struct ExclusionSpan: Equatable, Sendable {
+        public var startTs: Int
+        public var endTs: Int
+        public var kind: ExclusionKind
+        public init(startTs: Int, endTs: Int, kind: ExclusionKind) {
+            self.startTs = startTs
+            self.endTs = endTs
+            self.kind = kind
+        }
+    }
+
+    /// After a logged workout, keep excluding until HR is back within this many bpm
+    /// of the pre-workout mean, or the intensity-scaled cap elapses.
+    public static let recoveryReturnBPM: Double = 15
+    /// Hard cap on the post-workout recovery exclusion (seconds).
+    public static let recoveryMaxSeconds: Int = 3_600
+    /// Floor on that cap so a short easy bout still has a few minutes of shadow.
+    public static let recoveryMinSeconds: Int = 15 * 60
+    /// Walk/run share of classed step ticks that marks a 5-minute bucket as activity.
+    /// `AutoWorkoutDetector.minNonStillShare` is 0.05 for workout detection; stress
+    /// uses a higher bar so a few steps around the kitchen do not mask sitting.
+    public static let activityWalkShare: Double = 0.15
+    /// Gravity-delta floor copied from `WorkoutDetector.motionThreshold` (walk).
+    public static let activityMotionThreshold: Double = 0.20
+    /// Fraction of gravity samples above `activityMotionThreshold` that confirms activity
+    /// when step class is missing. Same 0.30 as `DaytimeStress.activityMaskFraction`.
+    public static let activityMotionShare: Double = 0.30
+    /// Samples needed in a bucket before motion/steps are trusted.
+    public static let activityMinSamples: Int = 5
+
+    /// Workout, then post-workout recovery, then walking/running. Missing HR is a gap.
     public static func evaluate(bpm: Double?, rmssd: Double? = nil,
                                 isWorkout: Bool, isAsleep: Bool,
-                                baselines: Baselines) -> Outcome {
-        if isWorkout { return .excluded }
+                                baselines: Baselines,
+                                isActivity: Bool = false,
+                                isRecovery: Bool = false) -> Outcome {
+        if isWorkout || isRecovery || isActivity { return .excluded }
         guard let bpm else { return .gap }
         return .value(score(bpm: bpm, rmssd: rmssd, isAsleep: isAsleep, baselines: baselines))
+    }
+
+    public static func exclusionKind(isWorkout: Bool, isRecovery: Bool, isActivity: Bool) -> ExclusionKind? {
+        if isWorkout { return .workout }
+        if isRecovery { return .recovery }
+        if isActivity { return .activity }
+        return nil
     }
 
     /// 0–3 for a bucket that has HR and is not a workout.
@@ -188,6 +235,119 @@ public enum BandStress {
         return bucketTs < end && (bucketTs + bucketSeconds) > start
     }
 
+    /// Post-workout exclusion: from `workoutEnd` until HR is within `recoveryReturnBPM`
+    /// of the pre-workout mean, or an intensity-scaled cap (15–60 min).
+    ///
+    /// Cap scales with how far the bout mean sat above the pre-workout level:
+    /// +15 bpm → 30 min, +30 bpm → 60 min (clamped). Empty HR → cap only.
+    public static func recoveryWindow(workoutStart: Int, workoutEnd: Int,
+                                      samples: [(ts: Int, bpm: Double)],
+                                      returnWithinBPM: Double = recoveryReturnBPM,
+                                      minSeconds: Int = recoveryMinSeconds,
+                                      maxSeconds: Int = recoveryMaxSeconds) -> (start: Int, end: Int)? {
+        guard workoutEnd > workoutStart else { return nil }
+        let preLo = workoutStart - 10 * 60
+        let pre = samples.filter { $0.ts >= preLo && $0.ts < workoutStart }.map(\.bpm)
+        let during = samples.filter { $0.ts >= workoutStart && $0.ts < workoutEnd }.map(\.bpm)
+        let preMean = average(pre)
+        let boutMean = average(during) ?? preMean
+        let excess = max(0, (boutMean ?? 0) - (preMean ?? 0))
+        let scaled = Int((excess / max(returnWithinBPM, 1)) * 1_800)
+        let cap = min(maxSeconds, max(minSeconds, scaled == 0 ? minSeconds : scaled))
+        let capEnd = workoutEnd + cap
+        guard let preMean else {
+            return (workoutEnd, capEnd)
+        }
+        let threshold = preMean + returnWithinBPM
+        let after = samples.filter { $0.ts >= workoutEnd && $0.ts <= capEnd }.sorted { $0.ts < $1.ts }
+        if let hit = after.first(where: { $0.bpm <= threshold }) {
+            return (workoutEnd, max(workoutEnd, hit.ts))
+        }
+        return (workoutEnd, capEnd)
+    }
+
+    public static func recoveryWindows(workouts: [(start: Int, end: Int)],
+                                       samples: [(ts: Int, bpm: Double)]) -> [(start: Int, end: Int)] {
+        workouts.compactMap { recoveryWindow(workoutStart: $0.start, workoutEnd: $0.end, samples: samples) }
+    }
+
+    /// 5-minute buckets where the wearer is walking or running (activity class 1/2),
+    /// or gravity intensity is at walk floor for enough of the bucket.
+    public static func activityBuckets(bucketStarts: [Int],
+                                       bucketSeconds: Int = bucketSeconds,
+                                       steps: [(ts: Int, activityClass: Int)] = [],
+                                       motion: [(ts: Int, intensity: Double)] = []) -> Set<Int> {
+        guard bucketSeconds > 0 else { return [] }
+        var stepHits: [Int: (walk: Int, n: Int)] = [:]
+        for sample in steps where sample.activityClass >= 0 {
+            let key = floorDiv(sample.ts, bucketSeconds) * bucketSeconds
+            var entry = stepHits[key] ?? (0, 0)
+            entry.n += 1
+            if sample.activityClass >= 1 { entry.walk += 1 }
+            stepHits[key] = entry
+        }
+        var motionHits: [Int: (hot: Int, n: Int)] = [:]
+        for sample in motion {
+            let key = floorDiv(sample.ts, bucketSeconds) * bucketSeconds
+            var entry = motionHits[key] ?? (0, 0)
+            entry.n += 1
+            if sample.intensity >= activityMotionThreshold { entry.hot += 1 }
+            motionHits[key] = entry
+        }
+        var out: Set<Int> = []
+        let keys = Set(bucketStarts).union(stepHits.keys).union(motionHits.keys)
+        for key in keys {
+            if let step = stepHits[key], step.n >= activityMinSamples {
+                if Double(step.walk) / Double(step.n) >= activityWalkShare {
+                    out.insert(key)
+                    continue
+                }
+            }
+            if let mot = motionHits[key], mot.n >= activityMinSamples {
+                if Double(mot.hot) / Double(mot.n) >= activityMotionShare {
+                    out.insert(key)
+                }
+            }
+        }
+        if !bucketStarts.isEmpty {
+            let wanted = Set(bucketStarts)
+            return out.intersection(wanted)
+        }
+        return out
+    }
+
+    /// Merge adjacent 5-minute activity buckets into `[start, end)` spans.
+    public static func spans(fromBuckets buckets: Set<Int>,
+                             bucketSeconds: Int = bucketSeconds) -> [ExclusionSpan] {
+        guard bucketSeconds > 0 else { return [] }
+        let sorted = buckets.sorted()
+        var out: [ExclusionSpan] = []
+        var i = 0
+        while i < sorted.count {
+            let start = sorted[i]
+            var end = start + bucketSeconds
+            var j = i + 1
+            while j < sorted.count, sorted[j] <= end {
+                end = sorted[j] + bucketSeconds
+                j += 1
+            }
+            out.append(ExclusionSpan(startTs: start, endTs: end, kind: .activity))
+            i = j
+        }
+        return out
+    }
+
+    public static func highMinutes(levels: [Double?],
+                                   bucketSeconds: Int = bucketSeconds,
+                                   floor: Double = highBandFloor) -> Double {
+        var n = 0
+        for level in levels {
+            guard let level, level >= floor else { continue }
+            n += 1
+        }
+        return Double(n) * Double(bucketSeconds) / 60.0
+    }
+
     static func floorDiv(_ a: Int, _ b: Int) -> Int {
         let q = a / b, r = a % b
         return (r != 0 && (r < 0) != (b < 0)) ? q - 1 : q
@@ -208,5 +368,11 @@ public enum BandStress {
         let n = xs.count
         if n % 2 == 1 { return xs[n / 2] }
         return 0.5 * (xs[n / 2 - 1] + xs[n / 2])
+    }
+
+    static func average(_ values: [Double]) -> Double? {
+        let xs = values.filter { $0.isFinite && $0 > 0 }
+        guard !xs.isEmpty else { return nil }
+        return xs.reduce(0, +) / Double(xs.count)
     }
 }

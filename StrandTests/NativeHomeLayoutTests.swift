@@ -245,6 +245,74 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertNil(NativeStressHistory.timeInHighMinutes(gapped))
     }
 
+    func testStressBandDurationsSkipGapsLikeTimeInHigh() {
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        let consecutive: [NativeHourPoint] = [
+            NativeHourPoint(time: t0, value: 0.4),
+            NativeHourPoint(time: t0.addingTimeInterval(300), value: 1.4),
+            NativeHourPoint(time: t0.addingTimeInterval(600), value: 2.4),
+            NativeHourPoint(time: t0.addingTimeInterval(900), value: 2.1),
+        ]
+        let durations = NativeStressBandTime.durations(consecutive)
+        XCTAssertEqual(durations.low, 300, accuracy: 0.01)
+        XCTAssertEqual(durations.mid, 300, accuracy: 0.01)
+        XCTAssertEqual(durations.high, 300, accuracy: 0.01)
+        XCTAssertEqual(NativeStressHistory.timeInHighMinutes(consecutive) ?? -1, 5, accuracy: 0.01)
+
+        let gapped: [NativeHourPoint] = [
+            NativeHourPoint(time: t0, value: 2.1),
+            NativeHourPoint(time: t0.addingTimeInterval(3 * 3600), value: 0.4),
+        ]
+        XCTAssertEqual(NativeStressBandTime.durations(gapped).total, 0, accuracy: 0.01)
+        XCTAssertEqual(NativeStressBandTime.clock(3660), "1:01")
+    }
+
+    func testStressTypicalPrefersSameWeekdayThenLastSevenDays() {
+        let saturday = NativeStressBandDurations(low: 3600, mid: 13 * 3600, high: 7 * 3600)
+        let other = NativeStressBandDurations(low: 10 * 3600, mid: 8 * 3600, high: 2 * 3600)
+        let daily = [
+            (weekday: 7, durations: saturday),
+            (weekday: 1, durations: other),
+            (weekday: 7, durations: NativeStressBandDurations(low: 1800, mid: 12 * 3600, high: 8 * 3600)),
+            (weekday: 3, durations: other),
+        ]
+        let typical = NativeStressBandTime.typical(daily: daily, todayWeekday: 7)
+        XCTAssertEqual(typical?.sameWeekday, true)
+        XCTAssertEqual(typical?.durations.low ?? -1, 2700, accuracy: 0.01)
+
+        let sparse = [
+            (weekday: 2, durations: other),
+            (weekday: 3, durations: other),
+        ]
+        let fallback = NativeStressBandTime.typical(daily: sparse, todayWeekday: 7)
+        XCTAssertEqual(fallback?.sameWeekday, false)
+        XCTAssertEqual(fallback?.durations.low ?? -1, other.low, accuracy: 0.01)
+
+        XCTAssertEqual(
+            NativeStressBandTime.deltaPercent(current: 3600, typical: 7200) ?? -1,
+            -0.5,
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(NativeStressMonitorMath.segments(consecutivePoints()).count, 1)
+        XCTAssertEqual(NativeStressMonitorMath.segments(gappedPoints()).count, 2)
+    }
+
+    private func consecutivePoints() -> [NativeHourPoint] {
+        let t0 = Date(timeIntervalSince1970: 0)
+        return [
+            NativeHourPoint(time: t0, value: 1),
+            NativeHourPoint(time: t0.addingTimeInterval(300), value: 1.2),
+        ]
+    }
+
+    private func gappedPoints() -> [NativeHourPoint] {
+        let t0 = Date(timeIntervalSince1970: 0)
+        return [
+            NativeHourPoint(time: t0, value: 1),
+            NativeHourPoint(time: t0.addingTimeInterval(3600), value: 1.2),
+        ]
+    }
+
     func testDateStepperChevronsFitBesideStrapOnIPhone15() {
         let strapBudget: CGFloat = 96
         XCTAssertEqual(HomeDateStepperLayout.chevronSize, 32, accuracy: 0.5)

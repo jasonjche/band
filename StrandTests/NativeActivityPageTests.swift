@@ -78,21 +78,27 @@ final class NativeActivityPageTests: XCTestCase {
         let model = NativeActivityPageLogic.make(
             workout, prior: prior, scale: .whoop, zoneSet: nil, percents: nil
         )
-        XCTAssertEqual(model.stats.map(\.title), ["Average HR", "Max HR", "Calories", "Distance", "Steps"])
-        XCTAssertEqual(model.stats.first { $0.title == "Average HR" }?.neutralDelta, true)
+        XCTAssertEqual(model.stats.map(\.title), ["Avg HR", "Max HR", "Calories", "Distance"])
+        XCTAssertEqual(model.stats.first { $0.title == "Avg HR" }?.neutralDelta, true)
         XCTAssertEqual(model.stats.first { $0.title == "Max HR" }?.neutralDelta, true)
         XCTAssertEqual(model.stats.first { $0.title == "Calories" }?.neutralDelta, false)
         XCTAssertEqual(model.stats.first { $0.title == "Distance" }?.neutralDelta, false)
-        XCTAssertEqual(model.stats.first { $0.title == "Steps" }?.neutralDelta, false)
         XCTAssertFalse(model.stats.contains { $0.title.localizedCaseInsensitiveContains("pace") })
         XCTAssertFalse(model.stats.contains { $0.title.localizedCaseInsensitiveContains("speed") })
         XCTAssertFalse(model.stats.contains { $0.title.localizedCaseInsensitiveContains("elevation") })
         XCTAssertFalse(model.stats.contains { $0.title == "Duration" })
-        XCTAssertEqual(model.strainDelta, .up)
+        XCTAssertFalse(model.stats.contains { $0.title == "Steps" })
+        XCTAssertEqual(model.strainTypical?.delta, .up)
+        XCTAssertEqual(model.strainTypical?.accessibilityLabel, "Above your typical Running strain of \(NativeDayLogic.strainText(22, scale: .whoop))")
+        XCTAssertEqual(model.stepsText, NativeScoreMath.count(Double(4_200)) as String)
+        XCTAssertEqual(model.stepsTypical?.delta, .up)
+        XCTAssertEqual(model.stepsTypical?.accessibilityLabel, "Above your typical Running steps of \(NativeScoreMath.count(Double(4_000)) as String)")
         XCTAssertTrue(model.isManual)
         XCTAssertTrue(model.hasStrain)
         XCTAssertNil(model.sourceLine)
         XCTAssertTrue(model.zones.isEmpty)
+        XCTAssertEqual(model.stats.first { $0.title == "Avg HR" }?.value, "168")
+        XCTAssertEqual(model.stats.first { $0.title == "Avg HR" }?.unit, "BPM")
     }
 
     func testHeartRateRecoveryRowUsesOneMinuteDropAndHidesWhenMissing() {
@@ -104,17 +110,18 @@ final class NativeActivityPageTests: XCTestCase {
         let hidden = NativeActivityPageLogic.make(
             workout, prior: [], scale: .whoop, zoneSet: nil, percents: nil
         )
-        XCTAssertFalse(hidden.stats.contains { $0.title == "Heart Rate Recovery" })
+        XCTAssertFalse(hidden.stats.contains { $0.title == "HR Recovery" })
 
         let shown = NativeActivityPageLogic.make(
             workout, prior: [], scale: .whoop, zoneSet: nil, percents: nil,
             heartRateRecovery: 32, priorHeartRateRecovery: [28, 30, 34]
         )
-        let row = shown.stats.first { $0.title == "Heart Rate Recovery" }
-        XCTAssertEqual(row?.value, "32 BPM")
+        let row = shown.stats.first { $0.title == "HR Recovery" }
+        XCTAssertEqual(row?.value, "32")
+        XCTAssertEqual(row?.unit, "BPM")
         XCTAssertEqual(row?.heartFamily, true)
         XCTAssertEqual(row?.neutralDelta, true)
-        XCTAssertNotNil(row?.prior)
+        XCTAssertNotNil(row?.typical)
     }
 
     func testZonePercentsComeFromSamplesAndHideWhenEmpty() {
@@ -134,6 +141,79 @@ final class NativeActivityPageTests: XCTestCase {
         XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 5, set: set), "171+ BPM")
         XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 0, set: set), "< 95 BPM")
         XCTAssertNil(NativeActivityPageLogic.bpmRange(zone: 2, set: nil))
+    }
+
+    func testWhoopHRRBoundsDriveDisplayedBpmRanges() {
+        let set = HRZones.zones(maxHR: 198, restingHR: 63)
+        XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 0, set: set), "< 117 BPM")
+        XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 1, set: set), "117–144 BPM")
+        XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 2, set: set), "145–157 BPM")
+        XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 3, set: set), "158–171 BPM")
+        XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 4, set: set), "172–184 BPM")
+        XCTAssertEqual(NativeActivityPageLogic.bpmRange(zone: 5, set: set), "185+ BPM")
+    }
+
+    func testStrainTypicalChipHidesWithoutThreePriorSameSportWorkouts() {
+        let workout = row(start: 1_700_000_000, sport: "Running", strain: 10)
+        let two = [
+            row(start: 1_700_000_000 - 86_400, sport: "Running", strain: 22),
+            row(start: 1_700_000_000 - 2 * 86_400, sport: "Running", strain: 21),
+        ]
+        let hidden = NativeActivityPageLogic.make(
+            workout, prior: two, scale: .whoop, zoneSet: nil, percents: nil
+        )
+        XCTAssertNil(hidden.strainTypical)
+        XCTAssertEqual(NativeActivityPageLogic.strainDelta(current: 10, prior: [22, 21]), .none)
+
+        let three = two + [row(start: 1_700_000_000 - 3 * 86_400, sport: "Running", strain: 20)]
+        let shown = NativeActivityPageLogic.make(
+            workout, prior: three, scale: .whoop, zoneSet: nil, percents: nil
+        )
+        XCTAssertEqual(shown.strainTypical?.delta, .down)
+        XCTAssertEqual(
+            shown.strainTypical?.accessibilityLabel,
+            "Below your typical Running strain of \(NativeDayLogic.strainText(21, scale: .whoop))"
+        )
+    }
+
+    func testToggleZoneSelectsAndClears() {
+        XCTAssertEqual(NativeActivityPageLogic.toggleZone(nil, tapped: 4), 4)
+        XCTAssertEqual(NativeActivityPageLogic.toggleZone(4, tapped: 4), nil)
+        XCTAssertEqual(NativeActivityPageLogic.toggleZone(4, tapped: 2), 2)
+    }
+
+    func testZoneRunsKeepOnlyTheSelectedZone() {
+        let set = HRZones.zones(maxHR: 198, restingHR: 63)
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let points = [100.0, 150.0, 180.0, 150.0].enumerated().map { index, bpm in
+            NativeHourPoint(time: start.addingTimeInterval(Double(index) * 20), value: bpm)
+        }
+        let runs = NativeActivityPageLogic.zoneRuns(points, zone: 4, zoneSet: set)
+        XCTAssertEqual(runs.flatMap { $0 }.map(\.value), [180])
+        XCTAssertTrue(NativeActivityPageLogic.zoneRuns(points, zone: 5, zoneSet: set).isEmpty)
+        XCTAssertEqual(NativeActivityPageLogic.zoneRuns(points, zone: 0, zoneSet: set).flatMap { $0 }.map(\.value), [100])
+    }
+
+    func testStepsHeroHidesTypicalChipWithoutThreePriorWorkoutsWithSteps() {
+        let workout = WorkoutRow(
+            startTs: 1_700_000_000, endTs: 1_700_001_800, sport: "Running", source: "whoop",
+            durationS: 1_800, energyKcal: nil, avgHr: nil, maxHr: nil, strain: 13.6,
+            distanceM: nil, zonesJSON: nil, notes: nil, steps: 3_942
+        )
+        let two = (1...2).map { offset in
+            WorkoutRow(
+                startTs: 1_700_000_000 - offset * 86_400,
+                endTs: 1_700_001_800 - offset * 86_400,
+                sport: "Running", source: "whoop",
+                durationS: 1_800, energyKcal: nil, avgHr: nil, maxHr: nil, strain: 12,
+                distanceM: nil, zonesJSON: nil, notes: nil, steps: 5_000
+            )
+        }
+        let hidden = NativeActivityPageLogic.make(
+            workout, prior: two, scale: .whoop, zoneSet: nil, percents: nil
+        )
+        XCTAssertEqual(hidden.stepsText, NativeScoreMath.count(Double(3_942)) as String)
+        XCTAssertNil(hidden.stepsTypical)
     }
 
     private func row(start: Int, sport: String, strain: Double) -> WorkoutRow {

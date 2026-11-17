@@ -129,9 +129,20 @@ enum NativeTypicalRange {
         TypicalVitalRange.range(history: values, sigmaFloor: TypicalVitalRange.sigmaFloor(matching: cfg))
     }
 
+    /// Count metrics never get the MAD vital band (it goes negative on steps).
+    /// Vitals keep the shared band; a negative lower bound is clamped at 0.
+    static func display(_ range: ClosedRange<Double>?, kind: NativeScopeKind) -> ClosedRange<Double>? {
+        guard let range, range.upperBound.isFinite else { return nil }
+        if kind == .total { return nil }
+        let lo = max(0, range.lowerBound)
+        let hi = range.upperBound
+        guard hi > lo, lo.isFinite, hi.isFinite else { return nil }
+        return lo...hi
+    }
+
     static func caption(range: ClosedRange<Double>, format: (Double) -> String, unit: String?) -> String {
-        let low = format(range.lowerBound)
-        let high = format(range.upperBound)
+        let low = format(max(0, range.lowerBound))
+        let high = format(max(0, range.upperBound))
         if let unit, !unit.isEmpty {
             return "Typical range \(low)–\(high) \(unit)"
         }
@@ -185,13 +196,16 @@ struct NativeScopeSeries: Equatable {
         let today = calendar.startOfDay(for: now)
         let last = calendar.startOfDay(for: ending ?? finite.last?.date ?? today)
         let endDay = min(last, today)
-        let typical = NativeTypicalRange.band(
-            values: NativeTypicalRange.windowValues(
-                dates: parsed.map { ($0.date, $0.value.isFinite ? $0.value : nil) },
-                ending: endDay,
-                calendar: calendar
+        let typical = NativeTypicalRange.display(
+            cfg == nil ? nil : NativeTypicalRange.band(
+                values: NativeTypicalRange.windowValues(
+                    dates: parsed.map { ($0.date, $0.value.isFinite ? $0.value : nil) },
+                    ending: endDay,
+                    calendar: calendar
+                ),
+                cfg: cfg
             ),
-            cfg: cfg
+            kind: kind
         )
         guard let first = finite.first?.date else {
             return NativeScopeSeries(
@@ -203,7 +217,12 @@ struct NativeScopeSeries: Equatable {
         let buckets: [NativeScopeBucket]
         switch scope {
         case .day, .week, .month:
-            buckets = dailyBuckets(parsed: parsed, from: first, to: endDay, calendar: calendar)
+            buckets = dailyBuckets(
+                parsed: parsed,
+                from: dailyStart(first: first, endDay: endDay, scope: scope, calendar: calendar),
+                to: endDay,
+                calendar: calendar
+            )
         case .sixMonths:
             buckets = groupedBuckets(
                 parsed: parsed, from: first, to: endDay, calendar: calendar, now: today, unit: .weekOfYear
@@ -332,6 +351,20 @@ struct NativeScopeSeries: Equatable {
     }
 
     // MARK: - Building
+
+    /// Trailing visible window, plus any earlier samples so the chart can still scroll.
+    static func dailyStart(
+        first: Date,
+        endDay: Date,
+        scope: NativeMetricScope,
+        calendar: Calendar
+    ) -> Date {
+        let pad = max(scope.visibleCount - 1, 0)
+        let visibleStart = calendar.date(byAdding: .day, value: -pad, to: endDay) ?? first
+        let a = calendar.startOfDay(for: first)
+        let b = calendar.startOfDay(for: visibleStart)
+        return min(a, b)
+    }
 
     private static func dailyBuckets(
         parsed: [(date: Date, value: Double, low: Double?, high: Double?)],
@@ -653,5 +686,162 @@ enum NativeCountTicks {
 
     static func hourLabelDates(dayStart: Date, calendar: Calendar) -> [Date] {
         [0, 6, 12, 18].compactMap { calendar.date(byAdding: .hour, value: $0, to: calendar.startOfDay(for: dayStart)) }
+    }
+}
+
+/// Plot geometry that views must not recompute in `body`.
+enum NativeScopePlotMath {
+    /// Join consecutive readings closer than this; a 14-day hole stays a hole.
+    static let maxConnectGap: TimeInterval = 14 * 24 * 60 * 60
+
+    struct LinePoint: Identifiable, Equatable {
+        var date: Date
+        var value: Double
+        var segment: Int
+        var key: String
+        var id: String { "\(segment)-\(key)" }
+    }
+
+    static func barUnit(scope: NativeMetricScope) -> Calendar.Component {
+        switch scope {
+        case .day: return .hour
+        case .week, .month: return .day
+        case .sixMonths: return .weekOfYear
+        case .year: return .month
+        }
+    }
+
+    static func showsVertices(scope: NativeMetricScope, knownCount: Int) -> Bool {
+        switch scope {
+        case .day, .week: return true
+        case .month: return knownCount <= 16
+        case .sixMonths, .year: return knownCount <= 12
+        }
+    }
+
+    /// Consecutive known points share a segment until the calendar gap exceeds `maxConnectGap`.
+    static func lineSegments(_ buckets: [NativeScopeBucket]) -> [LinePoint] {
+        var segment = 0
+        var lastDate: Date?
+        var result: [LinePoint] = []
+        for bucket in buckets {
+            guard let value = bucket.value, value.isFinite else { continue }
+            if let lastDate, bucket.start.timeIntervalSince(lastDate) > maxConnectGap {
+                segment += 1
+            }
+            result.append(LinePoint(date: bucket.start, value: value, segment: segment, key: bucket.key))
+            lastDate = bucket.start
+        }
+        return result
+    }
+
+    /// Typical band clipped to the y domain so it cannot flood the plot.
+    static func clippedTypical(
+        _ typical: ClosedRange<Double>?,
+        yDomain: ClosedRange<Double>
+    ) -> ClosedRange<Double>? {
+        guard let typical else { return nil }
+        let lo = max(typical.lowerBound, yDomain.lowerBound)
+        let hi = min(typical.upperBound, yDomain.upperBound)
+        guard hi > lo else { return nil }
+        return lo...hi
+    }
+}
+
+/// Round y-axis ticks for line charts (bars use `NativeCountTicks`).
+enum NativeScopeYTicks {
+    static func values(in domain: ClosedRange<Double>, maxCount: Int = 3) -> [Double] {
+        let lo = domain.lowerBound
+        let hi = domain.upperBound
+        let span = hi - lo
+        guard span > 0, maxCount >= 2 else { return [lo] }
+        let step = niceStep(span / Double(max(maxCount, 2)))
+        guard step > 0 else { return [lo, hi] }
+        let start = ceil(lo / step - 1e-9) * step
+        var ticks: [Double] = []
+        var cursor = start
+        while cursor <= hi + step * 0.01 {
+            ticks.append((cursor * 1e9).rounded() / 1e9)
+            cursor += step
+            if ticks.count > 8 { break }
+        }
+        if ticks.count < 2 { return [lo, hi] }
+        return ticks
+    }
+
+    static func niceDomain(_ values: [Double], fallback: ClosedRange<Double>) -> ClosedRange<Double> {
+        let fitted = NativeChartDay.fittedDomain(values, fallback: fallback)
+        let ticks = Self.values(in: fitted)
+        guard let first = ticks.first, let last = ticks.last, last > first else { return fitted }
+        let lo = min(fitted.lowerBound, first)
+        let hi = max(fitted.upperBound, last)
+        return lo...hi
+    }
+
+    private static func niceStep(_ raw: Double) -> Double {
+        let v = max(abs(raw), 1e-9)
+        let exp = floor(log10(v))
+        let mag = pow(10, exp)
+        let n = v / mag
+        let nice: Double
+        // Nearest nice step (not the next one up), so a 64-wide domain gets 20s, not one 50.
+        if n < 1.5 { nice = 1 }
+        else if n < 3.5 { nice = 2 }
+        else if n < 7.5 { nice = 5 }
+        else { nice = 10 }
+        return nice * mag
+    }
+}
+
+/// One-sentence Trend View copy under the hero.
+enum NativeScopeSummary {
+    static func sentence(
+        title: String,
+        scope: NativeMetricScope,
+        kind: NativeScopeKind,
+        current: Double?,
+        previous: Double?,
+        format: (Double) -> String,
+        higherIsBetter: Bool?
+    ) -> String? {
+        guard let current, current.isFinite else { return nil }
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let caption = kind == .total && scope == .day ? "total" : "average"
+        let period = periodPhrase(scope)
+        let formatted = format(current)
+        guard let previous, previous.isFinite else {
+            return "Your \(caption) \(name) \(period) was \(formatted)."
+        }
+        let denom = max(abs(previous), 1e-9)
+        let relation: String
+        if abs(current - previous) / denom <= 0.03 {
+            relation = "was about the same as"
+        } else if current < previous {
+            relation = "was below"
+        } else {
+            relation = "was above"
+        }
+        return "Your \(caption) \(name) \(period) (\(formatted)) \(relation) your previous \(priorPhrase(scope)) average of \(format(previous))."
+    }
+
+    static func periodPhrase(_ scope: NativeMetricScope) -> String {
+        switch scope {
+        case .day: return "today"
+        case .week: return "this week"
+        case .month: return "this month"
+        case .sixMonths: return "over 6 months"
+        case .year: return "this year"
+        }
+    }
+
+    static func priorPhrase(_ scope: NativeMetricScope) -> String {
+        switch scope {
+        case .day: return "day"
+        case .week: return "week"
+        case .month: return "30-day"
+        case .sixMonths: return "6-month"
+        case .year: return "year"
+        }
     }
 }

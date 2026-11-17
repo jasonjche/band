@@ -248,10 +248,18 @@ final class ProfileStore: ObservableObject {
         return hrZoneThresholds.map(Double.init)
     }
 
-    /// The single display-zone model used by live HR, workout splits, and haptic coaching.
-    var hrZoneSet: HRZoneSet {
-        HRZones.zones(maxHR: Double(hrMax), customLowerBounds: customHRZoneLowerBounds)
+    /// Display zones (activity page, live HR, splits). Heart-rate reserve with
+    /// `restingHR` when there is no custom override. BandStrain does not read this.
+    func displayZoneSet(restingHR: Double? = nil) -> HRZoneSet {
+        let maxHR = Double(hrMax)
+        if let custom = customHRZoneLowerBounds {
+            return HRZones.zones(maxHR: maxHR, customLowerBounds: custom)
+        }
+        return HRZones.zones(maxHR: maxHR, restingHR: restingHR ?? BandStrain.defaultRestingHR)
     }
+
+    /// The single display-zone model used by live HR, workout splits, and haptic coaching.
+    var hrZoneSet: HRZoneSet { displayZoneSet() }
 
     var hasCustomHRZones: Bool { customHRZoneLowerBounds != nil }
 
