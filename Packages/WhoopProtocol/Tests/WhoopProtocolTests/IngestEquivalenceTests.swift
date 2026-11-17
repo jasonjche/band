@@ -80,6 +80,37 @@ final class IngestEquivalenceTests: XCTestCase {
         XCTAssertEqual(streams.gravity, intactStreams.gravity)
     }
 
+    func testFusedDecodeMatchesParseAndExtract() {
+        let seed = Self.hex(Self.whoop5HistoricalHex)
+        var frames = [[UInt8]](); frames.reserveCapacity(64)
+        for _ in 0..<64 { frames.append(seed) }
+        let unix = 1_780_916_150
+        let old = extractHistoricalStreams(frames: frames, deviceClockRef: unix, wallClockRef: unix,
+                                           family: .whoop5, wallNow: unix + 10)
+        let (fused, facts) = HistoricalStreamDecoder.decode(
+            frames: frames, family: .whoop5,
+            deviceClockRef: unix, wallClockRef: unix, wallNow: unix + 10)
+        XCTAssertEqual(fused, old)
+        XCTAssertEqual(facts.rejected, rejectedHistoricalRecords(frames, family: .whoop5))
+        XCTAssertEqual(facts.firstHistVersion, 18)
+        XCTAssertTrue(facts.anyHeartRate)
+        XCTAssertTrue(facts.anyGravity)
+    }
+
+    func testFusedDecodeRejectsCorruptedFrames() {
+        let intact = Self.hex(Self.whoop5HistoricalHex)
+        let unix = 1_780_916_150
+        let mixed = [corrupt(intact, at: 6), intact, corrupt(intact, at: intact.count - 1)]
+        let old = extractHistoricalStreams(frames: mixed, deviceClockRef: unix, wallClockRef: unix,
+                                           family: .whoop5, wallNow: unix + 10)
+        let (fused, facts) = HistoricalStreamDecoder.decode(
+            frames: mixed, family: .whoop5,
+            deviceClockRef: unix, wallClockRef: unix, wallNow: unix + 10)
+        XCTAssertEqual(fused, old)
+        XCTAssertEqual(facts.rejected, rejectedHistoricalRecords(mixed, family: .whoop5))
+        XCTAssertEqual(fused.hr.count, 1)
+    }
+
     func testFastPathParsedDictUnchangedOnHistoricalAndCorrupted() {
         let intact = Self.hex(Self.whoop5HistoricalHex)
         for frame in [intact, corrupt(intact, at: 6), corrupt(intact, at: intact.count - 2)] {

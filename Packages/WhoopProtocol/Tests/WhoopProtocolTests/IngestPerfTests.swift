@@ -205,6 +205,40 @@ final class IngestPerfTests: XCTestCase {
                seconds: summarize(times), allocs: summarize(allocs))
     }
 
+    func testPerfFusedDecodeDayOfHistorical() throws {
+        try requirePerf()
+        let seed = Self.hex(Self.whoop5HistoricalHex)
+        let frames = tile(seed, count: Self.dayFrames)
+        let bytes = frames.reduce(0) { $0 + $1.count }
+        let unix = 1_780_916_150
+
+        var times: [Double] = []
+        var allocs: [Double] = []
+        var sink = 0
+
+        func runOnce() -> Int {
+            let (streams, facts) = HistoricalStreamDecoder.decode(
+                frames: frames, family: .whoop5,
+                deviceClockRef: unix, wallClockRef: unix, wallNow: unix + 10)
+            return frames.count + streams.hr.count + streams.rr.count + streams.gravity.count
+                + facts.rejected.count
+        }
+        sink &+= runOnce()
+
+        for _ in 0..<Self.measuredRuns {
+            let a0 = mallocInUse()
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            sink &+= runOnce()
+            let t1 = DispatchTime.now().uptimeNanoseconds
+            let a1 = mallocInUse()
+            times.append(Double(t1 - t0) / 1e9)
+            allocs.append(Double(max(0, a1 - a0)))
+        }
+        XCTAssertGreaterThan(sink, 0)
+        report("fused_decode_whoop5_hist", n: Self.dayFrames, bytes: bytes,
+               seconds: summarize(times), allocs: summarize(allocs))
+    }
+
     func testPerfParseFrameOnlyDayOfHistorical() throws {
         try requirePerf()
         let seed = Self.hex(Self.whoop5HistoricalHex)
@@ -329,6 +363,45 @@ final class IngestPerfTests: XCTestCase {
             Double(max(0, fpStream - fp1)) / 1_000_000,
             Double(max(0, aAcc - a0)) / 1_000_000,
             Double(max(0, aStream - a1)) / 1_000_000,
+            Double(fp0) / 1_000_000))
+        fflush(stdout)
+    }
+
+    func testPerfPeakMemoryFusedVsOld() throws {
+        try requirePerf()
+        let seed = Self.hex(Self.whoop5HistoricalHex)
+        let frames = tile(seed, count: Self.dayFrames)
+        let unix = 1_780_916_150
+        _ = extractHistoricalStreams(frames: frames, deviceClockRef: unix, wallClockRef: unix,
+                                     family: .whoop5, wallNow: unix + 10)
+        _ = HistoricalStreamDecoder.decode(frames: frames, family: .whoop5,
+                                           deviceClockRef: unix, wallClockRef: unix,
+                                           wallNow: unix + 10)
+
+        let fp0 = physFootprint()
+        let a0 = mallocInUse()
+        let old = extractHistoricalStreams(frames: frames, deviceClockRef: unix, wallClockRef: unix,
+                                           family: .whoop5, wallNow: unix + 10)
+        let fpOld = physFootprint()
+        let aOld = mallocInUse()
+
+        let fp1 = physFootprint()
+        let a1 = mallocInUse()
+        let (fused, _) = HistoricalStreamDecoder.decode(
+            frames: frames, family: .whoop5,
+            deviceClockRef: unix, wallClockRef: unix, wallNow: unix + 10)
+        let fpFused = physFootprint()
+        let aFused = mallocInUse()
+
+        XCTAssertEqual(fused.hr.count, old.hr.count)
+        XCTAssertEqual(fused.rr.count, old.rr.count)
+        print(String(
+            format: "BAND_PERF peak_memory_fused_vs_old n=%d old_footprint_delta=%.1f MB fused_footprint_delta=%.1f MB old_malloc_delta=%.1f MB fused_malloc_delta=%.1f MB (baseline_fp=%.1f MB)",
+            Self.dayFrames,
+            Double(max(0, fpOld - fp0)) / 1_000_000,
+            Double(max(0, fpFused - fp1)) / 1_000_000,
+            Double(max(0, aOld - a0)) / 1_000_000,
+            Double(max(0, aFused - a1)) / 1_000_000,
             Double(fp0) / 1_000_000))
         fflush(stdout)
     }
