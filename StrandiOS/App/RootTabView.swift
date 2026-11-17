@@ -578,7 +578,7 @@ private enum MoreDestination: Hashable {
     @ViewBuilder var destination: some View {
         switch self {
         case .devices:         DevicesView()
-        case .settings:        SettingsView()
+        case .settings:        NativeAppSettingsView()
         case .about:           BandAboutView()
         case .profile:         NativeProfileView()
         case .dataBackup:      NativeDataBackupView()

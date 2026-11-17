@@ -100,6 +100,7 @@ struct NativeHealthspanBody: View {
     var result: HealthspanEngine.Result?
     var links: [NativeHealthItem] = []
     @Environment(\.nativeStyle) private var style
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var compactProgress: CGFloat = 0
 
     private var forming: Bool { result == nil }
@@ -108,11 +109,11 @@ struct NativeHealthspanBody: View {
         ScrollView {
             VStack(alignment: .leading, spacing: style == .whoop ? 12 : 10) {
                 NativeHealthspanOrb(
-                    bandAge: result?.bandAge,
-                    deltaYears: result?.deltaYears,
-                    forming: forming,
-                    diameter: 280,
-                    animates: compactProgress < 0.55
+                    value: result?.bandAge,
+                    delta: result?.deltaYears,
+                    isLoading: forming,
+                    compact: false,
+                    reduceMotion: reduceMotion
                 )
                 .frame(maxWidth: .infinity)
                 .padding(.top, 8)

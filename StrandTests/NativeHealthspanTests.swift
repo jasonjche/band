@@ -97,6 +97,25 @@ final class NativeHealthspanTests: XCTestCase {
         XCTAssertEqual(NativeHealthspanOrbHue.progress(deltaYears: nil), 0.5, accuracy: 0.001)
     }
 
+    func testOrbMapClampsDeltaToHueAndFillFraction() {
+        XCTAssertEqual(NativeHealthspanOrbMap.fillFraction(delta: 5), 1, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanOrbMap.fillFraction(delta: -5), 0, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanOrbMap.fillFraction(delta: 0), 0.5, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanOrbMap.fillFraction(delta: nil), 0.5, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanOrbMap.fillFraction(delta: 2.5), 0.75, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanOrbMap.fillFraction(delta: 12), 1, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanOrbMap.fillFraction(delta: -12), 0, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanOrbMap.tone(delta: 2.2, isLoading: false), .younger)
+        XCTAssertEqual(NativeHealthspanOrbMap.tone(delta: -1.4, isLoading: false), .older)
+        XCTAssertEqual(NativeHealthspanOrbMap.tone(delta: 0, isLoading: false), .neutral)
+        XCTAssertEqual(NativeHealthspanOrbMap.tone(delta: 0.02, isLoading: false), .neutral)
+        XCTAssertEqual(NativeHealthspanOrbMap.tone(delta: 4, isLoading: true), .loading)
+        XCTAssertEqual(NativeHealthspanOrbStyle.storageKey, "band.orbStyle")
+        XCTAssertEqual(NativeHealthspanOrbStyle.ring.rawValue, "ring")
+        XCTAssertEqual(NativeHealthspanOrbStyle.bloom.rawValue, "bloom")
+        XCTAssertEqual(NativeHealthspanOrbStyle.glass.rawValue, "glass")
+    }
+
     func testMarkerProgressClampsToTheScale() {
         XCTAssertEqual(NativeHealthspanFormat.markerProgress(value: 70, scaleMin: 40, scaleMax: 100), 0.5, accuracy: 0.001)
         XCTAssertEqual(NativeHealthspanFormat.markerProgress(value: 40, scaleMin: 40, scaleMax: 100), 0, accuracy: 0.001)

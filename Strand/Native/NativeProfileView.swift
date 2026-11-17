@@ -5,6 +5,7 @@ struct NativeProfileView: View {
     @EnvironmentObject private var profile: ProfileStore
     @EnvironmentObject private var repo: Repository
     @State private var weightReadings: [NativeWeight.Reading] = []
+    @State private var showStepsCalibration = false
     @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
 
     private var unitSystem: UnitSystem { UnitSystem(rawValue: unitSystemRaw) ?? .metric }
@@ -29,9 +30,12 @@ struct NativeProfileView: View {
             Section {
                 heightRow
                 weightRow
+                waistRow
             } footer: {
                 if let latest = weightReadings.last {
-                    Text("Weight follows Apple Health. Last weigh-in \(latest.date.formatted(.dateTime.month().day())).")
+                    Text("Weight follows Apple Health. Last weigh-in \(latest.date.formatted(.dateTime.month().day())). Optional waist makes VO₂max more accurate.")
+                } else {
+                    Text("Optional waist makes VO₂max more accurate. Measure around your middle, at the navel.")
                 }
             }
 
@@ -59,8 +63,30 @@ struct NativeProfileView: View {
             } footer: {
                 Text(hrMaxFooter)
             }
+
+            Section {
+                Stepper(
+                    onIncrement: {
+                        profile.stepTicksPerStep = ProfileStore.steppedStepScale(profile.stepTicksPerStep, up: true)
+                    },
+                    onDecrement: {
+                        profile.stepTicksPerStep = ProfileStore.steppedStepScale(profile.stepTicksPerStep, up: false)
+                    }
+                ) {
+                    LabeledContent("Step Calibration", value: String(format: "%.1f", profile.stepTicksPerStep))
+                }
+                Button("Steps Estimate") { showStepsCalibration = true }
+            } header: {
+                Text("Steps")
+            } footer: {
+                Text("Counter ticks per step, and the WHOOP 4.0 motion estimate. Leave calibration at 1.0 unless steps run high.")
+            }
         }
         .appleSettingsChrome("Profile")
+        .sheet(isPresented: $showStepsCalibration) {
+            StepsCalibrationSheet(repo: repo, onClose: { showStepsCalibration = false })
+                .environmentObject(profile)
+        }
         .task {
             weightReadings = await NativeWeight.sync(repo: repo, profile: profile)
             await profile.syncObservedHRMax(from: repo)
@@ -110,6 +136,42 @@ struct NativeProfileView: View {
                     : String(format: "%.1f kg", profile.weightKg))
             }
         }
+    }
+
+    @ViewBuilder private var waistRow: some View {
+        if unitSystem == .imperial {
+            Stepper(
+                onIncrement: {
+                    let inches = profile.waistCm > 0 ? UnitFormatter.cmToInches(profile.waistCm).rounded() : 30
+                    profile.waistCm = min(160, (inches + 1) * UnitFormatter.centimetersPerInch)
+                },
+                onDecrement: {
+                    let inches = UnitFormatter.cmToInches(profile.waistCm).rounded() - 1
+                    profile.waistCm = inches < 24 ? 0 : inches * UnitFormatter.centimetersPerInch
+                }
+            ) {
+                LabeledContent("Waist", value: waistImperialLabel)
+            }
+        } else {
+            Stepper(
+                onIncrement: {
+                    profile.waistCm = min(160, (profile.waistCm > 0 ? profile.waistCm : 79) + 1)
+                },
+                onDecrement: {
+                    let next = profile.waistCm - 1
+                    profile.waistCm = next < 60 ? 0 : next
+                }
+            ) {
+                LabeledContent("Waist", value: profile.waistCm > 0
+                    ? "\(Int(profile.waistCm.rounded())) cm"
+                    : "Not set")
+            }
+        }
+    }
+
+    private var waistImperialLabel: String {
+        guard profile.waistCm > 0 else { return "Not set" }
+        return "\(Int(UnitFormatter.cmToInches(profile.waistCm).rounded())) in"
     }
 
     @ViewBuilder private var manualWeightRow: some View {

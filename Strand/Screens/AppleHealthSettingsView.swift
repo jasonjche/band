@@ -4,7 +4,7 @@ import StrandDesign
 import UIKit
 #endif
 
-/// Settings → Apple Health and More → Apple Health. One Form so the two routes cannot disagree.
+/// Settings → Apple Health and More → Apple Health. One List so the two routes cannot disagree.
 /// Charts live on the Native metric pages; this screen is status, sync, and data-type access.
 struct AppleHealthSettingsView: View {
     #if os(iOS)
@@ -17,7 +17,7 @@ struct AppleHealthSettingsView: View {
 
     var body: some View {
         #if os(iOS)
-        Form {
+        List {
             statusSection
             dataTypeSection
             if !latest.isEmpty {
@@ -25,6 +25,7 @@ struct AppleHealthSettingsView: View {
             }
             permissionsSection
         }
+        .listStyle(.insetGrouped)
         .appleSettingsChrome("Apple Health")
         .task { await loadLatest() }
         #else
@@ -44,18 +45,25 @@ struct AppleHealthSettingsView: View {
 
     private var statusSection: some View {
         Section {
-            LabeledContent("Status", value: statusValue)
-            if let last = health.lastSync {
-                LabeledContent("Last Sync", value: relativeAgo(last.timeIntervalSince1970))
-            }
-            if health.syncing {
-                ProgressView(health.auth == .authorized ? "Syncing…" : "Working…")
+            LabeledContent("Status") {
+                if health.syncing {
+                    HStack(spacing: 8) {
+                        Text(health.auth == .authorized ? "Syncing…" : "Working…")
+                            .foregroundStyle(.secondary)
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                } else {
+                    Text(idleStatusValue)
+                        .foregroundStyle(.secondary)
+                }
             }
             switch health.auth {
             case .unavailable, .entitlementMissing:
                 EmptyView()
             case .unknown, .denied:
                 Button("Enable Apple Health") { enableHealth() }
+                    .disabled(health.syncing)
             case .authorized:
                 Button("Sync Now") { syncNow() }
                     .disabled(health.syncing)
@@ -118,9 +126,12 @@ struct AppleHealthSettingsView: View {
         }
     }
 
-    private var statusValue: String {
+    private var idleStatusValue: String {
         switch health.auth {
-        case .authorized: return health.syncing ? "Syncing" : "Connected"
+        case .authorized:
+            guard let last = health.lastSync else { return "Up to date" }
+            if Date().timeIntervalSince(last) < 60 { return "Up to date" }
+            return "Last sync \(relativeAgo(last.timeIntervalSince1970))"
         case .denied: return "Not authorised"
         case .unavailable: return "Unavailable"
         case .entitlementMissing: return "Not available"

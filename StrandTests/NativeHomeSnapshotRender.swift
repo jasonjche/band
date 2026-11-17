@@ -138,6 +138,7 @@ final class NativeHomeSnapshotRender: XCTestCase {
             ("power-saving", AnyView(PowerSavingView().environmentObject(model))),
             ("backup-sync", AnyView(BackupSyncView().environmentObject(model))),
             ("licenses", AnyView(LicensesView())),
+            ("app-settings", AnyView(NativeAppSettingsView())),
             ("apple-health-settings", AnyView(AppleHealthSettingsView())),
         ]
         let previous = NSApp.appearance

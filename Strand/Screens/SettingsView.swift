@@ -14,8 +14,8 @@ import WhoopStore
 // the hardcoded "15" outlived the sequence growing to 16 and declared success a flag early.
 import WhoopProtocol
 
-/// Settings — profile (powers zones / calories / recovery), strap connection, and about.
-/// Grouped cards on surface.raised with a two-column form feel.
+/// Settings — diagnostics and experimental controls on Band (More → Settings → Advanced).
+/// Everyday units, strain scale, appearance, and sync live on NativeAppSettingsView.
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var live: LiveState
@@ -326,14 +326,16 @@ struct SettingsView: View {
 
     #if os(iOS)
     /// iOS Settings-style root: inset grouped list, coloured glyphs, one screen per group.
-    /// Band More owns Strap/Alarm/Health/Import/Backup/Notifications/About; this page is Profile only.
+    /// Band More owns Profile, everyday Settings, Strap, Backup, Notifications, and About.
+    /// Personal builds open this page from Settings → Advanced, so Profile and Backup stay off it.
     @ViewBuilder
     private var appleSettingsRoot: some View {
         if AppBrand.isPersonalBuild {
-            Form {
-                profileCard
+            List {
+                stockAppleSettingsSections
             }
-            .appleSettingsChrome("Profile")
+            .listStyle(.insetGrouped)
+            .appleSettingsChrome("Advanced")
         } else {
             List {
                 stockAppleSettingsSections
@@ -346,9 +348,11 @@ struct SettingsView: View {
 
     @ViewBuilder private var stockAppleSettingsSections: some View {
         Section {
-            appleSettingsNav("Profile", "person.fill", .blue) {
-                appleSettingsPage("Profile") {
-                    profileCard
+            if !AppBrand.isPersonalBuild {
+                appleSettingsNav("Profile", "person.fill", .blue) {
+                    appleSettingsPage("Profile") {
+                        profileCard
+                    }
                 }
             }
             appleSettingsNav("Units", "ruler", .orange) {
@@ -419,9 +423,11 @@ struct SettingsView: View {
                     experimentalAdvancedPages
                 }
             }
-            appleSettingsNav("Backup", "externaldrive.fill", Color(white: 0.45)) {
-                appleSettingsPage("Backup") {
-                    backupCard
+            if !AppBrand.isPersonalBuild {
+                appleSettingsNav("Backup", "externaldrive.fill", Color(white: 0.45)) {
+                    appleSettingsPage("Backup") {
+                        backupCard
+                    }
                 }
             }
         } header: {
@@ -4299,28 +4305,60 @@ private struct SettingsRowDivider: View {
 /// More → Backup. File export / import only.
 struct BandBackupView: View {
     @EnvironmentObject var model: AppModel
-    @State private var backupBusy = false
+    @State private var work: BackupWork?
+    @State private var actionsReady = false
     @State private var backupAlertTitle = ""
     @State private var backupAlertMessage = ""
     @State private var showBackupAlert = false
     @State private var showOversizeRestoreConfirm = false
     @State private var oversizeRestoreMessage = ""
 
+    private enum BackupWork {
+        case exporting
+        case importing
+    }
+
     var body: some View {
-        Form {
+        List {
             Section {
-                Button("Export…") { runExport() }
-                    .disabled(backupBusy)
-                Button("Import…") { runImport() }
-                    .disabled(backupBusy)
-                if backupBusy {
-                    ProgressView("Working…")
+                Button {
+                    runExport()
+                } label: {
+                    HStack {
+                        Text("Export…")
+                        Spacer()
+                        if work == .exporting {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                Button {
+                    runImport()
+                } label: {
+                    HStack {
+                        Text("Import…")
+                        Spacer()
+                        if work == .importing {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
                 }
             } footer: {
                 Text("Importing replaces all data on this device. Backups are unencrypted ZIP files.")
             }
         }
+        #if os(iOS)
+        .listStyle(.insetGrouped)
+        #endif
         .appleSettingsChrome("Backup")
+        .task {
+            // The NavigationLink tap that pushed this page can land on Export. Wait one
+            // turn so appear does not start a checkpoint / zip / integrity check.
+            await Task.yield()
+            actionsReady = true
+        }
         .alert(backupAlertTitle, isPresented: $showBackupAlert) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -4335,14 +4373,16 @@ struct BandBackupView: View {
     }
 
     private func runExport() {
-        backupBusy = true
+        guard actionsReady, work == nil else { return }
+        work = .exporting
         Task {
             handleBackup(await DataBackup.runExport(checkpoint: { await model.repo.checkpointForBackup() }))
         }
     }
 
     private func runImport(allowOversize: Bool = false) {
-        backupBusy = true
+        guard actionsReady, work == nil else { return }
+        work = .importing
         Task {
             handleBackup(await DataBackup.runImport(allowOversize: allowOversize))
         }
@@ -4350,7 +4390,7 @@ struct BandBackupView: View {
 
     @MainActor
     private func handleBackup(_ result: DataBackup.BackupResult) {
-        backupBusy = false
+        work = nil
         switch result {
         case .cancelled:
             return

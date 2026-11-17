@@ -598,7 +598,7 @@ enum DemoScreens {
         case "live":     return AnyView(LiveView())
         case "workouts": return AnyView(WorkoutsView())
         case "insights": return AnyView(InsightsView())
-        case "settings": return AnyView(SettingsView())
+        case "settings": return AnyView(NativeAppSettingsView())
         case "devices":  return AnyView(DevicesView())
         case "devicescatalog": return AnyView(DeviceCardCatalog())
         case "addwizard": return AnyView(AddWizardDemoHost())

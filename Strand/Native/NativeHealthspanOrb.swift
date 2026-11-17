@@ -1,135 +1,217 @@
 import SwiftUI
 import StrandDesign
 
-/// Soft living sphere for Band Age. Apple Watch Mindfulness / Siri glow, not a WHOOP particle storm.
-struct NativeHealthspanOrb: View {
-    var bandAge: Double?
-    var deltaYears: Double?
-    var forming: Bool
-    var diameter: CGFloat = 280
-    var showsCaption: Bool = true
-    var showsDelta: Bool = true
-    /// Compact header keeps a still frame so two orbs are not both on a 30 fps clock.
-    var animates: Bool = true
+/// Visual language for the Band Age hero. Persisted as `band.orbStyle`.
+enum NativeHealthspanOrbStyle: String, CaseIterable, Identifiable {
+    case ring
+    case bloom
+    case glass
 
-    @Environment(\.nativeStyle) private var style
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var id: String { rawValue }
+
+    /// `@AppStorage` / `defaults write` key. Unset resolves to `ring`.
+    static let storageKey = "band.orbStyle"
+}
+
+/// Delta → ring fill and hue. Pure so StrandTests can cover it without rendering.
+enum NativeHealthspanOrbMap {
+    static let deltaSpan: Double = 5
+    static let deadband: Double = 0.05
+
+    /// 0 at 5 years older, 1 at 5 years younger. Nil delta sits at 0.5.
+    static func fillFraction(delta: Double?) -> Double {
+        guard let delta else { return 0.5 }
+        let clamped = min(max(delta, -deltaSpan), deltaSpan)
+        return (clamped + deltaSpan) / (2 * deltaSpan)
+    }
+
+    static func tone(delta: Double?, isLoading: Bool) -> NativeHealthspanOrbTone {
+        NativeHealthspanOrbTone.resolve(delta: delta, isLoading: isLoading)
+    }
+}
+
+enum NativeHealthspanOrbTone: Equatable {
+    case younger
+    case older
+    case neutral
+    case loading
+
+    static func resolve(delta: Double?, isLoading: Bool) -> NativeHealthspanOrbTone {
+        if isLoading { return .loading }
+        guard let delta, abs(delta) >= NativeHealthspanOrbMap.deadband else { return .neutral }
+        return delta > 0 ? .younger : .older
+    }
+}
+
+/// Band Age hero. Apple Watch Activity / Mindfulness / glass — not a WHOOP particle ball.
+struct NativeHealthspanOrb: View {
+    var value: Double?
+    var delta: Double?
+    var isLoading: Bool
+    var compact: Bool = false
+    var reduceMotion: Bool = false
+
+    @AppStorage(NativeHealthspanOrbStyle.storageKey) private var styleRaw = NativeHealthspanOrbStyle.ring.rawValue
+    @Environment(\.nativeStyle) private var nativeStyle
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var motion = NoopMotionState.shared
     @State private var onScreen = false
+    @State private var drawn: Double = 0
 
+    private var orbStyle: NativeHealthspanOrbStyle {
+        NativeHealthspanOrbStyle(rawValue: styleRaw) ?? .ring
+    }
     private var poseStill: Bool { motion.poseStill(reduceMotion) }
-    private var live: Bool { animates && onScreen && scenePhase == .active && !poseStill }
-    private var hue: NativeHealthspanOrbHue {
-        NativeHealthspanOrbHue.resolve(deltaYears: deltaYears, forming: forming)
+    private var live: Bool { onScreen && scenePhase == .active && !poseStill }
+    private var size: CGFloat { compact ? NativeHealthspanOrbLayout.compactSize : NativeHealthspanOrbLayout.heroSize }
+    private var tone: NativeHealthspanOrbTone { NativeHealthspanOrbMap.tone(delta: delta, isLoading: isLoading) }
+    private var targetFill: Double {
+        isLoading ? 0 : NativeHealthspanOrbMap.fillFraction(delta: delta)
+    }
+    /// Ring only ticks while loading so the pulse can run; bloom/glass tick whenever live.
+    private var clockPaused: Bool {
+        compact || !live || (orbStyle == .ring && !isLoading)
     }
 
     var body: some View {
         ZStack {
-            if live {
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-                    orbLayers(t: timeline.date.timeIntervalSinceReferenceDate)
-                }
-            } else {
-                orbLayers(t: 0)
+            TimelineView(.animation(minimumInterval: NativeHealthspanOrbLayout.clockInterval, paused: clockPaused)) { timeline in
+                let t = clockPaused ? 0 : timeline.date.timeIntervalSinceReferenceDate
+                artwork(t: t)
+                    .frame(width: size, height: size)
             }
-            labels
+            .frame(width: size, height: size)
+            if !compact {
+                labels
+            }
         }
-        .frame(width: diameter, height: diameter)
-        .onAppear { onScreen = true }
+        .frame(width: size, height: size)
+        .modifier(NativeHealthspanGlassRim(enabled: orbStyle == .glass && !isLoading && !compact, size: size))
+        .animation(poseStill ? nil : NativeHealthspanOrbLayout.crossFade, value: isLoading)
+        .onAppear {
+            onScreen = true
+            armFill(fromZero: true)
+        }
         .onDisappear { onScreen = false }
+        .onChangeCompat(of: isLoading) { loading in
+            armFill(fromZero: !loading)
+        }
+        .onChangeCompat(of: delta) { _ in
+            guard !isLoading else { return }
+            armFill(fromZero: false)
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
     }
 
     private var accessibilityLabel: String {
-        if forming { return "Computing Band Age" }
-        let age = bandAge.map(NativeHealthspanFormat.ageText) ?? "unavailable"
-        if let delta = deltaYears {
+        if isLoading { return "Computing Band Age" }
+        let age = value.map(NativeHealthspanFormat.ageText) ?? "unavailable"
+        if let delta {
             return "Band Age \(age), \(NativeHealthspanFormat.youngerText(delta))"
         }
         return "Band Age \(age)"
     }
 
     @ViewBuilder
-    private func orbLayers(t: TimeInterval) -> some View {
-        let breath = live ? 1 + 0.02 * sin(t * 2 * .pi / (forming ? 6.4 : 4.6)) : 1
+    private func artwork(t: TimeInterval) -> some View {
+        let pulse: CGFloat = {
+            guard isLoading else { return 1 }
+            guard live, !compact else { return 0.72 }
+            return 0.58 + 0.42 * CGFloat(0.5 + 0.5 * sin(t * 2 * .pi / NativeHealthspanOrbLayout.pulsePeriod))
+        }()
         ZStack {
-            fill(t: t)
-            NativeHealthspanOrbParticles(t: t, hue: hue, style: style, live: live)
-            glow
+            switch orbStyle {
+            case .ring:
+                NativeHealthspanRingOrb(
+                    fill: drawn,
+                    tone: tone,
+                    size: size,
+                    nativeStyle: nativeStyle
+                )
+            case .bloom:
+                NativeHealthspanBloomOrb(
+                    t: t,
+                    live: live && !isLoading,
+                    tone: tone,
+                    size: size,
+                    nativeStyle: nativeStyle,
+                    colorScheme: colorScheme
+                )
+            case .glass:
+                NativeHealthspanGlassOrb(
+                    t: t,
+                    live: live && !isLoading,
+                    tone: tone,
+                    size: size,
+                    nativeStyle: nativeStyle,
+                    colorScheme: colorScheme
+                )
+            }
         }
-        .clipShape(Circle())
-        .scaleEffect(breath)
-        .saturation(forming ? 0.38 : 1)
-        .opacity(forming ? 0.88 : 1)
-    }
-
-    @ViewBuilder
-    private func fill(t: TimeInterval) -> some View {
-        if #available(iOS 18.0, macOS 15.0, *) {
-            NativeHealthspanMeshFill(t: live ? t : 0, hue: hue, style: style)
-        } else {
-            NativeHealthspanFallbackFill(t: live ? t : 0, hue: hue, style: style)
-        }
-    }
-
-    private var glow: some View {
-        let rim = NativeHealthspanOrbPalette.rim(hue, style: style)
-        return RadialGradient(
-            colors: [Color.clear, Color.clear, rim.opacity(0.55)],
-            center: .center,
-            startRadius: diameter * 0.22,
-            endRadius: diameter * 0.5
-        )
-        .allowsHitTesting(false)
+        .frame(width: size, height: size)
+        .compositingGroup()
+        .saturation(isLoading ? 0.18 : 1)
+        .opacity(pulse)
     }
 
     private var labels: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: NativeHealthspanOrbLayout.labelSpacing) {
             ageLabel
-            if showsCaption {
-                Text("BAND AGE")
-                    .font(style == .whoop ? NativeTokens.whoopCaps(12) : .footnote.weight(.semibold))
-                    .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 1.2)
-                    .foregroundStyle(.secondary)
-            }
-            if showsCaption, showsDelta {
-                deltaLabel
-            }
+            Text("BAND AGE")
+                .font(NativeTokens.whoopCaps(11))
+                .tracking(NativeTokens.whoopCapsTracking)
+                .foregroundStyle(.secondary)
+            deltaLabel
         }
-        .padding(.horizontal, 28)
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, NativeHealthspanOrbLayout.labelInset)
     }
 
     @ViewBuilder
     private var ageLabel: some View {
-        let text = forming ? "00.0" : (bandAge.map(NativeHealthspanFormat.ageText) ?? "—")
+        let text = isLoading ? "00.0" : (value.map(NativeHealthspanFormat.ageText) ?? "—")
         Text(text)
-            .font(NativePaint.number(diameter > 160 ? 56 : 22, weight: .bold, style: style))
+            .font(NativeTokens.whoopNumber(NativeHealthspanOrbLayout.numberSize, weight: .semibold))
+            .tracking(StrandFont.displayTracking(NativeHealthspanOrbLayout.numberSize))
             .monospacedDigit()
             .foregroundStyle(Color.primary)
-            .redacted(reason: forming ? .placeholder : [])
+            .redacted(reason: isLoading ? .placeholder : [])
             .healthspanNumericText(reduceMotion: poseStill)
     }
 
     @ViewBuilder
     private var deltaLabel: some View {
-        if forming {
+        if isLoading {
             Capsule()
-                .fill(NativePaint.separator(style).opacity(0.45))
-                .frame(width: 132, height: 14)
+                .fill(NativePaint.separator(nativeStyle).opacity(0.45))
+                .frame(width: 120, height: 12)
                 .redacted(reason: .placeholder)
-        } else if let delta = deltaYears {
+        } else if let delta {
             Text(NativeHealthspanFormat.youngerText(delta))
-                .font(.subheadline.weight(.semibold))
+                .font(NativeTokens.whoopNumber(15, weight: .semibold))
                 .foregroundStyle(deltaColor(delta))
-                .multilineTextAlignment(.center)
         }
     }
 
     private func deltaColor(_ delta: Double) -> Color {
-        if abs(delta) < 0.05 { return Color.primary }
-        return delta > 0 ? NativePaint.positiveDelta(style) : NativePaint.negativeDelta(style)
+        if abs(delta) < NativeHealthspanOrbMap.deadband { return Color.primary }
+        return delta > 0 ? NativePaint.positiveDelta(nativeStyle) : NativePaint.negativeDelta(nativeStyle)
+    }
+
+    private func armFill(fromZero: Bool) {
+        let target = targetFill
+        if poseStill || compact {
+            var transaction = Transaction(animation: nil)
+            withTransaction(transaction) { drawn = target }
+            return
+        }
+        if fromZero, drawn != 0 {
+            var transaction = Transaction(animation: nil)
+            withTransaction(transaction) { drawn = 0 }
+        }
+        withAnimation(NativeHealthspanOrbLayout.fillSpring) { drawn = target }
     }
 }
 
@@ -140,6 +222,7 @@ struct NativeHealthspanCompactHeader: View {
     var pace: Double?
     var forming: Bool
     @Environment(\.nativeStyle) private var style
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 8) {
@@ -149,13 +232,11 @@ struct NativeHealthspanCompactHeader: View {
                 tint: deltaTint
             )
             NativeHealthspanOrb(
-                bandAge: bandAge,
-                deltaYears: deltaYears,
-                forming: forming,
-                diameter: 72,
-                showsCaption: true,
-                showsDelta: false,
-                animates: false
+                value: bandAge,
+                delta: deltaYears,
+                isLoading: forming,
+                compact: true,
+                reduceMotion: reduceMotion
             )
             side(
                 value: pace.map(NativeHealthspanFormat.paceText) ?? "—",
@@ -173,7 +254,7 @@ struct NativeHealthspanCompactHeader: View {
 
     private var deltaTint: Color {
         guard let delta = deltaYears else { return .secondary }
-        if abs(delta) < 0.05 { return Color.primary }
+        if abs(delta) < NativeHealthspanOrbMap.deadband { return Color.primary }
         return delta > 0 ? NativePaint.positiveDelta(style) : NativePaint.negativeDelta(style)
     }
 
@@ -202,144 +283,215 @@ struct NativeHealthspanCompactHeader: View {
     }
 }
 
-enum NativeHealthspanOrbPalette {
-    static func rim(_ hue: NativeHealthspanOrbHue, style: NativeStyle) -> Color {
-        switch hue {
+enum NativeHealthspanOrbLayout {
+    static let heroSize: CGFloat = 220
+    static let compactSize: CGFloat = 44
+    static let numberSize: CGFloat = 44
+    static let labelSpacing: CGFloat = 4
+    static let labelInset: CGFloat = 28
+    static let petalCount = 7
+    static let bloomRevolution: TimeInterval = 36
+    static let breathPeriod: TimeInterval = 6
+    static let pulsePeriod: TimeInterval = 1.2
+    static let glassDriftPeriod: TimeInterval = 22
+    static let clockInterval: TimeInterval = 1.0 / 12.0
+    static let fillSpring = Animation.spring(response: 0.6, dampingFraction: 1.0)
+    static let crossFade = Animation.easeInOut(duration: 0.45)
+
+    static func lineWidth(size: CGFloat) -> CGFloat { max(4, size * 0.09) }
+
+    static func petalAngle(_ index: Int) -> Double {
+        Double(index) * 2 * Double.pi / Double(petalCount)
+    }
+}
+
+enum NativeHealthspanOrbSwatch {
+    static func lead(_ tone: NativeHealthspanOrbTone, style: NativeStyle) -> Color {
+        switch tone {
         case .younger: return NativePaint.recovery(style)
         case .older: return NativePaint.negativeDelta(style)
-        case .mixed: return NativePaint.sleep(style)
-        case .forming: return NativePaint.separator(style)
+        case .neutral: return Color.secondary
+        case .loading: return NativePaint.separator(style)
         }
     }
 
-    static func mint(_ style: NativeStyle) -> Color {
-        NativePaint.recovery(style)
-    }
-
-    static func teal(_ style: NativeStyle) -> Color {
-        NativePaint.sleep(style)
-    }
-
-    static func blue(_ style: NativeStyle) -> Color {
-        NativePaint.respiratory(style)
-    }
-
-    static func amber(_ style: NativeStyle) -> Color {
-        NativePaint.negativeDelta(style)
-    }
-
-    static func orange(_ style: NativeStyle) -> Color {
-        NativePaint.activity(style)
-    }
-}
-
-@available(iOS 18.0, macOS 15.0, *)
-private struct NativeHealthspanMeshFill: View {
-    var t: TimeInterval
-    var hue: NativeHealthspanOrbHue
-    var style: NativeStyle
-
-    var body: some View {
-        let drift = CGFloat(sin(t * 0.13) * 0.07)
-        let driftY = CGFloat(cos(t * 0.09) * 0.05)
-        MeshGradient(
-            width: 3,
-            height: 3,
-            points: [
-                SIMD2<Float>(0.0, 0.0), SIMD2<Float>(0.5, 0.0), SIMD2<Float>(1.0, 0.0),
-                SIMD2<Float>(0.0, 0.5), SIMD2<Float>(Float(0.5) + Float(drift), Float(0.5) + Float(driftY)), SIMD2<Float>(1.0, 0.5),
-                SIMD2<Float>(0.0, 1.0), SIMD2<Float>(0.5, 1.0), SIMD2<Float>(1.0, 1.0)
-            ],
-            colors: colors
-        )
-    }
-
-    private var colors: [Color] {
-        let dark = NativePaint.page(style)
-        let mint = NativeHealthspanOrbPalette.mint(style)
-        let teal = NativeHealthspanOrbPalette.teal(style)
-        let blue = NativeHealthspanOrbPalette.blue(style)
-        let amber = NativeHealthspanOrbPalette.amber(style)
-        let orange = NativeHealthspanOrbPalette.orange(style)
-        let grey = NativePaint.separator(style)
-        switch hue {
-        case .younger:
-            return [mint, mint, teal, teal, dark, blue, teal, blue, blue]
-        case .older:
-            return [amber, amber, orange, amber, dark, orange, orange, orange, amber]
-        case .mixed:
-            return [mint, teal, blue, amber.opacity(0.7), dark, teal, teal, blue, orange.opacity(0.6)]
-        case .forming:
-            return [grey, teal.opacity(0.45), grey, grey, dark, grey, grey, teal.opacity(0.35), grey]
+    static func trail(_ tone: NativeHealthspanOrbTone, style: NativeStyle) -> Color {
+        switch tone {
+        case .younger: return NativePaint.respiratory(style)
+        case .older: return NativePaint.activity(style)
+        case .neutral: return NativePaint.separator(style)
+        case .loading: return NativePaint.separator(style)
         }
     }
 }
 
-private struct NativeHealthspanFallbackFill: View {
-    var t: TimeInterval
-    var hue: NativeHealthspanOrbHue
-    var style: NativeStyle
+/// Apple Watch Activity / Vitals: thick round-capped gradient ring over a faint track.
+private struct NativeHealthspanRingOrb: View {
+    var fill: Double
+    var tone: NativeHealthspanOrbTone
+    var size: CGFloat
+    var nativeStyle: NativeStyle
 
     var body: some View {
-        let rim = NativeHealthspanOrbPalette.rim(hue, style: style)
-        let inner = NativePaint.page(style)
-        let second: Color = {
-            switch hue {
-            case .younger: return NativeHealthspanOrbPalette.blue(style)
-            case .older: return NativeHealthspanOrbPalette.orange(style)
-            case .mixed: return NativeHealthspanOrbPalette.teal(style)
-            case .forming: return NativePaint.separator(style)
-            }
-        }()
-        let angle = Angle.degrees(t * 8)
+        let width = NativeHealthspanOrbLayout.lineWidth(size: size)
+        let lead = NativeHealthspanOrbSwatch.lead(tone, style: nativeStyle)
+        let trail = NativeHealthspanOrbSwatch.trail(tone, style: nativeStyle)
+        let inset = width / 2 + 1
         ZStack {
-            RadialGradient(
-                colors: [inner, rim.opacity(0.55), rim.opacity(0.15)],
-                center: .center,
-                startRadius: 8,
-                endRadius: 160
-            )
-            AngularGradient(
-                colors: [rim.opacity(0.0), rim.opacity(0.65), second.opacity(0.7), rim.opacity(0.0)],
-                center: .center,
-                angle: angle
-            )
-            .opacity(0.85)
+            Circle()
+                .stroke(
+                    lead.opacity(NativeTokens.trackOpacity),
+                    style: StrokeStyle(lineWidth: width, lineCap: .round)
+                )
+            if fill > 0.001 {
+                arc(fill: fill)
+                    .stroke(
+                        lead.opacity(0.28),
+                        style: StrokeStyle(lineWidth: width * 2.4, lineCap: .round)
+                    )
+                    .blur(radius: size > 80 ? 6 : 0)
+                    .allowsHitTesting(false)
+                arc(fill: fill)
+                    .stroke(
+                        AngularGradient(colors: [lead, trail, lead], center: .center),
+                        style: StrokeStyle(lineWidth: width, lineCap: .round)
+                    )
+            }
+        }
+        .padding(inset)
+        .frame(width: size, height: size)
+    }
+
+    private func arc(fill: Double) -> some Shape {
+        Circle()
+            .trim(from: 0, to: CGFloat(min(max(fill, 0.001), 1)))
+            .rotation(.degrees(-90))
+    }
+}
+
+/// Apple Mindfulness / Breathe: overlapping translucent petals, slow spin, gentle breath.
+private struct NativeHealthspanBloomOrb: View {
+    var t: TimeInterval
+    var live: Bool
+    var tone: NativeHealthspanOrbTone
+    var size: CGFloat
+    var nativeStyle: NativeStyle
+    var colorScheme: ColorScheme
+
+    var body: some View {
+        let lead = NativeHealthspanOrbSwatch.lead(tone, style: nativeStyle)
+        let trail = NativeHealthspanOrbSwatch.trail(tone, style: nativeStyle)
+        let turn = live ? t / NativeHealthspanOrbLayout.bloomRevolution * 360 : 0
+        let breath = live ? 1 + 0.03 * sin(t * 2 * .pi / NativeHealthspanOrbLayout.breathPeriod) : 1
+        let petalSize = size * 0.54
+        let offset = size * 0.20
+        ZStack {
+            ForEach(0..<NativeHealthspanOrbLayout.petalCount, id: \.self) { i in
+                let angle = NativeHealthspanOrbLayout.petalAngle(i)
+                Circle()
+                    .fill(i.isMultiple(of: 2) ? lead.opacity(0.42) : trail.opacity(0.36))
+                    .frame(width: petalSize, height: petalSize)
+                    .offset(x: CGFloat(cos(angle)) * offset, y: CGFloat(sin(angle)) * offset)
+            }
+        }
+        .blendMode(colorScheme == .dark ? .plusLighter : .normal)
+        .rotationEffect(.degrees(turn))
+        .scaleEffect(breath)
+        .frame(width: size, height: size)
+        .overlay {
+            Circle()
+                .fill(NativePaint.page(nativeStyle).opacity(colorScheme == .dark ? 0.72 : 0.88))
+                .frame(width: size * 0.46, height: size * 0.46)
         }
     }
 }
 
-/// A few drifting light points. Static seeds, no per-frame allocations, ≤ 40 dots.
-private struct NativeHealthspanOrbParticles: View {
+/// Dimensional sphere: dark falloff, top-left specular, tinted rim, slow colour drift. No particles.
+private struct NativeHealthspanGlassOrb: View {
     var t: TimeInterval
-    var hue: NativeHealthspanOrbHue
-    var style: NativeStyle
     var live: Bool
-
-    private static let count = 32
+    var tone: NativeHealthspanOrbTone
+    var size: CGFloat
+    var nativeStyle: NativeStyle
+    var colorScheme: ColorScheme
 
     var body: some View {
-        let color = NativeHealthspanOrbPalette.rim(hue, style: style)
-        Canvas { context, size in
-            let half = min(size.width, size.height) * 0.5
-            let cx = size.width * 0.5
-            let cy = size.height * 0.5
-            let clock = live ? t : 0
-            for i in 0..<Self.count {
-                let u = Double((i * 47) % 97) / 97.0
-                let v = Double((i * 23) % 89) / 89.0
-                let w = Double((i * 13) % 53) / 53.0
-                let angle = u * 2 * .pi + clock * (0.035 + v * 0.055)
-                let radius = (0.56 + v * 0.32) * half
-                let x = cx + CGFloat(cos(angle)) * radius
-                let y = cy + CGFloat(sin(angle) * 0.96) * radius
-                let dot = 1.3 + CGFloat(w) * 2.4
-                let alpha = 0.22 + w * 0.55
-                let rect = CGRect(x: x - dot / 2, y: y - dot / 2, width: dot, height: dot)
-                context.fill(Path(ellipseIn: rect), with: .color(color.opacity(alpha)))
+        let lead = NativeHealthspanOrbSwatch.lead(tone, style: nativeStyle)
+        let trail = NativeHealthspanOrbSwatch.trail(tone, style: nativeStyle)
+        let drift = live ? sin(t * 2 * .pi / NativeHealthspanOrbLayout.glassDriftPeriod) * 0.05 : 0
+        let specular = colorScheme == .dark ? Color.primary.opacity(0.55) : NativeTokens.card.opacity(0.92)
+        ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            NativePaint.card(nativeStyle),
+                            NativePaint.page(nativeStyle),
+                            NativePaint.page(nativeStyle).opacity(0.92)
+                        ],
+                        center: UnitPoint(x: 0.38 + drift, y: 0.32),
+                        startRadius: 0,
+                        endRadius: size * 0.62
+                    )
+                )
+            ZStack {
+                Circle()
+                    .fill(lead.opacity(0.22))
+                    .blur(radius: size > 80 ? 18 : 4)
+                    .offset(x: CGFloat(drift) * size * 0.4, y: CGFloat(-drift) * size * 0.15)
+                Circle()
+                    .fill(trail.opacity(0.16))
+                    .blur(radius: size > 80 ? 14 : 3)
+                    .offset(x: CGFloat(-drift) * size * 0.35, y: size * 0.12)
+            }
+            .mask(Circle())
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [specular, specular.opacity(0)],
+                        center: UnitPoint(x: 0.30, y: 0.26),
+                        startRadius: 0,
+                        endRadius: size * 0.28
+                    )
+                )
+            Circle()
+                .stroke(
+                    AngularGradient(
+                        colors: [lead.opacity(0.95), trail.opacity(0.45), lead.opacity(0.2), lead.opacity(0.95)],
+                        center: .center
+                    ),
+                    lineWidth: max(1.25, size * 0.018)
+                )
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// iOS 26 Liquid Glass on a thin outer rim only. Body stays a normal gradient (HIG: glass is for controls).
+private struct NativeHealthspanGlassRim: ViewModifier {
+    var enabled: Bool
+    var size: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        content.background {
+            if enabled {
+                glassPlate
             }
         }
-        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private var glassPlate: some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            Circle()
+                .fill(Color.clear)
+                .frame(width: size + 10, height: size + 10)
+                .glassEffect(.regular, in: Circle())
+                .allowsHitTesting(false)
+        }
+        #endif
     }
 }
 

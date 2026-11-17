@@ -58,7 +58,7 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
         case .strap: DevicesView()
         case .dataBackup: NativeDataBackupView()
         case .profile: NativeProfileView()
-        case .settings: SettingsView()
+        case .settings: NativeAppSettingsView()
         case .notifications: NativeNotificationsSettings()
         case .about: BandAboutView()
         }
