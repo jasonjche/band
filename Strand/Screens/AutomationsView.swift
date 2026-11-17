@@ -48,6 +48,7 @@ struct AutomationsView: View {
     @AppStorage(HapticPrefs.workout) private var workoutHaptic = true
 
     @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+    @Environment(\.appleSettingsStyle) private var appleSettingsStyle
 
     var body: some View {
         Group {
@@ -99,6 +100,7 @@ struct AutomationsView: View {
     private var wristAlertsCard: some View {
         Section2(icon: "bell.badge.fill", title: String(localized: "Wrist alerts"),
                  blurb: String(localized: "Let NOOP tap your wrist for the things you turn on below, so you can leave your phone and still feel what matters."),
+                 shortFooter: String(localized: "Master switch for strap buzzes."),
                  active: wristAlertsMaster) {
             VStack(spacing: 0) {
                 ToggleRow(label: String(localized: "Enable wrist alerts"),
@@ -117,6 +119,7 @@ struct AutomationsView: View {
     private var hapticsCard: some View {
         Section2(icon: "waveform.path", title: String(localized: "Haptics"),
                  blurb: String(localized: "Choose which in-session cues buzz your wrist during a breathing session, timer, or workout."),
+                 shortFooter: String(localized: "In-session wrist buzzes."),
                  active: breathingHaptic || intervalsHaptic || liveSessionHaptic || workoutHaptic) {
             VStack(spacing: 0) {
                 ToggleRow(label: String(localized: "Breathing pacer"),
@@ -143,6 +146,7 @@ struct AutomationsView: View {
     private var doubleTapCard: some View {
         Section2(icon: "hand.tap.fill", title: String(localized: "Double-tap"),
                  blurb: String(localized: "Double-tap the strap to trigger an action on \(Platform.deviceNounPhrase). (The strap exposes a single double-tap gesture.)"),
+                 shortFooter: String(localized: "One double-tap gesture on the strap."),
                  active: behavior.doubleTapAction != .none) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
@@ -176,20 +180,30 @@ struct AutomationsView: View {
         }
     }
 
-    private var momentsView: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Recent moments").strandOverline()
-                Spacer()
-                Button("Clear") {
-                    model.moments.removeAll()
-                    UserDefaults.standard.removeObject(forKey: "moments")
-                }
-                .buttonStyle(.plain).font(StrandFont.caption).foregroundStyle(StrandPalette.accent)
-            }
+    @ViewBuilder private var momentsView: some View {
+        if appleSettingsStyle {
             ForEach(Array(model.moments.suffix(5).reversed().enumerated()), id: \.offset) { _, d in
-                Text(Self.momentFormatter.string(from: d))
-                    .font(StrandFont.captionNumber).foregroundStyle(StrandPalette.textSecondary)
+                LabeledContent("Moment", value: Self.momentFormatter.string(from: d))
+            }
+            Button("Clear Moments", role: .destructive) {
+                model.moments.removeAll()
+                UserDefaults.standard.removeObject(forKey: "moments")
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Recent moments").strandOverline()
+                    Spacer()
+                    Button("Clear") {
+                        model.moments.removeAll()
+                        UserDefaults.standard.removeObject(forKey: "moments")
+                    }
+                    .buttonStyle(.plain).font(StrandFont.caption).foregroundStyle(StrandPalette.accent)
+                }
+                ForEach(Array(model.moments.suffix(5).reversed().enumerated()), id: \.offset) { _, d in
+                    Text(Self.momentFormatter.string(from: d))
+                        .font(StrandFont.captionNumber).foregroundStyle(StrandPalette.textSecondary)
+                }
             }
         }
     }
@@ -208,6 +222,7 @@ struct AutomationsView: View {
     private var wearCard: some View {
         Section2(icon: "figure.walk.motion", title: String(localized: "Wear & presence"),
                  blurb: wearBlurb,
+                 shortFooter: String(localized: "Shortcuts when the strap comes off or on."),
                  active: wearActive) {
             VStack(spacing: 0) {
                 #if os(macOS)
@@ -232,6 +247,7 @@ struct AutomationsView: View {
     private var coachingCard: some View {
         Section2(icon: "bolt.heart.fill", title: String(localized: "Haptic coaching"),
                  blurb: String(localized: "Train by feel. The strap buzzes so you don't have to watch a screen."),
+                 shortFooter: String(localized: "Wrist buzzes while you train."),
                  active: behavior.zoneCoaching || behavior.stressCheckIn) {
             VStack(spacing: 0) {
                 ToggleRow(label: String(localized: "HR-zone coaching"),
@@ -266,6 +282,7 @@ struct AutomationsView: View {
     private var inactivityCard: some View {
         Section2(icon: "timer", title: String(localized: "Inactivity reminder"),
                  blurb: String(localized: "A gentle wrist buzz when you've been sitting too long, a nudge to get up and move. Inferred from the strap's motion on each history sync, so it lags real time by a sync or two."),
+                 shortFooter: String(localized: "Buzz after sitting too long."),
                  active: inactivity.enabled) {
             VStack(spacing: 0) {
                 ToggleRow(label: String(localized: "Enable inactivity reminder"),
@@ -327,21 +344,28 @@ struct AutomationsView: View {
     }
 
     /// A label/help row with a native −[value]+ stepper, clamped to `range` and moved by `step`.
+    @ViewBuilder
     private func stepperRow(label: String, help: String, value: Binding<Int>,
                             suffix: String, range: ClosedRange<Int>, step: Int) -> some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
-                Text(help).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+        if appleSettingsStyle {
+            Stepper(value: value, in: range, step: step) {
+                LabeledContent(label, value: "\(value.wrappedValue) \(suffix)")
             }
-            Spacer()
-            Text("\(value.wrappedValue) \(suffix)")
-                .font(StrandFont.bodyNumber).foregroundStyle(StrandPalette.textPrimary)
-            Stepper("", value: value, in: range, step: step).labelsHidden()
-                .accessibilityLabel(label)
+        } else {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label).font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                    Text(help).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Text("\(value.wrappedValue) \(suffix)")
+                    .font(StrandFont.bodyNumber).foregroundStyle(StrandPalette.textPrimary)
+                Stepper("", value: value, in: range, step: step).labelsHidden()
+                    .accessibilityLabel(label)
+            }
+            .frame(minHeight: 42).padding(.vertical, 4)
         }
-        .frame(minHeight: 42).padding(.vertical, 4)
     }
 
     // MARK: - Illness early-warning
@@ -349,6 +373,7 @@ struct AutomationsView: View {
     private var illnessCard: some View {
         Section2(icon: "waveform.path.ecg", title: String(localized: "Illness early-warning"),
                  blurb: String(localized: "Watches your resting HR, HRV, skin temperature and respiration against your own 28-day baseline. On-device and approximate: informational only, not a diagnosis."),
+                 shortFooter: String(localized: "On-device, informational only."),
                  active: behavior.illnessWatch) {
             ToggleRow(label: String(localized: "Watch for early-illness signs"),
                       help: String(localized: "Needs at least 14 days of history. When two or more signals drift together you get a banner on the dashboard and a notification, at most once a day."),
@@ -365,6 +390,7 @@ struct AutomationsView: View {
     private var healthInsightsCard: some View {
         Section2(icon: "thermometer.medium", title: String(localized: "Health insights"),
                  blurb: String(localized: "Optional, on-device reads from your nightly signals. Each is off by default: for awareness only, never a diagnosis."),
+                 shortFooter: String(localized: "Optional on-device reads. Off by default."),
                  active: cycleAwareness || rhythmEnabled) {
             VStack(spacing: 0) {
                 // #801: cycle awareness reads the MENSTRUAL temperature shift, so the toggle is only
@@ -422,6 +448,7 @@ struct AutomationsView: View {
     private var batteryCard: some View {
         Section2(icon: "battery.25", title: String(localized: "Battery alerts"),
                  blurb: String(localized: "Get a notification when the strap battery runs low (15%) so you can top it up before tonight, and when it finishes charging."),
+                 shortFooter: String(localized: "Low and full charge notifications."),
                  active: behavior.batteryAlerts) {
             ToggleRow(label: String(localized: "Notify on low and full battery"),
                       help: String(localized: "A reminder to recharge before bed when the strap drops to 15%, and a heads-up when it reaches 100%, each at most once per charge cycle."),
@@ -442,6 +469,7 @@ struct AutomationsView: View {
     private var strainTargetCard: some View {
         Section2(icon: "flame", title: String(localized: "Strain target"),
                  blurb: String(localized: "A once-a-day nudge when your Effort reaches the low end of today's optimal strain range, worked out from your recovery."),
+                 shortFooter: String(localized: "Once a day when Effort hits today's range."),
                  active: behavior.strainTargetNudge) {
             ToggleRow(label: String(localized: "Notify when optimal strain is reached"),
                       help: String(localized: "Posts after your strap syncs and NOOP scores the day — not the exact second you cross it. At most once per day."),
@@ -508,17 +536,24 @@ struct AutomationsView: View {
             .frame(maxWidth: 320)
     }
 
+    @ViewBuilder
     private func shortcutFieldRow(_ label: String, help: String, text: Binding<String>) -> some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
-                Text(help).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+        if appleSettingsStyle {
+            LabeledContent(label) {
+                TextField("Shortcut name", text: text)
             }
-            Spacer()
-            shortcutField(String(localized: "Shortcut name"), text: text)
+        } else {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label).font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                    Text(help).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                shortcutField(String(localized: "Shortcut name"), text: text)
+            }
+            .frame(minHeight: 42).padding(.vertical, 4)
         }
-        .frame(minHeight: 42).padding(.vertical, 4)
     }
 
     private var rowDivider: some View {
@@ -544,6 +579,7 @@ private struct BondStatePill: View {
 
 private struct Section2<Content: View>: View {
     let icon: String; let title: String; var blurb: String? = nil
+    var shortFooter: String? = nil
     /// When this automation is enabled the card carries a brighter brand-green wash; otherwise a
     /// faint one — so an active automation reads at a glance. Presentation-only.
     var active: Bool = false
@@ -556,7 +592,7 @@ private struct Section2<Content: View>: View {
             } header: {
                 Text(title)
             } footer: {
-                if let blurb { Text(blurb) }
+                if let shortFooter { Text(shortFooter) }
             }
         } else {
         StrandCard(padding: 20, tint: StrandPalette.accent) {

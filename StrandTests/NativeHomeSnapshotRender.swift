@@ -61,7 +61,7 @@ final class NativeHomeSnapshotRender: XCTestCase {
             }
         }
         for section in NativeGallerySnapshot.sections where [
-            "sleep-page", "recovery-page", "strain-page", "activity-page",
+            "sleep-page", "sleep-page-empty", "recovery-page", "strain-page", "activity-page",
         ].contains(section.name) {
             for pass in NativeSnapshotPass.all {
                 NSApp.appearance = NSAppearance(named: pass.scheme == .dark ? .darkAqua : .aqua)

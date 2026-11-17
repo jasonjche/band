@@ -1418,7 +1418,40 @@ struct SettingsView: View {
 
     /// Independent body and exercise-distance unit choices plus temperature and Effort overrides.
     /// Display-only — nothing stored changes; NOOP keeps everything in SI.
-    private var unitsCard: some View {
+    @ViewBuilder private var unitsCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Picker("Body Measurements", selection: $unitSystemRaw) {
+                    Text("Metric").tag(UnitSystem.metric.rawValue)
+                    Text("Imperial").tag(UnitSystem.imperial.rawValue)
+                }
+                Picker("Exercise Distance & Pace", selection: distanceSystemBinding) {
+                    Text("Kilometres").tag(UnitSystem.metric.rawValue)
+                    Text("Miles").tag(UnitSystem.imperial.rawValue)
+                }
+                Picker("Temperature", selection: $temperatureRaw) {
+                    Text("Follow body").tag("")
+                    Text("°C").tag(TemperatureUnit.celsius.rawValue)
+                    Text("°F").tag(TemperatureUnit.fahrenheit.rawValue)
+                }
+                Picker("Skin Temperature", selection: $skinTempDisplayRaw) {
+                    Text("Temperature").tag("")
+                    Text("vs baseline").tag(SkinTempDisplay.Kind.deviation.rawValue)
+                }
+                Picker("Effort Scale", selection: $effortScaleRaw) {
+                    Text("0-100").tag(EffortScale.hundred.rawValue)
+                    Text("0-21").tag(EffortScale.whoop.rawValue)
+                }
+                Toggle("Exponential Intensity Scale", isOn: $banisterEffortEnabled)
+                    .onChangeCompat(of: banisterEffortEnabled) { _ in
+                        Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
+                    }
+            } header: {
+                Text("Units")
+            } footer: {
+                Text("Display only. Stored data stays in SI units.")
+            }
+        } else {
         SettingsSection(
             icon: "ruler",
             title: "Units",
@@ -1516,6 +1549,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        }
     }
 
     // MARK: - Appearance (Theme everywhere; alternate app icon iOS-only)
@@ -1580,7 +1614,10 @@ struct SettingsView: View {
         )
     }
 
-    private var appearanceCard: some View {
+    @ViewBuilder private var appearanceCard: some View {
+        if appleSettingsStyle {
+            nativeAppearanceSections
+        } else {
         SettingsSection(
             icon: "circle.lefthalf.filled",
             title: "Appearance",
@@ -1868,6 +1905,110 @@ struct SettingsView: View {
                 rowDivider
                 backgroundImageControls
             }
+        }
+        }
+    }
+
+    @ViewBuilder private var nativeAppearanceSections: some View {
+        Section {
+            Picker("Language", selection: $appLanguageRaw) {
+                ForEach(AppLanguage.allCases) { language in
+                    Text(language == .system ? String(localized: "System default") : language.autonym)
+                        .tag(language.rawValue)
+                }
+            }
+            .onChangeCompat(of: appLanguageRaw) { AppLanguage.apply($0) }
+            Picker("Clock", selection: $clockFormatRaw) {
+                Text("System default").tag(ClockFormatPreference.system.rawValue)
+                Text("12-hour").tag(ClockFormatPreference.twelveHour.rawValue)
+                Text("24-hour").tag(ClockFormatPreference.twentyFourHour.rawValue)
+            }
+            .onChangeCompat(of: clockFormatRaw) { _ in AppClock.invalidate() }
+            Toggle("AI Coach", isOn: $coachEnabled)
+                .onChangeCompat(of: coachEnabled) { on in
+                    CoachBriefScheduler.applyMasterSwitch(on)
+                }
+            #if os(iOS)
+            if #available(iOS 26.0, *) {
+                Toggle("Hide Bar When Scrolling", isOn: $bottomBarAutoHide)
+            }
+            #endif
+        } header: {
+            Text("General")
+        } footer: {
+            Text("Language changes take effect after you reopen Band.")
+        }
+
+        Section {
+            Picker("Preset", selection: themePresetBinding) {
+                ForEach(ThemePreset.allCases) { p in
+                    Text(p.label).tag(p)
+                }
+            }
+            Picker("Theme", selection: $appearanceRaw) {
+                ForEach(AppearanceMode.allCases) { mode in
+                    Text(mode.label).tag(mode.rawValue)
+                }
+            }
+            Picker("Chart Colours", selection: $chartStyleRaw) {
+                ForEach(ChartStyle.allCases) { style in
+                    Text(style.label).tag(style.rawValue)
+                }
+            }
+            Picker("Sleep Chart", selection: $sleepChartStyleRaw) {
+                ForEach(SleepChartStyle.allCases) { style in
+                    Text(style.label).tag(style.rawValue)
+                }
+            }
+            Picker("Accent", selection: $accentRaw) {
+                ForEach(AccentColor.allCases) { c in
+                    Text(c.label).tag(c.rawValue)
+                }
+            }
+            if AccentColor.resolve(accentRaw) == .custom {
+                ColorPicker("Custom Colour", selection: customAccentBinding, supportsOpacity: false)
+            }
+            Picker("Trend Charts", selection: $trendChartStyleRaw) {
+                ForEach(TrendChartStyle.allCases) { style in
+                    Text(style.label).tag(style.rawValue)
+                }
+            }
+            #if os(iOS)
+            Picker("App Icon", selection: $useNavyIcon) {
+                Text("Default").tag(false)
+                Text("Navy").tag(true)
+            }
+            .onChangeCompat(of: useNavyIcon) { applyAppIcon($0) }
+            #endif
+        } header: {
+            Text("Look")
+        }
+
+        Section {
+            Toggle("Reduce Motion", isOn: $quietMotion)
+            Toggle("Day-Cycle Background", isOn: $showDayCycleBackground)
+            Toggle("Sky Behind Cards", isOn: $skyBehindCards)
+                .disabled(!showDayCycleBackground)
+            Toggle("Transparent Cards", isOn: Binding(
+                get: { cardOpacityPercent < 100 },
+                set: { on in cardOpacityPercent = on ? (cardOpacityPercent >= 100 ? 70 : cardOpacityPercent) : 100 }
+            ))
+            LabeledContent("Card Transparency", value: "\(100 - cardOpacityPercent)%")
+            Slider(
+                value: Binding(
+                    get: { Double(100 - cardOpacityPercent) },
+                    set: { cardOpacityPercent = 100 - Int($0.rounded()) }
+                ),
+                in: 0...100, step: 1
+            )
+        } header: {
+            Text("Motion & Cards")
+        }
+
+        Section {
+            backgroundImageControls
+        } header: {
+            Text("Background")
         }
     }
 
@@ -2341,6 +2482,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        }
     }
 
     #if os(iOS)
@@ -2348,7 +2490,16 @@ struct SettingsView: View {
 
     /// Behaviour while a strap history sync runs. Its own section rather than a row under Features, which holds
     /// optional trackers. `SyncKeepAwake` reads the same key.
-    private var syncCard: some View {
+    @ViewBuilder private var syncCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Toggle("Keep Screen On While Syncing", isOn: $syncKeepScreenOn)
+            } header: {
+                Text("Sync")
+            } footer: {
+                Text("Holds the screen awake while a strap history sync runs.")
+            }
+        } else {
         SettingsSection(
             icon: "arrow.triangle.2.circlepath",
             title: "Sync",
@@ -2369,6 +2520,7 @@ struct SettingsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
         }
     }
     #endif
@@ -2501,7 +2653,29 @@ struct SettingsView: View {
     /// Opt-in liquid Today redesign (default ON in this build). Off falls back to the
     /// classic dashboard immediately, no rebuild. Same data either way.
     @AppStorage("noop.liquidTodayEnabled") private var liquidTodayEnabled = true
-    private var liquidTodayCard: some View {
+    @ViewBuilder private var liquidTodayCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Toggle("WHOOP Layout, Apple Controls", isOn: $nativeTodayEnabled)
+                if nativeTodayEnabled {
+                    Picker("Style", selection: $nativeStyleRaw) {
+                        ForEach(NativeStyle.allCases) { option in
+                            Text(option.label).tag(option.rawValue)
+                        }
+                    }
+                    Toggle("High Sleep Stress", isOn: $sleepStressEnabled)
+                }
+            } header: {
+                Text("Today")
+            } footer: {
+                Text("Three rings and the score pages. Same stored data.")
+            }
+            Section {
+                Toggle("Liquid Today (prototype)", isOn: $liquidTodayEnabled)
+            } footer: {
+                Text("Prototype Today layout. Same live data.")
+            }
+        } else {
         Group {
             SettingsSection(
                 icon: "heart.text.square",
@@ -2547,6 +2721,7 @@ struct SettingsView: View {
                 }
             }
             upstreamLiquidTodayCard
+        }
         }
     }
 

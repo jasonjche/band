@@ -165,7 +165,7 @@ enum NativeBandScores {
                 hrvMs: day.avgHrv,
                 rhr: day.restingHr.map(Double.init),
                 resp: day.respRateBpm,
-                temp: day.skinTempC ?? day.skinTempDevC,
+                temp: day.skinTempC,
                 spo2: day.spo2Pct
             )
         }

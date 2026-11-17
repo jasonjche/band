@@ -708,7 +708,8 @@ private enum MoreDestination: Hashable {
     var usesAppleSettingsChrome: Bool {
         switch self {
         case .devices, .dataSources, .backupSync, .appleHealth, .alarms,
-             .automations, .testCentre, .powerSaving, .settings:
+             .automations, .testCentre, .powerSaving, .settings,
+             .siriShortcuts, .shortcutsExport:
             return true
         default:
             return false

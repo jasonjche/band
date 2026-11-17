@@ -118,7 +118,7 @@ struct AppleHealthSettingsView: View {
         Section {
             Button("Open Apple Health") { openHealthApp() }
         } footer: {
-            Text("Change Band’s access in Settings → Health → Data Access & Devices.")
+            Text("Change Band's access in Settings → Health → Data Access & Devices.")
         }
     }
 

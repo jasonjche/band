@@ -545,6 +545,12 @@ enum NativeHealthRange {
             guard measured > 0 else { return nil }
             return "Within Range \(inRange) of \(measured)"
         }
+
+        /// Compact header form for the half-width Health Monitor card.
+        var headerTrailing: String? {
+            guard measured > 0 else { return nil }
+            return "\(inRange)/\(measured)"
+        }
     }
 
     static func summary(days: [DailyMetric], todayKey: String) -> Summary {

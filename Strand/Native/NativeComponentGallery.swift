@@ -163,6 +163,7 @@ struct NativeGallerySnapshot {
             Section(name: "recovery-week", title: "Recovery Week", view: AnyView(recoveryWeek)),
             Section(name: "strain-week", title: "Strain Week", view: AnyView(strainWeek)),
             Section(name: "sleep-page", title: "Sleep Page", padded: false, view: AnyView(sleepPage)),
+            Section(name: "sleep-page-empty", title: "Sleep Page Empty", padded: false, view: AnyView(sleepPageEmpty)),
             Section(name: "recovery-page", title: "Recovery Page", padded: false, view: AnyView(recoveryPage)),
             Section(name: "strain-page", title: "Strain Page", padded: false, view: AnyView(strainPage)),
             Section(name: "activity-page", title: "Activity Page", padded: false, view: AnyView(activityPage)),
@@ -372,6 +373,29 @@ struct NativeGallerySnapshot {
             dayKey: highlightKey,
             needMinutes: 465,
             debtMinutes: 36,
+            scrolls: false
+        )
+    }
+
+    private static var emptySleepScore: NativeScore {
+        NativeScore(
+            name: "Sleep",
+            value: "—",
+            known: false,
+            fraction: nil,
+            tint: NativeTokens.sleep,
+            rows: [],
+            insight: "",
+            route: .sleep
+        )
+    }
+
+    private static var sleepPageEmpty: some View {
+        NativeScoreView(
+            score: emptySleepScore,
+            weekCards: [],
+            kind: .sleep,
+            dayKey: highlightKey,
             scrolls: false
         )
     }

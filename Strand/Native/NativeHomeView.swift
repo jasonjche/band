@@ -152,7 +152,7 @@ struct NativeHomeView: View {
             rhr: HomeMonitorValue.from(model.dashboard, title: "Resting Heart Rate", unit: "BPM"),
             stressLevel: stressLevel,
             stressHours: sampleHours,
-            rangeCaption: healthRange.caption,
+            rangeCaption: healthRange.headerTrailing,
             onHealth: { path.wrappedValue.append(TabRoute.metric("hrv")) },
             onStress: { path.wrappedValue.append(TabRoute.stress) }
         )
@@ -995,16 +995,15 @@ struct HomeLoadingSkeleton: View {
     }
 
     private var skeletonCard: some View {
-        NativeChrome.panel(expands: true) {
+        NativeChrome.panel {
             Text("Monitor")
                 .font(.footnote.weight(.semibold))
             Text("88")
                 .font(StrandFont.rounded(22, weight: .bold))
             Text("Typical")
                 .font(.footnote)
-            Spacer(minLength: 24)
         }
-        .frame(minHeight: 140)
+        .frame(minHeight: 140, alignment: .top)
     }
 }
 
@@ -1212,9 +1211,23 @@ enum HomeSnapshot {
         ]
     }
 
+    static var emptyPage: some View {
+        NativeChrome.stack {
+            NativeNoDataCard(onImport: {}, onPair: {})
+        }
+    }
+
+    static var loadingPage: some View {
+        NativeChrome.stack {
+            HomeLoadingSkeleton()
+        }
+    }
+
     static var sections: [Section] {
         [
             Section(name: "page", padded: false, view: AnyView(homePage)),
+            Section(name: "empty", padded: false, view: AnyView(emptyPage)),
+            Section(name: "loading", padded: false, view: AnyView(loadingPage)),
             Section(name: "rings", view: AnyView(HomeRingsRow(
                 sleep: sleepScore, recovery: recoveryScore, strain: strainScore, onOpen: { _ in }
             ))),

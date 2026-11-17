@@ -18,6 +18,60 @@ struct StorageView: View {
     @State private var lastCleanedSummary: String?
 
     var body: some View {
+        Group {
+            #if os(iOS)
+            if AppleSettingsLayout.isEnabled {
+                nativeForm
+            } else {
+                storageScaffold
+            }
+            #else
+            storageScaffold
+            #endif
+        }
+        .task { await load() }
+    }
+
+    #if os(iOS)
+    private var nativeForm: some View {
+        Form {
+            if loading && report == nil {
+                Section {
+                    ProgressView("Measuring…")
+                }
+            } else if let report {
+                Section {
+                    LabeledContent("Health Database", value: report.db.map(Self.format) ?? "—")
+                    LabeledContent("Leftover Import Copies", value: Self.format(report.inbox))
+                    LabeledContent("Import Temp Files", value: Self.format(report.importTemp))
+                } header: {
+                    Text("On This Device")
+                }
+                Section {
+                    if let lastCleanedSummary {
+                        LabeledContent("Last Clean-Up", value: lastCleanedSummary)
+                    }
+                    Button("Clean Up Now") {
+                        Task { await cleanUp() }
+                    }
+                    .disabled(cleaning || (report.inbox + report.importTemp) == 0)
+                    if cleaning { ProgressView() }
+                } header: {
+                    Text("Clean Up")
+                } footer: {
+                    Text("Removes leftover import copies. Live data stays.")
+                }
+            } else {
+                Section {
+                    LabeledContent("Storage", value: "Unavailable")
+                }
+            }
+        }
+        .appleSettingsChrome("Storage")
+    }
+    #endif
+
+    private var storageScaffold: some View {
         ScreenScaffold(title: "Storage",
                        subtitle: "Where NOOP's on-device space is going, and a one-tap clean-up.") {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
@@ -36,7 +90,6 @@ struct StorageView: View {
                 explainerCard.staggeredAppear(index: 2)
             }
         }
-        .task { await load() }
     }
 
     // MARK: - Cards
