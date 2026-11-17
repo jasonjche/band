@@ -96,7 +96,7 @@ enum NativeTrendsCatalog {
         }
     }
 
-    static var sections: [NativeTrendsSection] { sections() }
+    static let sections: [NativeTrendsSection] = NativeTrendsCatalog.sections(in: MetricCatalog.all)
     static var metrics: [MetricDescriptor] { sections.flatMap(\.metrics) }
     static var keys: [String] { metrics.map(\.key) }
 

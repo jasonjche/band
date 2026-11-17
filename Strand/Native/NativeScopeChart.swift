@@ -117,16 +117,14 @@ struct NativeScopeChart: View {
 }
 
 extension View {
-    /// Clip marks to the plot; reserve trailing/bottom space so axis labels sit outside.
-    func nativeClippedChartPlot(top: CGFloat = NativeScopePlotMath.plotTop) -> some View {
-        chartPlotStyle { plot in
-            plot
-                .clipped()
-                .padding(.leading, NativeScopePlotMath.plotLeading)
-                .padding(.trailing, NativeScopePlotMath.plotTrailing)
-                .padding(.top, top)
-                .padding(.bottom, NativeScopePlotMath.plotBottom)
-        }
+    /// Clip marks to the plot. Swift Charts already lays axis labels outside the plot.
+    ///
+    /// Do not pad inside `chartPlotStyle`: padding there moves the marks and gridlines but not the
+    /// axis labels, so the labels drift off their gridlines and the x labels land inside the plot.
+    /// Extra room above the plot (the stress chart's icon lane) goes on the chart view instead.
+    func nativeClippedChartPlot(top: CGFloat = 0) -> some View {
+        chartPlotStyle { plot in plot.clipped() }
+            .padding(.top, top)
     }
 }
 

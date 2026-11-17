@@ -400,7 +400,12 @@ final class AppModel: ObservableObject {
         // a (re)bond or a settings change. A strap that stays continuously bonded (a Mac in range) would
         // fire once and never re-arm , silent from day two. Re-arm daily so an always-on session keeps
         // waking the user.
-        scheduleDailySmartAlarmRearm()
+        // Timer + power-saving prefs are not needed before first frame. The bond sink
+        // re-applies power-saving on connect; the daily re-arm still starts this run loop.
+        Task { @MainActor [weak self] in
+            self?.scheduleDailySmartAlarmRearm()
+            self?.applyPowerSaving()
+        }
         // Re-apply "Continuous HRV capture" on every (re)bond: if on, the strap should hold the dense
         // realtime stream armed even with no Live screen open, so it banks beat-to-beat R-R 24/7 for
         // better overnight HRV/recovery/sleep. The BLE reconciler arms it on the off→on edge; pushing it
@@ -448,7 +453,6 @@ final class AppModel: ObservableObject {
         // reflects it from launch , the reconciler then arms the dense stream as soon as the strap bonds
         // (and the bond sink above re-applies it on every reconnect).
         ble.setKeepRealtimeForData(PuffinExperiment.keepRealtimeForDataEnabled)
-        applyPowerSaving()
 
         // Turn the strap's offloaded raw data into dashboard scores on launch and every 15
         // minutes, so recovery / strain / sleep populate from the strap itself with no import.

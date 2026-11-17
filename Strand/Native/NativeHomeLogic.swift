@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import WhoopStore
+import StrandAnalytics
 
 /// Fixed leading-pill geometry for Home activity rows so sleep and workouts share one grid.
 enum HomeActivityLayout {
@@ -350,7 +351,7 @@ enum HomeMonitorTile {
         guard summary.measured > 0 else { return "No data" }
         if summary.judged == 0 { return "Building baseline" }
         if summary.outside == 0 { return "Within Range" }
-        return "\(summary.outside) Outside Range"
+        return "\(summary.outside) Out of Range"
     }
 }
 
@@ -449,6 +450,155 @@ enum HomeStressWindow {
     ) -> Date {
         let end = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? clock
         return min(clock, end)
+    }
+}
+
+/// One Home snapshot: rings, dashboard, week, calendar, tonight. Pure; Home applies it to `@State`.
+enum NativeHomeRebuild {
+    struct Snapshot {
+        var firstDay: String?
+        var storeEmpty: Bool
+        var dayModel: NativeDay.Model
+        var strainTarget: BandStrainTarget.Result?
+        var healthReport: NativeHealthRange.Report
+        var overnightLoad: BandIllnessSignal.DayResult?
+        var tonight: NativeTonightSleep.Model?
+        var stressLevel: Double?
+        var stressUpdatedAt: Date?
+        var stressDayStart: Date
+        var stressNow: Date
+        var strainTargetFraction: ClosedRange<Double>?
+        var activityItems: [HomeActivityItem]
+        var journalDots: [HomeJournalDot]
+        var journalHasEntry: Bool
+        var calendarRecovery: [String: Double]
+        var stressSleepStart: Date?
+        var stressSleepEnd: Date?
+        var stressBouts: [(start: Date, end: Date)]
+        var weekRecovery: [NativeDayPoint]
+        var weekStrain: [NativeDayPoint]
+        var sleepStreak: Int
+        var dashboardItems: [HomeMetricItem]
+    }
+
+    struct Input {
+        var days: [DailyMetric]
+        var sleeps: [CachedSleepSession]
+        var importedSleep: [String: ImportedSleepFigures]
+        var workouts: [WorkoutRow]
+        var journalEntries: [JournalEntry]
+        var vo2max: Double?
+        var sampleHours: [NativeHourPoint]
+        var liveTodayStrain: Double?
+        var selectedKey: String
+        var selectedDay: Date
+        var effortScale: EffortScale
+        var smartAlarmEnabled: Bool
+        var smartAlarmMinutes: Int
+        var dashboardJSON: String
+        var temperature: TemperatureUnit
+        var stressExtraExclusions: [(start: Date, end: Date)]
+        var now: Date
+    }
+
+    static func run(_ input: Input) -> Snapshot {
+        let liveDay = NativeDayLogic.logicalToday(now: input.now)
+        let model = NativeDay.make(
+            days: input.days,
+            sleeps: input.sleeps,
+            workouts: input.workouts,
+            todayKey: input.selectedKey,
+            connected: false,
+            effortScale: input.effortScale,
+            now: input.now,
+            journalEntries: input.journalEntries,
+            importedSleep: input.importedSleep,
+            liveStrain: input.liveTodayStrain
+        )
+        let strainTarget = NativeStrainTarget.resolve(
+            viewingKey: input.selectedKey,
+            todayKey: liveDay,
+            days: input.days,
+            sleeps: input.sleeps,
+            workouts: input.workouts,
+            importedSleep: input.importedSleep
+        )
+        let tonight: NativeTonightSleep.Model?
+        if input.selectedKey == liveDay {
+            tonight = NativeTonightSleep.make(
+                needMin: model.sleepNeedMin,
+                alarmEnabled: input.smartAlarmEnabled,
+                alarmMinutes: input.smartAlarmMinutes
+            )
+        } else {
+            tonight = nil
+        }
+        let windowStart = HomeStressWindow.dayStart(for: input.selectedDay)
+        let sleep = input.sleeps.last {
+            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == input.selectedKey
+        }
+        let stressBouts = input.workouts.compactMap { row -> (start: Date, end: Date)? in
+            let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
+            guard NativeDayLogic.sleepSessionDayKey(boutStart) == input.selectedKey else { return nil }
+            return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
+        } + input.stressExtraExclusions
+        let stressLevel = NativeStressResolver.level(
+            hours: input.sampleHours, days: input.days, todayKey: input.selectedKey
+        )
+        return Snapshot(
+            firstDay: input.days.first?.day,
+            storeEmpty: NativeDayLogic.isEmptyStore(
+                days: input.days, sleeps: input.sleeps, importedSleep: input.importedSleep
+            ),
+            dayModel: model,
+            strainTarget: strainTarget,
+            healthReport: NativeHealthRange.report(
+                days: input.days, todayKey: input.selectedKey, temperature: input.temperature
+            ),
+            overnightLoad: NativeIllnessSignal.result(days: input.days, dayKey: input.selectedKey),
+            tonight: tonight,
+            stressLevel: stressLevel,
+            stressUpdatedAt: input.sampleHours.last(where: { $0.time <= Date() })?.time,
+            stressDayStart: windowStart,
+            stressNow: HomeStressWindow.now(dayStart: windowStart, clock: input.now),
+            strainTargetFraction: strainTarget.map { NativeStrainTarget.ringFraction($0.range) },
+            activityItems: HomeActivityItem.make(from: model),
+            journalDots: NativeHomeCharts.journalDots(filled: model.journalDays, todayKey: input.selectedKey),
+            journalHasEntry: model.journalDays.last == true,
+            calendarRecovery: HomeCalendarRecovery.values(
+                days: input.days,
+                sleeps: input.sleeps,
+                workouts: input.workouts,
+                importedSleep: input.importedSleep
+            ),
+            stressSleepStart: sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) },
+            stressSleepEnd: sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) },
+            stressBouts: stressBouts,
+            weekRecovery: NativeWeek.points(
+                kind: .recovery, days: input.days, todayKey: input.selectedKey,
+                sleeps: input.sleeps, workouts: input.workouts, importedSleep: input.importedSleep
+            ),
+            weekStrain: NativeWeek.points(
+                kind: .strain, days: input.days, todayKey: input.selectedKey,
+                effortScale: input.effortScale,
+                sleeps: input.sleeps, workouts: input.workouts, importedSleep: input.importedSleep
+            ),
+            sleepStreak: HomeSleepStreak.days(
+                sleeps: input.sleeps,
+                imported: input.importedSleep,
+                todayKey: input.selectedKey,
+                viewingToday: input.selectedKey == liveDay
+            ),
+            dashboardItems: HomeMetricItem.make(
+                dashboard: model.dashboard,
+                days: input.days,
+                todayKey: input.selectedKey,
+                vo2max: input.vo2max,
+                model: model,
+                stress: stressLevel,
+                ids: HomeDashboardStore.decode(input.dashboardJSON)
+            )
+        )
     }
 }
 

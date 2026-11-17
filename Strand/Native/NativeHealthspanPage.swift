@@ -9,9 +9,9 @@ struct NativeHealthspanPage: View {
     /// Rows shown under Pace of Aging when this page is the Health tab root (Trends, Reports).
     var links: [NativeHealthItem] = []
     var title: String = "Healthspan"
-    @EnvironmentObject private var profile: ProfileStore
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @State private var repoHandle: Repository?
+    @State private var profileHandle: ProfileStore?
     @State private var refreshSeq = 0
     @State private var handlesReady = false
     @State private var result: HealthspanEngine.Result?
@@ -36,6 +36,7 @@ struct NativeHealthspanPage: View {
         .modifier(NativeInlineTitle())
         .background {
             NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
+            NativeProfileSink { profileHandle = $0 }
         }
         .task(id: taskID) {
             guard handlesReady, let repo = repoHandle else { return }
@@ -71,16 +72,24 @@ struct NativeHealthspanPage: View {
             vo2EstByDay: NativeHealthspanBuild.map(await vo2e),
             leanByDay: NativeHealthspanBuild.map(await leanS),
             weightByDay: NativeHealthspanBuild.map(await weightS),
-            profileWeightKg: profile.weightKg > 0 ? profile.weightKg : nil
+            profileWeightKg: {
+                guard let kg = profileHandle?.weightKg, kg > 0 else { return nil }
+                return kg
+            }()
         )
         if Task.isCancelled { return }
         let asOf = dayKey
-        let chrono = NativeHealthspanFormat.chronoAge(dob: profile.dateOfBirth, asOf: selectedDay)
-        let computed = HealthspanEngine.compute(
-            days: days,
-            profile: .init(chronoAge: chrono, sex: profile.sex),
-            asOfDay: asOf
-        )
+        let chrono = profileHandle.map {
+            NativeHealthspanFormat.chronoAge(dob: $0.dateOfBirth, asOf: selectedDay)
+        } ?? 0
+        let sex = profileHandle?.sex ?? ""
+        let computed = await Task.detached(priority: .userInitiated) {
+            HealthspanEngine.compute(
+                days: days,
+                profile: .init(chronoAge: chrono, sex: sex),
+                asOfDay: asOf
+            )
+        }.value
         if Task.isCancelled { return }
         result = computed
     }

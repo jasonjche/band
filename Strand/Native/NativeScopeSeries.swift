@@ -420,14 +420,26 @@ struct NativeScopeSeries: Equatable {
         unit: Calendar.Component
     ) -> [NativeScopeBucket] {
         guard let firstInterval = calendar.dateInterval(of: unit, for: from) else { return [] }
+        let ordered = parsed.filter { $0.value.isFinite }.sorted { $0.date < $1.date }
         var buckets: [NativeScopeBucket] = []
         var cursor = firstInterval.start
         let end = calendar.startOfDay(for: to)
+        var i = 0
         while cursor <= end {
             guard let interval = calendar.dateInterval(of: unit, for: cursor) else { break }
-            let values = parsed.filter { $0.date >= interval.start && $0.date < interval.end && $0.value.isFinite }
-            let lows = values.compactMap(\.low)
-            let highs = values.compactMap(\.high)
+            while i < ordered.count, ordered[i].date < interval.start { i += 1 }
+            var j = i
+            var sum = 0.0
+            var n = 0
+            var lo: Double?
+            var hi: Double?
+            while j < ordered.count, ordered[j].date < interval.end {
+                sum += ordered[j].value
+                n += 1
+                if let v = ordered[j].low { lo = lo.map { min($0, v) } ?? v }
+                if let v = ordered[j].high { hi = hi.map { max($0, v) } ?? v }
+                j += 1
+            }
             let lastDay = calendar.date(byAdding: .day, value: -1, to: interval.end) ?? interval.start
             let isPartial = lastDay > now
             // Totals (steps, calories): weekly/monthly bar is the mean of daily totals (avg/day),
@@ -436,16 +448,17 @@ struct NativeScopeSeries: Equatable {
                 NativeScopeBucket(
                     start: interval.start,
                     end: interval.end,
-                    value: mean(values.map(\.value)),
-                    low: lows.isEmpty ? nil : lows.min(),
-                    high: highs.isEmpty ? nil : highs.max(),
+                    value: n > 0 ? sum / Double(n) : nil,
+                    low: lo,
+                    high: hi,
                     isPartial: isPartial,
-                    sampleCount: values.count,
+                    sampleCount: n,
                     key: key(from: interval.start, calendar: calendar)
                 )
             )
             guard let next = calendar.date(byAdding: unit, value: 1, to: interval.start), next > cursor else { break }
             cursor = next
+            i = j
         }
         return buckets
     }
@@ -637,6 +650,9 @@ enum NativeScopeFormat {
         let endYear = calendar.component(.year, from: end)
         let startMonth = calendar.component(.month, from: start)
         let endMonth = calendar.component(.month, from: end)
+        if calendar.isDate(start, inSameDayAs: end) {
+            return "\(monthDayFormatter.string(from: end)), \(yearFormatter.string(from: end))"
+        }
         if startYear == endYear {
             if startMonth == endMonth {
                 return "\(monthDayFormatter.string(from: start))–\(dayOnlyFormatter.string(from: end)), \(yearFormatter.string(from: end))"
@@ -680,11 +696,19 @@ enum NativeCountFormat {
 
 /// 0-based nice ticks for step/calorie bars (0 / 5k / 10k).
 enum NativeCountTicks {
+    /// Top of a count axis: the max rounded up to the next tick. 11k → 15k (0 / 5k / 10k / 15k),
+    /// 9.6k → 10k. Rounding the max itself up to 1/2/2.5/5×10ⁿ put 11k bars under a 20k ceiling.
     static func niceCeiling(_ value: Double) -> Double {
         let v = max(value, 1)
-        let exp = floor(log10(v))
-        let mag = pow(10, exp)
-        let n = v / mag
+        let step = tickStep(v)
+        return (v / step - 1e-9).rounded(.up) * step
+    }
+
+    /// 1 / 2 / 2.5 / 5 × 10ⁿ step giving about three intervals up to `top`.
+    static func tickStep(_ top: Double) -> Double {
+        let raw = max(top, 1e-9) / 3
+        let mag = pow(10, floor(log10(raw)))
+        let n = raw / mag
         let nice: Double
         if n <= 1 { nice = 1 }
         else if n <= 2 { nice = 2 }
@@ -696,8 +720,9 @@ enum NativeCountTicks {
 
     static func values(ceiling: Double) -> [Double] {
         let top = niceCeiling(ceiling)
-        if top <= 1 { return [0, top] }
-        return [0, top / 2, top]
+        let step = tickStep(max(ceiling, 1))
+        guard step > 0 else { return [0, top] }
+        return Array(stride(from: 0, through: top + step * 0.01, by: step)).map { ($0 * 1e9).rounded() / 1e9 }
     }
 
     static func hourLabelDates(dayStart: Date, calendar: Calendar) -> [Date] {

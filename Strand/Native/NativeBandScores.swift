@@ -23,6 +23,11 @@ enum NativeBandScores {
         var sleepConsistency: Double?
         var hoursVsNeeded: Double?
         var source: Source
+        /// Hours vs. Needed breakdown (strap days only). Same `a * loadForNeed` / `b * debt`
+        /// parts `NativeSleepNeed` used to re-evaluate BandScores for.
+        var needBaselineMin: Double?
+        var needStrainMin: Double?
+        var needDebtMin: Double?
     }
 
     struct Snapshot: Equatable {
@@ -51,7 +56,11 @@ enum NativeBandScores {
         cacheLock.lock()
         defer { cacheLock.unlock() }
         if let hit = cache.first(where: {
-            $0.days == days && $0.sleeps == sleeps && $0.workouts == workouts
+            $0.days.count == days.count
+                && $0.sleeps.count == sleeps.count
+                && $0.workouts.count == workouts.count
+                && $0.importedSleep.count == importedSleep.count
+                && $0.days == days && $0.sleeps == sleeps && $0.workouts == workouts
                 && $0.importedSleep == importedSleep
         }) {
             return hit.snapshot
@@ -101,6 +110,18 @@ enum NativeBandScores {
             } else {
                 hours = nil
             }
+            var needBaseline: Double?
+            var needStrain: Double?
+            var needDebtPart: Double?
+            if !imported, let b, let params = params() {
+                let strainPart = params.sleepLedger.a * (b.loadForNeed ?? 0)
+                let debtPart = params.sleepLedger.b * (b.debt ?? 0)
+                needStrain = strainPart
+                needDebtPart = debtPart
+                if let need {
+                    needBaseline = need - strainPart - debtPart
+                }
+            }
             let day = Day(
                 // Imported days keep WHOOP's DailyMetric.recovery. Strap days prefer round-5
                 // recoveryV3 once it has passed the current-source warm-up; else round-2
@@ -111,7 +132,10 @@ enum NativeBandScores {
                 sleepDebt: imported ? (fig?.debtMin ?? b?.debt) : b?.debt,
                 sleepConsistency: imported ? (fig?.consistencyPct ?? b?.cons) : b?.cons,
                 hoursVsNeeded: hours,
-                source: imported ? .imported : .band
+                source: imported ? .imported : .band,
+                needBaselineMin: needBaseline,
+                needStrainMin: needStrain,
+                needDebtMin: needDebtPart
             )
             ordered.append(day)
             byDay[d.day] = day

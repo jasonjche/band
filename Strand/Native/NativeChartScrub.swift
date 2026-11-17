@@ -10,8 +10,10 @@ final class NativeScopeScrub: ObservableObject {
 
 /// Display-only HR polyline. Stats and scrub keep the raw samples.
 enum NativeHRDisplay {
+    static let plotBudget = 480
+
     static func line(_ points: [NativeHourPoint]) -> [NativeHourPoint] {
-        NativeHRSmoothing.smooth(points)
+        NativeStressMonitorMath.drawPoints(NativeHRSmoothing.smooth(points), budget: plotBudget)
     }
 }
 

@@ -159,7 +159,9 @@ struct StrandiOSApp: App {
         StaleBatteryBackgroundScheduler.register(perform: { [weak model] in
             await model?.checkStrapNotSeen()
         })
-        StaleBatteryBackgroundScheduler.schedule()
+        Task { @MainActor in
+            StaleBatteryBackgroundScheduler.schedule()
+        }
         let bridge = HealthKitBridge(
             repo: model.repo,
             appleDeviceId: model.appleDeviceId,

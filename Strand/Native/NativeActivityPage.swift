@@ -400,6 +400,7 @@ struct NativeActivityView: View {
     @State private var muscular: ActivityScoring.Muscular?
     @State private var showEdit = false
     @State private var confirmDelete = false
+    @State private var pageModel: NativeActivityPageLogic.Model?
 
     init(startTs: Int) {
         _keyTs = State(initialValue: startTs)
@@ -407,18 +408,7 @@ struct NativeActivityView: View {
 
     var body: some View {
         Group {
-            if let workout {
-                let model = NativeActivityPageLogic.make(
-                    workout,
-                    prior: prior,
-                    scale: UnitPrefs.resolveEffortScale(effortScaleRaw),
-                    zoneSet: zoneSet,
-                    percents: percents,
-                    heartRateRecovery: heartRateRecoveryBpm,
-                    priorHeartRateRecovery: priorHeartRateRecovery,
-                    steps: activitySteps,
-                    muscular: muscular
-                )
+            if let workout, let model = pageModel {
                 NativeActivityBody(
                     model: model,
                     hr: hr,
@@ -477,6 +467,25 @@ struct NativeActivityView: View {
             guard handlesReady else { return }
             await load()
         }
+        .onChange(of: effortScaleRaw) { _ in rebuildPageModel() }
+    }
+
+    private func rebuildPageModel() {
+        guard let workout else {
+            pageModel = nil
+            return
+        }
+        pageModel = NativeActivityPageLogic.make(
+            workout,
+            prior: prior,
+            scale: UnitPrefs.resolveEffortScale(effortScaleRaw),
+            zoneSet: zoneSet,
+            percents: percents,
+            heartRateRecovery: heartRateRecoveryBpm,
+            priorHeartRateRecovery: priorHeartRateRecovery,
+            steps: activitySteps,
+            muscular: muscular
+        )
     }
 
     private func load() async {
@@ -486,9 +495,9 @@ struct NativeActivityView: View {
         zoneSet = profileHandle?.displayZoneSet(restingHR: restingHR)
         let rows = await repo.workoutRows(days: 120)
         let found = rows.first { $0.startTs == keyTs }
-        workout = found
         prior = rows
-        guard let workout else {
+        guard let found else {
+            workout = nil
             hr = []
             percents = nil
             route = []
@@ -496,20 +505,21 @@ struct NativeActivityView: View {
             priorHeartRateRecovery = []
             activitySteps = nil
             muscular = nil
+            pageModel = nil
             return
         }
-        percents = repo.parsedZones(for: workout) ?? WorkoutZones.percents(workout.zonesJSON)
+        percents = repo.parsedZones(for: found) ?? WorkoutZones.percents(found.zonesJSON)
         // Strap samples when they cover the workout, else the Apple Health samples stored for it.
         let series = await repo.workoutHeartRate(
-            startTs: workout.startTs, endTs: workout.endTs,
-            sport: workout.sport, source: workout.source
+            startTs: found.startTs, endTs: found.endTs,
+            sport: found.sport, source: found.source
         )
         let rawPoints = NativeActivityPageLogic.bucketed(
             series.samples.map { (ts: $0.ts, bpm: Double($0.bpm)) },
             seconds: NativeActivityPageLogic.hrBucketSeconds
         )
         hr = NativeHRSmoothing.smooth(rawPoints)
-        let isRecovery = WorkoutCatalog.isRecovery(workout.sport)
+        let isRecovery = WorkoutCatalog.isRecovery(found.sport)
         let zones = zoneSet ?? HRZones.zones(
             maxHR: profileHandle?.effortHRmax ?? 197,
             restingHR: restingHR ?? BandStrain.defaultRestingHR
@@ -522,15 +532,15 @@ struct NativeActivityView: View {
         }
         let ticksPerStep = profileHandle?.stepTicksPerStep ?? 1
         activitySteps = await repo.workoutStepCount(
-            from: workout.startTs, to: workout.endTs,
-            ticksPerStep: ticksPerStep, stored: workout.steps
+            from: found.startTs, to: found.endTs,
+            ticksPerStep: ticksPerStep, stored: found.steps
         )
-        let sets = await repo.liftSets(startTs: workout.startTs, sport: workout.sport)
-        let cardio21 = NativeStrain.workout(workout).map {
+        let sets = await repo.liftSets(startTs: found.startTs, sport: found.sport)
+        let cardio21 = NativeStrain.workout(found).map {
             NativeDayLogic.strainDisplayValue($0, scale: .whoop)
         }
         muscular = ActivityScoring.muscularLoad(
-            sport: workout.sport,
+            sport: found.sport,
             sets: sets,
             bodyWeightKg: profileHandle?.weightKg,
             cardioStrain21: cardio21
@@ -539,12 +549,12 @@ struct NativeActivityView: View {
         priorHeartRateRecovery = []
         if !isRecovery, series.origin == .strap, let maxHR = profileHandle?.effortHRmax, maxHR > 0 {
             let recovered = await repo.workoutHeartRateRecovery(
-                from: workout.startTs, to: workout.endTs, maxHR: maxHR, source: workout.source
+                from: found.startTs, to: found.endTs, maxHR: maxHR, source: found.source
             )
             if let drop = recovered?.after1Minute {
                 heartRateRecoveryBpm = drop
                 let same = NativeActivityPageLogic.sameSport(
-                    as: workout, in: rows, windowDays: NativeActivityPageLogic.statsWindowDays
+                    as: found, in: rows, windowDays: NativeActivityPageLogic.statsWindowDays
                 )
                 var priors: [Double] = []
                 for row in same {
@@ -557,12 +567,14 @@ struct NativeActivityView: View {
                 priorHeartRateRecovery = priors
             }
         }
-        if let stored = RouteStore.load(startTs: workout.startTs, sport: workout.sport) {
+        if let stored = RouteStore.load(startTs: found.startTs, sport: found.sport) {
             let pts = RouteMath.decode(stored.polyline)
             route = pts.count >= 2 ? pts : []
         } else {
             route = []
         }
+        workout = found
+        rebuildPageModel()
     }
 }
 
@@ -949,9 +961,13 @@ private struct NativeActivityHRPlot: View {
         return NativeTokens.hrZone(selectedZone)
     }
 
+    private var plotPoints: [NativeHourPoint] {
+        NativeStressMonitorMath.drawPoints(points, budget: NativeHRDisplay.plotBudget)
+    }
+
     private var zoneRuns: [[NativeHourPoint]] {
         guard let selectedZone, let zoneSet else { return [] }
-        return NativeActivityPageLogic.zoneRuns(points, zone: selectedZone, zoneSet: zoneSet)
+        return NativeActivityPageLogic.zoneRuns(plotPoints, zone: selectedZone, zoneSet: zoneSet)
     }
 
     var body: some View {
@@ -966,7 +982,7 @@ private struct NativeActivityHRPlot: View {
                     .foregroundStyle(Color.secondary.opacity(0.7))
                     .accessibilityHidden(true)
             }
-            ForEach(points) { point in
+            ForEach(plotPoints) { point in
                 AreaMark(
                     x: .value("Time", point.time),
                     yStart: .value("Low", yDomain.lowerBound),

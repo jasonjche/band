@@ -80,18 +80,20 @@ enum NativeHeartRateMath {
         let span = last.time.timeIntervalSince(first.time)
         guard span > 0 else { return Array(ordered.prefix(maxPoints)) }
         let width = span / Double(maxPoints)
-        var sums: [Int: (total: Double, n: Int)] = [:]
-        sums.reserveCapacity(maxPoints)
+        var totals = [Double](repeating: 0, count: maxPoints)
+        var counts = [Int](repeating: 0, count: maxPoints)
         for point in ordered {
             let key = min(maxPoints - 1, Int(point.time.timeIntervalSince(first.time) / width))
-            let cur = sums[key] ?? (0, 0)
-            sums[key] = (cur.total + point.value, cur.n + 1)
+            totals[key] += point.value
+            counts[key] += 1
         }
-        return sums.keys.sorted().map { key in
-            let bucket = sums[key]!
+        var out: [NativeHourPoint] = []
+        out.reserveCapacity(maxPoints)
+        for key in 0..<maxPoints where counts[key] > 0 {
             let time = first.time.addingTimeInterval(TimeInterval(key) * width + width / 2)
-            return NativeHourPoint(time: time, value: bucket.total / Double(bucket.n))
+            out.append(NativeHourPoint(time: time, value: totals[key] / Double(counts[key])))
         }
+        return out
     }
 
     /// Bucket width (seconds) that keeps a `span` under `maxPoints`. Floor 60 s.

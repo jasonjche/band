@@ -1675,9 +1675,9 @@ enum NativeChartTicks {
     static func nice(min: Double, max: Double, targetCount: Int = 4) -> [Double] {
         let lo0 = min.isFinite ? min : 0
         let hi0 = max.isFinite ? max : lo0
-        let lo = min(lo0, hi0)
-        let hi = max(lo0, hi0)
-        let count = max(targetCount, 2)
+        let lo = Swift.min(lo0, hi0)
+        let hi = Swift.max(lo0, hi0)
+        let count = Swift.max(targetCount, 2)
         if hi <= lo {
             return [snap(lo)]
         }

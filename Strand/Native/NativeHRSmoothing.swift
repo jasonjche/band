@@ -1,4 +1,5 @@
 import Foundation
+import StrandAnalytics
 
 /// Display-only heart-rate smoother. Raw samples stay for maxima, zones, and stats.
 ///
@@ -34,48 +35,23 @@ enum NativeHRSmoothing {
                        window: TimeInterval = defaultWindow) -> [NativeHourPoint] {
         guard points.count >= 3, window > 0 else { return points }
         let ordered = points.sorted { $0.time < $1.time }
-        let gap = gapLimit(in: ordered, window: window)
-        var out: [NativeHourPoint] = []
-        out.reserveCapacity(ordered.count)
-        for run in runs(ordered, maxGap: gap) {
-            let prepared = runSpan(run) > longSpan ? bucketMeans(run, seconds: longBucket) : run
-            out.append(contentsOf: smoothRun(prepared, window: window))
+        let series = ordered.map { (ts: Int($0.time.timeIntervalSince1970), value: $0.value) }
+        let smoothed = DisplaySeries.smooth(series, window: max(1, Int(window.rounded())))
+        if smoothed.count == ordered.count {
+            return zip(ordered, smoothed).map { NativeHourPoint(time: $0.0.time, value: $0.1.value) }
         }
-        return out
+        return smoothed.map {
+            NativeHourPoint(time: Date(timeIntervalSince1970: TimeInterval($0.ts)), value: $0.value)
+        }
     }
 
     /// A hole larger than the smoothing window, or 2× the median spacing, is a gap.
     static func gapLimit(in points: [NativeHourPoint], window: TimeInterval) -> TimeInterval {
-        let spacings = zip(points, points.dropFirst()).map {
-            $1.time.timeIntervalSince($0.time)
-        }.filter { $0 > 0 }.sorted()
-        let median = spacings.isEmpty ? window : spacings[spacings.count / 2]
-        return max(window, median * 2)
+        let series = points.map { (ts: Int($0.time.timeIntervalSince1970), value: $0.value) }
+        return TimeInterval(DisplaySeries.gapLimit(in: series, window: max(1, Int(window.rounded()))))
     }
 
-    // MARK: - Internals
-
-    private static func runs(_ points: [NativeHourPoint], maxGap: TimeInterval) -> [[NativeHourPoint]] {
-        var segments: [[NativeHourPoint]] = []
-        var current: [NativeHourPoint] = []
-        var last: Date?
-        for point in points {
-            if let last, point.time.timeIntervalSince(last) > maxGap {
-                if !current.isEmpty { segments.append(current) }
-                current = []
-            }
-            current.append(point)
-            last = point.time
-        }
-        if !current.isEmpty { segments.append(current) }
-        return segments
-    }
-
-    private static func runSpan(_ points: [NativeHourPoint]) -> TimeInterval {
-        guard let first = points.first, let last = points.last else { return 0 }
-        return last.time.timeIntervalSince(first.time)
-    }
-
+    /// Per-`seconds` bucket means, oldest first. Used by `smoothDay`.
     private static func bucketMeans(_ points: [NativeHourPoint], seconds: TimeInterval) -> [NativeHourPoint] {
         guard seconds > 0 else { return points }
         var sums: [Int: (total: Double, n: Int)] = [:]
@@ -91,44 +67,5 @@ enum NativeHRSmoothing {
                 value: b.total / Double(b.n)
             )
         }
-    }
-
-    private static func smoothRun(_ points: [NativeHourPoint], window: TimeInterval) -> [NativeHourPoint] {
-        guard points.count >= 3 else { return points }
-        let medians = rolling(points, window: window, reduce: median)
-        return rolling(medians, window: window, reduce: mean)
-    }
-
-    private static func rolling(
-        _ points: [NativeHourPoint],
-        window: TimeInterval,
-        reduce: ([Double]) -> Double
-    ) -> [NativeHourPoint] {
-        let half = window / 2
-        var lo = 0
-        var hi = 0
-        return points.enumerated().map { i, point in
-            let start = point.time.addingTimeInterval(-half)
-            let end = point.time.addingTimeInterval(half)
-            while lo < points.count, points[lo].time < start { lo += 1 }
-            if hi < lo { hi = lo }
-            while hi < points.count, points[hi].time <= end { hi += 1 }
-            let slice = points[lo..<hi]
-            let values = slice.map(\.value)
-            return NativeHourPoint(time: point.time, value: values.isEmpty ? point.value : reduce(values))
-        }
-    }
-
-    private static func median(_ values: [Double]) -> Double {
-        let sorted = values.sorted()
-        let mid = sorted.count / 2
-        if sorted.count.isMultiple(of: 2) {
-            return (sorted[mid - 1] + sorted[mid]) / 2
-        }
-        return sorted[mid]
-    }
-
-    private static func mean(_ values: [Double]) -> Double {
-        values.reduce(0, +) / Double(values.count)
     }
 }

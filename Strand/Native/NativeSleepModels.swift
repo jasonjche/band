@@ -47,11 +47,11 @@ enum NativeSleepNeed {
             asleep > 0 ? asleep / need * 100 : nil
         }
         let imported = scored.source == .imported
-        var baseline: Double?
-        var strain: Double?
-        var debt: Double?
-        if !imported, let parts = bandParts(dayKey: dayKey, days: days, sleeps: sleeps,
-                                            workouts: workouts, importedSleep: importedSleep) {
+        var baseline = scored.needBaselineMin
+        var strain = scored.needStrainMin
+        var debt = scored.needDebtMin
+        if !imported, baseline == nil, let parts = bandParts(dayKey: dayKey, days: days, sleeps: sleeps,
+                                                            workouts: workouts, importedSleep: importedSleep) {
             strain = parts.strain
             debt = parts.debt
             baseline = need - parts.strain - parts.debt
@@ -191,7 +191,9 @@ enum NativeSleepClock {
             t += stepHours * 60
             if marks.count > 8 { break }
         }
-        if let last = marks.last, last < hiH - 0.5 { marks.append(hiH) }
+        // Extend by a whole step rather than adding the bare end hour, which put "9 AM" and
+        // "10 AM" on top of each other.
+        if let last = marks.last, last < hiH - 0.5 { marks.append(last + stepHours * 60) }
         return marks
     }
 
@@ -1141,7 +1143,14 @@ struct NativeSleepPageDetail {
         let session = sleeps.last {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
         }
-        let segments = AnalyticsEngine.decodeStages(session?.stagesJSON)
+        // Prefer the Repository per-row cache. Re-decoding stagesJSON here used to run on every
+        // Sleep-page body rebuild (400 nights × JSONSerialization).
+        let segments: [StageSegment]
+        if parsedStages.isEmpty {
+            segments = AnalyticsEngine.decodeStages(session?.stagesJSON)
+        } else {
+            segments = parsedStages.map { StageSegment(start: $0.start, end: $0.end, stage: $0.stage) }
+        }
         let epoch = parsedStages.isEmpty
             ? NativeSleepEfficiency.spans(from: segments)
             : NativeSleepEfficiency.spans(from: parsedStages)

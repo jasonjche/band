@@ -23,8 +23,6 @@ struct RootTabView: View {
     @AppStorage("noop.coachEnabled") private var coachEnabled = true
     @AppStorage("noop.bottomBarAutoHide") private var bottomBarAutoHide = false
 
-    /// The live gym session, owned at the app root — see `LiftSessionController`.
-    @EnvironmentObject private var liftSession: LiftSessionController
     /// External entry points must wait until the mandatory first-run gates have completed. The root owns
     /// that state; keeping it explicit here prevents this shell's window-level sheet from covering a gate.
     let homeScreenQuickActionsEnabled: Bool
@@ -32,6 +30,7 @@ struct RootTabView: View {
     /// Unobserved handle. The TabView must not `@EnvironmentObject` Repository: hydrationSeq /
     /// cycleTrackingSeq would re-diff every tab root. Refresh still runs from the sink.
     @State private var repoHandle: Repository?
+    @State private var liftPresented = false
     /// Cross-screen navigation requests (e.g. Live → "Manage devices"). Devices isn't a tab — it lives
     /// behind the More list — so a request presents it as a sheet, matching the quick-action screens.
     @EnvironmentObject private var router: NavRouter
@@ -122,7 +121,7 @@ struct RootTabView: View {
     }
 
     private func reselectTab(_ tag: Int) {
-        Task { await repoHandle?.refresh() }
+        Task(priority: .utility) { await repoHandle?.refresh() }
         if !tabPaths[tag].isEmpty {
             tabPaths[tag] = NavigationPath()
         } else {
@@ -292,24 +291,13 @@ struct RootTabView: View {
         .onChange(of: homeScreenQuickActionsEnabled) { _, _ in
             presentPendingHomeScreenQuickActionIfPossible()
         }
-        // The running gym session, reachable from ANY tab. It sits above the tab bar rather than
-        // inside the Lift Log screen, because a workout outlives whichever screen you wandered to —
-        // and because swiping the sheet away must minimise the session, not end it.
+        // Lift session chrome observes LiftSessionController in its own leaves so rest-timer
+        // publishes do not re-diff every tab root (Home included).
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if liftSession.isActive {
-                LiftSessionBar()
-                    .padding(.horizontal, 14)
-                    // Clear the floating tab bar with the same constant every screen uses, or the
-                    // session bar sits on top of the tab labels.
-                    .padding(.bottom, NoopMetrics.tabBarClearance)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            RootTabLiftBar()
         }
-        .animation(.easeInOut(duration: 0.25), value: liftSession.isActive)
-        // A session left running by a previous launch is back before this view exists
-        // (`LiftSessionController.resumeSaved`, from `StrandiOSApp.init`), as the BAR — not as a sheet
-        // thrown in the user's face; they open it when they want it.
-        .sheet(isPresented: $liftSession.isPresented) {
+        .background { RootTabLiftPresentSink(isPresented: $liftPresented) }
+        .sheet(isPresented: $liftPresented) {
             LiftSessionView { }
         }
     }
@@ -701,6 +689,41 @@ private struct QuickActionSheet: View {
             .navigationTitle("Quick actions")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+}
+
+/// Holds `LiftSessionController` so the tab roots do not re-diff on rest-timer ticks.
+private struct RootTabLiftBar: View {
+    @EnvironmentObject private var liftSession: LiftSessionController
+
+    var body: some View {
+        Group {
+            if liftSession.isActive {
+                LiftSessionBar()
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, NoopMetrics.tabBarClearance)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: liftSession.isActive)
+    }
+}
+
+private struct RootTabLiftPresentSink: View {
+    @EnvironmentObject private var liftSession: LiftSessionController
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onAppear { isPresented = liftSession.isPresented }
+            .onReceive(liftSession.$isPresented) { isPresented = $0 }
+            .onChange(of: isPresented) { _, new in
+                if liftSession.isPresented != new {
+                    liftSession.isPresented = new
+                }
+            }
     }
 }
 
