@@ -189,7 +189,8 @@ public enum BandScores {
         )
         let hrvMs = days.map { nan($0.hrvMs) }
         let recoveryV3 = BandRecoveryV3.run(
-            hrv: hrvMs, sleepPct: perf, sources: days.map(\.source), params: params.recoveryV3
+            hrv: hrvMs, sleepPct: perf, sources: days.map(\.source),
+            params: params.recoveryV3, asleep: asleep, need: ledger.need
         )
 
         return (0..<n).map { t in

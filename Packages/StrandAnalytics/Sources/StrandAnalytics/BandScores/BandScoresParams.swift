@@ -52,7 +52,9 @@ extension BandScores {
                 zClip: v3.zClip,
                 etaClip: v3.etaClip,
                 recLo: v3.recClip[0],
-                recHi: v3.recClip[1]
+                recHi: v3.recClip[1],
+                hingeHvn: v3.hingeHvn,
+                hingeWeight: v3.hingeWeight
             )
             let strain = BandStrain.Params(
                 schemaVersion: st.schemaVersion,
@@ -299,6 +301,8 @@ private struct File: Decodable {
         var zClip: Double
         var etaClip: Double
         var recClip: [Double]
+        var hingeHvn: Double
+        var hingeWeight: Double
         var params: P
         enum CodingKeys: String, CodingKey {
             case variant, params
@@ -312,6 +316,8 @@ private struct File: Decodable {
             case zClip = "z_clip"
             case etaClip = "eta_clip"
             case recClip = "rec_clip"
+            case hingeHvn = "hinge_hvn"
+            case hingeWeight = "hinge_weight"
         }
         struct P: Decodable {
             var b0, wHrv, wSleep: Double

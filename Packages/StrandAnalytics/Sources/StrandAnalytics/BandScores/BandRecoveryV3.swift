@@ -1,7 +1,8 @@
 import Foundation
 
 /// Round-5 recovery head: causal EWMA on raw HRV in milliseconds (not ln), logistic of z and a sleep term.
-/// Separately tested from round-2 `BandRecovery`. Port: `/tmp/whoopfit5/params/port_notes.md`.
+/// Round-6b: short-night hinge on hours-vs-needed, zero above `hingeHvn` so long nights match the
+/// logistic. Port: `/tmp/whoopfit5/params/port_notes.md`, hinge `/tmp/whoopfit8/FOLLOWUP.md`.
 public enum BandRecoveryV3 {
 
     public static let expectedSchemaVersion = 5
@@ -23,11 +24,16 @@ public enum BandRecoveryV3 {
         public var etaClip: Double
         public var recLo: Double
         public var recHi: Double
+        /// Hours-vs-needed fraction. Hinge is `max(0, hingeHvn − asleep/need)`.
+        public var hingeHvn: Double
+        /// Weight on the hinge; 0 disables it. Train fit is negative.
+        public var hingeWeight: Double
 
         public init(schemaVersion: Int, variant: String, halfLifeDays: Double, zScale: Double,
                     zFloor: Double, warmupNights: Int, b0: Double, wHrv: Double, wSleep: Double,
                     sleepCenter: Double, sleepScale: Double, zClip: Double, etaClip: Double,
-                    recLo: Double, recHi: Double) {
+                    recLo: Double, recHi: Double, hingeHvn: Double = 0.55,
+                    hingeWeight: Double = 0) {
             self.schemaVersion = schemaVersion
             self.variant = variant
             self.halfLifeDays = halfLifeDays
@@ -43,6 +49,8 @@ public enum BandRecoveryV3 {
             self.etaClip = etaClip
             self.recLo = recLo
             self.recHi = recHi
+            self.hingeHvn = hingeHvn
+            self.hingeWeight = hingeWeight
         }
     }
 
@@ -69,7 +77,8 @@ public enum BandRecoveryV3 {
     /// Exact port_notes recursion with a frozen z-scale. `nan_to_0` on z and the sleep term.
     /// Always emits a clipped recovery (golden path, including the first night where z is NaN).
     public static func score(hrv: [Double], sleepPct: [Double], params: Params,
-                             zScale: Double? = nil) -> Series {
+                             zScale: Double? = nil,
+                             asleep: [Double] = [], need: [Double] = []) -> Series {
         let n = hrv.count
         let zsc = max(zScale ?? params.zScale, params.zFloor)
         let a = alpha(halfLifeDays: params.halfLifeDays)
@@ -81,6 +90,8 @@ public enum BandRecoveryV3 {
         for t in 0..<n {
             let x = t < hrv.count ? hrv[t] : .nan
             let sp = t < sleepPct.count ? sleepPct[t] : .nan
+            let asl = t < asleep.count ? asleep[t] : .nan
+            let nd = t < need.count ? need[t] : .nan
             let base = ewma
             baseline[t] = base
             scales[t] = zsc
@@ -94,7 +105,7 @@ public enum BandRecoveryV3 {
             if x.isFinite, base.isFinite {
                 z[t] = BandScores.clip((x - base) / zsc, -params.zClip, params.zClip)
             }
-            recovery[t] = logistic(z: z[t], sleepPct: sp, params: params)
+            recovery[t] = logistic(z: z[t], sleepPct: sp, params: params, asleep: asl, need: nd)
         }
         return Series(baseline: baseline, z: z, zScale: scales, recovery: recovery)
     }
@@ -104,7 +115,8 @@ public enum BandRecoveryV3 {
     /// Expanding MAD from the new source only. Missing HRV carries state and does not update.
     public static func run(hrv: [Double], sleepPct: [Double],
                            sources: [BandScores.DaySource],
-                           params: Params) -> Series {
+                           params: Params,
+                           asleep: [Double] = [], need: [Double] = []) -> Series {
         let n = hrv.count
         let a = alpha(halfLifeDays: params.halfLifeDays)
         var baseline = [Double](repeating: .nan, count: n)
@@ -123,6 +135,8 @@ public enum BandRecoveryV3 {
             lastSource = src
             let x = hrv[t]
             let sp = t < sleepPct.count ? sleepPct[t] : .nan
+            let asl = t < asleep.count ? asleep[t] : .nan
+            let nd = t < need.count ? need[t] : .nan
             let base = ewma
             baseline[t] = base
             var zsc = params.zScale
@@ -142,13 +156,21 @@ public enum BandRecoveryV3 {
                 }
             }
             if z[t].isFinite, residuals.count >= params.warmupNights {
-                recovery[t] = logistic(z: z[t], sleepPct: sp, params: params)
+                recovery[t] = logistic(z: z[t], sleepPct: sp, params: params, asleep: asl, need: nd)
             }
         }
         return Series(baseline: baseline, z: z, zScale: scales, recovery: recovery)
     }
 
-    public static func logistic(z: Double, sleepPct: Double, params: Params) -> Double {
+    /// `max(0, threshold − asleep/need)`. Zero when either input is missing or need ≤ 0.
+    public static func hvnHinge(asleep: Double, need: Double, threshold: Double) -> Double {
+        guard asleep.isFinite, need.isFinite, need > 0, threshold.isFinite else { return 0 }
+        let h = threshold - asleep / need
+        return h > 0 ? h : 0
+    }
+
+    public static func logistic(z: Double, sleepPct: Double, params: Params,
+                                asleep: Double = .nan, need: Double = .nan) -> Double {
         let zz = z.isFinite ? z : 0.0
         let st: Double
         if sleepPct.isFinite {
@@ -156,7 +178,8 @@ public enum BandRecoveryV3 {
         } else {
             st = 0.0
         }
-        var eta = params.b0 + params.wHrv * zz + params.wSleep * st
+        let hinge = hvnHinge(asleep: asleep, need: need, threshold: params.hingeHvn)
+        var eta = params.b0 + params.wHrv * zz + params.wSleep * st + params.hingeWeight * hinge
         eta = BandScores.clip(eta, -params.etaClip, params.etaClip)
         return BandScores.clip(100.0 / (1.0 + exp(-eta)), params.recLo, params.recHi)
     }

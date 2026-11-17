@@ -22,11 +22,89 @@ final class BandScoresRecoveryV3Tests: XCTestCase {
         XCTAssertEqual(params.recoveryV3.b0, 0.5831048802710344, accuracy: 0)
         XCTAssertEqual(params.recoveryV3.wHrv, 0.8125248327804836, accuracy: 0)
         XCTAssertEqual(params.recoveryV3.wSleep, 0.15955536837785575, accuracy: 0)
+        XCTAssertEqual(params.recoveryV3.hingeHvn, 0.55, accuracy: 0)
+        XCTAssertEqual(params.recoveryV3.hingeWeight, -8.0, accuracy: 0)
         XCTAssertEqual(
             BandRecoveryV3.alpha(halfLifeDays: 10),
             0.06696700846319259,
             accuracy: 1e-15
         )
+    }
+
+    func testHvnHingeZeroAtAndAboveThreshold() {
+        XCTAssertEqual(BandRecoveryV3.hvnHinge(asleep: 231, need: 420, threshold: 0.55), 0, accuracy: 1e-15)
+        XCTAssertEqual(BandRecoveryV3.hvnHinge(asleep: 420, need: 420, threshold: 0.55), 0, accuracy: 1e-15)
+        XCTAssertEqual(BandRecoveryV3.hvnHinge(asleep: 180, need: 420, threshold: 0.55),
+                       0.55 - 180.0 / 420.0, accuracy: 1e-15)
+        XCTAssertEqual(BandRecoveryV3.hvnHinge(asleep: 180, need: 0, threshold: 0.55), 0, accuracy: 0)
+        XCTAssertEqual(BandRecoveryV3.hvnHinge(asleep: .nan, need: 420, threshold: 0.55), 0, accuracy: 0)
+    }
+
+    func testLogisticHingeMatchesPythonAndLeavesLongNights() throws {
+        let params = try BandScores.Params.bundled().recoveryV3
+        let long = BandRecoveryV3.logistic(z: 0, sleepPct: 80, params: params, asleep: 420, need: 420)
+        let atT = BandRecoveryV3.logistic(z: 0, sleepPct: 80, params: params, asleep: 231, need: 420)
+        let short = BandRecoveryV3.logistic(z: 0, sleepPct: 80, params: params, asleep: 180, need: 420)
+        let missing = BandRecoveryV3.logistic(z: 0, sleepPct: 80, params: params)
+        XCTAssertEqual(long, 65.39143299177093, accuracy: 1e-9)
+        XCTAssertEqual(atT, long, accuracy: 1e-12)
+        XCTAssertEqual(missing, long, accuracy: 1e-12)
+        XCTAssertEqual(short, 41.69908581278962, accuracy: 1e-9)
+        XCTAssertLessThan(short, long)
+    }
+
+    func testRunHingeLeavesLongNightsIdenticalToDisabled() throws {
+        var params = try BandScores.Params.bundled().recoveryV3
+        let n = 40
+        let hrv = [Double](repeating: 55, count: n)
+        let sleep = [Double](repeating: 80, count: n)
+        let asleep = [Double](repeating: 420, count: n)
+        let need = [Double](repeating: 420, count: n)
+        let sources = [BandScores.DaySource](repeating: .strap, count: n)
+        let withHinge = BandRecoveryV3.run(
+            hrv: hrv, sleepPct: sleep, sources: sources, params: params,
+            asleep: asleep, need: need
+        )
+        params.hingeWeight = 0
+        let off = BandRecoveryV3.run(
+            hrv: hrv, sleepPct: sleep, sources: sources, params: params,
+            asleep: asleep, need: need
+        )
+        for t in 0..<n {
+            switch (withHinge.recovery[t].isFinite, off.recovery[t].isFinite) {
+            case (false, false):
+                break
+            case (true, true):
+                XCTAssertEqual(withHinge.recovery[t], off.recovery[t], accuracy: 1e-12, "t=\(t)")
+            default:
+                XCTFail("publish mismatch t=\(t)")
+            }
+        }
+    }
+
+    func testRunHingeLowersOnlyShortNights() throws {
+        let params = try BandScores.Params.bundled().recoveryV3
+        let n = 40
+        var asleep = [Double](repeating: 420, count: n)
+        asleep[n - 1] = 180
+        let need = [Double](repeating: 420, count: n)
+        let hrv = [Double](repeating: 55, count: n)
+        let sleep = [Double](repeating: 80, count: n)
+        let sources = [BandScores.DaySource](repeating: .strap, count: n)
+        var offParams = params
+        offParams.hingeWeight = 0
+        let on = BandRecoveryV3.run(
+            hrv: hrv, sleepPct: sleep, sources: sources, params: params,
+            asleep: asleep, need: need
+        )
+        let off = BandRecoveryV3.run(
+            hrv: hrv, sleepPct: sleep, sources: sources, params: offParams,
+            asleep: asleep, need: need
+        )
+        let last = n - 1
+        XCTAssertTrue(on.recovery[last].isFinite)
+        XCTAssertEqual(on.recovery[last - 1], off.recovery[last - 1], accuracy: 1e-12)
+        XCTAssertLessThan(on.recovery[last], off.recovery[last])
     }
 
     func testWarmupWithholdsUntilFiniteZCount() throws {
