@@ -105,6 +105,8 @@ struct NativeHomeView: View {
     @State private var dayModel: NativeDay.Model?
     @State private var strainTarget: BandStrainTarget.Result?
     @State private var healthReport = NativeHealthRange.Report(vitals: [])
+    /// Shown on Home only when it reaches `.watch` (two nights in a row of 2+ off signals).
+    @State private var overnightLoad: BandIllnessSignal.DayResult?
     @State private var tonight: NativeTonightSleep.Model?
     @State private var stressLevel: Double?
     @State private var stressSleepStart: Date?
@@ -379,6 +381,7 @@ struct NativeHomeView: View {
                 override: temperatureRaw
             )
         )
+        overnightLoad = NativeIllnessSignal.result(days: repo.days, dayKey: selectedKey)
         if selectedKey == NativeDayLogic.logicalToday() {
             tonight = NativeTonightSleep.make(
                 needMin: model.sleepNeedMin,
@@ -470,6 +473,7 @@ struct NativeHomeView: View {
             HomeHealthMonitorCard(report: healthReport)
         }
         .buttonStyle(.plain)
+        NativeIllnessSignalCard(result: overnightLoad, compact: true)
         NativeChrome.section("My Day")
         HomeActivitiesCard(
             items: HomeActivityItem.make(from: model),

@@ -36,6 +36,8 @@ struct NativeScorePage: View {
     @State private var sleepDetail: NativeSleepPageDetail?
     @State private var nightSession: CachedSleepSession?
     @State private var strainTarget: BandStrainTarget.Result?
+    @State private var hrvTrend: HRVTrend.DayResult?
+    @State private var overnightLoad: BandIllnessSignal.DayResult?
 
     private var selectedDay: Date {
         NativeDaySelection.date(from: selectedDayKey)
@@ -73,7 +75,9 @@ struct NativeScorePage: View {
                     debtMinutes: model.sleepDebtMin,
                     sleepDetail: sleepDetail,
                     onEditSleep: kind == .sleep && nightSession != nil ? { sleepEdit = nightSession.map(NativeSleepEditTarget.init) } : nil,
-                    strainTarget: strainTarget
+                    strainTarget: strainTarget,
+                    hrvTrend: hrvTrend,
+                    overnightLoad: overnightLoad
                 )
             } else {
                 NativeChrome.screen {
@@ -206,6 +210,8 @@ struct NativeScorePage: View {
                 importedSleep: repo.importedSleep
             )
             : nil
+        hrvTrend = kind == .recovery ? NativeHRVTrend.result(days: repo.days, dayKey: dayKey) : nil
+        overnightLoad = kind == .recovery ? NativeIllnessSignal.result(days: repo.days, dayKey: dayKey) : nil
     }
 
     private func buildModel(_ repo: Repository) -> NativeDay.Model {
@@ -261,6 +267,8 @@ struct NativeScoreView: View {
     var sleepDetail: NativeSleepPageDetail? = nil
     var onEditSleep: (() -> Void)? = nil
     var strainTarget: BandStrainTarget.Result? = nil
+    var hrvTrend: HRVTrend.DayResult? = nil
+    var overnightLoad: BandIllnessSignal.DayResult? = nil
     @Environment(\.nativeNavigationPath) private var path
 
     private var visibleRows: [NativeScore.Row] {
@@ -393,6 +401,11 @@ struct NativeScoreView: View {
             } else {
                 NativeChrome.footnote("Compared with your last 30 days")
             }
+        }
+
+        if kind == .recovery {
+            NativeHRVTrendCard(result: hrvTrend)
+            NativeIllnessSignalCard(result: overnightLoad)
         }
 
         if kind == .sleep, hasLastNight {
