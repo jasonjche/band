@@ -1,23 +1,24 @@
 import SwiftUI
 import StrandDesign
 
-/// WHOOP Trend View groups. Catalog categories (Effort / Charge / Rest) map onto these.
+/// WHOOP Trend View groups. Catalog categories (Effort / Charge / Rest) stay as-is;
+/// this is only the Trends menu's section order and titles.
 enum NativeTrendsGroup: String, CaseIterable, Identifiable {
+    case healthspan
+    case other
+    case sleep
     case strain
     case recovery
-    case sleep
-    case health
-    case activity
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .healthspan: return "Healthspan"
+        case .other: return "Other"
+        case .sleep: return "Sleep"
         case .strain: return "Strain"
         case .recovery: return "Recovery"
-        case .sleep: return "Sleep"
-        case .health: return "Health"
-        case .activity: return "Activity"
         }
     }
 }
@@ -28,7 +29,8 @@ struct NativeTrendsSection: Identifiable, Equatable {
     var id: NativeTrendsGroup { group }
 }
 
-/// One row per unique `MetricCatalog` key, grouped the way WHOOP's Trend View lists them.
+/// WHOOP Trend View rows Band can series. Grouped and named like WHOOP; catalog
+/// category ids (Effort / Charge / Rest) are unchanged.
 enum NativeTrendsCatalog {
     static let storageKey = "native.trends.metricKey"
     static let defaultKey = "hrv"
@@ -41,9 +43,37 @@ enum NativeTrendsCatalog {
     static func route(for key: String) -> TabRoute { .metric(key) }
 
     static func title(for key: String, catalog: [MetricDescriptor] = MetricCatalog.all) -> String {
-        if key == "vo2max" || key == "vo2max_est" { return "VO₂ Max" }
-        return catalog.first { $0.key == key }?.title
-            ?? key.replacingOccurrences(of: "_", with: " ").capitalized
+        switch key {
+        case "band_age": return "Band Age"
+        case "pace_of_aging": return "Pace of Aging"
+        case "lean_mass": return "Lean Body Mass"
+        case "weight": return "Weight"
+        case "stress": return "Total Day Stress"
+        case "sleep_performance": return "Sleep Performance"
+        case "in_bed_min": return "Time in Bed"
+        case "hours_vs_needed_hours": return "Hours vs. Needed (Hours)"
+        case "hours_vs_needed_pct": return "Hours vs. Needed (%)"
+        case "sleep_consistency": return "Sleep Consistency"
+        case "restorative_pct": return "Restorative Sleep (%)"
+        case "restorative_min": return "Restorative Sleep (Hours)"
+        case "sleep_efficiency": return "Sleep Efficiency"
+        case "sleep_debt_min": return "Sleep Debt"
+        case "strain": return "Strain"
+        case "hr_zones13_min": return "Heart Rate Zones 1-3"
+        case "hr_zones45_min": return "Heart Rate Zones 4-5"
+        case "hr_zones_all_min": return "Heart Rate Zones All"
+        case "strength_min": return "Strength Activity Time"
+        case "avg_hr": return "Average Heart Rate"
+        case "energy_kcal", "active_kcal": return "Calories"
+        case "vo2max", "vo2max_est": return "VO₂ Max"
+        case "recovery": return "Recovery"
+        case "hrv": return "Heart Rate Variability"
+        case "rhr", "resting_hr": return "Resting Heart Rate"
+        case "resp_rate": return "Respiratory Rate"
+        default:
+            return catalog.first { $0.key == key }?.title
+                ?? key.replacingOccurrences(of: "_", with: " ").capitalized
+        }
     }
 
     static func symbol(for key: String, catalog: [MetricDescriptor] = MetricCatalog.all) -> String {
@@ -54,29 +84,29 @@ enum NativeTrendsCatalog {
         switch key {
         case "hrv", "rhr", "resting_hr", "avg_hr", "max_hr": return NativePaint.heart(style)
         case "resp_rate", "vo2max", "vo2max_est": return NativePaint.respiratory(style)
-        case "steps", "steps_est", "energy_kcal", "active_kcal": return NativePaint.activity(style)
+        case "steps", "steps_est", "energy_kcal", "active_kcal", "strength_min",
+             "hr_zones13_min", "hr_zones45_min", "hr_zones_all_min":
+            return NativePaint.activity(style)
         case "strain": return NativePaint.strain(style)
-        case "recovery": return NativePaint.recovery(style)
+        case "recovery", "band_age", "pace_of_aging": return NativePaint.recovery(style)
+        case "stress", "lean_mass", "weight": return NativePaint.strain(style)
         default: return NativePaint.sleep(style)
         }
     }
 
+    static func opensHealthspan(_ key: String) -> Bool {
+        key == "band_age" || key == "pace_of_aging"
+    }
+
     static func group(for key: String, catalog: [MetricDescriptor] = MetricCatalog.all) -> NativeTrendsGroup {
-        switch key {
-        case "strain", "hr_zones13_min", "hr_zones45_min", "hr_zones_all_min",
-             "energy_kcal", "active_kcal", "avg_hr", "max_hr":
-            return .strain
-        case "recovery", "hrv", "rhr", "resting_hr", "resp_rate", "spo2", "skin_temp":
-            return .recovery
-        case "steps", "steps_est", "strength_min", "intensity_min":
-            return .activity
-        default:
-            switch catalog.first(where: { $0.key == key })?.category {
-            case "Rest": return .sleep
-            case "Charge": return .recovery
-            case "Effort": return .strain
-            default: return .health
-            }
+        if let match = orderedKeys.first(where: { $0.keys.contains(key) }) {
+            return match.group
+        }
+        switch catalog.first(where: { $0.key == key })?.category {
+        case "Rest": return .sleep
+        case "Charge": return .recovery
+        case "Effort": return .strain
+        default: return .other
         }
     }
 
@@ -86,13 +116,11 @@ enum NativeTrendsCatalog {
     }
 
     static func sections(in catalog: [MetricDescriptor] = MetricCatalog.all) -> [NativeTrendsSection] {
-        let unique = uniqueMetrics(in: catalog)
-        return NativeTrendsGroup.allCases.map { group in
-            let members = unique.filter { Self.group(for: $0.key, catalog: catalog) == group }
-            let preferredKeys = preferred[group] ?? []
-            let leading = preferredKeys.compactMap { key in members.first { $0.key == key } }
-            let rest = members.filter { !preferredKeys.contains($0.key) }
-            return NativeTrendsSection(group: group, metrics: leading + rest)
+        let byKey = Dictionary(uniqueKeysWithValues: uniqueMetrics(in: catalog).map { ($0.key, $0) })
+        return orderedKeys.compactMap { entry in
+            let metrics = entry.keys.compactMap { byKey[$0] }
+            guard !metrics.isEmpty else { return nil }
+            return NativeTrendsSection(group: entry.group, metrics: metrics)
         }
     }
 
@@ -100,12 +128,21 @@ enum NativeTrendsCatalog {
     static var metrics: [MetricDescriptor] { sections.flatMap(\.metrics) }
     static var keys: [String] { metrics.map(\.key) }
 
-    private static let preferred: [NativeTrendsGroup: [String]] = [
-        .strain: ["strain", "hr_zones13_min", "hr_zones45_min", "energy_kcal", "avg_hr"],
-        .recovery: ["recovery", "hrv", "rhr", "resp_rate"],
-        .sleep: ["sleep_performance"],
-        .health: ["vo2max", "weight", "body_fat", "stress"],
-        .activity: ["steps", "strength_min"],
+    /// WHOOP Trend View order. Keys Band cannot cheaply series are omitted here
+    /// (Sleep Stress, Non-Activity Stress, Total Volume Load).
+    static let orderedKeys: [(group: NativeTrendsGroup, keys: [String])] = [
+        (.healthspan, ["band_age", "pace_of_aging"]),
+        (.other, ["lean_mass", "weight", "stress"]),
+        (.sleep, [
+            "sleep_performance", "in_bed_min", "hours_vs_needed_hours", "hours_vs_needed_pct",
+            "sleep_consistency", "restorative_pct", "restorative_min", "sleep_efficiency",
+            "sleep_debt_min",
+        ]),
+        (.strain, [
+            "strain", "hr_zones13_min", "hr_zones45_min", "hr_zones_all_min",
+            "strength_min", "avg_hr", "energy_kcal", "vo2max",
+        ]),
+        (.recovery, ["recovery", "hrv", "rhr", "resp_rate"]),
     ]
 }
 
@@ -169,8 +206,14 @@ private struct NativeTrendsMetricHost: View, Equatable {
     var key: String
 
     var body: some View {
-        NativeMetricPage(key: key, showsNavigationTitle: false)
-            .id(key)
+        Group {
+            if NativeTrendsCatalog.opensHealthspan(key) {
+                NativeHealthspanPage(title: NativeTrendsCatalog.title(for: key))
+            } else {
+                NativeMetricPage(key: key, showsNavigationTitle: false)
+            }
+        }
+        .id(key)
     }
 }
 

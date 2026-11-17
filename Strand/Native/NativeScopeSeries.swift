@@ -481,11 +481,12 @@ enum NativeMetricDirection {
     static func higherIsBetter(_ key: String) -> Bool? {
         switch key {
         case "hrv", "recovery", "sleep_performance", "hours_vs_needed_pct",
-             "sleep_efficiency", "sleep_total_min", "asleep_min", "steps", "steps_est",
-             "spo2", "vo2max", "vo2max_est", "restorative_pct", "restorative_min",
-             "sleep_deep_min", "sleep_rem_min", "lean_mass", "mood":
+             "hours_vs_needed_hours", "sleep_efficiency", "sleep_total_min", "asleep_min",
+             "steps", "steps_est", "spo2", "vo2max", "vo2max_est", "restorative_pct",
+             "restorative_min", "sleep_deep_min", "sleep_rem_min", "lean_mass", "mood":
             return true
-        case "rhr", "resting_hr", "sleep_debt_min", "stress", "fitness_age", "body_age", "body_fat":
+        case "rhr", "resting_hr", "sleep_debt_min", "stress", "fitness_age", "body_age",
+             "body_fat", "band_age", "pace_of_aging":
             return false
         default:
             return nil
@@ -526,7 +527,8 @@ enum NativeScopeKindMap {
         switch key {
         case "steps", "steps_est", "energy_kcal", "active_kcal", "strain",
              "sleep_total_min", "asleep_min", "in_bed_min", "sleep_deep_min",
-             "sleep_rem_min", "sleep_light_min", "restorative_min":
+             "sleep_rem_min", "sleep_light_min", "restorative_min",
+             "hr_zones13_min", "hr_zones45_min", "hr_zones_all_min", "strength_min":
             return .total
         default:
             return .rate
@@ -747,6 +749,17 @@ enum NativeCountTicks {
             hour += step
         }
         return dates.isEmpty ? [start] : dates
+    }
+}
+
+/// Round-hour x labels on a day plot. The first tick sits on the plot's leading edge
+/// ("12 AM") and the last on the trailing edge, so a centered label clips the card.
+enum NativeDayAxisLabel {
+    static func anchor(for date: Date, in labels: [Date]) -> UnitPoint {
+        guard labels.count > 1 else { return .top }
+        if date == labels.first { return .topLeading }
+        if date == labels.last { return .topTrailing }
+        return .top
     }
 }
 

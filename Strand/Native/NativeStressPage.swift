@@ -116,28 +116,12 @@ struct NativeStressPage: View {
             minuteMeans[key] = mean
         }
         if scope != .day {
-            let lookback: Int = {
-                switch scope {
-                case .day: return 1
-                case .week: return 14
-                case .month: return 60
-                case .sixMonths: return 26 * 7
-                case .year: return 365
-                }
-            }()
-            let oldest = calendar.date(byAdding: .day, value: -lookback, to: start) ?? start
-            for day in days where day.day <= key && day.day != key {
-                guard let dayDate = NativeScopeSeries.date(from: day.day, calendar: calendar),
-                      dayDate >= oldest else { continue }
-                let built = await NativeDerivedSeries.stressDay(
-                    repo: repo, dayKey: day.day, dayStart: calendar.startOfDay(for: dayDate),
-                    days: days, sleeps: repo.sleeps, workouts: nextWorkouts, calendar: calendar
-                )
-                if Task.isCancelled { return }
-                if let mean = NativeScopeSeries.mean(built.hours.map(\.value)) {
-                    minuteMeans[day.day] = mean
-                }
-            }
+            let others = await NativeStressHistory.minuteMeans(
+                repo: repo, days: days, ending: key, scope: scope,
+                workouts: nextWorkouts, calendar: calendar
+            )
+            if Task.isCancelled { return }
+            minuteMeans.merge(others) { current, _ in current }
         }
         let daily = NativeStressHistory.daily(days: days, ending: key, minuteMeans: minuteMeans)
         let nextSeries = NativeScopeSeries.make(
@@ -371,6 +355,45 @@ struct NativeStressChartHeader: View {
 }
 
 enum NativeStressHistory {
+    /// Each day's minute-series stress mean over the scope's look-back window, before `ending`.
+    /// The one source for a day's stress value on Stress W/M/6M and on Trends' Total Day Stress, so the
+    /// two can never disagree. Days without a minute series fall back to the daily score in `daily`.
+    static func minuteMeans(
+        repo: Repository,
+        days: [DailyMetric],
+        ending key: String,
+        scope: NativeMetricScope,
+        workouts: [WorkoutRow],
+        calendar: Calendar
+    ) async -> [String: Double] {
+        let lookback: Int = {
+            switch scope {
+            case .day: return 1
+            case .week: return 14
+            case .month: return 60
+            case .sixMonths: return 26 * 7
+            case .year: return 365
+            }
+        }()
+        guard let endDate = NativeScopeSeries.date(from: key, calendar: calendar) else { return [:] }
+        let start = calendar.startOfDay(for: endDate)
+        let oldest = calendar.date(byAdding: .day, value: -lookback, to: start) ?? start
+        var out: [String: Double] = [:]
+        for day in days where day.day < key {
+            guard let dayDate = NativeScopeSeries.date(from: day.day, calendar: calendar),
+                  dayDate >= oldest else { continue }
+            let built = await NativeDerivedSeries.stressDay(
+                repo: repo, dayKey: day.day, dayStart: calendar.startOfDay(for: dayDate),
+                days: days, sleeps: repo.sleeps, workouts: workouts, calendar: calendar
+            )
+            if Task.isCancelled { return out }
+            if let mean = NativeScopeSeries.mean(built.hours.map(\.value)) {
+                out[day.day] = mean
+            }
+        }
+        return out
+    }
+
     /// One funnel for the Day-view average and that day's W/M/6M bar.
     /// Prefer the mean of `NativeDerivedSeries.stressDay` hours (and its cache).
     /// Fall back to the daily HRV/RHR score only when that day has no minute series;
@@ -1248,13 +1271,13 @@ struct NativeStressDayPlot: View {
             }
         }
         .chartXAxis {
-            AxisMarks(
-                preset: .aligned,
-                values: NativeCountTicks.roundHourLabels(dayStart: dayStart, plotEnd: plotEnd, calendar: .current)
-            ) { value in
+            let labels = NativeCountTicks.roundHourLabels(
+                dayStart: dayStart, plotEnd: plotEnd, calendar: .current
+            )
+            AxisMarks(preset: .aligned, values: labels) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativePaint.separator(style))
-                AxisValueLabel {
+                AxisValueLabel(anchor: NativeDayAxisLabel.anchor(for: value.as(Date.self) ?? .distantPast, in: labels)) {
                     if let date = value.as(Date.self) {
                         Text(NativeScopeFormat.hourClock(date, calendar: .current))
                             .font(.caption2)

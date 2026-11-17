@@ -1,5 +1,4 @@
 import SwiftUI
-import Charts
 import WhoopStore
 import StrandDesign
 import StrandAnalytics
@@ -10,6 +9,8 @@ struct NativeHealthspanPage: View {
     var links: [NativeHealthItem] = []
     var title: String = "Healthspan"
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var motion = NoopMotionState.shared
     @State private var repoHandle: Repository?
     @State private var profileHandle: ProfileStore?
     @State private var refreshSeq = 0
@@ -21,27 +22,20 @@ struct NativeHealthspanPage: View {
     private var taskID: String { handlesReady ? "\(dayKey)|\(refreshSeq)" : "boot" }
 
     var body: some View {
-        Group {
-            if let result {
-                NativeHealthspanBody(result: result, links: links)
-            } else {
-                NativeChrome.screen {
-                    ProgressView("Loading")
-                        .frame(maxWidth: .infinity, minHeight: 200)
-                    if !links.isEmpty { NativeHealthLinks(items: links) }
-                }
+        NativeHealthspanBody(result: result, links: links)
+            .navigationTitle(title)
+            .modifier(NativeInlineTitle())
+            .navigationDestination(for: NativeHealthspanTrendKind.self) { kind in
+                NativeHealthspanTrendPage(kind: kind, points: result?.trend ?? [])
             }
-        }
-        .navigationTitle(title)
-        .modifier(NativeInlineTitle())
-        .background {
-            NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
-            NativeProfileSink { profileHandle = $0 }
-        }
-        .task(id: taskID) {
-            guard handlesReady, let repo = repoHandle else { return }
-            await reload(repo: repo)
-        }
+            .background {
+                NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
+                NativeProfileSink { profileHandle = $0 }
+            }
+            .task(id: taskID) {
+                guard handlesReady, let repo = repoHandle else { return }
+                await reload(repo: repo)
+            }
     }
 
     private func reload(repo: Repository) async {
@@ -91,64 +85,104 @@ struct NativeHealthspanPage: View {
             )
         }.value
         if Task.isCancelled { return }
-        result = computed
+        let still = motion.poseStill(reduceMotion)
+        if still {
+            result = computed
+        } else {
+            withAnimation(NoopMotion.card) {
+                result = computed
+            }
+        }
     }
 }
 
 struct NativeHealthspanBody: View {
-    var result: HealthspanEngine.Result
+    var result: HealthspanEngine.Result?
     var links: [NativeHealthItem] = []
     @Environment(\.nativeStyle) private var style
+    @State private var compactProgress: CGFloat = 0
+
+    private var forming: Bool { result == nil }
 
     var body: some View {
-        NativeChrome.screen {
-            hero
-            NativeHealthspanPaceCard(pace: result.pace)
-            if !links.isEmpty {
-                NativeHealthLinks(items: links)
-            }
-            if result.readiness != .ready {
-                calibration
-            }
-            section("Sleep", .sleep)
-            section("Strain", .strain)
-            section("Fitness", .fitness)
-            if !result.trend.isEmpty {
-                NativeChrome.section("Trend")
-                NativeHealthspanTrendCard(points: result.trend)
-            }
-            NativeChrome.footnote(
-                "Band Age is a wellness comparison from published mortality research, not a medical or biological age. Lean mass is omitted when the device has none. HRV is not used."
-            )
-        }
-    }
-
-    private var hero: some View {
-        NativeChrome.panel {
-            VStack(spacing: 8) {
-                Text(result.bandAge.map(NativeHealthspanFormat.ageText) ?? "—")
-                    .font(NativePaint.number(56, weight: .bold, style: style))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.primary)
-                Text("BAND AGE")
-                    .font(style == .whoop ? NativeTokens.whoopCaps(12) : .footnote.weight(.semibold))
-                    .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 1.2)
-                    .foregroundStyle(.secondary)
-                if let delta = result.deltaYears {
-                    Text(NativeHealthspanFormat.youngerText(delta))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(delta >= 0 ? NativePaint.positiveDelta(style) : NativePaint.negativeDelta(style))
+        ScrollView {
+            VStack(alignment: .leading, spacing: style == .whoop ? 12 : 10) {
+                NativeHealthspanOrb(
+                    bandAge: result?.bandAge,
+                    deltaYears: result?.deltaYears,
+                    forming: forming,
+                    diameter: 280,
+                    animates: compactProgress < 0.55
+                )
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+                .opacity(1 - compactProgress)
+                .modifier(NativeHealthspanHeroPhaseFade())
+                .background(NativeHealthspanHeroAnchor())
+                if let result {
+                    NativeHealthspanPaceCard(
+                        pace: result.pace,
+                        weekDelta: NativeHealthspanPaceChip.weekDelta(points: result.trend)
+                    )
                 }
-                Text(String(format: "Chronological age %.1f", result.chronoAge))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                if !links.isEmpty {
+                    NativeHealthLinks(items: links)
+                }
+                if let result {
+                    if result.readiness != .ready {
+                        calibration(result)
+                    }
+                    NativeHealthspanSectionBlock(
+                        title: "Sleep",
+                        rows: result.contributors.filter { $0.section == .sleep }
+                    )
+                    NativeHealthspanSectionBlock(
+                        title: "Strain",
+                        rows: result.contributors.filter { $0.section == .strain }
+                    )
+                    NativeHealthspanSectionBlock(
+                        title: "Fitness",
+                        rows: result.contributors.filter { $0.section == .fitness }
+                    )
+                    if !result.trend.isEmpty {
+                        NativeChrome.section("Trend")
+                        NativeHealthspanTrendCard(points: result.trend, kind: .bandAge)
+                        NativeHealthspanTrendCard(points: result.trend, kind: .pace)
+                    }
+                    NativeChrome.footnote(
+                        "Band Age is a wellness comparison from published mortality research, not a medical or biological age. Lean mass is omitted when the device has none. HRV is not used."
+                    )
+                }
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 160)
+        }
+        .coordinateSpace(name: NativeHealthspanScroll.name)
+        .background(NativePageFill().ignoresSafeArea())
+        .modifier(NativeHealthspanScrollCompact(progress: $compactProgress))
+        .onPreferenceChange(NativeHealthspanHeroMinYKey.self) { minY in
+            if #available(iOS 18.0, macOS 15.0, *) { return }
+            let next = NativeHealthspanScroll.progress(heroMinY: minY)
+            if abs(next - compactProgress) > 0.01 {
+                compactProgress = next
+            }
+        }
+        .overlay(alignment: .top) {
+            if let result {
+                NativeHealthspanCompactHeader(
+                    bandAge: result.bandAge,
+                    deltaYears: result.deltaYears,
+                    pace: result.pace,
+                    forming: false
+                )
+                .opacity(compactProgress)
+                .allowsHitTesting(false)
+            }
         }
     }
 
-    private var calibration: some View {
+    private func calibration(_ result: HealthspanEngine.Result) -> some View {
         NativeChrome.panel {
             VStack(alignment: .leading, spacing: 8) {
                 Text(NativeHealthspanFormat.calibrationTitle(result.readiness, days: result.coverageDays))
@@ -164,384 +198,68 @@ struct NativeHealthspanBody: View {
             }
         }
     }
+}
 
-    @ViewBuilder
-    private func section(_ title: String, _ section: HealthspanEngine.Section) -> some View {
-        let rows = result.contributors.filter { $0.section == section }
-        NativeChrome.section(title)
-        NativeChrome.panel {
-            VStack(alignment: .leading, spacing: 18) {
-                ForEach(rows, id: \.key) { row in
-                    NativeHealthspanContributorRow(row: row)
-                }
-            }
-        }
+enum NativeHealthspanScroll {
+    static let name = "healthspan"
+    static let fadeStart: CGFloat = 24
+    static let fadeSpan: CGFloat = 140
+
+    static func progress(offset: CGFloat) -> CGFloat {
+        min(1, max(0, (offset - fadeStart) / fadeSpan))
+    }
+
+    static func progress(heroMinY: CGFloat) -> CGFloat {
+        progress(offset: -heroMinY)
     }
 }
 
-struct NativeHealthspanPaceCard: View {
-    var pace: Double?
-    @Environment(\.nativeStyle) private var style
-
-    var body: some View {
-        NativeChrome.panel {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("PACE OF AGING")
-                        .font(style == .whoop ? NativeTokens.whoopCaps(12) : .footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(pace.map(NativeHealthspanFormat.paceText) ?? "—")
-                        .font(NativePaint.number(22, weight: .bold, style: style))
-                        .monospacedDigit()
-                }
-                NativeHealthspanPaceMeter(pace: pace ?? 1)
-                HStack {
-                    Text("Slow")
-                    Spacer()
-                    Text("−1.0x")
-                    Spacer()
-                    Text("1.0x")
-                    Spacer()
-                    Text("3.0x")
-                    Spacer()
-                    Text("Fast")
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
-        }
+private struct NativeHealthspanHeroMinYKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
-struct NativeHealthspanPaceMeter: View {
-    var pace: Double
-    @Environment(\.nativeStyle) private var style
-
+private struct NativeHealthspanHeroAnchor: View {
     var body: some View {
         GeometryReader { geo in
-            let t = CGFloat(HealthspanEngine.clamp(pace, -1, 3) + 1) / 4
-            let x = max(2, min(geo.size.width - 2, t * geo.size.width))
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(NativePaint.separator(style).opacity(0.35))
-                    .frame(height: 6)
-                Capsule()
-                    .fill(NativePaint.recovery(style))
-                    .frame(width: max(6, x), height: 6)
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Color.primary)
-                    .frame(width: 3, height: 18)
-                    .offset(x: x - 1.5)
-            }
-        }
-        .frame(height: 18)
-        .accessibilityLabel("Pace of aging \(NativeHealthspanFormat.paceText(pace))")
-    }
-}
-
-struct NativeHealthspanContributorRow: View {
-    var row: HealthspanEngine.Contributor
-    @Environment(\.nativeStyle) private var style
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(row.label.uppercased())
-                    .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Text(NativeHealthspanFormat.yearsImpact(row.years, available: row.available))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(yearsColor)
-                    .monospacedDigit()
-            }
-            if row.available, let value = row.value {
-                NativeHealthspanRangeBar(
-                    value: value,
-                    value30: row.value30,
-                    scaleMin: row.scaleMin,
-                    scaleMax: row.scaleMax,
-                    higherIsBetter: row.higherIsBetter
-                )
-                HStack {
-                    Text(NativeHealthspanFormat.valueText(value, unit: row.unit, key: row.key))
-                        .font(.subheadline.weight(.semibold))
-                        .monospacedDigit()
-                    Spacer()
-                    Text(row.targetLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Text("Not available")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(NativeHealthspanFormat.accessibility(row))
-    }
-
-    private var yearsColor: Color {
-        guard row.available, let years = row.years else { return .secondary }
-        if years < -0.05 { return NativePaint.positiveDelta(style) }
-        if years > 0.05 { return NativePaint.negativeDelta(style) }
-        return .secondary
-    }
-}
-
-struct NativeHealthspanRangeBar: View {
-    var value: Double
-    var value30: Double?
-    var scaleMin: Double
-    var scaleMax: Double
-    var higherIsBetter: Bool
-    @Environment(\.nativeStyle) private var style
-
-    var body: some View {
-        GeometryReader { geo in
-            let span = max(scaleMax - scaleMin, 1)
-            let x: (Double) -> CGFloat = { v in
-                CGFloat(HealthspanEngine.clamp((v - scaleMin) / span, 0, 1)) * geo.size.width
-            }
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: higherIsBetter
-                                ? [NativeTokens.bandPoor, NativeTokens.bandSufficient, NativeTokens.bandOptimal]
-                                : [NativeTokens.bandOptimal, NativeTokens.bandSufficient, NativeTokens.bandPoor],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(height: 8)
-                Image(systemName: "arrowtriangle.down.fill")
-                    .font(.system(size: 8))
-                    .offset(x: x(value) - 5, y: -10)
-                if let value30 {
-                    Image(systemName: "arrowtriangle.up.fill")
-                        .font(.system(size: 8))
-                        .offset(x: x(value30) - 5, y: 10)
-                }
-            }
-        }
-        .frame(height: 28)
-        .accessibilityHidden(true)
-    }
-}
-
-struct NativeHealthspanTrendCard: View {
-    var points: [HealthspanEngine.TrendPoint]
-    @Environment(\.nativeStyle) private var style
-
-    private struct PlotPoint: Identifiable {
-        var day: Date
-        var bandAge: Double
-        var chronoAge: Double
-        var pace: Double?
-        var id: Date { day }
-    }
-
-    private var plot: [PlotPoint] {
-        points.compactMap { point in
-            guard let day = NativeDayLogic.startOfLocalDay(point.day) else { return nil }
-            return PlotPoint(day: day, bandAge: point.bandAge, chronoAge: point.chronoAge, pace: point.pace)
-        }
-    }
-
-    private var xDomain: ClosedRange<Date> {
-        guard let first = plot.first, let last = plot.last, last.day >= first.day else {
-            let now = Date()
-            return now...now.addingTimeInterval(86_400)
-        }
-        return first.day...last.day
-    }
-
-    private var ageDomain: ClosedRange<Double> {
-        let values = plot.flatMap { [$0.bandAge, $0.chronoAge] }
-        return NativePlotAxis.yDomain(values, fallback: 20...40)
-    }
-
-    private var paceDomain: ClosedRange<Double> {
-        let values = plot.compactMap(\.pace) + [1]
-        return NativePlotAxis.yDomain(values, fallback: 0...2)
-    }
-
-    private var inWindow: [PlotPoint] {
-        plot.filter { NativePlotAxis.inTimeDomain($0.day, xDomain) }
-    }
-
-    var body: some View {
-        NativeChrome.panel {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("BAND AGE TREND")
-                    .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Chart {
-                    ForEach(inWindow) { p in
-                        if NativePlotAxis.inValueDomain(p.bandAge, ageDomain) {
-                            LineMark(
-                                x: .value("Day", p.day),
-                                y: .value("Age", p.bandAge),
-                                series: .value("Kind", "Band Age")
-                            )
-                            .foregroundStyle(NativePaint.recovery(style))
-                        }
-                        if NativePlotAxis.inValueDomain(p.chronoAge, ageDomain) {
-                            LineMark(
-                                x: .value("Day", p.day),
-                                y: .value("Age", p.chronoAge),
-                                series: .value("Kind", "Chronological")
-                            )
-                            .foregroundStyle(Color.primary.opacity(0.45))
-                        }
-                    }
-                }
-                .chartXScale(domain: xDomain)
-                .chartYScale(domain: ageDomain)
-                .chartYAxis {
-                    AxisMarks(position: .trailing, values: NativePlotAxis.yTicks(in: ageDomain)) { value in
-                        AxisGridLine(stroke: NativeChrome.gridStroke)
-                            .foregroundStyle(NativeChrome.hairline)
-                        AxisValueLabel {
-                            if let age = value.as(Double.self) {
-                                Text(NativeHealthspanFormat.ageText(age))
-                                    .font(.caption2)
-                                    .foregroundStyle(Color.secondary)
-                                    .monospacedDigit()
-                            }
-                        }
-                    }
-                }
-                .chartXAxis {
-                    AxisMarks(values: NativePlotAxis.monthTicks(start: xDomain.lowerBound, end: xDomain.upperBound)) { value in
-                        AxisGridLine(stroke: NativeChrome.gridStroke)
-                            .foregroundStyle(NativeChrome.hairline)
-                        AxisValueLabel {
-                            if let date = value.as(Date.self) {
-                                Text(NativeScopeFormat.month(date, calendar: .current))
-                                    .font(.caption2)
-                                    .foregroundStyle(Color.secondary)
-                            }
-                        }
-                    }
-                }
-                .chartPlotStyle { $0.clipped() }
-                .frame(height: 160)
-
-                Text("PACE OF AGING TREND")
-                    .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 8)
-                Chart {
-                    ForEach(inWindow) { p in
-                        if let pace = p.pace, NativePlotAxis.inValueDomain(pace, paceDomain) {
-                            LineMark(
-                                x: .value("Day", p.day),
-                                y: .value("Pace", pace)
-                            )
-                            .foregroundStyle(NativePaint.strain(style))
-                        }
-                    }
-                    if NativePlotAxis.inValueDomain(1, paceDomain) {
-                        RuleMark(y: .value("1x", 1.0))
-                            .foregroundStyle(Color.secondary.opacity(0.4))
-                    }
-                }
-                .chartXScale(domain: xDomain)
-                .chartYScale(domain: paceDomain)
-                .chartYAxis {
-                    AxisMarks(position: .trailing, values: NativePlotAxis.yTicks(in: paceDomain)) { value in
-                        AxisGridLine(stroke: NativeChrome.gridStroke)
-                            .foregroundStyle(NativeChrome.hairline)
-                        AxisValueLabel {
-                            if let pace = value.as(Double.self) {
-                                Text(NativeHealthspanFormat.paceText(pace))
-                                    .font(.caption2)
-                                    .foregroundStyle(Color.secondary)
-                                    .monospacedDigit()
-                            }
-                        }
-                    }
-                }
-                .chartXAxis {
-                    AxisMarks(values: NativePlotAxis.monthTicks(start: xDomain.lowerBound, end: xDomain.upperBound)) { value in
-                        AxisGridLine(stroke: NativeChrome.gridStroke)
-                            .foregroundStyle(NativeChrome.hairline)
-                        AxisValueLabel {
-                            if let date = value.as(Date.self) {
-                                Text(NativeScopeFormat.month(date, calendar: .current))
-                                    .font(.caption2)
-                                    .foregroundStyle(Color.secondary)
-                            }
-                        }
-                    }
-                }
-                .chartPlotStyle { $0.clipped() }
-                .frame(height: 140)
-            }
+            Color.clear.preference(
+                key: NativeHealthspanHeroMinYKey.self,
+                value: geo.frame(in: .named(NativeHealthspanScroll.name)).minY
+            )
         }
     }
 }
 
-enum NativeHealthspanFormat {
-    static func chronoAge(dob: Date, asOf: Date) -> Double {
-        max(0, asOf.timeIntervalSince(dob) / (365.25 * 86_400))
-    }
-
-    static func ageText(_ value: Double) -> String {
-        String(format: "%.1f", value)
-    }
-
-    static func paceText(_ value: Double) -> String {
-        String(format: "%.1fx", value)
-    }
-
-    static func yearsImpact(_ years: Double?, available: Bool) -> String {
-        guard available, let years else { return "—" }
-        if abs(years) < 0.05 { return "0.0 years" }
-        return String(format: "%+.1f years", years)
-    }
-
-    static func youngerText(_ delta: Double) -> String {
-        if abs(delta) < 0.05 { return "Same as your age" }
-        if delta > 0 { return String(format: "%.1f years younger", delta) }
-        return String(format: "%.1f years older", -delta)
-    }
-
-    static func valueText(_ value: Double, unit: String, key: String) -> String {
-        switch key {
-        case "sleep": return NativeScoreMath.duration(value * 60) + " h"
-        case "zone13", "zone45", "strength": return NativeScoreMath.duration(value) + " h"
-        case "steps": return NativeScoreMath.count(value)
-        case "consistency", "lean": return String(format: "%.0f%%", value)
-        case "rhr": return String(format: "%.0f bpm", value)
-        case "vo2max": return String(format: "%.0f ml/kg/min", value)
-        default:
-            if unit.isEmpty { return String(format: "%.0f", value) }
-            return String(format: "%.0f %@", value, unit)
+private struct NativeHealthspanHeroPhaseFade: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            content.scrollTransition { view, phase in
+                view.scaleEffect(phase.isIdentity ? 1 : 0.92)
+            }
+        } else {
+            content
         }
     }
+}
 
-    static func calibrationTitle(_ readiness: HealthspanEngine.Readiness, days: Int) -> String {
-        switch readiness {
-        case .notReady: return "Not enough data yet"
-        case .calibrating: return "Calibrating Band Age"
-        case .ready: return "Calibrated"
+private struct NativeHealthspanScrollCompact: ViewModifier {
+    @Binding var progress: CGFloat
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, macOS 15.0, *) {
+            content.onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y + geo.contentInsets.top
+            } action: { _, y in
+                let next = min(1, max(0, (y - NativeHealthspanScroll.fadeStart) / NativeHealthspanScroll.fadeSpan))
+                if abs(next - progress) > 0.01 {
+                    progress = next
+                }
+            }
+        } else {
+            content
         }
-    }
-
-    static func calibrationBody(days: Int) -> String {
-        let remain = max(0, HealthspanEngine.minDaysForAge - days)
-        return "Band Age uses a 6-month average. \(days) days on record. Pace of Aging uses 30 days.\(remain > 0 ? " About \(remain) more days until Band Age is calibrated." : "")"
-    }
-
-    static func accessibility(_ row: HealthspanEngine.Contributor) -> String {
-        let value = row.value.map { valueText($0, unit: row.unit, key: row.key) } ?? "not available"
-        let years = yearsImpact(row.years, available: row.available)
-        return "\(row.label), \(value), target \(row.targetLabel), \(years)"
     }
 }
 

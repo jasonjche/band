@@ -85,4 +85,105 @@ final class NativeHealthspanTests: XCTestCase {
         XCTAssertEqual(NativeHealthspanFormat.valueText(66, unit: "%", key: "consistency"), "66%")
         XCTAssertEqual(NativeHealthspanFormat.valueText(65, unit: "bpm", key: "rhr"), "65 bpm")
     }
+
+    func testOrbHueMapsYoungerToMintAndOlderToAmber() {
+        XCTAssertEqual(NativeHealthspanOrbHue.resolve(deltaYears: 3.2, forming: false), .younger)
+        XCTAssertEqual(NativeHealthspanOrbHue.resolve(deltaYears: -2.4, forming: false), .older)
+        XCTAssertEqual(NativeHealthspanOrbHue.resolve(deltaYears: 0, forming: false), .mixed)
+        XCTAssertEqual(NativeHealthspanOrbHue.resolve(deltaYears: 4, forming: true), .forming)
+        XCTAssertEqual(NativeHealthspanOrbHue.progress(deltaYears: 5), 1, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanOrbHue.progress(deltaYears: -5), 0, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanOrbHue.progress(deltaYears: 0), 0.5, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanOrbHue.progress(deltaYears: nil), 0.5, accuracy: 0.001)
+    }
+
+    func testMarkerProgressClampsToTheScale() {
+        XCTAssertEqual(NativeHealthspanFormat.markerProgress(value: 70, scaleMin: 40, scaleMax: 100), 0.5, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanFormat.markerProgress(value: 40, scaleMin: 40, scaleMax: 100), 0, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanFormat.markerProgress(value: 100, scaleMin: 40, scaleMax: 100), 1, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanFormat.markerProgress(value: 10, scaleMin: 40, scaleMax: 100), 0, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanFormat.markerProgress(value: 200, scaleMin: 40, scaleMax: 100), 1, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanFormat.markerProgress(value: 50, scaleMin: 50, scaleMax: 50), 0.5, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanFormat.paceProgress(-1), 0, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanFormat.paceProgress(1), 0.5, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanFormat.paceProgress(3), 1, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanFormat.paceProgress(5), 1, accuracy: 0.001)
+    }
+
+    func testScaleLabelsMatchWhoopEnds() {
+        XCTAssertEqual(NativeHealthspanFormat.scaleLabel(40, key: "consistency"), "40%")
+        XCTAssertEqual(NativeHealthspanFormat.scaleLabel(5, key: "sleep"), "5h")
+        XCTAssertEqual(NativeHealthspanFormat.scaleLabel(0, key: "zone13"), "0h")
+        XCTAssertEqual(NativeHealthspanFormat.scaleLabel(60, key: "zone45"), "1h")
+        XCTAssertEqual(NativeHealthspanFormat.scaleLabel(120, key: "strength"), "2h")
+        XCTAssertEqual(NativeHealthspanFormat.scaleLabel(0, key: "steps"), "0K")
+        XCTAssertEqual(NativeHealthspanFormat.scaleLabel(16_000, key: "steps"), "16K")
+        XCTAssertEqual(NativeHealthspanFormat.scaleLabel(40, key: "rhr"), "40bpm")
+        XCTAssertEqual(NativeHealthspanFormat.scaleLabel(15, key: "vo2max"), "15")
+    }
+
+    func testYearsFormattingStaysSigned() {
+        XCTAssertEqual(NativeHealthspanFormat.yearsImpact(0.5, available: true), "+0.5 years")
+        XCTAssertEqual(NativeHealthspanFormat.yearsImpact(-1.4, available: true), "-1.4 years")
+        XCTAssertEqual(NativeHealthspanFormat.yearsImpact(0.0, available: true), "0.0 years")
+        XCTAssertEqual(NativeHealthspanFormat.compactDeltaValue(1.9), "1.9")
+        XCTAssertEqual(NativeHealthspanFormat.compactDeltaCaption(1.9), "YEARS YOUNGER")
+        XCTAssertEqual(NativeHealthspanFormat.compactDeltaCaption(-0.8), "YEARS OLDER")
+        XCTAssertEqual(NativeHealthspanFormat.compactDeltaCaption(0), "YEARS")
+    }
+
+    func testPaceChipReadsLastTwoWeeklyPoints() {
+        let points: [HealthspanEngine.TrendPoint] = [
+            .init(day: "2026-11-01", bandAge: 27, chronoAge: 30, pace: 0.9),
+            .init(day: "2026-11-08", bandAge: 27.1, chronoAge: 30, pace: 1.2)
+        ]
+        XCTAssertEqual(NativeHealthspanPaceChip.weekDelta(points: points) ?? 0, 0.3, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanPaceChip.from(weekDelta: 0.3), .faster)
+        XCTAssertEqual(NativeHealthspanPaceChip.from(weekDelta: -0.2), .slower)
+        XCTAssertNil(NativeHealthspanPaceChip.from(weekDelta: 0.01))
+        XCTAssertEqual(NativeHealthspanPaceChip.faster.label, "faster vs last week")
+        XCTAssertEqual(NativeHealthspanPaceChip.slower.label, "slower vs last week")
+    }
+
+    func testContributorNoteIsPlainLanguage() {
+        let worse = HealthspanEngine.Contributor(
+            key: "consistency", label: "Sleep Consistency", section: .sleep,
+            value: 66, value30: 66, unit: "%", target: 70, targetLabel: "≥ 70%",
+            years: 0.5, years30: 0.5, scaleMin: 40, scaleMax: 100,
+            higherIsBetter: true, available: true, citation: ""
+        )
+        XCTAssertTrue(NativeHealthspanFormat.contributorNote(worse).contains("+0.5 years"))
+        let better = HealthspanEngine.Contributor(
+            key: "zone13", label: "Time in HR Zones 1–3 (Weekly)", section: .strain,
+            value: 270, value30: 240, unit: "min", target: 100, targetLabel: "≥ 100 min",
+            years: -1.4, years30: -1.2, scaleMin: 0, scaleMax: 360,
+            higherIsBetter: true, available: true, citation: ""
+        )
+        XCTAssertTrue(NativeHealthspanFormat.contributorNote(better).contains("1.4 years"))
+        let missing = HealthspanEngine.Contributor(
+            key: "lean", label: "Lean Body Mass", section: .fitness,
+            value: nil, value30: nil, unit: "%", target: 80, targetLabel: "≥ 80%",
+            years: nil, years30: nil, scaleMin: 50, scaleMax: 90,
+            higherIsBetter: true, available: false, citation: ""
+        )
+        XCTAssertTrue(NativeHealthspanFormat.contributorNote(missing).contains("Not enough"))
+    }
+
+    func testTrendScopeKeepsAMonthOfWeeklyPoints() {
+        let points: [HealthspanEngine.TrendPoint] = [
+            .init(day: "2026-05-16", bandAge: 26.0, chronoAge: 29.5, pace: 1.1),
+            .init(day: "2026-10-01", bandAge: 26.4, chronoAge: 29.9, pace: 1.0),
+            .init(day: "2026-11-01", bandAge: 26.6, chronoAge: 30.0, pace: 0.9),
+            .init(day: "2026-11-15", bandAge: 26.8, chronoAge: 30.0, pace: 0.8)
+        ]
+        let month = NativeHealthspanTrendScope.windowed(points, scope: .month)
+        XCTAssertEqual(month.map(\.day), ["2026-11-01", "2026-11-15"])
+        let six = NativeHealthspanTrendScope.windowed(points, scope: .sixMonths)
+        XCTAssertEqual(six.map(\.day), ["2026-10-01", "2026-11-01", "2026-11-15"])
+        XCTAssertEqual(NativeHealthspanTrendScope.month.label, "M")
+        XCTAssertEqual(NativeHealthspanTrendScope.sixMonths.label, "6M")
+        XCTAssertEqual(NativeHealthspanScroll.progress(heroMinY: 8), 0, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanScroll.progress(offset: 0), 0, accuracy: 0.001)
+        XCTAssertEqual(NativeHealthspanScroll.progress(offset: 24 + 140), 1, accuracy: 0.001)
+    }
 }

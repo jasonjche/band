@@ -342,8 +342,53 @@ final class NativeHomeLayoutTests: XCTestCase {
             -0.5,
             accuracy: 1e-9
         )
-        XCTAssertEqual(NativeStressMonitorMath.segments(consecutivePoints()).count, 1)
-        XCTAssertEqual(NativeStressMonitorMath.segments(gappedPoints()).count, 2)
+    }
+
+    func testStressDrawBridgesFiveMinuteGapsAndDropsShortFragments() {
+        XCTAssertEqual(NativeStressMonitorMath.drawConnectGap, 5 * 60, accuracy: 0.01)
+        XCTAssertEqual(NativeStressMonitorMath.minDrawDuration, 5 * 60, accuracy: 0.01)
+
+        let t0 = Date(timeIntervalSince1970: 0)
+        func points(_ offsets: [Int], value: Double = 1) -> [NativeHourPoint] {
+            offsets.map {
+                NativeHourPoint(time: t0.addingTimeInterval(TimeInterval($0 * 60)), value: value)
+            }
+        }
+
+        // 6 minutes of 1-minute samples: keep, one polyline, stored vertices only.
+        let long = points(Array(0...6))
+        let longSegments = NativeStressMonitorMath.segments(long)
+        XCTAssertEqual(longSegments.count, 1)
+        XCTAssertEqual(longSegments[0].map(\.time), long.map(\.time))
+
+        // 4-minute scrap and a lone minute: display-only drop.
+        XCTAssertTrue(NativeStressMonitorMath.segments(points(Array(0...4))).isEmpty)
+        XCTAssertTrue(NativeStressMonitorMath.segments(points([0])).isEmpty)
+
+        // Two samples 5 minutes apart: connect and keep (span == 5 min).
+        let bridged = NativeStressMonitorMath.segments(points([0, 5, 6]))
+        XCTAssertEqual(bridged.count, 1)
+        XCTAssertEqual(bridged[0].count, 3)
+
+        // 5 min + 1 s hole: two short fragments, neither drawn.
+        let split: [NativeHourPoint] = [
+            NativeHourPoint(time: t0, value: 1),
+            NativeHourPoint(time: t0.addingTimeInterval(5 * 60 + 1), value: 1.2),
+        ]
+        XCTAssertTrue(NativeStressMonitorMath.segments(split).isEmpty)
+
+        // Two 6-minute runs with a 6-minute hole: two polylines, nothing in the gap.
+        let left = points(Array(0...6), value: 1)
+        let right = points(Array(12...18), value: 2)
+        let gapped = NativeStressMonitorMath.segments(left + right)
+        XCTAssertEqual(gapped.count, 2)
+        XCTAssertEqual(gapped[0].last?.time, left.last?.time)
+        XCTAssertEqual(gapped[1].first?.time, right.first?.time)
+
+        // Averages still see the short scrap that drawing dropped.
+        let scrap = points(Array(0...2), value: 2.4)
+        XCTAssertTrue(NativeStressMonitorMath.segments(scrap).isEmpty)
+        XCTAssertEqual(NativeScopeSeries.mean(scrap.map(\.value)) ?? -1, 2.4, accuracy: 1e-9)
     }
 
     func testStressTimelineSmoothsMinuteScores() {
@@ -484,22 +529,6 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertFalse(NativeStressMonitorMath.showsNow(dayStart: past, now: now))
         let dayEnd = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? now
         XCTAssertFalse(NativeStressMonitorMath.showsNow(dayStart: dayStart, now: dayEnd))
-    }
-
-    private func consecutivePoints() -> [NativeHourPoint] {
-        let t0 = Date(timeIntervalSince1970: 0)
-        return [
-            NativeHourPoint(time: t0, value: 1),
-            NativeHourPoint(time: t0.addingTimeInterval(60), value: 1.2),
-        ]
-    }
-
-    private func gappedPoints() -> [NativeHourPoint] {
-        let t0 = Date(timeIntervalSince1970: 0)
-        return [
-            NativeHourPoint(time: t0, value: 1),
-            NativeHourPoint(time: t0.addingTimeInterval(3600), value: 1.2),
-        ]
     }
 
     func testDateStepperChevronsFitBesideStrapOnIPhone15() {

@@ -12,18 +12,26 @@ final class HealthspanEngineTests: XCTestCase {
     }
 
     func testOptimalLifestyleReadsAtChronoAge() {
+        let age = 30.0
+        let sex = "male"
         let six = HealthspanEngine.Window(
-            sleepHours: 7.5, sleepConsistency: 70,
-            weeklyZone13Min: 100, weeklyZone45Min: 10, weeklyStrengthMin: 40,
-            dailySteps: 8_000, restingHR: 60, vo2max: 44, leanMassPct: 80,
+            sleepHours: HealthspanEngine.sleepHoursTarget,
+            sleepConsistency: HealthspanEngine.consistencyTarget,
+            weeklyZone13Min: HealthspanEngine.zone13Target(age: age),
+            weeklyZone45Min: HealthspanEngine.zone45TargetMin,
+            weeklyStrengthMin: HealthspanEngine.strengthTargetMin,
+            dailySteps: HealthspanEngine.stepsTarget(age: age),
+            restingHR: HealthspanEngine.rhrTarget(sex: sex),
+            vo2max: HealthspanEngine.vo2Target(age: age, sex: sex),
+            leanMassPct: HealthspanEngine.leanMassTarget(sex: sex),
             daysWithData: 180
         )
         let r = HealthspanEngine.compute(
-            profile: .init(chronoAge: 30, sex: "male"),
+            profile: .init(chronoAge: age, sex: sex),
             sixMonth: six, thirtyDay: six, coverageDays: 180
         )
         XCTAssertEqual(r.readiness, .ready)
-        XCTAssertEqual(r.bandAge ?? -1, 30, accuracy: 0.35)
+        XCTAssertEqual(r.bandAge ?? -1, age, accuracy: 0.35)
         XCTAssertEqual(r.deltaYears ?? -1, 0, accuracy: 0.35)
         XCTAssertEqual(r.pace ?? -1, 1.0, accuracy: 0.05)
         XCTAssertFalse(r.contributors.contains { $0.key == "hrv" })
@@ -36,46 +44,51 @@ final class HealthspanEngineTests: XCTestCase {
         let short = HealthspanEngine.years(fromHazard: 1.12)
         XCTAssertEqual(short, 1.13, accuracy: 0.05)
         XCTAssertGreaterThan(HealthspanEngine.years(fromHazard: HealthspanEngine.sleepHoursHazard(5)), 0)
-        XCTAssertEqual(HealthspanEngine.years(fromHazard: HealthspanEngine.sleepHoursHazard(7.07)), 0, accuracy: 0.05)
+        XCTAssertEqual(HealthspanEngine.years(fromHazard: HealthspanEngine.sleepHoursHazard(7.5)), 0, accuracy: 0.05)
     }
 
     func testSleepConsistencyWindred() {
         XCTAssertEqual(HealthspanEngine.sleepConsistencyHazard(70), 1.0, accuracy: 1e-9)
         XCTAssertEqual(HealthspanEngine.sleepConsistencyHazard(100), 0.70, accuracy: 1e-9)
         XCTAssertEqual(HealthspanEngine.sleepConsistencyHazard(40), 1.43, accuracy: 1e-9)
-        let at66 = HealthspanEngine.years(fromHazard: HealthspanEngine.sleepConsistencyHazard(66))
-        XCTAssertEqual(at66, 0.56, accuracy: 0.15)
-        XCTAssertGreaterThan(at66, 0)
+        let mid = HealthspanEngine.years(fromHazard: HealthspanEngine.sleepConsistencyHazard(55))
+        XCTAssertGreaterThan(mid, 0)
+        XCTAssertLessThan(mid, HealthspanEngine.years(fromHazard: 1.43))
     }
 
     func testStepsPaluchPlateau() {
-        let at8k = HealthspanEngine.stepsHazard(8_000, age: 24)
+        let at8k = HealthspanEngine.stepsHazard(8_000, age: 30)
         XCTAssertEqual(at8k, 1.0, accuracy: 0.03)
-        XCTAssertGreaterThan(HealthspanEngine.stepsHazard(3_000, age: 24), 1.2)
-        let hi = HealthspanEngine.stepsHazard(13_467, age: 24)
-        XCTAssertLessThan(hi, 1.0)
-        XCTAssertEqual(HealthspanEngine.stepsTarget(age: 24), 8_000)
+        XCTAssertGreaterThan(HealthspanEngine.stepsHazard(3_000, age: 30), 1.2)
+        let hi = HealthspanEngine.stepsHazard(12_000, age: 30)
+        XCTAssertEqual(hi, 0.94, accuracy: 0.01)
+        XCTAssertEqual(HealthspanEngine.stepsHazard(14_000, age: 30), hi, accuracy: 1e-9)
+        XCTAssertEqual(HealthspanEngine.stepsTarget(age: 30), 8_000)
         XCTAssertEqual(HealthspanEngine.stepsTarget(age: 65), 6_000)
     }
 
     func testStrengthMommaNadir() {
         XCTAssertEqual(HealthspanEngine.strengthHazard(40), 1.0, accuracy: 1e-9)
-        XCTAssertEqual(HealthspanEngine.strengthHazard(0), 1.205, accuracy: 1e-9)
-        let at28 = HealthspanEngine.years(fromHazard: HealthspanEngine.strengthHazard(28))
-        XCTAssertEqual(at28, 0.56, accuracy: 0.12)
-        XCTAssertGreaterThan(at28, 0)
+        XCTAssertEqual(HealthspanEngine.strengthHazard(0), 1.17, accuracy: 1e-9)
+        let below = HealthspanEngine.years(fromHazard: HealthspanEngine.strengthHazard(20))
+        XCTAssertGreaterThan(below, 0)
+        XCTAssertLessThan(HealthspanEngine.strengthHazard(60), 1.0)
+        XCTAssertGreaterThan(HealthspanEngine.strengthHazard(200), 1.0)
     }
 
     func testRestingHRZhang() {
-        XCTAssertEqual(HealthspanEngine.restingHRHazard(60, sex: "male"), 1.0, accuracy: 1e-9)
-        let plus10 = HealthspanEngine.restingHRHazard(70, sex: "male")
+        let target = HealthspanEngine.rhrTarget(sex: "male")
+        XCTAssertEqual(HealthspanEngine.restingHRHazard(target, sex: "male"), 1.0, accuracy: 1e-9)
+        let plus10 = HealthspanEngine.restingHRHazard(target + 10, sex: "male")
         XCTAssertEqual(plus10, 1.09, accuracy: 1e-9)
-        XCTAssertEqual(HealthspanEngine.rhrTarget(sex: "female"), 64)
+        XCTAssertEqual(
+            HealthspanEngine.rhrTarget(sex: "female") - HealthspanEngine.rhrTarget(sex: "male"),
+            4, accuracy: 1e-9)
     }
 
     func testVO2KodamaPerMET() {
         let target = HealthspanEngine.vo2Target(age: 30, sex: "male")
-        XCTAssertEqual(target, 44, accuracy: 0.01)
+        XCTAssertEqual(target, 45.8, accuracy: 0.01)
         XCTAssertEqual(HealthspanEngine.vo2Hazard(target, age: 30, sex: "male"), 1.0, accuracy: 1e-9)
         let plusMET = HealthspanEngine.vo2Hazard(target + 3.5, age: 30, sex: "male")
         XCTAssertEqual(plusMET, 0.87, accuracy: 1e-9)
@@ -103,7 +116,7 @@ final class HealthspanEngineTests: XCTestCase {
     func testLeanMassPercentFromKilograms() {
         let pct = HealthspanEngine.leanMassPercent(stored: 63.0, weightKg: 73.0)
         XCTAssertEqual(pct ?? 0, 86.3, accuracy: 0.2)
-        XCTAssertEqual(HealthspanEngine.leanMassPercent(stored: 86.5, weightKg: nil) ?? 0, 86.5, accuracy: 0.01)
+        XCTAssertEqual(HealthspanEngine.leanMassPercent(stored: 80.0, weightKg: nil) ?? 0, 80.0, accuracy: 0.01)
         XCTAssertNil(HealthspanEngine.leanMassPercent(stored: 0, weightKg: 70))
     }
 
@@ -121,30 +134,33 @@ final class HealthspanEngineTests: XCTestCase {
 
     func testPaceIsOneWhenWindowsMatch() {
         let w = HealthspanEngine.Window(
-            sleepHours: 7.2, sleepConsistency: 66,
-            weeklyZone13Min: 273, weeklyZone45Min: 11, weeklyStrengthMin: 28,
-            dailySteps: 13_467, restingHR: 65, vo2max: 52, leanMassPct: 86.5,
+            sleepHours: 7.2, sleepConsistency: 80,
+            weeklyZone13Min: 120, weeklyZone45Min: 20, weeklyStrengthMin: 45,
+            dailySteps: 9_000, restingHR: 55, vo2max: 48, leanMassPct: 82,
             daysWithData: 180
         )
         let r = HealthspanEngine.compute(
-            profile: .init(chronoAge: 23.7, sex: "male"),
+            profile: .init(chronoAge: 30, sex: "male"),
             sixMonth: w, thirtyDay: w, coverageDays: 180
         )
         XCTAssertEqual(r.pace ?? -1, 1.0, accuracy: 0.02)
     }
 
     func testPaceOnePointThreeFromFifteenHundredthsYearGap() {
+        let sex = "male"
+        let rhr0 = HealthspanEngine.rhrTarget(sex: sex)
         let base = HealthspanEngine.Window(
             sleepHours: 7.5, sleepConsistency: 70,
             weeklyZone13Min: 100, weeklyZone45Min: 10, weeklyStrengthMin: 40,
-            dailySteps: 8_000, restingHR: 60, vo2max: 44, daysWithData: 180
+            dailySteps: 8_000, restingHR: rhr0,
+            vo2max: HealthspanEngine.vo2Target(age: 30, sex: sex), daysWithData: 180
         )
         var thirty = base
-        // Zhang: years = ((RHR − 60)/10) × ln(1.09) / 0.1. 0.15 years → RHR ≈ 61.74.
-        thirty.restingHR = 60 + 10 * (0.15 * 0.1 / log(1.09))
+        // Zhang: years = ((RHR − target)/10) × ln(1.09) / 0.1. 0.15 years → +Δ bpm.
+        thirty.restingHR = rhr0 + 10 * (0.15 * 0.1 / log(1.09))
         thirty.daysWithData = 30
         let r = HealthspanEngine.compute(
-            profile: .init(chronoAge: 30, sex: "male"),
+            profile: .init(chronoAge: 30, sex: sex),
             sixMonth: base, thirtyDay: thirty, coverageDays: 180
         )
         XCTAssertEqual(r.pace ?? 0, 1.3, accuracy: 0.02)
@@ -250,31 +266,25 @@ final class HealthspanEngineTests: XCTestCase {
         XCTAssertGreaterThan(mapped.last ?? 0, 90)
     }
 
-    func testWhoopScreenshotOrderOfMagnitude() {
-        // WHOOP screenshot: Age 21.8, 1.9 years younger, chrono ≈ 23.7.
-        // Published curves on those contributor values should land in the same ballpark,
-        // not copy WHOOP's closed weights.
+    func testBandAgeIsChronoPlusSumOfYears() {
         let six = HealthspanEngine.Window(
-            sleepHours: 7.07, sleepConsistency: 66,
-            weeklyZone13Min: 273, weeklyZone45Min: 11, weeklyStrengthMin: 28,
-            dailySteps: 13_467, restingHR: 65, vo2max: 52, leanMassPct: 86.5,
+            sleepHours: 6.0, sleepConsistency: 80,
+            weeklyZone13Min: 180, weeklyZone45Min: 20, weeklyStrengthMin: 50,
+            dailySteps: 9_500, restingHR: 52, vo2max: 50, leanMassPct: 75,
             daysWithData: 180
         )
+        let chrono = 32.0
         let r = HealthspanEngine.compute(
-            profile: .init(chronoAge: 23.7, sex: "male"),
+            profile: .init(chronoAge: chrono, sex: "male"),
             sixMonth: six, thirtyDay: six, coverageDays: 180
         )
-        XCTAssertNotNil(r.bandAge)
-        XCTAssertGreaterThan(r.deltaYears ?? 0, 0)
-        XCTAssertLessThan(r.bandAge ?? 100, 23.7)
-        XCTAssertGreaterThan(r.bandAge ?? 0, 18)
-        XCTAssertLessThan(abs((r.bandAge ?? 0) - 21.8), 4.0)
-        let cons = r.contributors.first { $0.key == "consistency" }!
-        XCTAssertGreaterThan(cons.years ?? 0, 0)
-        let z13 = r.contributors.first { $0.key == "zone13" }!
-        XCTAssertLessThan(z13.years ?? 0, 0)
-        let sleep = r.contributors.first { $0.key == "sleep" }!
-        XCTAssertEqual(sleep.years ?? 1, 0, accuracy: 0.1)
+        let sum = r.contributors.compactMap(\.years).reduce(0, +)
+        let expected = HealthspanEngine.clamp(chrono + sum,
+                                              HealthspanEngine.minBandAge,
+                                              HealthspanEngine.maxBandAge)
+        XCTAssertEqual(r.bandAge ?? -1, expected, accuracy: 1e-9)
+        XCTAssertEqual(r.deltaYears ?? 0, chrono - expected, accuracy: 1e-9)
+        XCTAssertEqual(r.factorsUsed, 9)
     }
 
     func testBuildFromDayList() {
@@ -292,5 +302,104 @@ final class HealthspanEngineTests: XCTestCase {
         XCTAssertNotNil(r.bandAge)
         XCTAssertFalse(r.trend.isEmpty)
         XCTAssertEqual(r.trend.last?.day, "2026-11-14")
+    }
+
+    func testReferentZeroes() {
+        let y: (Double) -> Double = { HealthspanEngine.years(fromHazard: $0) }
+        XCTAssertEqual(y(HealthspanEngine.sleepHoursHazard(7.5)), 0, accuracy: 1e-9)
+        XCTAssertEqual(y(HealthspanEngine.sleepHoursHazard(8.0)), 0, accuracy: 1e-9)
+        XCTAssertEqual(y(HealthspanEngine.sleepConsistencyHazard(70)), 0, accuracy: 1e-9)
+        XCTAssertEqual(y(HealthspanEngine.zone13Hazard(100)), 0, accuracy: 1e-9)
+        XCTAssertEqual(y(HealthspanEngine.zone45Hazard(10)), 0, accuracy: 1e-9)
+        XCTAssertEqual(y(HealthspanEngine.strengthHazard(40)), 0, accuracy: 1e-9)
+        XCTAssertEqual(y(HealthspanEngine.stepsHazard(8_000, age: 30)), 0, accuracy: 0.05)
+        XCTAssertEqual(y(HealthspanEngine.restingHRHazard(
+            HealthspanEngine.rhrTarget(sex: "male"), sex: "male")), 0, accuracy: 1e-9)
+        XCTAssertEqual(y(HealthspanEngine.vo2Hazard(
+            HealthspanEngine.vo2Target(age: 40, sex: "female"), age: 40, sex: "female")), 0, accuracy: 1e-9)
+        XCTAssertEqual(y(HealthspanEngine.leanMassHazard(80, sex: "male")), 0, accuracy: 1e-9)
+        XCTAssertEqual(y(HealthspanEngine.leanMassHazard(90, sex: "male")), 0, accuracy: 1e-9)
+        XCTAssertEqual(y(HealthspanEngine.leanMassHazard(67, sex: "female")), 0, accuracy: 1e-9)
+    }
+
+    func testEndClamps() {
+        XCTAssertEqual(HealthspanEngine.sleepHoursHazard(0), HealthspanEngine.sleepHoursHazard(4), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.sleepHoursHazard(20), HealthspanEngine.sleepHoursHazard(12), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.sleepConsistencyHazard(-10), HealthspanEngine.sleepConsistencyHazard(40), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.sleepConsistencyHazard(140), HealthspanEngine.sleepConsistencyHazard(100), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.zone13Hazard(-20), HealthspanEngine.zone13Hazard(0), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.zone13Hazard(900), HealthspanEngine.zone13Hazard(600), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.zone45Hazard(-5), HealthspanEngine.zone45Hazard(0), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.zone45Hazard(400), HealthspanEngine.zone45Hazard(150), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.stepsHazard(-100, age: 30), HealthspanEngine.stepsHazard(0, age: 30), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.stepsHazard(20_000, age: 30), HealthspanEngine.stepsHazard(14_000, age: 30), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.strengthHazard(-10), HealthspanEngine.strengthHazard(0), accuracy: 1e-12)
+        XCTAssertEqual(HealthspanEngine.strengthHazard(400), HealthspanEngine.strengthHazard(200), accuracy: 1e-12)
+    }
+
+    func testMonotoneWhereExpected() {
+        func decreasing(_ xs: [Double], _ f: (Double) -> Double, file: StaticString = #filePath, line: UInt = #line) {
+            var prev = f(xs[0])
+            for x in xs.dropFirst() {
+                let y = f(x)
+                XCTAssertLessThanOrEqual(y, prev + 1e-12, "x=\(x)", file: file, line: line)
+                prev = y
+            }
+        }
+        func increasing(_ xs: [Double], _ f: (Double) -> Double, file: StaticString = #filePath, line: UInt = #line) {
+            var prev = f(xs[0])
+            for x in xs.dropFirst() {
+                let y = f(x)
+                XCTAssertGreaterThanOrEqual(y, prev - 1e-12, "x=\(x)", file: file, line: line)
+                prev = y
+            }
+        }
+        decreasing([40, 55, 70, 85, 100], HealthspanEngine.sleepConsistencyHazard)
+        decreasing([0, 50, 100, 200, 300, 500, 600], HealthspanEngine.zone13Hazard)
+        decreasing([0, 10, 40, 75, 150], HealthspanEngine.zone45Hazard)
+        decreasing([0, 3_000, 6_000, 8_000, 10_000, 14_000]) { HealthspanEngine.stepsHazard($0, age: 30) }
+        decreasing([30, 40, 50, 60]) { HealthspanEngine.vo2Hazard($0, age: 30, sex: "male") }
+        increasing([50, 58, 65, 80]) { HealthspanEngine.restingHRHazard($0, sex: "male") }
+        decreasing([60, 70, 80]) { HealthspanEngine.leanMassHazard($0, sex: "male") }
+        XCTAssertEqual(HealthspanEngine.leanMassHazard(85, sex: "male"),
+                       HealthspanEngine.leanMassHazard(80, sex: "male"), accuracy: 1e-12)
+        // Strength stays J-shaped: down to the nadir, then up.
+        decreasing([0, 20, 40, 60], HealthspanEngine.strengthHazard)
+        increasing([60, 140, 200], HealthspanEngine.strengthHazard)
+        // Sleep hours stay U-shaped around 7–8 h.
+        decreasing([4, 5, 6, 7], HealthspanEngine.sleepHoursHazard)
+        increasing([8, 9, 10, 12], HealthspanEngine.sleepHoursHazard)
+    }
+
+    func testDisplayScaleEndpoints() {
+        let male = HealthspanEngine.contributors(
+            window: HealthspanEngine.Window(sleepHours: 7.5, leanMassPct: 80),
+            profile: .init(chronoAge: 30, sex: "male"))
+        let female = HealthspanEngine.contributors(
+            window: HealthspanEngine.Window(sleepHours: 7.5, leanMassPct: 70),
+            profile: .init(chronoAge: 30, sex: "female"))
+        XCTAssertEqual(male.first { $0.key == "sleep" }?.scaleMin, 5)
+        XCTAssertEqual(male.first { $0.key == "sleep" }?.scaleMax, 8)
+        XCTAssertEqual(male.first { $0.key == "consistency" }?.scaleMin, 40)
+        XCTAssertEqual(male.first { $0.key == "consistency" }?.scaleMax, 100)
+        XCTAssertEqual(male.first { $0.key == "zone45" }?.scaleMax, 60)
+        XCTAssertEqual(male.first { $0.key == "strength" }?.scaleMin, 0)
+        XCTAssertEqual(male.first { $0.key == "strength" }?.scaleMax, 120)
+        XCTAssertEqual(male.first { $0.key == "vo2max" }?.scaleMin, 15)
+        XCTAssertEqual(male.first { $0.key == "vo2max" }?.scaleMax, 70)
+        XCTAssertEqual(male.first { $0.key == "rhr" }?.scaleMin, 40)
+        XCTAssertEqual(male.first { $0.key == "rhr" }?.scaleMax, 80)
+        XCTAssertEqual(male.first { $0.key == "lean" }?.scaleMin, 60)
+        XCTAssertEqual(female.first { $0.key == "lean" }?.scaleMin, 50)
+    }
+
+    func testZone13PastTargetKeepsDecreasing() {
+        let atTarget = HealthspanEngine.zone13Hazard(100)
+        let mid = HealthspanEngine.zone13Hazard(200)
+        let far = HealthspanEngine.zone13Hazard(300)
+        XCTAssertEqual(atTarget, 1.0, accuracy: 1e-9)
+        XCTAssertLessThan(mid, atTarget)
+        XCTAssertLessThan(far, mid)
+        XCTAssertEqual(far, 0.85, accuracy: 1e-9)
     }
 }

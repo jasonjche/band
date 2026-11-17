@@ -22,6 +22,6 @@ let package = Package(
             name: "bandcheck",
             dependencies: ["StrandAnalytics", "WhoopProtocol", "StrandImport"]
         ),
-        .testTarget(name: "bandcheckTests", dependencies: ["bandcheck"]),
+        .testTarget(name: "bandcheckTests", dependencies: ["bandcheck", "StrandAnalytics"]),
     ]
 )

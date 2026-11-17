@@ -1,4 +1,5 @@
 import XCTest
+import StrandAnalytics
 @testable import bandcheck
 
 final class AgreementTests: XCTestCase {
@@ -166,6 +167,7 @@ final class ThresholdTests: XCTestCase {
         XCTAssertEqual(t.agreement["replay.recovery"]?.maxMae, 10)
         XCTAssertEqual(t.invariants.maxWorkoutsWithoutHR, 3)
         XCTAssertEqual(t.detection.minRecall, 0.2, accuracy: 1e-9)
+        XCTAssertEqual(t.healthspanCalibration.maxAbsTotalYears, 0.5, accuracy: 1e-9)
     }
 
     func testInvariantCap() {
@@ -184,6 +186,7 @@ final class ThresholdTests: XCTestCase {
         XCTAssertEqual(t.agreement["eval.strain_c_heldout"]!.maxMae, 1.1, accuracy: 1e-12)
         XCTAssertNil(t.agreement["eval.strain_a_heldout"])
         XCTAssertNil(t.agreement["eval.strain_b_heldout"])
+        XCTAssertEqual(t.healthspanCalibration.maxAbsTotalYears, 0.5, accuracy: 1e-12)
     }
 
     func testZoneMinutesPutsRemainderInSedentaryBin() {
@@ -254,6 +257,87 @@ final class StrainEvalTests: XCTestCase {
         XCTAssertEqual(c.withinTol, 1, accuracy: 1e-12)
         let empty = StrainEval.heldOutAgreements(workouts: [], rhrByDay: [:], hrMax: 198)
         XCTAssertEqual(empty.map(\.n), [0, 0, 0])
+    }
+}
+
+final class HealthspanCalibrationTests: XCTestCase {
+    func referentSnapshot(whoopYears: Double = 0, whoopAge: Double = 30) -> HealthspanLabels.Snapshot {
+        let age = 30.0
+        let sex = "male"
+        let metrics: [String: HealthspanLabels.Metric] = [
+            "sleepHours": .init(value: HealthspanEngine.sleepHoursTarget, years: whoopYears, scale: [5, 8]),
+            "sleepConsistencyPct": .init(value: HealthspanEngine.consistencyTarget, years: whoopYears, scale: [40, 100]),
+            "zone13WeeklyMin": .init(value: HealthspanEngine.zone13Target(age: age), years: whoopYears, scale: [0, nil]),
+            "zone45WeeklyMin": .init(value: HealthspanEngine.zone45TargetMin, years: whoopYears, scale: [nil, 60]),
+            "strengthWeeklyMin": .init(value: HealthspanEngine.strengthTargetMin, years: whoopYears, scale: [0, 120]),
+            "dailySteps": .init(value: HealthspanEngine.stepsTarget(age: age), years: whoopYears, scale: [0, nil]),
+            "vo2max": .init(value: HealthspanEngine.vo2Target(age: age, sex: sex), years: whoopYears, scale: [15, 70]),
+            "restingHR": .init(value: HealthspanEngine.rhrTarget(sex: sex), years: whoopYears, scale: [40, 80]),
+            "leanMassPct": .init(value: HealthspanEngine.leanMassTarget(sex: sex), years: whoopYears, scale: [60, nil]),
+        ]
+        return HealthspanLabels.Snapshot(
+            capturedOn: nil, chronologicalAge: age, whoopAge: whoopAge,
+            yearsYounger: nil, paceOfAging: nil, sex: sex, contributors: metrics)
+    }
+
+    func testReferentsMatchZeroWhoopYears() {
+        let labels = HealthspanLabels(snapshots: [referentSnapshot()])
+        let report = evaluateHealthspanCalibration(labels: labels)
+        XCTAssertEqual(report.snapshotCount, 1)
+        XCTAssertLessThan(report.yearsTotal.maxAbs, 0.1)
+        XCTAssertLessThan(report.bandAge.maxAbs, 0.35)
+        for p in report.contributors {
+            XCTAssertEqual(p.n, 1)
+            XCTAssertLessThan(p.maxAbs, 0.1, p.key)
+        }
+    }
+
+    func testPerContributorErrorIsBandMinusWhoop() {
+        let snap = referentSnapshot(whoopYears: 0.5, whoopAge: 30.5)
+        let labels = HealthspanLabels(snapshots: [snap])
+        let report = evaluateHealthspanCalibration(labels: labels)
+        for p in report.contributors {
+            XCTAssertEqual(p.bias, p.mae * (p.bias < 0 ? -1 : 1), accuracy: 1e-9, p.key)
+            XCTAssertLessThan(p.bias, 0, p.key)
+        }
+        XCTAssertLessThan(report.yearsTotal.bias, -4)
+    }
+
+    func testGateFailsWhenTotalYearsExceedCap() {
+        let labels = HealthspanLabels(snapshots: [referentSnapshot(whoopYears: 1.0, whoopAge: 31)])
+        let report = evaluateHealthspanCalibration(labels: labels)
+        let fail = gateHealthspanCalibration(report, cap: .init(maxAbsTotalYears: 0.5))
+        XCTAssertEqual(fail.first?.check, "healthspan_calibration")
+        let pass = gateHealthspanCalibration(report, cap: .init(maxAbsTotalYears: 20))
+        XCTAssertTrue(pass.isEmpty)
+    }
+
+    func testDecodeIgnoresNoteAndNullScaleEnds() throws {
+        let json = """
+        {"_note":"private","snapshots":[{"chronologicalAge":40,"sex":"female",
+          "contributors":{"sleepHours":{"value":7.5,"years":0.0,"scale":[5,null]}}}]}
+        """
+        let labels = try JSONDecoder().decode(HealthspanLabels.self, from: Data(json.utf8))
+        XCTAssertEqual(labels.snapshots.count, 1)
+        guard let scale = labels.snapshots[0].contributors["sleepHours"]?.scale else {
+            return XCTFail("missing scale")
+        }
+        XCTAssertEqual(scale.count, 2)
+        XCTAssertEqual(scale[0], 5)
+        XCTAssertNil(scale[1])
+        let report = evaluateHealthspanCalibration(labels: labels)
+        XCTAssertEqual(report.contributors.first { $0.key == "sleep" }?.n, 1)
+        XCTAssertEqual(report.yearsTotal.n, 1)
+        XCTAssertEqual(report.bandAge.n, 0)
+    }
+
+    func testPrintContainsErrorsNotInputs() {
+        let labels = HealthspanLabels(snapshots: [referentSnapshot()])
+        let report = evaluateHealthspanCalibration(labels: labels)
+        // Report struct holds only errors; labelled values never leave the evaluator.
+        XCTAssertEqual(report.contributors.map(\.key), HealthspanLabels.contributorOrder)
+        XCTAssertEqual(report.yearsTotal.key, "years_total")
+        XCTAssertEqual(report.bandAge.key, "band_age")
     }
 }
 

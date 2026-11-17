@@ -5,24 +5,20 @@ import StrandAnalytics
 
 final class NativeTrendsTests: XCTestCase {
 
-    func testEveryCatalogMetricAppearsInExactlyOneGroup() {
+    func testEveryTrendsMetricAppearsInExactlyOneWhoopGroup() {
         let sections = NativeTrendsCatalog.sections
         let groupedKeys = sections.flatMap { $0.metrics.map(\.key) }
-        let catalogKeys = Set(MetricCatalog.all.map(\.key))
-
-        XCTAssertEqual(Set(groupedKeys), catalogKeys,
-                       "every unique catalog key must appear in the Trends menu")
-        XCTAssertEqual(groupedKeys.count, catalogKeys.count,
-                       "a catalog key must not appear in more than one group")
-
-        for metric in MetricCatalog.all {
-            let groups = sections.filter { section in
-                section.metrics.contains { $0.key == metric.key }
-            }
-            XCTAssertEqual(groups.count, 1,
-                           "\(metric.key) must live in exactly one Trends group")
+        XCTAssertEqual(groupedKeys.count, Set(groupedKeys).count,
+                       "a Trends key must not appear in more than one group")
+        for key in groupedKeys {
+            XCTAssertNotNil(MetricCatalog.all.first { $0.key == key },
+                            "\(key) must be a MetricCatalog entry")
+            XCTAssertEqual(
+                sections.filter { $0.metrics.contains { $0.key == key } }.count, 1,
+                "\(key) must live in exactly one Trends group"
+            )
         }
-
+        XCTAssertEqual(Set(groupedKeys), Set(NativeTrendsCatalog.orderedKeys.flatMap(\.keys)))
         for group in NativeTrendsGroup.allCases {
             XCTAssertEqual(sections.filter { $0.group == group }.count, 1)
             XCTAssertFalse(sections.first { $0.group == group }?.metrics.isEmpty ?? true,
@@ -33,29 +29,47 @@ final class NativeTrendsTests: XCTestCase {
     func testGroupOrderMatchesWhoopTrendView() {
         XCTAssertEqual(
             NativeTrendsCatalog.sections.map(\.group),
-            [.strain, .recovery, .sleep, .health, .activity]
+            [.healthspan, .other, .sleep, .strain, .recovery]
         )
         XCTAssertEqual(NativeTrendsGroup.allCases.map(\.title),
-                       ["Strain", "Recovery", "Sleep", "Health", "Activity"])
+                       ["Healthspan", "Other", "Sleep", "Strain", "Recovery"])
         XCTAssertEqual(
-            NativeTrendsCatalog.sections.first { $0.group == .strain }?.metrics.prefix(5).map(\.key) ?? [],
-            ["strain", "hr_zones13_min", "hr_zones45_min", "energy_kcal", "avg_hr"]
+            NativeTrendsCatalog.sections.first { $0.group == .healthspan }?.metrics.map(\.key) ?? [],
+            ["band_age", "pace_of_aging"]
         )
         XCTAssertEqual(
-            NativeTrendsCatalog.sections.first { $0.group == .recovery }?.metrics.prefix(4).map(\.key) ?? [],
+            NativeTrendsCatalog.sections.first { $0.group == .other }?.metrics.map(\.key) ?? [],
+            ["lean_mass", "weight", "stress"]
+        )
+        XCTAssertEqual(
+            NativeTrendsCatalog.sections.first { $0.group == .sleep }?.metrics.map(\.key) ?? [],
+            [
+                "sleep_performance", "in_bed_min", "hours_vs_needed_hours", "hours_vs_needed_pct",
+                "sleep_consistency", "restorative_pct", "restorative_min", "sleep_efficiency",
+                "sleep_debt_min",
+            ]
+        )
+        XCTAssertEqual(
+            NativeTrendsCatalog.sections.first { $0.group == .strain }?.metrics.map(\.key) ?? [],
+            [
+                "strain", "hr_zones13_min", "hr_zones45_min", "hr_zones_all_min",
+                "strength_min", "avg_hr", "energy_kcal", "vo2max",
+            ]
+        )
+        XCTAssertEqual(
+            NativeTrendsCatalog.sections.first { $0.group == .recovery }?.metrics.map(\.key) ?? [],
             ["recovery", "hrv", "rhr", "resp_rate"]
         )
-        XCTAssertEqual(
-            NativeTrendsCatalog.sections.first { $0.group == .sleep }?.metrics.first?.key ?? "",
-            "sleep_performance"
-        )
-        XCTAssertEqual(
-            NativeTrendsCatalog.sections.first { $0.group == .activity }?.metrics.prefix(2).map(\.key) ?? [],
-            ["steps", "strength_min"]
-        )
-        XCTAssertTrue(
-            NativeTrendsCatalog.sections.first { $0.group == .health }?.metrics.contains { $0.key == "vo2max" } ?? false
-        )
+        XCTAssertEqual(NativeTrendsCatalog.title(for: "band_age"), "Band Age")
+        XCTAssertEqual(NativeTrendsCatalog.title(for: "stress"), "Total Day Stress")
+        XCTAssertEqual(NativeTrendsCatalog.title(for: "hours_vs_needed_pct"), "Hours vs. Needed (%)")
+        XCTAssertEqual(NativeTrendsCatalog.title(for: "hours_vs_needed_hours"), "Hours vs. Needed (Hours)")
+        XCTAssertEqual(NativeTrendsCatalog.title(for: "restorative_min"), "Restorative Sleep (Hours)")
+        XCTAssertEqual(NativeTrendsCatalog.title(for: "hrv"), "Heart Rate Variability")
+        XCTAssertEqual(NativeTrendsCatalog.title(for: "hr_zones_all_min"), "Heart Rate Zones All")
+        XCTAssertTrue(NativeTrendsCatalog.opensHealthspan("band_age"))
+        XCTAssertTrue(NativeTrendsCatalog.opensHealthspan("pace_of_aging"))
+        XCTAssertFalse(NativeTrendsCatalog.opensHealthspan("hrv"))
     }
 
     func testEveryTrendsRouteOpens() {
@@ -63,6 +77,7 @@ final class NativeTrendsTests: XCTestCase {
             XCTAssertEqual(NativeTrendsCatalog.route(for: key), TabRoute.metric(key))
             XCTAssertNotNil(MetricCatalog.all.first { $0.key == key },
                             "\(key) must resolve through MetricCatalog so TabRoute.metric opens a page")
+            if NativeTrendsCatalog.opensHealthspan(key) { continue }
 
             let presentation = NativeRouteResolver.presentation(for: .metric(key), nativeLayout: true)
             switch presentation {
@@ -103,6 +118,18 @@ final class NativeTrendsTests: XCTestCase {
         XCTAssertTrue(NativeMetricScope.pickerCases(for: "hrv").map(\.label).contains("W"))
         XCTAssertTrue(NativeMetricScope.pickerCases(for: "hrv").map(\.label).contains("M"))
         XCTAssertTrue(NativeMetricScope.pickerCases(for: "hrv").map(\.label).contains("6M"))
+    }
+
+    func testCatalogCategoryIdsStayEffortChargeRest() {
+        XCTAssertEqual(
+            MetricCatalog.categories,
+            ["Heart", "Charge", "Rest", "Effort", "Health", "Nutrition", "Mind"]
+        )
+        XCTAssertEqual(MetricCatalog.all.first { $0.key == "recovery" }?.category, "Charge")
+        XCTAssertEqual(MetricCatalog.all.first { $0.key == "strain" }?.category, "Effort")
+        XCTAssertEqual(MetricCatalog.all.first { $0.key == "sleep_performance" }?.category, "Rest")
+        XCTAssertEqual(MetricCatalog.all.first { $0.key == "band_age" }?.category, "Health")
+        XCTAssertEqual(MetricCatalog.all.first { $0.key == "hours_vs_needed_hours" }?.category, "Rest")
     }
 
     func testHealthTabIncludesTrends() {

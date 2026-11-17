@@ -184,14 +184,16 @@ public enum HealthspanEngine {
     public static func stepsTarget(age: Double) -> Double { age >= 60 ? 6_000 : 8_000 }
 
     /// WHOOP Age guide / FRIEND-like cardiorespiratory-fitness target (ml/kg/min).
-    /// About 44 (men) / 38 (women) at age 30, declining 0.4 ml/kg/min per year.
+    /// About 46 (men) / 38 (women) at age 30, declining 0.4 ml/kg/min per year.
+    /// Male age-30 target calibrated to WHOOP Healthspan outputs; Kodama slope kept.
     public static func vo2Target(age: Double, sex: String) -> Double {
-        let at30 = isFemale(sex) ? 38.0 : 44.0
+        let at30 = isFemale(sex) ? 38.0 : 45.8
         return max(18, at30 - 0.4 * (age - 30))
     }
 
-    /// WHOOP Age guide: below 60 bpm (men) / 64 bpm (women).
-    public static func rhrTarget(sex: String) -> Double { isFemale(sex) ? 64 : 60 }
+    /// Resting-HR 0-year referent (bpm). Zhang 2016 slope is applied versus this target.
+    /// Male/female pair calibrated to WHOOP Healthspan outputs (4 bpm sex offset kept).
+    public static func rhrTarget(sex: String) -> Double { isFemale(sex) ? 62 : 58 }
 
     /// Momma 2022 BJSM nadir ~40 min/week of muscle-strengthening.
     public static let strengthTargetMin = 40.0
@@ -232,23 +234,25 @@ public enum HealthspanEngine {
     /// Paluch AE et al. Lancet Public Health 2022;7:e219–e228. Device-measured steps,
     /// 15 cohorts. Quartile medians 3,553 / 5,801 / 7,842 / 10,901; HRs vs Q1: 0.60 / 0.55 /
     /// 0.47. Knots are those HRs re-based so Q3 (~8,000, the under-60 plateau) is HR 1.0.
+    /// Plateau HR past ~10,000 steps/day calibrated to WHOOP Healthspan outputs.
     public static func stepsHazard(_ steps: Double, age: Double) -> Double {
         let target = stepsTarget(age: age)
         let scale = target / 8_000
         let x = steps / scale
         return hazard(x, knots: [
             (0, 2.20), (3_553, 1.82), (5_801, 1.09), (7_842, 1.00),
-            (10_901, 0.85), (14_000, 0.85)
+            (10_000, 0.94), (14_000, 0.94)
         ])
     }
 
     /// Arem H et al. JAMA Intern Med 2015;175:959–967. Leisure-time MVPA vs none:
     /// 0.1–7.4 MET-h/wk HR 0.80; meeting guidelines (7.5–14.9) HR 0.69; 2–3× HR 0.63;
     /// ≥3× HR 0.61. Re-based so 100 min/week (WHOOP young-adult zones 1–3 target / WHO
-    /// moderate activity) is HR 1.0.
+    /// moderate activity) is HR 1.0. Slope past the target calibrated to WHOOP
+    /// Healthspan outputs (Arem diminishing returns were too flat for Healthspan).
     public static func zone13Hazard(_ weeklyMin: Double) -> Double {
         hazard(weeklyMin, knots: [
-            (0, 1.45), (100, 1.00), (150, 0.93), (300, 0.91), (600, 0.88)
+            (0, 1.45), (100, 1.00), (300, 0.85), (600, 0.82)
         ])
     }
 
@@ -263,10 +267,11 @@ public enum HealthspanEngine {
 
     /// Momma H et al. Br J Sports Med 2022;56:755–763. Muscle-strengthening vs none
     /// RR 0.85; spline nadir ~40 min/week RR 0.83 (J-shaped; RR rises again past ~140 min).
-    /// 40 min/week is the 0-year referent.
+    /// 40 min/week is the 0-year referent. 0-min knot calibrated to WHOOP Healthspan
+    /// outputs (Momma 0.85 vs none, re-based to the 40 min referent).
     public static func strengthHazard(_ weeklyMin: Double) -> Double {
         hazard(weeklyMin, knots: [
-            (0, 1.205), (40, 1.00), (60, 0.95), (140, 1.00), (200, 1.08)
+            (0, 1.17), (40, 1.00), (60, 0.95), (140, 1.00), (200, 1.08)
         ])
     }
 
@@ -288,8 +293,8 @@ public enum HealthspanEngine {
 
     /// Srikanthan P, Karlamangla AS. Am J Med 2014;127:547–555. Low muscle mass vs
     /// higher quartiles, all-cause HR ≈ 1.23. Linear to the WHOOP Age guide target
-    /// (80% men / 67% women); no extra credit above the target (matching WHOOP's 0.0
-    /// years at 86.5% lean mass).
+    /// (80% men / 67% women); no extra credit above the target (calibrated to WHOOP
+    /// Healthspan outputs, which show 0.0 years at and above the referent).
     public static func leanMassHazard(_ percent: Double, sex: String) -> Double {
         let target = leanMassTarget(sex: sex)
         let floor = isFemale(sex) ? 50.0 : 60.0
@@ -511,7 +516,7 @@ public enum HealthspanEngine {
                 citation: "Windred 2024 Sleep; UK Biobank SRI, most- vs least-regular HR ≈ 0.70."),
             row(key: "sleep", label: "Hours of Sleep", section: .sleep,
                 value: window.sleepHours, unit: "h", target: sleepHoursTarget,
-                targetLabel: "7–9 h", years: sleepY, scaleMin: 5, scaleMax: 9,
+                targetLabel: "7–9 h", years: sleepY, scaleMin: 5, scaleMax: 8,
                 higherIsBetter: true, available: window.sleepHours != nil,
                 citation: "Cappuccio 2010 Sleep; U-shape vs 7–8 h, short RR 1.12, long RR 1.30."),
             row(key: "zone13", label: "Time in HR Zones 1–3 (Weekly)", section: .strain,
@@ -551,7 +556,7 @@ public enum HealthspanEngine {
             row(key: "lean", label: "Lean Body Mass", section: .fitness,
                 value: window.leanMassPct, unit: "%", target: leanMassTarget(sex: sex),
                 targetLabel: "≥ \(Int(leanMassTarget(sex: sex)))%", years: lbmY,
-                scaleMin: 50, scaleMax: 90, higherIsBetter: true,
+                scaleMin: isFemale(sex) ? 50 : 60, scaleMax: 90, higherIsBetter: true,
                 available: window.leanMassPct != nil,
                 citation: "Srikanthan 2014 Am J Med; low muscle mass all-cause HR ≈ 1.23."),
         ]

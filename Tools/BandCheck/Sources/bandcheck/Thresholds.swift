@@ -4,6 +4,37 @@ struct Thresholds: Equatable, Codable {
     var agreement: [String: AgreementCap]
     var detection: DetectionCap
     var invariants: InvariantCap
+    var healthspanCalibration: HealthspanCalibrationCap
+
+    enum CodingKeys: String, CodingKey {
+        case agreement, detection, invariants
+        case healthspanCalibration = "healthspan_calibration"
+    }
+
+    init(agreement: [String: AgreementCap], detection: DetectionCap, invariants: InvariantCap,
+         healthspanCalibration: HealthspanCalibrationCap = .lenient) {
+        self.agreement = agreement
+        self.detection = detection
+        self.invariants = invariants
+        self.healthspanCalibration = healthspanCalibration
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        agreement = try c.decode([String: AgreementCap].self, forKey: .agreement)
+        detection = try c.decode(DetectionCap.self, forKey: .detection)
+        invariants = try c.decode(InvariantCap.self, forKey: .invariants)
+        healthspanCalibration = try c.decodeIfPresent(
+            HealthspanCalibrationCap.self, forKey: .healthspanCalibration) ?? .lenient
+    }
+
+    struct HealthspanCalibrationCap: Equatable, Codable {
+        var maxAbsTotalYears: Double
+        enum CodingKeys: String, CodingKey {
+            case maxAbsTotalYears = "max_abs_total_years"
+        }
+        static let lenient = HealthspanCalibrationCap(maxAbsTotalYears: 0.5)
+    }
 
     struct AgreementCap: Equatable, Codable {
         var maxMae: Double

@@ -40,6 +40,19 @@ final class NativeHealthTabTests: XCTestCase {
         }
     }
 
+    func testHealthTabLinksOmitRowSubtitles() {
+        let src = try! String(contentsOfFile: NativeHealthTabTests.healthTabPath, encoding: .utf8)
+        XCTAssertFalse(src.contains("subtitle: item.subtitle"))
+        XCTAssertTrue(src.contains("NativeSettingsRow(title: item.title, icon: item.icon, color: item.color)"))
+    }
+
+    private static var healthTabPath: String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return root.appendingPathComponent("Strand/Native/NativeHealthTab.swift").path
+    }
+
     private func sampleMetric(day: String, hrv: Double? = nil, rhr: Int? = nil,
                               resp: Double? = nil, spo2: Double? = nil, skin: Double? = nil) -> DailyMetric {
         DailyMetric(

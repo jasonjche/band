@@ -28,8 +28,7 @@ struct NativeMetricPage: View {
     }
 
     private var title: String {
-        if key == "vo2max" || key == "vo2max_est" { return "VO₂ Max" }
-        return metric?.title ?? key.replacingOccurrences(of: "_", with: " ").capitalized
+        NativeTrendsCatalog.title(for: key)
     }
 
     private var taskID: String {
@@ -86,9 +85,11 @@ struct NativeMetricPage: View {
         switch key {
         case "hrv", "rhr", "resting_hr", "avg_hr", "max_hr": return NativeTokens.heart
         case "resp_rate": return NativeTokens.respiratory
-        case "steps", "energy_kcal", "active_kcal": return NativeTokens.activity
+        case "steps", "energy_kcal", "active_kcal", "strength_min",
+             "hr_zones13_min", "hr_zones45_min", "hr_zones_all_min":
+            return NativeTokens.activity
         case "vo2max", "vo2max_est": return NativeTokens.respiratory
-        case "strain": return NativeTokens.strain
+        case "strain", "stress": return NativeTokens.strain
         case "recovery": return NativeTokens.recoveryHigh
         default: return NativeTokens.sleep
         }
@@ -110,6 +111,8 @@ struct NativeMetricPage: View {
         case "energy_kcal", "active_kcal":
             return "cal"
         case "vo2max", "vo2max_est": return "ml/kg·min"
+        case "restorative_min", "hours_vs_needed_hours": return "hr"
+        case "stress": return nil
         default:
             let unit = metric?.unit ?? ""
             return unit.isEmpty ? nil : unit
@@ -124,36 +127,27 @@ struct NativeMetricPage: View {
             await reloadVo2(repo: repo, calendar: calendar, ending: ending)
             return
         }
-        // Score resolution walks every stored day and night, so it runs off the main actor and only
-        // for keys that need it. Doing it in place stalled range switches (weekly HRV in Trends).
-        let days = repo.days
-        let sleeps = Self.scoredKeys.contains(key) ? repo.sleeps : []
-        let imported = Self.scoredKeys.contains(key) ? repo.importedSleep : [:]
-        let key = key, dayKey = dayKey, scope = scope
+        if key == "stress" {
+            await reloadStress(repo: repo, calendar: calendar, ending: ending)
+            return
+        }
         let scale = UnitPrefs.resolveEffortScale(effortScaleRaw)
-        let computed = await Task.detached(priority: .userInitiated) { () -> ([NativeDayPoint], NativeScopeSeries) in
-            let scores = Self.scoredKeys.contains(key)
-                ? NativeBandScores.resolve(days: days, sleeps: sleeps, importedSleep: imported)
-                : nil
-            let points: [NativeDayPoint] = days.filter { $0.day <= dayKey }.compactMap { day in
-                Self.displayValue(
-                    Self.resolvedValue(key: key, day: day, scores: scores), key: key, scale: scale
-                ).map { NativeDayPoint(key: day.day, value: $0) }
-            }
-            let made = NativeScopeSeries.make(
-                points: points,
-                scope: scope,
-                kind: NativeScopeKindMap.kind(for: key),
-                calendar: calendar,
-                now: ending,
-                ending: ending,
-                cfg: NativeTypicalRange.cfg(for: key)
-            )
-            return (points, made)
-        }.value
+        let points: [NativeDayPoint]
+        if Self.scoredKeys.contains(key) {
+            points = await reloadScored(repo: repo, calendar: calendar, ending: ending, scale: scale)
+        } else {
+            points = await reloadSeries(repo: repo, calendar: calendar, ending: ending, scale: scale)
+        }
         guard !Task.isCancelled else { return }
-        let points = computed.0
-        series = computed.1
+        series = NativeScopeSeries.make(
+            points: points,
+            scope: scope,
+            kind: NativeScopeKindMap.kind(for: key),
+            calendar: calendar,
+            now: ending,
+            ending: ending,
+            cfg: NativeTypicalRange.cfg(for: key)
+        )
         latest = points.last
         sourceCaption = nil
         hourPoints = []
@@ -173,6 +167,92 @@ struct NativeMetricPage: View {
                 mergedDaily: points.last { $0.key == dayKey }?.value
             )
         }
+    }
+
+    private func reloadScored(
+        repo: Repository, calendar: Calendar, ending: Date, scale: EffortScale
+    ) async -> [NativeDayPoint] {
+        _ = (calendar, ending)
+        let days = repo.days
+        let sleeps = repo.sleeps
+        let imported = repo.importedSleep
+        let key = key, dayKey = dayKey
+        return await Task.detached(priority: .userInitiated) {
+            let scores = NativeBandScores.resolve(days: days, sleeps: sleeps, importedSleep: imported)
+            return days.filter { $0.day <= dayKey }.compactMap { day in
+                Self.displayValue(
+                    Self.resolvedValue(key: key, day: day, scores: scores), key: key, scale: scale
+                ).map { NativeDayPoint(key: day.day, value: $0) }
+            }
+        }.value
+    }
+
+    private func reloadSeries(
+        repo: Repository, calendar: Calendar, ending: Date, scale: EffortScale
+    ) async -> [NativeDayPoint] {
+        _ = (calendar, ending)
+        let source = metric?.source ?? "my-whoop"
+        let rows = await repo.exploreSeries(key: key, source: source)
+        var byDay: [String: Double] = [:]
+        for row in rows where row.day <= dayKey {
+            if let value = Self.displayValue(row.value, key: key, scale: scale) {
+                byDay[row.day] = value
+            }
+        }
+        for day in repo.days where day.day <= dayKey && byDay[day.day] == nil {
+            if let value = Self.displayValue(Self.derivedValue(key: key, day: day), key: key, scale: scale) {
+                byDay[day.day] = value
+            }
+        }
+        if Self.workoutKeys.contains(key) {
+            let workouts = await repo.workoutRows(days: 400)
+            for point in Self.workoutPoints(key: key, workouts: workouts, ending: dayKey) {
+                if byDay[point.key] == nil { byDay[point.key] = point.value }
+            }
+        }
+        if key == "weight" {
+            for reading in NativeWeight.readings(await repo.appleDailyRows()) where reading.day <= dayKey {
+                if byDay[reading.day] == nil { byDay[reading.day] = reading.kg }
+            }
+        }
+        return byDay.keys.sorted().compactMap { day in
+            byDay[day].map { NativeDayPoint(key: day, value: $0) }
+        }
+    }
+
+    private func reloadStress(repo: Repository, calendar: Calendar, ending: Date) async {
+        let days = repo.days
+        let dayKey = dayKey, scope = scope
+        // Same per-day funnel as the Stress Monitor's W/M/6M view, so Trends and Stress agree.
+        let workouts = await repo.workoutRows(days: 28)
+        var means = await NativeStressHistory.minuteMeans(
+            repo: repo, days: days, ending: dayKey, scope: scope,
+            workouts: workouts, calendar: calendar
+        )
+        if let start = NativeScopeSeries.date(from: dayKey, calendar: calendar) {
+            let today = await NativeDerivedSeries.stressDay(
+                repo: repo, dayKey: dayKey, dayStart: calendar.startOfDay(for: start),
+                days: days, sleeps: repo.sleeps, workouts: workouts, calendar: calendar
+            )
+            if let mean = NativeScopeSeries.mean(today.hours.map(\.value)) { means[dayKey] = mean }
+        }
+        guard !Task.isCancelled else { return }
+        let minuteMeans = means
+        let points = await Task.detached(priority: .userInitiated) {
+            NativeStressHistory.daily(days: days, ending: dayKey, minuteMeans: minuteMeans)
+        }.value
+        guard !Task.isCancelled else { return }
+        series = NativeScopeSeries.make(
+            points: points,
+            scope: scope,
+            kind: .rate,
+            calendar: calendar,
+            now: ending,
+            ending: ending
+        )
+        latest = points.last
+        sourceCaption = nil
+        hourPoints = []
     }
 
     private func reloadVo2(repo: Repository, calendar: Calendar, ending: Date) async {
@@ -207,8 +287,12 @@ struct NativeMetricPage: View {
 
     /// Keys whose value comes from `NativeBandScores` rather than a stored daily column.
     private static let scoredKeys: Set<String> = [
-        "recovery", "sleep_performance", "hours_vs_needed_pct", "sleep_consistency",
-        "sleep_need_min", "sleep_debt_min",
+        "recovery", "sleep_performance", "hours_vs_needed_pct", "hours_vs_needed_hours",
+        "sleep_consistency", "sleep_need_min", "sleep_debt_min",
+    ]
+
+    private static let workoutKeys: Set<String> = [
+        "strength_min", "hr_zones13_min", "hr_zones45_min", "hr_zones_all_min",
     ]
 
     private static func resolvedValue(key: String, day: DailyMetric, scores: NativeBandScores.Snapshot?) -> Double? {
@@ -217,10 +301,59 @@ struct NativeMetricPage: View {
         case "recovery": return scored?.recovery
         case "sleep_performance": return scored?.sleepPerformance
         case "hours_vs_needed_pct": return scored?.hoursVsNeeded
+        case "hours_vs_needed_hours":
+            guard let asleep = day.totalSleepMin, let need = scored?.sleepNeed, need > 0 else { return nil }
+            return (asleep - need) / 60
         case "sleep_consistency": return scored?.sleepConsistency
         case "sleep_need_min": return scored?.sleepNeed
         case "sleep_debt_min": return scored?.sleepDebt
         default: return Repository.dailyColumn(key: key, day: day)
+        }
+    }
+
+    /// Cheap daily fill when `exploreSeries` has no row for the day.
+    private static func derivedValue(key: String, day: DailyMetric) -> Double? {
+        switch key {
+        case "restorative_min":
+            if let deep = day.deepMin, let rem = day.remMin {
+                let sum = deep + rem
+                return sum > 0 ? sum : nil
+            }
+            return nil
+        case "restorative_pct":
+            if let deep = day.deepMin, let rem = day.remMin,
+               let asleep = day.totalSleepMin, asleep > 0 {
+                return (deep + rem) / asleep * 100
+            }
+            return nil
+        case "in_bed_min":
+            guard let asleep = day.totalSleepMin, let efficiency = day.efficiency, efficiency > 0 else {
+                return nil
+            }
+            let pct = efficiency > 1 ? efficiency / 100 : efficiency
+            guard pct > 0 else { return nil }
+            return asleep / pct
+        default:
+            return Repository.dailyColumn(key: key, day: day)
+        }
+    }
+
+    private static func workoutPoints(key: String, workouts: [WorkoutRow], ending: String) -> [NativeDayPoint] {
+        let grouped = Dictionary(grouping: workouts) {
+            Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs)))
+        }
+        return grouped.keys.sorted().compactMap { day in
+            guard day <= ending else { return nil }
+            let rows = grouped[day] ?? []
+            let value: Double?
+            switch key {
+            case "strength_min": value = NativeDay.strengthMinutes(rows)
+            case "hr_zones13_min": value = NativeDay.zoneMinutes(rows, zones: 0..<3)
+            case "hr_zones45_min": value = NativeDay.zoneMinutes(rows, zones: 3..<5)
+            case "hr_zones_all_min": value = NativeDay.zoneMinutes(rows, zones: 0..<5)
+            default: value = nil
+            }
+            return value.map { NativeDayPoint(key: day, value: $0) }
         }
     }
 
@@ -230,6 +363,7 @@ struct NativeMetricPage: View {
             return NativeDayLogic.strainDisplayValue(raw, scale: scale)
         }
         if key == "sleep_efficiency", raw <= 1 { return raw * 100 }
+        if key == "restorative_min" { return raw / 60 }
         return raw
     }
 
@@ -239,7 +373,9 @@ struct NativeMetricPage: View {
                 ? String(format: "%.1f", value)
                 : String(Int(value.rounded()))
         }
-        if key == "resp_rate" || key == "vo2max" || key == "vo2max_est" {
+        if key == "resp_rate" || key == "vo2max" || key == "vo2max_est"
+            || key == "hours_vs_needed_hours" || key == "restorative_min" || key == "stress"
+            || key == "weight" || key == "lean_mass" {
             return String(format: "%.1f", value)
         }
         if key == "steps" || key == "energy_kcal" || key == "active_kcal" {

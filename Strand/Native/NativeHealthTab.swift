@@ -117,8 +117,7 @@ struct NativeHealthLinks: View {
                         navigationPath.wrappedValue.append(item)
                     } label: {
                         HStack(spacing: 0) {
-                            NativeSettingsRow(title: item.title, icon: item.icon, color: item.color,
-                                              subtitle: item.subtitle)
+                            NativeSettingsRow(title: item.title, icon: item.icon, color: item.color)
                             Image(systemName: "chevron.right")
                                 .font(.footnote.weight(.semibold))
                                 .foregroundStyle(.tertiary)
@@ -126,7 +125,7 @@ struct NativeHealthLinks: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityHint(item.subtitle)
+                    .accessibilityHint("Opens \(item.title)")
                 }
             }
         }

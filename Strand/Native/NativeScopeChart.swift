@@ -804,7 +804,7 @@ private struct NativeHourBarChart: View {
             AxisMarks(preset: .aligned, values: labels) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeTokens.separator)
-                AxisValueLabel {
+                AxisValueLabel(anchor: NativeDayAxisLabel.anchor(for: value.as(Date.self) ?? .distantPast, in: labels)) {
                     if let date = value.as(Date.self) {
                         Text(NativeScopeFormat.hourClock(date, calendar: calendar))
                             .font(.caption2)
@@ -887,7 +887,7 @@ private struct NativeScopeHourLineChart: View {
             AxisMarks(preset: .aligned, values: labels) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeTokens.separator)
-                AxisValueLabel {
+                AxisValueLabel(anchor: NativeDayAxisLabel.anchor(for: value.as(Date.self) ?? .distantPast, in: labels)) {
                     if let date = value.as(Date.self) {
                         Text(NativeScopeFormat.hourClock(date, calendar: calendar))
                             .font(.caption2)

@@ -143,6 +143,7 @@ enum MetricCatalog {
         d("in_bed_min", String(localized: "Time in Bed"), "Rest", "min", "my-whoop", "bed.double", 0, nil),
         d("sleep_total_min", String(localized: "Asleep Time"), "Rest", "min", "my-whoop", "moon.zzz", 0, true),
         d("hours_vs_needed_pct", String(localized: "Hours vs Needed"), "Rest", "%", "my-whoop", "gauge.medium", 0, true),
+        d("hours_vs_needed_hours", String(localized: "Hours vs. Needed (Hours)"), "Rest", "h", "my-whoop", "gauge.medium", 1, true),
         d("sleep_consistency", String(localized: "Sleep Consistency"), "Rest", "%", "my-whoop", "calendar", 0, true),
         d("restorative_pct", String(localized: "Restorative Sleep"), "Rest", "%", "my-whoop", "sparkles", 0, true),
         d("restorative_min", String(localized: "Restorative Sleep"), "Rest", "min", "my-whoop", "sparkles", 0, true),
@@ -181,6 +182,8 @@ enum MetricCatalog {
         d("lean_mass", String(localized: "Lean Body Mass"), "Health", "kg", "apple-health", "figure.arms.open", 1, true),
         d("bmi", "BMI", "Health", "", "apple-health", "figure", 1, nil),
         d("stress", String(localized: "Day Stress"), "Health", "/3", "my-whoop", "gauge.with.dots.needle.50percent", 1, false),
+        d("band_age", String(localized: "Band Age"), "Health", "yrs", "my-whoop", "sparkles", 1, false),
+        d("pace_of_aging", String(localized: "Pace of Aging"), "Health", "", "my-whoop", "chart.bar.xaxis", 2, false),
 
         // ── Nutrition (imported from a food-tracker CSV: calories-in alongside calories-out)
         d("calories_in", String(localized: "Calories In"), "Nutrition", "kcal", "nutrition-csv", "fork.knife", 0, nil),

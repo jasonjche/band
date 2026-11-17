@@ -1081,9 +1081,12 @@ struct NativeLabeledLine: View {
     private var axisTicks: [Double] {
         if let yTicks, yTicks.count >= 2 { return yTicks }
         let vals = known.map(\.value)
-        let lo = vals.min() ?? domain.lowerBound
-        let hi = vals.max() ?? domain.upperBound
-        return NativeChartTicks.nice(min: lo, max: hi, targetCount: compactYAxis ? 2 : 4)
+        let padded = NativeChartTicks.paddedRange(
+            lo: vals.min() ?? domain.lowerBound,
+            hi: vals.max() ?? domain.upperBound
+        )
+        return NativeChartTicks.nice(min: padded.lowerBound, max: padded.upperBound,
+                                     targetCount: compactYAxis ? 2 : 4)
     }
 
     private var yDomain: ClosedRange<Double> {
@@ -1696,6 +1699,18 @@ enum NativeChartTicks {
         return ticks
     }
 
+    /// Headroom for a line chart's value range, so the extreme points sit inside the plot instead of on
+    /// its edge and a 2 ms HRV wobble doesn't fill the whole chart. The visible span is at least 20% of
+    /// the value (and at least 1 unit), then padded by 15% on each side.
+    static func paddedRange(lo: Double, hi: Double) -> ClosedRange<Double> {
+        let low = Swift.min(lo, hi), high = Swift.max(lo, hi)
+        let mid = (low + high) / 2
+        let span = Swift.max(high - low, abs(mid) * 0.2, 1) * 1.3
+        let lower = mid - span / 2
+        // Never push a non-negative metric's axis below zero.
+        return (low >= 0 ? Swift.max(0, lower) : lower)...(mid + span / 2)
+    }
+
     static func domain(from ticks: [Double], fallback: ClosedRange<Double>) -> ClosedRange<Double> {
         guard let first = ticks.first, let last = ticks.last, last > first else { return fallback }
         return first...last
@@ -2214,6 +2229,12 @@ enum NativeStressMonitorMath {
     static let lineStopValues: [Double] = [0, 1.0, 1.2, 2.0, 2.4, 2.7, 3.0]
     /// A full day is 1,440 minutes. Charts stays cheap above this many vertices.
     static let drawBudget = 360
+    /// Connect consecutive samples at most this far apart. Larger holes stay empty.
+    /// Display only — averages still use every stored minute.
+    static let drawConnectGap: TimeInterval = 5 * 60
+    /// Drop a drawn fragment whose first-to-last span is shorter than this.
+    /// Isolated dots and 1–3 minute scraps stay in the data; they are not drawn.
+    static let minDrawDuration: TimeInterval = 5 * 60
     /// Icons closer than this fraction of the plot width collapse to a count badge.
     static let iconOverlapFraction: Double = 0.055
 
@@ -2329,20 +2350,29 @@ enum NativeStressMonitorMath {
         return out
     }
 
+    /// Split the minute series for drawing. Gaps ≤ `drawConnectGap` stay one polyline
+    /// (the line visits the stored samples; no extra interpolated values). Gaps larger
+    /// than that are not drawn. Fragments shorter than `minDrawDuration` are omitted.
     static func segments(_ hours: [NativeHourPoint]) -> [[NativeHourPoint]] {
         var segments: [[NativeHourPoint]] = []
         var current: [NativeHourPoint] = []
         for point in hours {
             if let last = current.last,
-               point.time.timeIntervalSince(last.time) > NativeStressHistory.highBucketMaxGap {
-                segments.append(current)
+               point.time.timeIntervalSince(last.time) > drawConnectGap {
+                if let kept = keptDrawSegment(current) { segments.append(kept) }
                 current = [point]
             } else {
                 current.append(point)
             }
         }
-        if !current.isEmpty { segments.append(current) }
+        if let kept = keptDrawSegment(current) { segments.append(kept) }
         return segments
+    }
+
+    private static func keptDrawSegment(_ points: [NativeHourPoint]) -> [NativeHourPoint]? {
+        guard let first = points.first, let last = points.last else { return nil }
+        guard last.time.timeIntervalSince(first.time) >= minDrawDuration else { return nil }
+        return points
     }
 
     static func lineStops(style: NativeStyle) -> [(value: Double, color: Color)] {

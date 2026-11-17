@@ -20,6 +20,19 @@ final class NativeRingTests: XCTestCase {
 }
 
 final class NativeChartTicksTests: XCTestCase {
+    func testPaddedRangeKeepsExtremesOffTheEdges() {
+        // HRV 46–50 ms: a 4 ms wobble must not fill the chart, and the points sit inside.
+        let hrv = NativeChartTicks.paddedRange(lo: 46, hi: 50)
+        XCTAssertLessThan(hrv.lowerBound, 46 - 3)
+        XCTAssertGreaterThan(hrv.upperBound, 50 + 3)
+        // A flat RHR week gets real headroom on both sides.
+        let rhr = NativeChartTicks.paddedRange(lo: 60, hi: 60)
+        XCTAssertLessThan(rhr.lowerBound, 55)
+        XCTAssertGreaterThan(rhr.upperBound, 65)
+        // A non-negative metric never dips below zero.
+        XCTAssertGreaterThanOrEqual(NativeChartTicks.paddedRange(lo: 0.2, hi: 0.4).lowerBound, 0)
+    }
+
     func testNiceStepsZeroBasedCounts() {
         XCTAssertEqual(
             NativeChartTicks.nice(min: 0, max: 11_000, targetCount: 4),

@@ -29,6 +29,7 @@ struct Args {
     var verbose = false
     var json: String?
     var labels: String?
+    var healthspanLabels: String?
 }
 
 func parseArgs() -> Args {
@@ -38,6 +39,7 @@ func parseArgs() -> Args {
     a.export = env["BANDCHECK_EXPORT"] ?? a.export
     a.thresholds = env["BANDCHECK_THRESHOLDS"] ?? a.thresholds
     a.labels = env["BANDCHECK_LABELS"] ?? a.labels
+    a.healthspanLabels = env["BANDCHECK_HEALTHSPAN_LABELS"] ?? a.healthspanLabels
     var it = CommandLine.arguments.dropFirst().makeIterator()
     while let k = it.next() {
         switch k {
@@ -56,6 +58,7 @@ func parseArgs() -> Args {
         case "--verbose": a.verbose = true
         case "--json": a.json = it.next()
         case "--labels": a.labels = it.next()
+        case "--healthspan-labels": a.healthspanLabels = it.next()
         case "-h", "--help": a.db = ""
         default:
             FileHandle.standardError.write(Data("unknown argument \(k)\n".utf8))
@@ -71,11 +74,15 @@ usage: bandcheck --db <sqlite> --export <whoop-csv-dir> [--thresholds <json>]
                  [--tz <iana>] [--age <y>] [--hr-max <bpm>]
                  [--weight-kg <kg>] [--height-cm <cm>] [--sex male|female|nonbinary]
                  [--verbose] [--json <path>] [--labels <json>]
+                 [--healthspan-labels <json>]
 
   One command that, before every install, says whether Band still agrees with WHOOP
   and with itself on this wearer's real data. Paths are arguments or env vars
-  (BANDCHECK_DB, BANDCHECK_EXPORT, BANDCHECK_THRESHOLDS). Output is aggregates only;
-  --verbose prints per-day pairs to stdout and must never be written into the repo.
+  (BANDCHECK_DB, BANDCHECK_EXPORT, BANDCHECK_THRESHOLDS, BANDCHECK_HEALTHSPAN_LABELS).
+  Output is aggregates only; --verbose prints per-day pairs to stdout and must never
+  be written into the repo. --healthspan-labels is a private WHOOP Healthspan snapshot
+  file (outside the repo); the section prints errors only. With that flag alone,
+  BandCheck skips the DB/export replay.
 
   NativeBandScores (Strand/Native) is app-target only and is not imported; the replay
   uses BandScores.evaluate, which is what NativeBandScores wraps. WorkoutZones is
@@ -88,6 +95,53 @@ if args.thresholds.isEmpty {
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     args.thresholds = here.appendingPathComponent("thresholds.json").path
 }
+let thresholds: Thresholds
+if FileManager.default.fileExists(atPath: args.thresholds) {
+    thresholds = try Thresholds.load(path: args.thresholds)
+} else {
+    fputs("thresholds file missing (\(args.thresholds)); using defaults that fail any invariant\n", stderr)
+    thresholds = .defaults
+}
+
+var healthspanReport: HealthspanCalibReport?
+if let path = args.healthspanLabels, !path.isEmpty {
+    let expanded = (path as NSString).expandingTildeInPath
+    guard FileManager.default.fileExists(atPath: expanded) else {
+        fputs("healthspan labels not found: \(path)\n", stderr); exit(2)
+    }
+    healthspanReport = try evaluateHealthspanCalibration(path: expanded)
+}
+let healthspanFails = healthspanReport.map {
+    gateHealthspanCalibration($0, cap: thresholds.healthspanCalibration)
+} ?? []
+
+let calibrationOnly = !args.db.isEmpty && !args.export.isEmpty ? false
+    : (healthspanReport != nil && args.db.isEmpty && args.export.isEmpty)
+if calibrationOnly {
+    print("""
+
+    ================================================================================
+    BANDCHECK  (healthspan calibration only)
+    ================================================================================
+    """)
+    if let report = healthspanReport {
+        printHealthspanCalibration(report)
+    }
+    if !healthspanFails.isEmpty {
+        print("\nTHRESHOLD REGRESSIONS (\(healthspanFails.count))")
+        for f in healthspanFails { print("  \(f.check): \(f.detail)") }
+    }
+    if let path = args.json, let report = healthspanReport {
+        let obj: [String: Any] = [
+            "healthspan_calibration": healthspanCalibrationJSON(report),
+            "regressions": healthspanFails.map { ["check": $0.check, "detail": $0.detail] },
+        ]
+        let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
+        try String(data: data, encoding: .utf8)?.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+    exit(healthspanFails.isEmpty ? 0 : 1)
+}
+
 guard !args.db.isEmpty, !args.export.isEmpty else {
     print(usage)
     exit(2)
@@ -231,15 +285,9 @@ let illnessRates = Perf.measure("illnessRate") {
                        computedDevice: args.computedDevice)
 }
 
-let thresholds: Thresholds
-if FileManager.default.fileExists(atPath: args.thresholds) {
-    thresholds = try Thresholds.load(path: args.thresholds)
-} else {
-    fputs("thresholds file missing (\(args.thresholds)); using defaults that fail any invariant\n", stderr)
-    thresholds = .defaults
-}
-let fails = evaluateGates(agreements: agreements, detection: detection,
+var fails = evaluateGates(agreements: agreements, detection: detection,
                           invariants: invariants, thresholds: thresholds)
+fails.append(contentsOf: healthspanFails)
 
 let overlapImported = Set(whoopDays.map(\.day)).intersection(daily.filter { $0.deviceId == args.importedDevice }.map(\.day))
 let overlapComputed = Set(whoopDays.map(\.day)).intersection(daily.filter { $0.deviceId == args.computedDevice }.map(\.day))
@@ -327,6 +375,10 @@ for r in illnessRates {
     print("  \(src)  nights \(r.nights)  span \(r.spanDays)  episodes \(r.episodes)  watch-nights \(r.watchNights)  per-60-days \(String(format: "%.3f", r.per60))")
 }
 
+if let report = healthspanReport {
+    printHealthspanCalibration(report)
+}
+
 print("""
 
 SKIPPED (app-target only; not moved)
@@ -352,7 +404,8 @@ if !failInv.isEmpty {
 
 if let path = args.json {
     let payload = reportJSON(agreements: agreements, detection: detection,
-                             invariants: invariants, fails: fails)
+                             invariants: invariants, fails: fails,
+                             healthspan: healthspanReport)
     try payload.write(toFile: path, atomically: true, encoding: .utf8)
 }
 
@@ -365,7 +418,8 @@ print(Perf.report())
 exit(fails.isEmpty ? 0 : 1)
 
 func reportJSON(agreements: [SeriesAgreement], detection: [String: MatchStats],
-                invariants: [InvariantResult], fails: [GateFail]) -> String {
+                invariants: [InvariantResult], fails: [GateFail],
+                healthspan: HealthspanCalibReport? = nil) -> String {
     func num(_ v: Double) -> Any { v.isFinite ? v : NSNull() }
     var agr: [[String: Any]] = []
     for a in agreements {
@@ -386,10 +440,13 @@ func reportJSON(agreements: [SeriesAgreement], detection: [String: MatchStats],
     let inv = invariants.map {
         ["name": $0.name, "pass": $0.pass, "fail_count": $0.failCount, "checked": $0.checked]
     }
-    let obj: [String: Any] = [
+    var obj: [String: Any] = [
         "agreements": agr, "detection": det, "invariants": inv,
         "regressions": fails.map { ["check": $0.check, "detail": $0.detail] },
     ]
+    if let healthspan {
+        obj["healthspan_calibration"] = healthspanCalibrationJSON(healthspan)
+    }
     let data = try! JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
     return String(data: data, encoding: .utf8) ?? "{}"
 }

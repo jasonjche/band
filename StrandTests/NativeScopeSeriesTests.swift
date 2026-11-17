@@ -516,6 +516,11 @@ final class NativeScopeSeriesTests: XCTestCase {
                 .map { NativeScopeFormat.hourClock($0, calendar: cal) },
             ["12 AM", "6 AM", "12 PM", "6 PM"]
         )
+        let labels = NativeCountTicks.roundHourLabels(dayStart: start, plotEnd: dayEnd, calendar: cal)
+        XCTAssertEqual(NativeDayAxisLabel.anchor(for: labels[0], in: labels), .topLeading)
+        XCTAssertEqual(NativeDayAxisLabel.anchor(for: labels[1], in: labels), .top)
+        XCTAssertEqual(NativeDayAxisLabel.anchor(for: labels[3], in: labels), .topTrailing)
+        XCTAssertEqual(NativeDayAxisLabel.anchor(for: start, in: [start]), .top)
     }
 
     func testPaddedXDomainKeepsFirstAndLastMarksInside() {

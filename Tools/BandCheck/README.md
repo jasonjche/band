@@ -32,7 +32,10 @@ Env vars `BANDCHECK_DB`, `BANDCHECK_EXPORT`, `BANDCHECK_THRESHOLDS` work in plac
 --hr-max 190
 --verbose          # per-day pairs to stdout; do not write into the repo
 --json /tmp/bandcheck.json
+--healthspan-labels ~/band/healthspan-labels.json   # private; errors only
 ```
+
+`--healthspan-labels` alone runs section F without a DB or export (`BANDCHECK_HEALTHSPAN_LABELS` works too).
 
 Exit `0` if every check is inside `thresholds.json`. Exit `1` on a regression. Exit `2` on usage / missing files.
 
@@ -57,6 +60,8 @@ Exit `0` if every check is inside `thresholds.json`. Exit `1` on a regression. E
 - workouts in the HR window (or auto/manual) with no HR samples
 - journal question ids that fold to the same title key
 - `vo2max` / `vo2max_est` in `metricSeries` with no `appleDaily.vo2max`
+
+**F. Healthspan calibration** — when `--healthspan-labels` is given, `HealthspanEngine` is scored at each labelled snapshot. Prints per-contributor year error and total Band Age error (aggregates only). Fails if `|total years|` exceeds `healthspan_calibration.max_abs_total_years` in `thresholds.json`.
 
 ## Skipped (app-target only)
 
