@@ -18,7 +18,7 @@ struct NativeSleepHoursVsNeededCard: View {
             )
             if let percent = model.percent {
                 NativeHeroValue(
-                    caption: "Hours vs. needed",
+                    caption: "Last night",
                     value: "\(Int(percent.rounded()))",
                     unit: "%"
                 )
@@ -110,7 +110,7 @@ struct NativeSleepConsistencyCard: View {
             )
             if let percent {
                 NativeHeroValue(
-                    caption: "Sleep consistency",
+                    caption: "Last night",
                     value: "\(Int(percent.rounded()))",
                     unit: "%"
                 )
@@ -199,7 +199,7 @@ struct NativeSleepEfficiencyCard: View {
                 tint: NativePaint.sleep(style)
             )
             NativeHeroValue(
-                caption: "Sleep efficiency",
+                caption: "Last night",
                 value: "\(Int(model.percent.rounded()))",
                 unit: "%",
                 date: model.prior.map { "\(Int($0.rounded()))% last 30 days" }
@@ -254,7 +254,7 @@ struct NativeSleepStressCard: View {
                 tint: NativePaint.sleep(style)
             )
             NativeHeroValue(
-                caption: "Overnight stress",
+                caption: "Average",
                 value: String(format: "%.1f", model.points.map(\.value).reduce(0, +) / Double(max(model.points.count, 1))),
                 unit: nil
             )
