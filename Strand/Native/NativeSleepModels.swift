@@ -139,6 +139,11 @@ enum NativeSleepClock {
     static let eveningHour = 18
     static let axisMarks: [Double] = [180, 420, 660, 900, 1140]
 
+    struct PlotWindow: Equatable {
+        var domain: ClosedRange<Double>
+        var marks: [Double]
+    }
+
     static func minutesFromEvening(_ date: Date) -> Double {
         let cal = Calendar.current
         let tod = cal.component(.hour, from: date) * 60 + cal.component(.minute, from: date)
@@ -149,6 +154,45 @@ enum NativeSleepClock {
 
     static func plotY(_ minutesFromEvening: Double) -> Double {
         -minutesFromEvening
+    }
+
+    /// Earliest bedtime − 1 h … latest wake + 1 h, rounded to the hour, with 3–4 hour labels.
+    static func fittedPlot(beds: [Double], wakes: [Double]) -> PlotWindow {
+        guard let earliest = beds.filter(\.isFinite).min(),
+              let latest = wakes.filter(\.isFinite).max(),
+              latest > earliest else {
+            return PlotWindow(
+                domain: plotY(axisMarks.last!)...plotY(axisMarks.first!),
+                marks: axisMarks
+            )
+        }
+        let lo = floor((earliest - 60) / 60) * 60
+        let hi = ceil((latest + 60) / 60) * 60
+        let marks = hourMarks(from: min(lo, hi - 60), to: max(hi, lo + 60))
+        let top = marks.first ?? lo
+        let bottom = marks.last ?? hi
+        return PlotWindow(domain: plotY(bottom)...plotY(top), marks: marks)
+    }
+
+    static func hourMarks(from lo: Double, to hi: Double) -> [Double] {
+        let loH = floor(lo / 60) * 60
+        var hiH = ceil(hi / 60) * 60
+        if hiH <= loH { hiH = loH + 60 }
+        let hours = (hiH - loH) / 60
+        let stepHours: Double
+        if hours <= 3 { stepHours = 1 }
+        else if hours <= 6 { stepHours = 2 }
+        else if hours <= 9 { stepHours = 3 }
+        else { stepHours = 4 }
+        var marks: [Double] = []
+        var t = loH
+        while t <= hiH + 0.5 {
+            marks.append(t)
+            t += stepHours * 60
+            if marks.count > 8 { break }
+        }
+        if let last = marks.last, last < hiH - 0.5 { marks.append(hiH) }
+        return marks
     }
 
     private static let hourOnly: DateFormatter = {
@@ -175,7 +219,7 @@ enum NativeSleepClock {
         comps.hour = total / 60
         comps.minute = total % 60
         let date = Calendar(identifier: .gregorian).date(from: comps) ?? Date()
-        return hourOnly.string(from: date).replacingOccurrences(of: " ", with: "")
+        return hourOnly.string(from: date)
     }
 
     static func clock(_ date: Date) -> String {
@@ -671,10 +715,14 @@ enum NativeSleepBands {
 }
 
 enum NativeSleepConsistency {
-    /// Chart window: last 4 nights (bed and wake). Score uses BandConsistency's
-    /// 5-night last-vs-each window (today vs the prior 4, recency 0.7).
-    static let chartNights = 4
+    /// Chart window: last 7 nights (bed and wake), with gaps for missing nights.
+    /// Score uses BandConsistency's 5-night last-vs-each window (today vs the prior 4, recency 0.7).
+    static let chartNights = 7
     static let scoreNights = 5
+
+    static func chartKeys(dayKey: String) -> [String] {
+        NativeWeek.lastSevenKeys(ending: dayKey)
+    }
 
     static func nights(
         dayKey: String,

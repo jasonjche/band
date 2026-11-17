@@ -103,10 +103,12 @@ let tz = TimeZone(identifier: args.tz) ?? TimeZone.current
 let calendar = DayKey.calendar(tz: tz)
 
 let db = try ReadOnlyDB(path: args.db)
-let (whoopDays, whoopWorkouts, whoopSleeps, whoopQuestions) = try loadWhoopExport(path: args.export)
-let daily = try db.dailyMetrics()
-let sleeps = try db.sleepSessions()
-let workouts = try db.workouts()
+let (whoopDays, whoopWorkouts, whoopSleeps, whoopQuestions) = try Perf.measure("load_export") {
+    try loadWhoopExport(path: args.export)
+}
+let daily = try Perf.measure("load_daily") { try db.dailyMetrics() }
+let sleeps = try Perf.measure("load_sleeps") { try db.sleepSessions() }
+let workouts = try Perf.measure("load_workouts") { try db.workouts() }
 let apple = try db.appleDaily()
 let journal = try db.journal()
 let series = try db.metricSeries(keys: ["vo2max", "vo2max_est", "steps", "sleep_performance", "energy_kcal"])
@@ -115,18 +117,49 @@ let hrSpan = try db.hrSpan()
 var hrByDay: [String: [HRSample]] = [:]
 var gravByDay: [String: [GravitySample]] = [:]
 var stepsByDay: [String: [StepSample]] = [:]
+var rrByDay: [String: [RRInterval]] = [:]
+var skinByDay: [String: [SkinTempSample]] = [:]
 if let span = hrSpan {
-    let hr = try db.coalescedHR(device: args.streamDevice, from: span.from, to: span.to)
-    let grav = try db.gravity(device: args.streamDevice, from: span.from, to: span.to)
-    let steps = try db.steps(device: args.streamDevice, from: span.from, to: span.to)
-    for s in hr {
-        hrByDay[DayKey.logical(s.ts, calendar: calendar), default: []].append(s)
+    let hr = try Perf.measure("load_hr") {
+        try db.coalescedHR(device: args.streamDevice, from: span.from, to: span.to)
     }
-    for g in grav {
-        gravByDay[DayKey.logical(g.ts, calendar: calendar), default: []].append(g)
+    let grav = try Perf.measure("load_gravity") {
+        try db.gravity(device: args.streamDevice, from: span.from, to: span.to)
     }
-    for s in steps {
-        stepsByDay[DayKey.logical(s.ts, calendar: calendar), default: []].append(s)
+    let steps = try Perf.measure("load_steps") {
+        try db.steps(device: args.streamDevice, from: span.from, to: span.to)
+    }
+    Perf.measure("bucket_by_day", days: 0) {
+        var cursor = DayKey.LogicalCursor(calendar: calendar)
+        for s in hr {
+            hrByDay[cursor.logical(s.ts), default: []].append(s)
+        }
+        cursor = DayKey.LogicalCursor(calendar: calendar)
+        for g in grav {
+            gravByDay[cursor.logical(g.ts), default: []].append(g)
+        }
+        cursor = DayKey.LogicalCursor(calendar: calendar)
+        for s in steps {
+            stepsByDay[cursor.logical(s.ts), default: []].append(s)
+        }
+    }
+    if Perf.analysisReplay {
+        let rr = try Perf.measure("load_rr") {
+            try db.rrIntervals(device: args.streamDevice, from: span.from, to: span.to)
+        }
+        let skin = try Perf.measure("load_skin") {
+            try db.skinTemp(device: args.streamDevice, from: span.from, to: span.to)
+        }
+        Perf.measure("bucket_rr_skin") {
+            var cursor = DayKey.LogicalCursor(calendar: calendar)
+            for r in rr {
+                rrByDay[cursor.logical(r.ts), default: []].append(r)
+            }
+            cursor = DayKey.LogicalCursor(calendar: calendar)
+            for s in skin {
+                skinByDay[cursor.logical(s.ts), default: []].append(s)
+            }
+        }
     }
 }
 
@@ -154,10 +187,12 @@ let cfg = CheckConfig(
     computedDevice: args.computedDevice, hrMax: hrMax,
     strainParams: strainParams, scoreParams: scoreParams, profile: profile)
 
-let (agreements, _) = agreementChecks(
-    whoopDays: whoopDays, whoopWorkouts: whoopWorkouts, whoopSleeps: whoopSleeps,
-    daily: daily, sleeps: sleeps, workouts: workouts, hrByDay: hrByDay,
-    energySeries: series, cfg: cfg)
+let (agreements, _) = Perf.measure("agreementChecks") {
+    agreementChecks(
+        whoopDays: whoopDays, whoopWorkouts: whoopWorkouts, whoopSleeps: whoopSleeps,
+        daily: daily, sleeps: sleeps, workouts: workouts, hrByDay: hrByDay,
+        energySeries: series, cfg: cfg)
+}
 
 var rhrByDay: [String: Double] = [:]
 for d in whoopDays { if let v = d.rhr { rhrByDay[d.day] = v } }
@@ -165,26 +200,36 @@ for r in daily where r.deviceId == args.computedDevice || r.deviceId == args.imp
     if let v = r.restingHr { rhrByDay[r.day] = v }
 }
 let labels = try args.labels.map { try WorkoutLabels.load(path: $0) } ?? WorkoutLabels()
-let detection = detectionChecks(
-    whoopWorkouts: whoopWorkouts, dbWorkouts: workouts,
-    hrByDay: hrByDay, gravByDay: gravByDay, rhrByDay: rhrByDay, labels: labels, cfg: cfg)
+let detection = Perf.measure("detectionChecks") {
+    detectionChecks(
+        whoopWorkouts: whoopWorkouts, dbWorkouts: workouts,
+        hrByDay: hrByDay, gravByDay: gravByDay, rhrByDay: rhrByDay, labels: labels, cfg: cfg)
+}
 
-var invariants = try invariantChecks(
-    daily: daily, apple: apple, workouts: workouts, journal: journal, series: series,
-    whoopQuestions: whoopQuestions, hrSpan: hrSpan, db: db,
-    appleHRDir: URL(fileURLWithPath: args.db).deletingLastPathComponent()
-        .appendingPathComponent("apple-workout-hr"),
-    cfg: cfg)
-let stressGate = stressGateCheck(
-    hrByDay: hrByDay, gravByDay: gravByDay, stepsByDay: stepsByDay,
-    workouts: workouts, rhrByDay: rhrByDay, cfg: cfg)
+var invariants = try Perf.measure("invariantChecks") {
+    try invariantChecks(
+        daily: daily, apple: apple, workouts: workouts, journal: journal, series: series,
+        whoopQuestions: whoopQuestions, hrSpan: hrSpan, db: db,
+        appleHRDir: URL(fileURLWithPath: args.db).deletingLastPathComponent()
+            .appendingPathComponent("apple-workout-hr"),
+        cfg: cfg)
+}
+let stressGate = Perf.measure("stressGateCheck") {
+    stressGateCheck(
+        hrByDay: hrByDay, gravByDay: gravByDay, stepsByDay: stepsByDay,
+        workouts: workouts, rhrByDay: rhrByDay, cfg: cfg)
+}
 invariants.append(stressGate.result)
 
-let rhrDef = rhrDefinitionCheck(whoopDays: whoopDays, sleeps: sleeps,
-                                hrByDay: hrByDay, cfg: cfg)
-let illnessRates = illnessRateReports(daily: daily, whoopDays: whoopDays,
-                                      importedDevice: args.importedDevice,
-                                      computedDevice: args.computedDevice)
+let rhrDef = Perf.measure("rhrDefinitionCheck") {
+    rhrDefinitionCheck(whoopDays: whoopDays, sleeps: sleeps,
+                       hrByDay: hrByDay, cfg: cfg)
+}
+let illnessRates = Perf.measure("illnessRate") {
+    illnessRateReports(daily: daily, whoopDays: whoopDays,
+                       importedDevice: args.importedDevice,
+                       computedDevice: args.computedDevice)
+}
 
 let thresholds: Thresholds
 if FileManager.default.fileExists(atPath: args.thresholds) {
@@ -310,6 +355,12 @@ if let path = args.json {
                              invariants: invariants, fails: fails)
     try payload.write(toFile: path, atomically: true, encoding: .utf8)
 }
+
+if Perf.analysisReplay {
+    replayAnalysisPass(hrByDay: hrByDay, gravByDay: gravByDay, stepsByDay: stepsByDay,
+                       rrByDay: rrByDay, skinByDay: skinByDay, cfg: cfg)
+}
+print(Perf.report())
 
 exit(fails.isEmpty ? 0 : 1)
 

@@ -83,6 +83,10 @@ final class NativeHealthRangeTests: XCTestCase {
         XCTAssertEqual(NativeHealthRange.metricSlots, 5)
         XCTAssertEqual(NativeHealthMonitorMath.slots(from: NativeHealthRange.Report(vitals: [])).map(\.id),
                        ["resp", "spo2", "rhr", "hrv", "skin"])
+        XCTAssertEqual(
+            NativeHealthMonitorMath.slots(from: NativeHealthRange.Report(vitals: [])).map(\.columnSpan),
+            [1, 1, 1, 1, 2]
+        )
         XCTAssertEqual(NativeHealthMonitorMath.zoneLabel(0), "Zone 0")
         XCTAssertEqual(NativeHealthMonitorMath.nightsRemaining(worn: 1), 6)
         XCTAssertNil(NativeHealthMonitorMath.nightsRemaining(worn: 7))
@@ -122,6 +126,31 @@ final class NativeHealthRangeTests: XCTestCase {
         XCTAssertEqual(fSkin.unit, "°F")
         XCTAssertEqual(fSkin.value, UnitFormatter.celsiusToFahrenheit(34.5), accuracy: 1e-9)
         XCTAssertNotEqual(cSkin.typicalText, fSkin.typicalText)
+        let cSlot = NativeHealthMonitorMath.slots(from: c).first { $0.id == "skin" }
+        let fSlot = NativeHealthMonitorMath.slots(from: f).first { $0.id == "skin" }
+        XCTAssertEqual(cSlot?.title, "Skin temp")
+        XCTAssertEqual(fSlot?.title, "Skin temp")
+        XCTAssertEqual(cSlot?.unit, "°C")
+        XCTAssertEqual(fSlot?.unit, "°F")
+        XCTAssertEqual(cSlot?.valueText, "34.5")
+        XCTAssertEqual(fSlot?.valueText, String(format: "%.1f", UnitFormatter.celsiusToFahrenheit(34.5)))
+        XCTAssertEqual(cSlot?.columnSpan, 2)
+    }
+
+    func testSkinTileShowsSignedDeviationFromBaseline() {
+        let days = series(today: "2026-11-16", prior: 20, hrv: 66, rhr: 51, resp: 14.7, spo2: 98, skin: -0.4)
+        let c = NativeHealthRange.report(days: days, todayKey: "2026-11-16", temperature: .celsius)
+        let f = NativeHealthRange.report(days: days, todayKey: "2026-11-16", temperature: .fahrenheit)
+        let cSlot = NativeHealthMonitorMath.slots(from: c).first { $0.id == "skin" }
+        let fSlot = NativeHealthMonitorMath.slots(from: f).first { $0.id == "skin" }
+        XCTAssertEqual(cSlot?.title, "Skin temp vs baseline")
+        XCTAssertEqual(fSlot?.title, "Skin temp vs baseline")
+        XCTAssertEqual(cSlot?.unit, "°C")
+        XCTAssertEqual(fSlot?.unit, "°F")
+        XCTAssertEqual(cSlot?.valueText, "-0.4")
+        XCTAssertEqual(fSlot?.valueText, String(format: "%+.1f", UnitFormatter.celsiusDeltaToFahrenheit(-0.4)))
+        XCTAssertEqual(c.vitals.first { $0.id == "skin" }?.unit, "°C")
+        XCTAssertEqual(f.vitals.first { $0.id == "skin" }?.unit, "°F")
     }
 
     func testWindowIgnoresNightsOlderThanThirtyDays() {

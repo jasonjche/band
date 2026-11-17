@@ -110,7 +110,7 @@ final class NativeScopeSeriesTests: XCTestCase {
         let series = NativeScopeSeries.make(
             points: points, scope: .sixMonths, kind: .total, calendar: cal, now: now, ending: now
         )
-        XCTAssertEqual(series.caption, "Daily Average")
+        XCTAssertEqual(series.caption, "Avg/day")
         XCTAssertEqual(series.buckets[0].value ?? -1, 100, accuracy: 1e-9)
     }
 
@@ -368,6 +368,7 @@ final class NativeScopeSeriesTests: XCTestCase {
     func testDayTotalsCaptionIsTotal() {
         XCTAssertEqual(NativeScopeSeries.caption(scope: .day, kind: .total), "Total")
         XCTAssertEqual(NativeScopeSeries.caption(scope: .week, kind: .total), "Average")
+        XCTAssertEqual(NativeScopeSeries.caption(scope: .sixMonths, kind: .total), "Avg/day")
         XCTAssertEqual(NativeScopeSeries.caption(scope: .day, kind: .rate), "Average")
     }
 
@@ -466,47 +467,84 @@ final class NativeScopeSeriesTests: XCTestCase {
         XCTAssertNil(NativeScopePlotMath.clippedTypical(40...55, yDomain: 80...100))
     }
 
-    func testSummarySentenceMatchesTrendView() {
-        let text = NativeScopeSummary.sentence(
-            title: "HRV",
-            scope: .month,
-            kind: .rate,
-            current: 46,
-            previous: 49,
-            format: { "\(Int($0.rounded()))" },
-            higherIsBetter: true
+    func testSummarySentenceIsOmitted() {
+        XCTAssertNil(
+            NativeScopeSummary.sentence(
+                title: "HRV",
+                scope: .month,
+                kind: .rate,
+                current: 46,
+                previous: 49,
+                format: { "\(Int($0.rounded()))" },
+                higherIsBetter: true
+            )
         )
-        XCTAssertEqual(
-            text,
-            "Your average HRV this month (46) was below your previous 30-day average of 49."
-        )
-        let even = NativeScopeSummary.sentence(
-            title: "VO₂ Max",
-            scope: .week,
-            kind: .rate,
-            current: 52,
-            previous: 51.5,
-            format: { String(format: "%.1f", $0) },
-            higherIsBetter: true
-        )
-        XCTAssertEqual(
-            even,
-            "Your average VO₂ Max this week (52.0) was about the same as your previous week average of 51.5."
-        )
-        XCTAssertEqual(NativeScopeSummary.periodPhrase(.month), "this month")
-        XCTAssertEqual(NativeScopeSummary.priorPhrase(.month), "30-day")
         XCTAssertNil(
             NativeScopeSummary.sentence(
                 title: "VO₂ Max",
-                scope: .month,
+                scope: .week,
                 kind: .rate,
-                current: 43.1,
-                previous: nil,
+                current: 52,
+                previous: 51.5,
                 format: { String(format: "%.1f", $0) },
                 higherIsBetter: true
-            ),
-            "a sentence that only restates the hero is omitted"
+            )
         )
+        XCTAssertEqual(NativeScopeSummary.periodPhrase(.month), "this month")
+        XCTAssertEqual(NativeScopeSummary.priorPhrase(.month), "30-day")
+    }
+
+    func testRoundHourLabelsUseCompactClockHours() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = cal.date(from: DateComponents(year: 2026, month: 11, day: 17))!
+        let afternoon = start.addingTimeInterval(16 * 3600 + 20 * 60)
+        XCTAssertEqual(
+            NativeCountTicks.roundHourLabels(dayStart: start, plotEnd: afternoon, calendar: cal)
+                .map { NativeScopeFormat.hourClock($0, calendar: cal) },
+            ["12 AM", "6 AM", "12 PM"]
+        )
+        let morning = start.addingTimeInterval(5 * 3600 + 23 * 60)
+        XCTAssertEqual(
+            NativeCountTicks.roundHourLabels(dayStart: start, plotEnd: morning, calendar: cal)
+                .map { NativeScopeFormat.hourClock($0, calendar: cal) },
+            ["12 AM", "3 AM"]
+        )
+        let dayEnd = cal.date(byAdding: .day, value: 1, to: start)!
+        XCTAssertEqual(
+            NativeCountTicks.roundHourLabels(dayStart: start, plotEnd: dayEnd, calendar: cal)
+                .map { NativeScopeFormat.hourClock($0, calendar: cal) },
+            ["12 AM", "6 AM", "12 PM", "6 PM"]
+        )
+    }
+
+    func testPaddedXDomainKeepsFirstAndLastMarksInside() {
+        let cal = calendar(firstWeekday: 1)
+        let points = (11...17).map { point(String(format: "2026-11-%02d", $0), Double($0)) }
+        let now = NativeScopeSeries.date(from: "2026-11-17", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .week, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        let window = series.latestWindow()
+        XCTAssertEqual(window.count, 7)
+        let domain = NativeScopePlotMath.paddedXDomain(buckets: window, bars: false)
+        XCTAssertLessThan(domain.lowerBound, window.first!.start)
+        XCTAssertGreaterThan(domain.upperBound, window.last!.start)
+        XCTAssertEqual(
+            domain.upperBound.timeIntervalSince(domain.lowerBound),
+            7 * 86_400,
+            accuracy: 1
+        )
+        let clipped = NativeScopePlotMath.clippedHours(
+            [
+                NativeHourPoint(time: window.first!.start.addingTimeInterval(-60), value: 1),
+                NativeHourPoint(time: window.first!.start, value: 2),
+                NativeHourPoint(time: window.last!.end.addingTimeInterval(60), value: 3),
+            ],
+            start: window.first!.start,
+            end: window.last!.end
+        )
+        XCTAssertEqual(clipped.map(\.value), [2])
     }
 
     func testDailyMetricsDropDayScopeUnlessHourly() {

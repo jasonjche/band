@@ -175,11 +175,23 @@ public enum BandStress {
     /// clean beats are omitted (HR-only).
     public static func rmssdByBucket(rr: [(ts: Int, ms: Double)],
                                      bucketSeconds: Int = bucketSeconds) -> [Int: Double] {
-        guard bucketSeconds > 0 else { return [:] }
-        var groups: [Int: [Double]] = [:]
+        guard bucketSeconds > 0, !rr.isEmpty else { return [:] }
+        var counts: [Int: Int] = [:]
+        counts.reserveCapacity(min(rr.count, 1_440))
         for sample in rr {
             let key = floorDiv(sample.ts, bucketSeconds) * bucketSeconds
-            groups[key, default: []].append(sample.ms)
+            counts[key, default: 0] += 1
+        }
+        var groups: [Int: [Double]] = [:]
+        groups.reserveCapacity(counts.count)
+        for (key, n) in counts {
+            var buf: [Double] = []
+            buf.reserveCapacity(n)
+            groups[key] = buf
+        }
+        for sample in rr {
+            let key = floorDiv(sample.ts, bucketSeconds) * bucketSeconds
+            groups[key]!.append(sample.ms)
         }
         var out: [Int: Double] = [:]
         out.reserveCapacity(groups.count)
@@ -264,29 +276,20 @@ public enum BandStress {
                                       minSeconds: Int = recoveryMinSeconds,
                                       maxSeconds: Int = recoveryMaxSeconds) -> (start: Int, end: Int)? {
         guard workoutEnd > workoutStart else { return nil }
-        let preLo = workoutStart - 10 * 60
-        let pre = samples.filter { $0.ts >= preLo && $0.ts < workoutStart }.map(\.bpm)
-        let during = samples.filter { $0.ts >= workoutStart && $0.ts < workoutEnd }.map(\.bpm)
-        let preMean = average(pre)
-        let boutMean = average(during) ?? preMean
-        let excess = max(0, (boutMean ?? 0) - (preMean ?? 0))
-        let scaled = Int((excess / max(returnWithinBPM, 1)) * 1_800)
-        let cap = min(maxSeconds, max(minSeconds, scaled == 0 ? minSeconds : scaled))
-        let capEnd = workoutEnd + cap
-        guard let preMean else {
-            return (workoutEnd, capEnd)
-        }
-        let threshold = preMean + returnWithinBPM
-        let after = samples.filter { $0.ts >= workoutEnd && $0.ts <= capEnd }.sorted { $0.ts < $1.ts }
-        if let hit = after.first(where: { $0.bpm <= threshold }) {
-            return (workoutEnd, max(workoutEnd, hit.ts))
-        }
-        return (workoutEnd, capEnd)
+        let sorted = samples.sorted { $0.ts < $1.ts }
+        return recoveryWindowSorted(
+            workoutStart: workoutStart, workoutEnd: workoutEnd, samples: sorted,
+            returnWithinBPM: returnWithinBPM, minSeconds: minSeconds, maxSeconds: maxSeconds
+        )
     }
 
     public static func recoveryWindows(workouts: [(start: Int, end: Int)],
                                        samples: [(ts: Int, bpm: Double)]) -> [(start: Int, end: Int)] {
-        workouts.compactMap { recoveryWindow(workoutStart: $0.start, workoutEnd: $0.end, samples: samples) }
+        guard !workouts.isEmpty else { return [] }
+        let sorted = samples.sorted { $0.ts < $1.ts }
+        return workouts.compactMap {
+            recoveryWindowSorted(workoutStart: $0.start, workoutEnd: $0.end, samples: sorted)
+        }
     }
 
     /// Minute buckets where the wearer is walking or running (activity class 1/2),
@@ -355,6 +358,94 @@ public enum BandStress {
         return out
     }
 
+    /// Minute scores plus exclusion spans. Unix-seconds form of the Native Stress chart
+    /// builder: workout / recovery / activity omit nothing from the line (WHOOP keeps it
+    /// running) but still record the span. Gaps stay omitted. Contiguous runs are
+    /// centred-smoothed.
+    public static func timeline(
+        buckets: [(ts: Int, bpm: Double)],
+        baselines: Baselines,
+        sleepStart: Int?,
+        sleepEnd: Int?,
+        workouts: [(start: Int, end: Int)],
+        rmssdByBucket: [Int: Double] = [:],
+        activityBuckets: Set<Int> = [],
+        recovery: [(start: Int, end: Int)] = [],
+        smoothRadius: Int = smoothRadiusBuckets,
+        bucketSeconds: Int = bucketSeconds
+    ) -> (hours: [(ts: Int, value: Double)], exclusions: [ExclusionSpan]) {
+        var exclusions: [ExclusionSpan] = []
+        exclusions.reserveCapacity(workouts.count + recovery.count + 8)
+        for bout in workouts where bout.end > bout.start {
+            exclusions.append(ExclusionSpan(startTs: bout.start, endTs: bout.end, kind: .workout))
+        }
+        for window in recovery where window.end > window.start {
+            exclusions.append(ExclusionSpan(startTs: window.start, endTs: window.end, kind: .recovery))
+        }
+        exclusions.append(contentsOf: mergeSpans(spans(fromBuckets: activityBuckets, bucketSeconds: bucketSeconds)))
+
+        let workoutSorted = workouts.filter { $0.end > $0.start }.sorted { $0.start < $1.start }
+        let recoverySorted = recovery.filter { $0.end > $0.start }.sorted { $0.start < $1.start }
+        var scored: [(ts: Int, value: Double)] = []
+        scored.reserveCapacity(buckets.count)
+        var wi = 0
+        var ri = 0
+        for bucket in buckets {
+            let asleep: Bool
+            if let sleepStart, let sleepEnd {
+                asleep = overlaps(bucketTs: bucket.ts, start: sleepStart, end: sleepEnd,
+                                  bucketSeconds: bucketSeconds)
+            } else {
+                asleep = false
+            }
+            let bEnd = bucket.ts + bucketSeconds
+            while wi < workoutSorted.count, workoutSorted[wi].end <= bucket.ts { wi += 1 }
+            var workout = false
+            var k = wi
+            while k < workoutSorted.count, workoutSorted[k].start < bEnd {
+                if overlaps(bucketTs: bucket.ts, start: workoutSorted[k].start, end: workoutSorted[k].end,
+                            bucketSeconds: bucketSeconds) {
+                    workout = true
+                    break
+                }
+                k += 1
+            }
+            while ri < recoverySorted.count, recoverySorted[ri].end <= bucket.ts { ri += 1 }
+            var recovering = false
+            var r = ri
+            while r < recoverySorted.count, recoverySorted[r].start < bEnd {
+                if overlaps(bucketTs: bucket.ts, start: recoverySorted[r].start, end: recoverySorted[r].end,
+                            bucketSeconds: bucketSeconds) {
+                    recovering = true
+                    break
+                }
+                r += 1
+            }
+            let moving = activityBuckets.contains(bucket.ts)
+            switch evaluate(
+                bpm: bucket.bpm,
+                rmssd: rmssdByBucket[bucket.ts],
+                isWorkout: workout,
+                isAsleep: asleep,
+                baselines: baselines,
+                isActivity: moving,
+                isRecovery: recovering
+            ) {
+            case .value(let value):
+                scored.append((bucket.ts, value))
+            case .excluded:
+                scored.append((bucket.ts, score(
+                    bpm: bucket.bpm, rmssd: rmssdByBucket[bucket.ts],
+                    isAsleep: asleep, baselines: baselines
+                )))
+            case .gap:
+                break
+            }
+        }
+        let hours = smoothCentered(points: scored, bucketSeconds: bucketSeconds, radius: smoothRadius)
+        return (hours, exclusions)
+    }
+
     /// Merge same-kind spans that overlap or sit within `gapSeconds`.
     /// Walking uses `activityMergeGapSeconds` so a cluster of short walks is one span.
     public static func mergeSpans(_ spans: [ExclusionSpan],
@@ -397,20 +488,23 @@ public enum BandStress {
             while j < sorted.count, sorted[j].ts - sorted[j - 1].ts == bucketSeconds {
                 j += 1
             }
-            let run = Array(sorted[i..<j])
-            if run.count == 1 {
-                out.append(run[0])
+            let runCount = j - i
+            if runCount == 1 {
+                out.append(sorted[i])
             } else {
-                for k in run.indices {
+                var prefix = [0.0]
+                prefix.reserveCapacity(runCount + 1)
+                var acc = 0.0
+                for k in i..<j {
+                    acc += sorted[k].value
+                    prefix.append(acc)
+                }
+                for k in 0..<runCount {
                     let lo = max(0, k - radius)
-                    let hi = min(run.count - 1, k + radius)
-                    var sum = 0.0
-                    var n = 0
-                    for m in lo...hi {
-                        sum += run[m].value
-                        n += 1
-                    }
-                    out.append((run[k].ts, n > 0 ? sum / Double(n) : run[k].value))
+                    let hi = min(runCount - 1, k + radius)
+                    let n = hi - lo + 1
+                    let sum = prefix[hi + 1] - prefix[lo]
+                    out.append((sorted[i + k].ts, n > 0 ? sum / Double(n) : sorted[i + k].value))
                 }
             }
             i = j
@@ -427,6 +521,58 @@ public enum BandStress {
             n += 1
         }
         return Double(n) * Double(bucketSeconds) / 60.0
+    }
+
+    static func recoveryWindowSorted(
+        workoutStart: Int, workoutEnd: Int,
+        samples: [(ts: Int, bpm: Double)],
+        returnWithinBPM: Double = recoveryReturnBPM,
+        minSeconds: Int = recoveryMinSeconds,
+        maxSeconds: Int = recoveryMaxSeconds
+    ) -> (start: Int, end: Int)? {
+        guard workoutEnd > workoutStart else { return nil }
+        let preLo = workoutStart - 10 * 60
+        let pre = bpmRange(samples, from: preLo, toExclusive: workoutStart)
+        let during = bpmRange(samples, from: workoutStart, toExclusive: workoutEnd)
+        let preMean = average(pre)
+        let boutMean = average(during) ?? preMean
+        let excess = max(0, (boutMean ?? 0) - (preMean ?? 0))
+        let scaled = Int((excess / max(returnWithinBPM, 1)) * 1_800)
+        let cap = min(maxSeconds, max(minSeconds, scaled == 0 ? minSeconds : scaled))
+        let capEnd = workoutEnd + cap
+        guard let preMean else {
+            return (workoutEnd, capEnd)
+        }
+        let threshold = preMean + returnWithinBPM
+        let lo = lowerBound(samples, ts: workoutEnd)
+        let hi = lowerBound(samples, ts: capEnd + 1)
+        if lo < hi {
+            for i in lo..<hi where samples[i].bpm <= threshold {
+                return (workoutEnd, max(workoutEnd, samples[i].ts))
+            }
+        }
+        return (workoutEnd, capEnd)
+    }
+
+    static func bpmRange(_ samples: [(ts: Int, bpm: Double)], from: Int, toExclusive: Int) -> [Double] {
+        let lo = lowerBound(samples, ts: from)
+        let hi = lowerBound(samples, ts: toExclusive)
+        guard lo < hi else { return [] }
+        var out: [Double] = []
+        out.reserveCapacity(hi - lo)
+        for i in lo..<hi { out.append(samples[i].bpm) }
+        return out
+    }
+
+    static func lowerBound(_ samples: [(ts: Int, bpm: Double)], ts: Int) -> Int {
+        var lo = 0
+        var hi = samples.count
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2
+            if samples[mid].ts < ts { lo = mid + 1 }
+            else { hi = mid }
+        }
+        return lo
     }
 
     static func floorDiv(_ a: Int, _ b: Int) -> Int {

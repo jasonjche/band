@@ -111,7 +111,35 @@ struct NativeStressPage: View {
         guard key == dayKey else { return }
         let nextLevel = NativeStressResolver.level(hours: nextHours, days: days, todayKey: key)
         let nextHigh = NativeStressHistory.timeInHighMinutes(nextHours)
-        let daily = NativeStressHistory.daily(days: days, ending: key)
+        var minuteMeans: [String: Double] = [:]
+        if let mean = NativeScopeSeries.mean(nextHours.map(\.value)) {
+            minuteMeans[key] = mean
+        }
+        if scope != .day {
+            let lookback: Int = {
+                switch scope {
+                case .day: return 1
+                case .week: return 14
+                case .month: return 60
+                case .sixMonths: return 26 * 7
+                case .year: return 365
+                }
+            }()
+            let oldest = calendar.date(byAdding: .day, value: -lookback, to: start) ?? start
+            for day in days where day.day <= key && day.day != key {
+                guard let dayDate = NativeScopeSeries.date(from: day.day, calendar: calendar),
+                      dayDate >= oldest else { continue }
+                let built = await NativeDerivedSeries.stressDay(
+                    repo: repo, dayKey: day.day, dayStart: calendar.startOfDay(for: dayDate),
+                    days: days, sleeps: repo.sleeps, workouts: nextWorkouts, calendar: calendar
+                )
+                if Task.isCancelled { return }
+                if let mean = NativeScopeSeries.mean(built.hours.map(\.value)) {
+                    minuteMeans[day.day] = mean
+                }
+            }
+        }
+        let daily = NativeStressHistory.daily(days: days, ending: key, minuteMeans: minuteMeans)
         let nextSeries = NativeScopeSeries.make(
             points: daily,
             scope: scope,
@@ -202,13 +230,6 @@ struct NativeStressChartPage: View {
     }
 
     @ViewBuilder private var dayBody: some View {
-        NativeHeroValue(
-            caption: NativeStressHero.caption(scrubbing: scrubTime != nil),
-            value: shownLevel.map { String(format: "%.1f", $0) } ?? "No data",
-            date: scrubTime.map { NativeScopeFormat.time($0) } ?? NativeScopeFormat.weekdayDate(dayStart, calendar: .current)
-        )
-        .frame(height: 76, alignment: .topLeading)
-
         NativeStressGauge(value: shownLevel, lastUpdated: gaugeCaption)
             .frame(width: 152, height: 96)
             .frame(maxWidth: .infinity)
@@ -286,10 +307,6 @@ struct NativeStressDayChart: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            NativeStressChartHeader(
-                level: level,
-                updated: NativeStressMonitorMath.lastUpdated(hours.last?.time)
-            )
             ZStack {
                 NativeStressDayPlot(
                     score: level ?? hours.last?.value ?? 0,
@@ -354,20 +371,48 @@ struct NativeStressChartHeader: View {
 }
 
 enum NativeStressHistory {
-    static func daily(days: [DailyMetric], ending: String) -> [NativeDayPoint] {
+    /// One funnel for the Day-view average and that day's W/M/6M bar.
+    /// Prefer the mean of `NativeDerivedSeries.stressDay` hours (and its cache).
+    /// Fall back to the daily HRV/RHR score only when that day has no minute series;
+    /// the Day view uses the same fallback.
+    static func dayAverage(hours: [NativeHourPoint], days: [DailyMetric], dayKey: String) -> Double? {
+        if let mean = NativeScopeSeries.mean(hours.map(\.value).filter(\.isFinite)) {
+            return mean
+        }
+        return dailyScore(days: days, dayKey: dayKey)
+    }
+
+    static func dailyScore(days: [DailyMetric], dayKey: String) -> Double? {
+        let ordered = days.filter { $0.day <= dayKey }
+        guard let day = ordered.last(where: { $0.day == dayKey }) else { return nil }
+        return dailyScore(day: day, prior: Array(ordered.filter { $0.day < dayKey }.suffix(30)))
+    }
+
+    static func dailyScore(day: DailyMetric, prior: [DailyMetric]) -> Double? {
+        let meanRHR = StressMath.mean(prior.compactMap { $0.restingHr }.map(Double.init))
+        let sdRHR = StressMath.std(prior.compactMap { $0.restingHr }.map(Double.init), mean: meanRHR)
+        let meanHRV = StressMath.mean(prior.compactMap(\.avgHrv))
+        let sdHRV = StressMath.std(prior.compactMap(\.avgHrv), mean: meanHRV)
+        guard day.restingHr != nil || day.avgHrv != nil else { return nil }
+        let raw = StressMath.rawScore(
+            rhrToday: day.restingHr.map(Double.init), meanRHR: meanRHR, sdRHR: sdRHR,
+            hrvToday: day.avgHrv, meanHRV: meanHRV, sdHRV: sdHRV
+        )
+        return StressMath.squash(raw)
+    }
+
+    static func daily(
+        days: [DailyMetric],
+        ending: String,
+        minuteMeans: [String: Double] = [:]
+    ) -> [NativeDayPoint] {
         let ordered = days.filter { $0.day <= ending }
         return ordered.compactMap { day in
+            if let mean = minuteMeans[day.day] {
+                return NativeDayPoint(key: day.day, value: mean)
+            }
             let prior = Array(ordered.filter { $0.day < day.day }.suffix(30))
-            let meanRHR = StressMath.mean(prior.compactMap { $0.restingHr }.map(Double.init))
-            let sdRHR = StressMath.std(prior.compactMap { $0.restingHr }.map(Double.init), mean: meanRHR)
-            let meanHRV = StressMath.mean(prior.compactMap(\.avgHrv))
-            let sdHRV = StressMath.std(prior.compactMap(\.avgHrv), mean: meanHRV)
-            guard day.restingHr != nil || day.avgHrv != nil else { return nil }
-            let raw = StressMath.rawScore(
-                rhrToday: day.restingHr.map(Double.init), meanRHR: meanRHR, sdRHR: sdRHR,
-                hrvToday: day.avgHrv, meanHRV: meanHRV, sdHRV: sdHRV
-            )
-            return NativeDayPoint(key: day.day, value: StressMath.squash(raw))
+            return dailyScore(day: day, prior: prior).map { NativeDayPoint(key: day.day, value: $0) }
         }
     }
 
@@ -540,25 +585,49 @@ struct NativeStressDayBreakdown: View {
                 if let typical {
                     stackedBar(typical, muted: true)
                 }
-                HStack(alignment: .top, spacing: 12) {
-                    bandColumn(
-                        title: "Low",
-                        seconds: today.low,
-                        typical: typical?.low,
-                        tint: NativeTokens.stressLow
-                    )
-                    bandColumn(
-                        title: "Medium",
-                        seconds: today.mid,
-                        typical: typical?.mid,
-                        tint: NativeTokens.stressMid
-                    )
-                    bandColumn(
-                        title: "High",
-                        seconds: today.high,
-                        typical: typical?.high,
-                        tint: NativeTokens.stressHigh
-                    )
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 12) {
+                        bandColumn(
+                            title: "Low",
+                            seconds: today.low,
+                            typical: typical?.low,
+                            tint: NativeTokens.stressLow
+                        )
+                        bandColumn(
+                            title: "Medium",
+                            seconds: today.mid,
+                            typical: typical?.mid,
+                            tint: NativeTokens.stressMid
+                        )
+                        bandColumn(
+                            title: "High",
+                            seconds: today.high,
+                            typical: typical?.high,
+                            tint: NativeTokens.stressHigh
+                        )
+                    }
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top, spacing: 12) {
+                            bandColumn(
+                                title: "Low",
+                                seconds: today.low,
+                                typical: typical?.low,
+                                tint: NativeTokens.stressLow
+                            )
+                            bandColumn(
+                                title: "Medium",
+                                seconds: today.mid,
+                                typical: typical?.mid,
+                                tint: NativeTokens.stressMid
+                            )
+                        }
+                        bandColumn(
+                            title: "High",
+                            seconds: today.high,
+                            typical: typical?.high,
+                            tint: NativeTokens.stressHigh
+                        )
+                    }
                 }
             }
             .padding(.vertical, 4)
@@ -620,6 +689,9 @@ struct NativeStressDayBreakdown: View {
             Text(NativeStressBandTime.clock(seconds))
                 .font(StrandFont.rounded(22, weight: .semibold))
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+                .allowsTightening(true)
             if let percent, delta != .flat, delta != .none {
                 HStack(spacing: 2) {
                     NativeDelta(delta: delta)
@@ -870,11 +942,7 @@ private struct NativeStressRangePlot: View {
     private var barUnit: Calendar.Component { NativeScopePlotMath.barUnit(scope: series.scope) }
 
     private var xDomain: ClosedRange<Date> {
-        guard let first = window.first, let last = window.last, last.end > first.start else {
-            let now = Date()
-            return now...now.addingTimeInterval(86_400)
-        }
-        return first.start...last.end
+        NativeScopePlotMath.paddedXDomain(buckets: window, bars: true)
     }
 
     private var columnKey: String { scrub.key ?? highlightKey }
@@ -918,7 +986,7 @@ private struct NativeStressRangePlot: View {
                 .foregroundStyle(dayHighlight)
                 .accessibilityHidden(true)
             }
-            ForEach(window) { bucket in
+            ForEach(window.filter { $0.start >= xDomain.lowerBound && $0.start <= xDomain.upperBound }) { bucket in
                 if let value = bucket.value {
                     BarMark(
                         x: .value("Day", bucket.start, unit: barUnit),
@@ -939,7 +1007,7 @@ private struct NativeStressRangePlot: View {
         .chartYScale(domain: 0...3)
         .chartXScale(domain: xDomain)
         .chartYAxis {
-            AxisMarks(position: .trailing, values: [1.0, 2.0, 3.0]) { value in
+            AxisMarks(preset: .aligned, position: .trailing, values: [0.0, 1.0, 2.0, 3.0]) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativePaint.separator(style))
                 AxisValueLabel {
@@ -953,7 +1021,7 @@ private struct NativeStressRangePlot: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: labelDates) { value in
+            AxisMarks(preset: .aligned, values: labelDates) { value in
                 AxisValueLabel {
                     if let date = value.as(Date.self) {
                         Text(axisLabel(date))
@@ -965,11 +1033,7 @@ private struct NativeStressRangePlot: View {
                 }
             }
         }
-        .chartPlotStyle { plot in
-            plot
-                .padding(.leading, NativeScopePlotMath.plotLeading)
-                .padding(.trailing, NativeScopePlotMath.plotTrailing)
-        }
+        .nativeClippedChartPlot()
         .modifier(NativeTimeSelect(
             selected: timeBinding,
             snap: { NativeChartScrubMath.snapBucket(date: $0, buckets: window, bars: true)?.time },
@@ -1027,7 +1091,9 @@ struct NativeStressDayPlot: View {
     @Binding var scrubTime: Date?
     @State private var selectedTime: Date?
 
-    private var hours: [NativeHourPoint] { sampleHours }
+    private var hours: [NativeHourPoint] {
+        NativeScopePlotMath.clippedHours(sampleHours, start: dayStart, end: plotEnd)
+    }
 
     private var hourSegments: [[NativeHourPoint]] {
         NativeStressMonitorMath.segments(hours).map { NativeStressMonitorMath.drawPoints($0) }
@@ -1166,9 +1232,9 @@ struct NativeStressDayPlot: View {
             }
         }
         .chartYScale(domain: 0...3)
-        .chartXScale(domain: dayStart...plotEnd)
+        .chartXScale(domain: NativeScopePlotMath.paddedXDomain(start: dayStart, end: plotEnd))
         .chartYAxis {
-            AxisMarks(position: .trailing, values: NativeStressMonitorMath.yAxisValues) { value in
+            AxisMarks(preset: .aligned, position: .trailing, values: NativeStressMonitorMath.yAxisValues) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativePaint.separator(style))
                 AxisValueLabel {
@@ -1182,26 +1248,23 @@ struct NativeStressDayPlot: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: NativeStressMonitorMath.xAxisDates(dayStart: dayStart, plotEnd: plotEnd)) { value in
-                if let date = value.as(Date.self),
-                   !NativeStressMonitorMath.isNow(date, now: now) {
-                    AxisGridLine(stroke: NativeChrome.gridStroke)
-                        .foregroundStyle(NativePaint.separator(style))
-                }
+            AxisMarks(
+                preset: .aligned,
+                values: NativeCountTicks.roundHourLabels(dayStart: dayStart, plotEnd: plotEnd, calendar: .current)
+            ) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativePaint.separator(style))
                 AxisValueLabel {
                     if let date = value.as(Date.self) {
-                        let current = NativeStressMonitorMath.isNow(date, now: now)
-                        Text(NativeScopeFormat.time(date))
-                            .font(.caption2.weight(current ? .bold : .regular))
-                            .foregroundStyle(current ? Color.primary : Color.secondary)
+                        Text(NativeScopeFormat.hourClock(date, calendar: .current))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
                             .monospacedDigit()
                     }
                 }
             }
         }
-        .chartPlotStyle { plot in
-            plot.padding(.top, NativeStressLaneIcon.iconLane)
-        }
+        .nativeClippedChartPlot(top: NativeStressLaneIcon.iconLane)
         .chartOverlay { proxy in
             NativeStressLaneOverlay(
                 proxy: proxy,

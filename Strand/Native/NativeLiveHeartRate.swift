@@ -46,7 +46,7 @@ struct NativeLiveHeartRate: View {
             VStack(alignment: .leading, spacing: 16) {
                 hero
                 zoneLine
-                spark
+                NativeChrome.panel { spark }
                 Spacer(minLength: 0)
             }
             .padding(16)
@@ -110,9 +110,11 @@ struct NativeLiveHeartRate: View {
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2.5))
                 }
+                .chartXScale(domain: xDomain)
+                .chartYScale(domain: yDomain)
                 .chartXAxis(.hidden)
                 .chartYAxis {
-                    AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+                    AxisMarks(position: .trailing, values: NativePlotAxis.yTicks(in: yDomain)) { value in
                         AxisGridLine(stroke: NativeChrome.gridStroke)
                             .foregroundStyle(NativeChrome.hairline)
                         AxisValueLabel {
@@ -125,7 +127,7 @@ struct NativeLiveHeartRate: View {
                         }
                     }
                 }
-                .chartYScale(domain: yDomain)
+                .chartPlotStyle { $0.clipped() }
                 .accessibilityLabel("Heart rate, last 60 seconds")
             } else {
                 NativeEmptyState(text: "No data", symbol: "heart")
@@ -134,9 +136,20 @@ struct NativeLiveHeartRate: View {
         .frame(height: 120)
     }
 
-    /// Smoothed polyline. Hero BPM stays on the latest raw sample.
+    /// Smoothed polyline clipped to the last 60 seconds. Hero BPM stays on the latest raw sample.
     private var plotSamples: [NativeHourPoint] {
-        NativeHRSmoothing.smooth(samples)
+        let smoothed = NativeHRSmoothing.smooth(samples)
+        guard let last = smoothed.last else { return smoothed }
+        let start = last.time.addingTimeInterval(-60)
+        return smoothed.filter { NativePlotAxis.inTimeDomain($0.time, start...last.time) }
+    }
+
+    private var xDomain: ClosedRange<Date> {
+        guard let first = plotSamples.first, let last = plotSamples.last, last.time >= first.time else {
+            let now = Date()
+            return now.addingTimeInterval(-60)...now
+        }
+        return first.time...last.time
     }
 
     private func zoneLabel(_ zone: Int) -> String {
@@ -151,10 +164,7 @@ struct NativeLiveHeartRate: View {
     }
 
     private var yDomain: ClosedRange<Double> {
-        let values = plotSamples.map(\.value)
-        guard let lo = values.min(), let hi = values.max() else { return 40...180 }
-        let pad = max(2, (hi - lo) / 8)
-        return (lo - pad)...(hi + pad)
+        NativePlotAxis.yDomain(plotSamples.map(\.value), fallback: 40...180)
     }
 
     private func zoneTint(_ zone: Int) -> Color {

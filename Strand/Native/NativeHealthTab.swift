@@ -26,8 +26,6 @@ enum NativeRootTab: Int, CaseIterable, Equatable {
 /// Health tab index. Order is the product contract the tests pin.
 enum NativeHealthItem: String, CaseIterable, Identifiable, Hashable {
     case healthspan
-    case healthMonitor
-    case stressMonitor
     case trends
     case reports
 
@@ -36,8 +34,6 @@ enum NativeHealthItem: String, CaseIterable, Identifiable, Hashable {
     var title: String {
         switch self {
         case .healthspan: return "Healthspan"
-        case .healthMonitor: return "Health Monitor"
-        case .stressMonitor: return "Stress Monitor"
         case .trends: return "Trends"
         case .reports: return "Reports"
         }
@@ -46,8 +42,6 @@ enum NativeHealthItem: String, CaseIterable, Identifiable, Hashable {
     var icon: String {
         switch self {
         case .healthspan: return "sparkles"
-        case .healthMonitor: return "heart.fill"
-        case .stressMonitor: return "waveform.path.ecg"
         case .trends: return "chart.xyaxis.line"
         case .reports: return "calendar"
         }
@@ -56,8 +50,6 @@ enum NativeHealthItem: String, CaseIterable, Identifiable, Hashable {
     var color: Color {
         switch self {
         case .healthspan: return NativeChrome.recovery
-        case .healthMonitor: return NativeChrome.heart
-        case .stressMonitor: return NativeChrome.stress
         case .trends: return NativeChrome.strain
         case .reports: return NativeChrome.activity
         }
@@ -66,8 +58,6 @@ enum NativeHealthItem: String, CaseIterable, Identifiable, Hashable {
     var subtitle: String {
         switch self {
         case .healthspan: return "Band Age and Pace of Aging"
-        case .healthMonitor: return "Overnight vitals vs typical"
-        case .stressMonitor: return "Daytime stress 0–3"
         case .trends: return "All metrics over weeks and months"
         case .reports: return "Weekly and monthly assessments"
         }
@@ -75,11 +65,12 @@ enum NativeHealthItem: String, CaseIterable, Identifiable, Hashable {
 
     static var titles: [String] { allCases.map(\.title) }
 
+    /// Rows on the Health tab root; Healthspan itself is the page.
+    static let tabLinks: [NativeHealthItem] = [.trends, .reports]
+
     @ViewBuilder var destination: some View {
         switch self {
         case .healthspan: NativeHealthspanPage()
-        case .healthMonitor: NativeHealthMonitorPage()
-        case .stressMonitor: NativeStressPage()
         case .trends: NativeTrendsPage()
         case .reports: NativePerformanceAssessmentView()
         }
@@ -89,83 +80,67 @@ enum NativeHealthItem: String, CaseIterable, Identifiable, Hashable {
 enum NativeHealthTabLogic {
     /// Cheap in-memory headline for a Health row. Band Age is skipped — it needs a 400-day rebuild.
     static func liveSummary(for item: NativeHealthItem, days: [DailyMetric], todayKey: String) -> String? {
-        switch item {
-        case .healthMonitor:
-            let summary = NativeHealthRange.report(days: days, todayKey: todayKey).summary
-            guard summary.measured > 0 else { return nil }
-            return HomeMonitorTile.healthPrimary(summary)
-        case .stressMonitor:
-            let level = NativeStressResolver.level(hours: [], days: days, todayKey: todayKey)
-            let tile = HomeMonitorTile.stress(level: level, at: nil)
-            guard let value = tile.value, let band = tile.band else { return nil }
-            return "\(value) \(band)"
-        case .healthspan, .trends, .reports:
-            return nil
-        }
+        // Healthspan needs a long rebuild and Trends/Reports have no single headline, so rows
+        // show their static subtitle. The monitors live on Home.
+        _ = (item, days, todayKey)
+        return nil
     }
 }
 
-/// Large-title Health index: Healthspan, monitors, Trends, Reports.
+/// Health tab root: Healthspan first (as in WHOOP), with Trends and Reports rows under Pace of Aging.
 struct NativeHealthTab: View {
     @Binding var suppressTabReselect: Bool
-    @Environment(\.scrollToTopSignal) private var scrollToTopSignal
-    @State private var repoHandle: Repository?
-    @State private var refreshSeq = 0
-    @State private var handlesReady = false
-    @State private var live: [NativeHealthItem: String] = [:]
 
     init(suppressTabReselect: Binding<Bool> = .constant(false)) {
         _suppressTabReselect = suppressTabReselect
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            List {
-                Section {
-                    ForEach(NativeHealthItem.allCases) { item in
-                        healthLink(item)
+        NativeHealthspanPage(links: NativeHealthItem.tabLinks, title: "Health")
+            .environment(\.nativeHealthLinkTapped) { suppressTabReselect = true }
+    }
+}
+
+/// Grouped rows that push a Health destination onto the tab's stack.
+struct NativeHealthLinks: View {
+    var items: [NativeHealthItem]
+    @Environment(\.nativeNavigationPath) private var navigationPath
+    @Environment(\.nativeHealthLinkTapped) private var onTap
+
+    var body: some View {
+        NativeChrome.panel {
+            VStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element) { index, item in
+                    if index > 0 { Divider().padding(.leading, 41) }
+                    Button {
+                        onTap()
+                        navigationPath.wrappedValue.append(item)
+                    } label: {
+                        HStack(spacing: 0) {
+                            NativeSettingsRow(title: item.title, icon: item.icon, color: item.color,
+                                              subtitle: item.subtitle)
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
                     }
-                }
-                .id("health-top")
-            }
-            #if os(iOS)
-            .listStyle(.insetGrouped)
-            #endif
-            .navigationTitle("Health")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.large)
-            #endif
-            .onChangeCompat(of: scrollToTopSignal) { _ in
-                proxy.scrollTo("health-top", anchor: .top)
-            }
-        }
-        .background {
-            NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
-        }
-        .task(id: handlesReady ? "\(refreshSeq)" : "boot") {
-            guard handlesReady, let repo = repoHandle else { return }
-            let today = NativeDayLogic.logicalToday()
-            var next: [NativeHealthItem: String] = [:]
-            for item in NativeHealthItem.allCases {
-                if let summary = NativeHealthTabLogic.liveSummary(for: item, days: repo.days, todayKey: today) {
-                    next[item] = summary
+                    .buttonStyle(.plain)
+                    .accessibilityHint(item.subtitle)
                 }
             }
-            live = next
         }
     }
+}
 
-    @ViewBuilder
-    private func healthLink(_ item: NativeHealthItem) -> some View {
-        let subtitle = live[item] ?? item.subtitle
-        let row = NavigationLink(value: item) {
-            NativeSettingsRow(title: item.title, icon: item.icon, color: item.color, subtitle: subtitle)
-        }
-        .simultaneousGesture(TapGesture().onEnded { suppressTabReselect = true })
-        if !subtitle.isEmpty {
-            row.accessibilityHint(subtitle)
-        } else {
-            row
-        }
+private struct NativeHealthLinkTappedKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+extension EnvironmentValues {
+    /// Lets the tab shell know a row push started, so the tab-reselect handler leaves the path alone.
+    var nativeHealthLinkTapped: () -> Void {
+        get { self[NativeHealthLinkTappedKey.self] }
+        set { self[NativeHealthLinkTappedKey.self] = newValue }
     }
 }

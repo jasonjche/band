@@ -75,6 +75,17 @@ final class DayKeyTests: XCTestCase {
         XCTAssertEqual(DayKey.logical(on, calendar: cal), "2026-11-17")
     }
 
+    func testLogicalCursorMatchesPerSampleLogical() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "America/New_York")!
+        var cursor = DayKey.LogicalCursor(calendar: cal)
+        // Crossing the 4am rollover and a DST boundary (2026-03-08).
+        let start = Int(Date(timeIntervalSince1970: 1_741_400_000).timeIntervalSince1970)
+        for ts in stride(from: start, to: start + 3 * 86_400, by: 1800) {
+            XCTAssertEqual(cursor.logical(ts), DayKey.logical(ts, calendar: cal), "ts=\(ts)")
+        }
+    }
+
     func testJournalTitleKeyFoldsPunctuation() {
         XCTAssertEqual(journalTitleKey("Shared your bed?"), journalTitleKey("shared your bed"))
         XCTAssertNotEqual(journalTitleKey("Did you share your bed?"), journalTitleKey("Shared your bed?"))

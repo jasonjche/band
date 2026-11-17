@@ -4,7 +4,7 @@ import XCTest
 final class DerivedSeriesCodecTests: XCTestCase {
 
     func testAlgorithmVersionsArePinned() {
-        XCTAssertEqual(DerivedSeriesCodec.algorithmVersion(kind: DerivedSeriesCodec.stressMinuteKind), 1)
+        XCTAssertEqual(DerivedSeriesCodec.algorithmVersion(kind: DerivedSeriesCodec.stressMinuteKind), 2)  // v2: line runs through activities, 15-min smoothing
         XCTAssertEqual(DerivedSeriesCodec.algorithmVersion(kind: DerivedSeriesCodec.overnightHRKind), 1)
         XCTAssertEqual(DerivedSeriesCodec.algorithmVersion(kind: DerivedSeriesCodec.hourlyStepsKind), 1)
         XCTAssertEqual(DerivedSeriesCodec.algorithmVersion(kind: "unknown"), 0)

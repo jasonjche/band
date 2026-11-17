@@ -62,6 +62,22 @@ enum NativeSleepPlannerLogic {
         return Snapshot(need: need, planned: planned, typical: typical, strainTarget: target)
     }
 
+    /// Cheap Sleep page caption. Uses stored wake/goal and tonight's need minutes; no extra ledger run.
+    static func cardSubtitle(
+        needMin: Double?,
+        wakeMinutes: Int,
+        goal: SleepPlanner.Goal = .peak
+    ) -> String {
+        guard let needMin, needMin > 0 else { return "Plan tonight's bedtime" }
+        let bed = SleepPlanner.inBedMinutes(
+            wakeMinutes: wakeMinutes,
+            needMin: needMin,
+            goal: goal,
+            typical: SleepPlanner.typicalSleep([])
+        )
+        return "Tonight: in bed by \(NativeTonightSleep.clock(bed))"
+    }
+
     static func nightSamples(days: [DailyMetric], sleeps: [CachedSleepSession]) -> [SleepPlanner.NightSample] {
         let sleepsByDay = Dictionary(grouping: sleeps) {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))

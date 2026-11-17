@@ -13,8 +13,85 @@ extension WhoopStore {
     static func encodePayload(_ payload: [String: ParsedValue]) throws -> String {
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]
-        let data = try enc.encode(payload)
+        return try encodePayload(payload, encoder: enc)
+    }
+
+    static func encodePayload(_ payload: [String: ParsedValue], encoder: JSONEncoder) throws -> String {
+        let data = try encoder.encode(payload)
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Rows per multi-VALUES INSERT. 64 × 6 binds = 384, well under SQLite's variable cap, while
+    /// cutting statement executions ~64× on a day-long offload. Remainder chunks reuse a second
+    /// cached statement keyed on their SQL.
+    static let bulkInsertChunk = 64
+
+    /// Multi-row INSERT with ON CONFLICT. Returns SQLite `changesCount` (rows actually inserted).
+    static func insertChunked<T>(
+        db: Database,
+        tableAndColumns: String,
+        conflictSQL: String,
+        valuesPerRow: Int,
+        rows: [T],
+        bind: (T, inout [(any DatabaseValueConvertible)?]) throws -> Void
+    ) throws -> Int {
+        guard !rows.isEmpty else { return 0 }
+        var inserted = 0
+        var i = 0
+        let n = rows.count
+        while i < n {
+            let k = min(bulkInsertChunk, n - i)
+            let sql = bulkInsertSQL(tableAndColumns: tableAndColumns, conflictSQL: conflictSQL,
+                                    valuesPerRow: valuesPerRow, rowCount: k, returning: nil)
+            var args: [(any DatabaseValueConvertible)?] = []
+            args.reserveCapacity(k * valuesPerRow)
+            for r in i..<(i + k) { try bind(rows[r], &args) }
+            let stmt = try db.cachedStatement(sql: sql)
+            try stmt.execute(arguments: StatementArguments(args))
+            inserted += db.changesCount
+            i += k
+        }
+        return inserted
+    }
+
+    /// Same as `insertChunked`, but `RETURNING col` so the caller learns which rows survived
+    /// ON CONFLICT DO NOTHING (needed for `stepDataRevision`, which records inserted timestamps).
+    static func insertChunkedReturning<T>(
+        db: Database,
+        tableAndColumns: String,
+        conflictSQL: String,
+        returning: String,
+        valuesPerRow: Int,
+        rows: [T],
+        bind: (T, inout [(any DatabaseValueConvertible)?]) throws -> Void
+    ) throws -> [Int] {
+        guard !rows.isEmpty else { return [] }
+        var out: [Int] = []
+        out.reserveCapacity(rows.count)
+        var i = 0
+        let n = rows.count
+        while i < n {
+            let k = min(bulkInsertChunk, n - i)
+            let sql = bulkInsertSQL(tableAndColumns: tableAndColumns, conflictSQL: conflictSQL,
+                                    valuesPerRow: valuesPerRow, rowCount: k, returning: returning)
+            var args: [(any DatabaseValueConvertible)?] = []
+            args.reserveCapacity(k * valuesPerRow)
+            for r in i..<(i + k) { try bind(rows[r], &args) }
+            let got = try Int.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+            out.append(contentsOf: got)
+            i += k
+        }
+        return out
+    }
+
+    private static func bulkInsertSQL(tableAndColumns: String, conflictSQL: String,
+                                      valuesPerRow: Int, rowCount: Int, returning: String?) -> String {
+        let one = "(" + Array(repeating: "?", count: valuesPerRow).joined(separator: ",") + ")"
+        var sql = "INSERT INTO \(tableAndColumns) VALUES "
+        sql += Array(repeating: one, count: rowCount).joined(separator: ",")
+        sql += " \(conflictSQL)"
+        if let returning { sql += " RETURNING \(returning)" }
+        return sql
     }
 
     /// Pack a decoded v26 PPG waveform's samples as little-endian i16 (2 bytes/sample) — a single
@@ -23,11 +100,16 @@ extension WhoopStore {
     /// Int16's range, matching the wire format it came from (`readI16` in the decoder never produces
     /// anything wider).
     static func packPpgSamples(_ samples: [Int]) -> Data {
-        var buf = Data(capacity: samples.count * 2)
-        for s in samples {
-            let v = Int16(truncatingIfNeeded: s)
-            buf.append(UInt8(truncatingIfNeeded: v))
-            buf.append(UInt8(truncatingIfNeeded: v >> 8))
+        var buf = Data(count: samples.count * 2)
+        buf.withUnsafeMutableBytes { raw in
+            let p = raw.bindMemory(to: UInt8.self)
+            var i = 0
+            for s in samples {
+                let v = Int16(truncatingIfNeeded: s)
+                p[i] = UInt8(truncatingIfNeeded: v)
+                p[i + 1] = UInt8(truncatingIfNeeded: v >> 8)
+                i += 2
+            }
         }
         return buf
     }
@@ -241,13 +323,14 @@ extension WhoopStore {
             // statement on the connection across insert() calls too. Each loop is guarded so empty
             // streams (the common live case) compile nothing.
             if !streams.hr.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO hrSample (deviceId, ts, bpm) VALUES (?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.hr {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.bpm])
-                    hr += db.changesCount
+                hr = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "hrSample (deviceId, ts, bpm)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 3,
+                    rows: streams.hr
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.bpm)
                 }
             }
             if !streams.rr.isEmpty {
@@ -330,70 +413,85 @@ extension WhoopStore {
                 }
             }
             if !streams.events.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO event (deviceId, ts, kind, payloadJSON) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts, kind) DO NOTHING
-                    """)
+                let enc = JSONEncoder()
+                enc.outputFormatting = [.sortedKeys]
+                var encoded: [(ts: Int, kind: String, json: String)] = []
+                encoded.reserveCapacity(streams.events.count)
                 for e in streams.events {
-                    let json = try WhoopStore.encodePayload(e.payload)
-                    try stmt.execute(arguments: [deviceId, e.ts, e.kind, json])
-                    ev += db.changesCount
+                    encoded.append((e.ts, e.kind, try WhoopStore.encodePayload(e.payload, encoder: enc)))
+                }
+                ev = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "event (deviceId, ts, kind, payloadJSON)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts, kind) DO NOTHING",
+                    valuesPerRow: 4,
+                    rows: encoded
+                ) { e, args in
+                    args.append(deviceId); args.append(e.ts); args.append(e.kind); args.append(e.json)
                 }
             }
             if !streams.battery.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO battery (deviceId, ts, soc, mv, charging) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for b in streams.battery {
-                    try stmt.execute(arguments: [deviceId, b.ts, b.soc, b.mv, b.charging])
-                    bat += db.changesCount
+                bat = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "battery (deviceId, ts, soc, mv, charging)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 5,
+                    rows: streams.battery
+                ) { b, args in
+                    args.append(deviceId); args.append(b.ts); args.append(b.soc)
+                    args.append(b.mv); args.append(b.charging)
                 }
             }
             if !streams.spo2.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO spo2Sample (deviceId, ts, red, ir) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.spo2 {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.red, s.ir])
-                    spo2 += db.changesCount
+                spo2 = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "spo2Sample (deviceId, ts, red, ir)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 4,
+                    rows: streams.spo2
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.red); args.append(s.ir)
                 }
             }
             // `aux1Raw`/`aux2Raw` (v31) are the two auxiliary thermal channels riding the same v18 record
             // as the primary reading. nil (a WHOOP 4.0, or a byte that failed the decoder's thermal gate)
             // stores SQL NULL, so an absent channel stays absent.
             if !streams.skinTemp.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO skinTempSample (deviceId, ts, raw, aux1Raw, aux2Raw) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.skinTemp {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.raw, s.aux1Raw, s.aux2Raw])
-                    skin += db.changesCount
+                skin = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "skinTempSample (deviceId, ts, raw, aux1Raw, aux2Raw)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 5,
+                    rows: streams.skinTemp
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.raw)
+                    args.append(s.aux1Raw); args.append(s.aux2Raw)
                 }
             }
             if !streams.resp.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO respSample (deviceId, ts, raw) VALUES (?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.resp {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.raw])
-                    resp += db.changesCount
+                resp = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "respSample (deviceId, ts, raw)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 3,
+                    rows: streams.resp
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.raw)
                 }
             }
             // `dynAccel` (v31) is the strap's OWN gravity-removed motion magnitude for the same second —
             // stored BESIDE the vector, never in place of it, and read by nothing. nil (a WHOOP 4.0, or an
             // f32 outside the decoder's [0, 8] g gate) stores SQL NULL.
             if !streams.gravity.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO gravitySample (deviceId, ts, x, y, z, dynAccel) VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.gravity {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.x, s.y, s.z, s.dynAccel])
-                    grav += db.changesCount
+                grav = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "gravitySample (deviceId, ts, x, y, z, dynAccel)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 6,
+                    rows: streams.gravity
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts)
+                    args.append(s.x); args.append(s.y); args.append(s.z); args.append(s.dynAccel)
                 }
             }
             // WHOOP5 step counter (#78). Persist-only, the count is not surfaced in the return tuple
@@ -402,17 +500,16 @@ extension WhoopStore {
             // decoder already carries on each StepSample; it was dropped here before v19. Bound as `s.activityClass`
             //, nil (the byte was 0xFF/invalid/absent) stores SQL NULL, so an absent class stays absent.
             if !streams.steps.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO stepSample (deviceId, ts, counter, activityClass) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                var insertedSteps = 0
-                var insertedStepTimestamps: [Int] = []
-                for s in streams.steps {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.counter, s.activityClass])
-                    let inserted = db.changesCount
-                    insertedSteps += inserted
-                    if inserted > 0 { insertedStepTimestamps.append(s.ts) }
+                let insertedStepTimestamps = try WhoopStore.insertChunkedReturning(
+                    db: db,
+                    tableAndColumns: "stepSample (deviceId, ts, counter, activityClass)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    returning: "ts",
+                    valuesPerRow: 4,
+                    rows: streams.steps
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts)
+                    args.append(s.counter); args.append(s.activityClass)
                 }
                 stepDataRevision.record(deviceId: deviceId, insertedTimestamps: insertedStepTimestamps)
             }
@@ -423,12 +520,14 @@ extension WhoopStore {
             // `rawByte` (v31) is the WHOLE @81 byte; `state` remains exactly its high nibble, so every
             // existing #175 consumer is bit-identical. nil stores SQL NULL.
             if !streams.sleepState.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO sleepStateSample (deviceId, ts, state, rawByte) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.sleepState {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.state, s.rawByte])
+                _ = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "sleepStateSample (deviceId, ts, state, rawByte)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 4,
+                    rows: streams.sleepState
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.state); args.append(s.rawByte)
                 }
             }
             // PPG-derived HR from the v26 optical buffer (#156). Persist-only, same as steps, the count
@@ -436,12 +535,14 @@ extension WhoopStore {
             // extending it would ripple), so it is inserted without being counted. ON CONFLICT DO NOTHING
             // keeps the FIRST estimate for a second; the measured hrSample is never touched here.
             if !streams.ppgHr.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO ppgHrSample (deviceId, ts, bpm, conf) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.ppgHr {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.bpm, s.conf])
+                _ = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "ppgHrSample (deviceId, ts, bpm, conf)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 4,
+                    rows: streams.ppgHr
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.bpm); args.append(s.conf)
                 }
             }
             // RAW v26 optical PPG waveform (#156 follow-up) — the samples `ppgHr` above is derived FROM.
@@ -450,16 +551,23 @@ extension WhoopStore {
             // per-second stream's dedupe rule. Packed into one compact BLOB per row (see
             // `packPpgSamples`) rather than 24 scalar rows, so this insert is O(records), not O(samples).
             if !streams.ppgWaveform.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO ppgWaveformSample (deviceId, ts, samples, burstIndex, baseCode)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
+                var packed: [(ts: Int, blob: Data, burstIndex: Int?, baseCode: Int?)] = []
+                packed.reserveCapacity(streams.ppgWaveform.count)
                 for s in streams.ppgWaveform {
-                    try stmt.execute(arguments: [deviceId, s.ts, WhoopStore.packPpgSamples(s.samples),
-                                                 s.burstIndex, s.baseCode])
-                    ppgWaveformWritten += 1
+                    packed.append((s.ts, WhoopStore.packPpgSamples(s.samples), s.burstIndex, s.baseCode))
                 }
+                _ = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "ppgWaveformSample (deviceId, ts, samples, burstIndex, baseCode)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 5,
+                    rows: packed
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.blob)
+                    args.append(s.burstIndex); args.append(s.baseCode)
+                }
+                // Same as the old per-row `+= 1`: prune budget counts attempts, including conflicts.
+                ppgWaveformWritten += packed.count
             }
             // Flash-banked MG ECG records (#2847), one row per strap-second of a reading, holding the
             // record's inner bytes verbatim. Persist-only like the three streams above: not added to the
@@ -487,15 +595,24 @@ extension WhoopStore {
             // slots are all absent packs to empty and is SKIPPED rather than banking a meaningless row —
             // which is also what keeps a WHOOP 4.0 offload from writing here at all.
             if !streams.v18Aux.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO v18AuxSample (deviceId, ts, fields) VALUES (?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
+                var packed: [(ts: Int, blob: Data)] = []
+                packed.reserveCapacity(streams.v18Aux.count)
                 for s in streams.v18Aux {
                     let blob = V18AuxCodec.pack(s)
                     if blob.isEmpty { continue }
-                    try stmt.execute(arguments: [deviceId, s.ts, blob])
-                    v18Written += 1
+                    packed.append((s.ts, blob))
+                }
+                if !packed.isEmpty {
+                    _ = try WhoopStore.insertChunked(
+                        db: db,
+                        tableAndColumns: "v18AuxSample (deviceId, ts, fields)",
+                        conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                        valuesPerRow: 3,
+                        rows: packed
+                    ) { s, args in
+                        args.append(deviceId); args.append(s.ts); args.append(s.blob)
+                    }
+                    v18Written += packed.count
                 }
             }
             return (hr, rr, ev, bat, spo2, skin, resp, grav)

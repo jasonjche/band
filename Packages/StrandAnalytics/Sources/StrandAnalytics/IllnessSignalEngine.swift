@@ -315,17 +315,6 @@ public enum IllnessSignalEngine {
     }
 
     public static func addDays(_ ymd: String, _ delta: Int) -> String? {
-        let parts = ymd.split(separator: "-")
-        guard parts.count == 3,
-              let y = Int(parts[0]), let m = Int(parts[1]), let d = Int(parts[2]) else { return nil }
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(secondsFromGMT: 0)!
-        var comps = DateComponents()
-        comps.year = y; comps.month = m; comps.day = d
-        guard let date = cal.date(from: comps),
-              let shifted = cal.date(byAdding: .day, value: delta, to: date) else { return nil }
-        let c = cal.dateComponents([.year, .month, .day], from: shifted)
-        guard let yy = c.year, let mm = c.month, let dd = c.day else { return nil }
-        return String(format: "%04d-%02d-%02d", yy, mm, dd)
+        CivilDay.addDays(ymd, delta)
     }
 }

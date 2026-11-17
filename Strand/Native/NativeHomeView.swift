@@ -1007,6 +1007,8 @@ private struct HomeSummaryTileHeader: View {
             HStack(spacing: 6) {
                 Image(systemName: symbol)
                 Text(title)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
             .foregroundStyle(tint)
             Spacer(minLength: 8)
@@ -1015,6 +1017,8 @@ private struct HomeSummaryTileHeader: View {
                 .foregroundStyle(.secondary)
         }
         .font(.subheadline.weight(.semibold))
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
         .accessibilityElement(children: .combine)
     }
 }
@@ -1044,10 +1048,14 @@ struct HomeHealthMonitorTile: View {
                 }
                 Text(primary)
                     .foregroundStyle(valueTint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .font(style == .whoop
                   ? NativeTokens.whoopNumber(22, weight: .semibold)
                   : .title3.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
             .frame(maxWidth: .infinity, minHeight: HomeMonitorTileLayout.valueMinHeight, alignment: .leading)
             Text(summary.tileDetail)
                 .font(.footnote)
@@ -1079,7 +1087,7 @@ struct HomeStressMonitorTile: View {
                     Text(value)
                         .font(style == .whoop
                               ? NativeTokens.whoopNumber(22, weight: .bold)
-                              : StrandFont.rounded(22, weight: .bold))
+                              : .title3.weight(.semibold))
                         .monospacedDigit()
                     Text(band.uppercased())
                         .font(style == .whoop ? NativeTokens.whoopCaps(12) : .subheadline.weight(.semibold))
@@ -1091,6 +1099,8 @@ struct HomeStressMonitorTile: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
             .frame(maxWidth: .infinity, minHeight: HomeMonitorTileLayout.valueMinHeight, alignment: .leading)
             Text(tile.time.map { "Updated \($0)" } ?? "")
                 .font(.footnote)

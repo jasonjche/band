@@ -24,7 +24,7 @@ struct NativeScopeChart: View {
     var accessibilityName: String = "Chart"
     var color: ((Double) -> Color)? = nil
     var plotHeight: CGFloat = 280
-    var scrolls: Bool = true
+    var scrolls: Bool = false
     var title: String = ""
 
     /// Class in `@State` so publishes do not rebuild this view (or the Chart).
@@ -44,7 +44,7 @@ struct NativeScopeChart: View {
 
     var body: some View {
         let window = visible
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             NativeScopeHeroView(
                 series: series,
                 visible: window,
@@ -59,38 +59,40 @@ struct NativeScopeChart: View {
                 color: color,
                 title: title
             )
-            if series.typical != nil, !usesHours {
-                HStack(spacing: 6) {
-                    Spacer(minLength: 0)
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(Color.secondary.opacity(0.35))
-                        .frame(width: 14, height: 8)
-                    Text("Typical range")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
+            NativeChrome.panel {
+                if series.typical != nil, !usesHours {
+                    HStack(spacing: 6) {
+                        Spacer(minLength: 0)
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(Color.secondary.opacity(0.18))
+                            .frame(width: 14, height: 8)
+                        Text("Typical range")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Typical range")
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Typical range")
+                NativeScopePlotHost(
+                    series: series,
+                    visible: window,
+                    hourPoints: hourPoints,
+                    bars: bars,
+                    tint: tint,
+                    format: format,
+                    calendar: calendar,
+                    color: color,
+                    plotHeight: plotHeight,
+                    scrolls: scrolls,
+                    usesHours: usesHours,
+                    hourBars: hourBars,
+                    previewTime: previewTime,
+                    scrub: scrub,
+                    scrollDate: $scrollDate,
+                    chartTitle: accessibilityName,
+                    chartUnit: unit ?? ""
+                )
             }
-            NativeScopePlotHost(
-                series: series,
-                visible: window,
-                hourPoints: hourPoints,
-                bars: bars,
-                tint: tint,
-                format: format,
-                calendar: calendar,
-                color: color,
-                plotHeight: plotHeight,
-                scrolls: scrolls,
-                usesHours: usesHours,
-                hourBars: hourBars,
-                previewTime: previewTime,
-                scrub: scrub,
-                scrollDate: $scrollDate,
-                chartTitle: accessibilityName,
-                chartUnit: unit ?? ""
-            )
             NativeTrendRows(
                 trend: series.trend(visible: window, higherIsBetter: higherIsBetter),
                 format: format,
@@ -114,6 +116,20 @@ struct NativeScopeChart: View {
     }
 }
 
+extension View {
+    /// Clip marks to the plot; reserve trailing/bottom space so axis labels sit outside.
+    func nativeClippedChartPlot(top: CGFloat = NativeScopePlotMath.plotTop) -> some View {
+        chartPlotStyle { plot in
+            plot
+                .clipped()
+                .padding(.leading, NativeScopePlotMath.plotLeading)
+                .padding(.trailing, NativeScopePlotMath.plotTrailing)
+                .padding(.top, top)
+                .padding(.bottom, NativeScopePlotMath.plotBottom)
+        }
+    }
+}
+
 private struct NativeScopeResetOnScope: ViewModifier {
     var scope: NativeMetricScope
     var onReset: () -> Void
@@ -127,8 +143,8 @@ private struct NativeScopeResetOnScope: ViewModifier {
     }
 }
 
-/// Caption / value / date / period-delta chip / one-sentence summary.
-/// Height depends on the series (delta + summary), never on the scrub tick.
+/// Caption / value / date / period-delta chip.
+/// Height depends on the series (delta), never on the scrub tick.
 private struct NativeScopeHeroView: View {
     var series: NativeScopeSeries
     var visible: [NativeScopeBucket]
@@ -144,7 +160,6 @@ private struct NativeScopeHeroView: View {
     var title: String
 
     private let footnoteHeight: CGFloat = 22
-    private let summaryHeight: CGFloat = 44
 
     private var selectedBucket: NativeScopeBucket? {
         guard let key = scrub.key else { return nil }
@@ -179,22 +194,9 @@ private struct NativeScopeHeroView: View {
         series.periodDeltaCaption(of: visible, higherIsBetter: higherIsBetter)
     }
 
-    private var summaryText: String? {
-        NativeScopeSummary.sentence(
-            title: title,
-            scope: series.scope,
-            kind: series.kind,
-            current: series.aggregate(of: visible),
-            previous: trend?.previousMean,
-            format: format,
-            higherIsBetter: higherIsBetter
-        )
-    }
-
     private var heroHeight: CGFloat {
         var height: CGFloat = 76
         if deltaCaption != nil { height += 6 + footnoteHeight }
-        if summaryText != nil { height += 6 + summaryHeight }
         return height
     }
 
@@ -217,10 +219,6 @@ private struct NativeScopeHeroView: View {
             if deltaCaption != nil {
                 periodDeltaRow
                     .frame(height: footnoteHeight, alignment: .leading)
-            }
-            if summaryText != nil {
-                summaryRow
-                    .frame(minHeight: summaryHeight, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, minHeight: heroHeight, maxHeight: heroHeight, alignment: .topLeading)
@@ -278,17 +276,6 @@ private struct NativeScopeHeroView: View {
         }
     }
 
-    @ViewBuilder private var summaryRow: some View {
-        if let summaryText, !isScrubbing {
-            Text(summaryText)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityLabel(summaryText)
-        } else {
-            Color.clear
-        }
-    }
 }
 
 /// Chart host. Does not observe `scrub`, so mark building is not on the scrub path.
@@ -323,11 +310,14 @@ private struct NativeScopePlotHost: View {
                     scrub: scrub
                 )
             } else if usesHours {
-                NativeOvernightLine(
+                NativeScopeHourLineChart(
                     points: hourPoints,
                     tint: tint,
-                    selectedTime: timeBinding,
-                    previewSelected: previewTime
+                    format: format,
+                    calendar: calendar,
+                    previewTime: previewTime,
+                    scrub: scrub,
+                    timeBinding: timeBinding
                 )
             } else if series.known.isEmpty {
                 NativeScopeEmptyChart(bars: bars, tint: tint, format: format)
@@ -398,6 +388,9 @@ private struct NativeScopePlotHost: View {
     }
 
     @ViewBuilder private var scopedChart: some View {
+        let windowDomain = NativeScopePlotMath.paddedXDomain(buckets: visible, bars: bars)
+        let visibleLength = windowDomain.upperBound.timeIntervalSince(windowDomain.lowerBound)
+        let leading = scrollDate ?? windowDomain.lowerBound
         if bars {
             NativeScopeBarSelectingChart(
                 series: series,
@@ -410,14 +403,16 @@ private struct NativeScopePlotHost: View {
                 scrolls: scrolls,
                 scrub: scrub,
                 scrollDate: $scrollDate,
-                timeBinding: timeBinding
+                timeBinding: timeBinding,
+                visibleLength: visibleLength,
+                leading: leading
             )
         } else if scrolls, #available(iOS 17.0, macOS 14.0, *) {
             lineMarks
                 .chartScrollableAxes(.horizontal)
-                .chartXVisibleDomain(length: series.scope.visibleSeconds)
+                .chartXVisibleDomain(length: visibleLength)
                 .chartScrollPosition(x: Binding(
-                    get: { scrollDate ?? series.latestWindow().first?.start ?? Date() },
+                    get: { leading },
                     set: { scrollDate = $0 }
                 ))
                 .chartXSelection(value: timeBinding)
@@ -466,6 +461,8 @@ private struct NativeScopeBarSelectingChart: View {
     @ObservedObject var scrub: NativeScopeScrub
     @Binding var scrollDate: Date?
     var timeBinding: Binding<Date?>
+    var visibleLength: TimeInterval
+    var leading: Date
 
     var body: some View {
         let marks = NativeScopeStaticChart(
@@ -483,9 +480,9 @@ private struct NativeScopeBarSelectingChart: View {
             if scrolls, #available(iOS 17.0, macOS 14.0, *) {
                 marks
                     .chartScrollableAxes(.horizontal)
-                    .chartXVisibleDomain(length: series.scope.visibleSeconds)
+                    .chartXVisibleDomain(length: visibleLength)
                     .chartScrollPosition(x: Binding(
-                        get: { scrollDate ?? series.latestWindow().first?.start ?? Date() },
+                        get: { leading },
                         set: { scrollDate = $0 }
                     ))
                     .chartXSelection(value: timeBinding)
@@ -555,21 +552,17 @@ private struct NativeScopeStaticChart: View {
         let values = visibleKnown.compactMap(\.value)
         let barCeiling = max(values.max() ?? known.compactMap(\.value).max() ?? 1, 1)
         let barTop = NativeCountTicks.niceCeiling(barCeiling)
-        let domainValues: [Double] = {
-            var list = values.isEmpty ? known.compactMap(\.value) : values
-            if let typical = series.typical, !bars {
-                list.append(typical.lowerBound)
-                list.append(typical.upperBound)
-            }
-            return list
-        }()
+        let domainValues = values.isEmpty ? known.compactMap(\.value) : values
         let yDomain: ClosedRange<Double> = bars
             ? 0...barTop
             : NativeScopeYTicks.niceDomain(domainValues, fallback: 0...1)
         let yTicks = bars
             ? NativeCountTicks.values(ceiling: barCeiling)
             : NativeScopeYTicks.values(in: yDomain)
-        let segments = NativeScopePlotMath.lineSegments(plotBuckets)
+        let xDomain = NativeScopePlotMath.paddedXDomain(buckets: plotBuckets, bars: bars)
+        let segments = NativeScopePlotMath.lineSegments(plotBuckets).filter {
+            $0.date >= xDomain.lowerBound && $0.date <= xDomain.upperBound
+        }
         let visibleKeys = Set(visibleKnown.map(\.key))
         let showVertices = NativeScopePlotMath.showsVertices(
             scope: series.scope, knownCount: visibleKnown.count
@@ -579,20 +572,22 @@ private struct NativeScopeStaticChart: View {
         let band = NativeScopePlotMath.clippedTypical(series.typical, yDomain: yDomain)
         let lastKnown = segments.last
         let barUnit = NativeScopePlotMath.barUnit(scope: series.scope)
+        let bandStart = visible.first?.start ?? plotBuckets.first?.start
+        let bandEnd = visible.last?.end ?? plotBuckets.last?.end
         return Chart {
-            if let band, let first = plotBuckets.first, let last = plotBuckets.last {
+            if let band, let bandStart, let bandEnd, bandEnd > bandStart {
                 RectangleMark(
-                    xStart: .value("Range start", first.start),
-                    xEnd: .value("Range end", last.end),
+                    xStart: .value("Range start", bandStart),
+                    xEnd: .value("Range end", bandEnd),
                     yStart: .value("Typical low", band.lowerBound),
                     yEnd: .value("Typical high", band.upperBound)
                 )
-                .foregroundStyle(Color.secondary.opacity(0.12))
+                .foregroundStyle(Color.secondary.opacity(0.08))
                 .accessibilityLabel("Typical range")
                 .accessibilityValue(NativeTypicalRange.caption(range: band, format: format, unit: nil))
             }
             if bars {
-                ForEach(plotBuckets) { bucket in
+                ForEach(plotBuckets.filter { $0.start >= xDomain.lowerBound && $0.start <= xDomain.upperBound }) { bucket in
                     if let value = bucket.value {
                         BarMark(
                             x: .value("Day", bucket.start, unit: barUnit),
@@ -610,7 +605,7 @@ private struct NativeScopeStaticChart: View {
                     }
                 }
             } else if plotBuckets.contains(where: { $0.low != nil && $0.high != nil }) {
-                ForEach(plotBuckets) { bucket in
+                ForEach(plotBuckets.filter { $0.start >= xDomain.lowerBound && $0.start <= xDomain.upperBound }) { bucket in
                     if let low = bucket.low, let high = bucket.high, let value = bucket.value {
                         BarMark(
                             x: .value("Day", bucket.start, unit: barUnit),
@@ -675,8 +670,9 @@ private struct NativeScopeStaticChart: View {
             }
         }
         .chartYScale(domain: yDomain)
+        .chartXScale(domain: xDomain)
         .chartYAxis {
-            AxisMarks(position: .trailing, values: yTicks) { value in
+            AxisMarks(preset: .aligned, position: .trailing, values: yTicks) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeTokens.separator)
                 AxisValueLabel {
@@ -690,7 +686,7 @@ private struct NativeScopeStaticChart: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: labelDates(in: plotBuckets)) { value in
+            AxisMarks(preset: .aligned, values: labelDates(in: visible)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeTokens.separator)
                 AxisValueLabel {
@@ -704,12 +700,7 @@ private struct NativeScopeStaticChart: View {
                 }
             }
         }
-        .chartPlotStyle { plot in
-            plot
-                .padding(.leading, NativeScopePlotMath.plotLeading)
-                .padding(.trailing, NativeScopePlotMath.plotTrailing)
-                .padding(.top, NativeScopePlotMath.plotTop)
-        }
+        .nativeClippedChartPlot()
     }
 
     private func labelDates(in buckets: [NativeScopeBucket]) -> [Date] {
@@ -768,14 +759,18 @@ private struct NativeHourBarChart: View {
     }
 
     var body: some View {
-        let ceiling = max(points.map(\.value).max() ?? 0, 1)
+        let dayStart = calendar.startOfDay(for: points.first?.time ?? Date())
+        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart.addingTimeInterval(86_400)
+        let xDomain = NativeScopePlotMath.paddedXDomain(start: dayStart, end: dayEnd)
+        let drawn = NativeScopePlotMath.clippedHours(points, start: xDomain.lowerBound, end: xDomain.upperBound)
+        let ceiling = max(drawn.map(\.value).max() ?? 0, 1)
         let top = NativeCountTicks.niceCeiling(ceiling)
-        let labels = NativeCountTicks.hourLabelDates(
-            dayStart: points.first?.time ?? Date(), calendar: calendar
+        let labels = NativeCountTicks.roundHourLabels(
+            dayStart: dayStart, plotEnd: dayEnd, calendar: calendar
         )
         let selectedTime = selectedPoint?.time
         Chart {
-            ForEach(points) { point in
+            ForEach(drawn) { point in
                 BarMark(
                     x: .value("Hour", point.time, unit: .hour),
                     y: .value("Value", point.value),
@@ -792,8 +787,9 @@ private struct NativeHourBarChart: View {
             }
         }
         .chartYScale(domain: 0...top)
+        .chartXScale(domain: xDomain)
         .chartYAxis {
-            AxisMarks(position: .trailing, values: NativeCountTicks.values(ceiling: ceiling)) { value in
+            AxisMarks(preset: .aligned, position: .trailing, values: NativeCountTicks.values(ceiling: ceiling)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeTokens.separator)
                 AxisValueLabel {
@@ -807,7 +803,7 @@ private struct NativeHourBarChart: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: labels) { value in
+            AxisMarks(preset: .aligned, values: labels) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeTokens.separator)
                 AxisValueLabel {
@@ -819,15 +815,100 @@ private struct NativeHourBarChart: View {
                 }
             }
         }
-        .chartPlotStyle { plot in
-            plot
-                .padding(.leading, NativeScopePlotMath.plotLeading)
-                .padding(.trailing, NativeScopePlotMath.plotTrailing)
-                .padding(.top, NativeScopePlotMath.plotTop)
-        }
+        .nativeClippedChartPlot()
         .modifier(NativeTimeSelect(
             selected: timeBinding,
             snap: { NativeChartScrubMath.snapHour(date: $0, points: points, calendar: calendar) },
+            onChange: { _ in }
+        ))
+        .onAppear { if scrub.time == nil { scrub.time = previewTime } }
+    }
+}
+
+/// Day-scope line (HR). Same clip / domain / outside-axis contract as the bar and range plots.
+private struct NativeScopeHourLineChart: View {
+    var points: [NativeHourPoint]
+    var tint: Color
+    var format: (Double) -> String
+    var calendar: Calendar
+    var previewTime: Date?
+    var scrub: NativeScopeScrub
+    var timeBinding: Binding<Date?>
+
+    var body: some View {
+        let dayStart = calendar.startOfDay(for: points.first?.time ?? Date())
+        let last = points.last?.time ?? dayStart
+        let plotEnd = max(last, dayStart)
+        let xDomain = NativeScopePlotMath.paddedXDomain(start: dayStart, end: plotEnd)
+        let drawn = NativeScopePlotMath.clippedHours(points, start: xDomain.lowerBound, end: xDomain.upperBound)
+        let yDomain = NativeScopeYTicks.niceDomain(drawn.map(\.value), fallback: 40...90)
+        let labels = NativeCountTicks.roundHourLabels(
+            dayStart: dayStart, plotEnd: plotEnd, calendar: calendar
+        )
+        let selected: NativeHourPoint? = {
+            guard let time = scrub.time ?? previewTime else { return nil }
+            return NativeChartScrubMath.nearestHour(
+                to: time,
+                in: drawn,
+                maxGap: NativeChartScrubMath.inferredMaxGap(in: drawn)
+            )
+        }()
+        Chart {
+            ForEach(drawn) { point in
+                LineMark(x: .value("Time", point.time), y: .value("Value", point.value))
+                    .foregroundStyle(tint)
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineJoin: .round))
+                    .accessibilityLabel(NativeScopeFormat.time(point.time))
+                    .accessibilityValue(format(point.value))
+            }
+            if let selected {
+                PointMark(x: .value("Scrub", selected.time), y: .value("Value", selected.value))
+                    .foregroundStyle(tint)
+                    .symbol { NativeSelectedVertex(tint: tint) }
+                    .accessibilityHidden(true)
+            }
+        }
+        .chartYScale(domain: yDomain)
+        .chartXScale(domain: xDomain)
+        .chartYAxis {
+            AxisMarks(preset: .aligned, position: .trailing, values: NativeScopeYTicks.values(in: yDomain)) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativeTokens.separator)
+                AxisValueLabel {
+                    if let raw = value.as(Double.self) {
+                        Text(format(raw))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(preset: .aligned, values: labels) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativeTokens.separator)
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(NativeScopeFormat.hourClock(date, calendar: calendar))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                    }
+                }
+            }
+        }
+        .nativeClippedChartPlot()
+        .modifier(NativeTimeSelect(
+            selected: timeBinding,
+            snap: { time in
+                guard let time else { return nil }
+                return NativeChartScrubMath.nearestHour(
+                    to: time,
+                    in: points,
+                    maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+                )?.time
+            },
             onChange: { _ in }
         ))
         .onAppear { if scrub.time == nil { scrub.time = previewTime } }
@@ -850,8 +931,9 @@ private struct NativeScopeEmptyChart: View {
             }
         }
         .chartYScale(domain: 0...top)
+        .chartXScale(domain: NativeScopePlotMath.paddedXDomain(start: Date(), end: Date().addingTimeInterval(86_400)))
         .chartYAxis {
-            AxisMarks(position: .trailing, values: bars ? NativeCountTicks.values(ceiling: 1) : [0, 1]) { value in
+            AxisMarks(preset: .aligned, position: .trailing, values: bars ? NativeCountTicks.values(ceiling: 1) : [0, 1]) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeTokens.separator)
                 AxisValueLabel {
@@ -865,6 +947,7 @@ private struct NativeScopeEmptyChart: View {
             }
         }
         .chartXAxis(.hidden)
+        .nativeClippedChartPlot()
         .accessibilityLabel("No data")
     }
 }
@@ -947,7 +1030,7 @@ struct NativeMetricChartPage: View {
     var previewTime: Date? = nil
     var calendar: Calendar = .current
     var color: ((Double) -> Color)? = nil
-    var scrolls: Bool = true
+    var scrolls: Bool = false
     var sourceCaption: String? = nil
     var scopes: [NativeMetricScope] = NativeMetricScope.pickerCases
     var showsNavigationTitle: Bool = true

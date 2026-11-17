@@ -128,18 +128,16 @@ struct NativeTrendsPage: View {
 
     private var picker: some View {
         Menu {
-            Picker("Metric", selection: Binding(
-                get: { NativeTrendsCatalog.resolvedKey(storedKey) },
-                set: { storedKey = $0 }
-            )) {
-                ForEach(NativeTrendsCatalog.sections) { section in
-                    Section(section.group.title) {
-                        ForEach(section.metrics, id: \.key) { metric in
+            ForEach(NativeTrendsCatalog.sections) { section in
+                Section(section.group.title) {
+                    ForEach(section.metrics, id: \.key) { metric in
+                        Button {
+                            storedKey = metric.key
+                        } label: {
                             Label(
                                 NativeTrendsCatalog.title(for: metric.key),
                                 systemImage: metric.icon
                             )
-                            .tag(metric.key)
                         }
                     }
                 }
@@ -156,7 +154,11 @@ struct NativeTrendsPage: View {
         .padding(.top, NoopMetrics.space2)
         .padding(.bottom, NoopMetrics.space2)
         .frame(maxWidth: .infinity)
-        .background(NativePaint.page(style))
+        .contentShape(Rectangle())
+        .background {
+            NativePaint.page(style)
+                .ignoresSafeArea(edges: .top)
+        }
         .accessibilityLabel(NativeTrendsCatalog.title(for: selectedKey))
         .accessibilityHint("Shows all metrics over weeks and months")
     }

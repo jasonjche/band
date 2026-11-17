@@ -142,6 +142,23 @@ public enum WorkoutDetector {
         hr.map { (ts: $0.ts, bpm: Double($0.bpm)) }.sorted { $0.ts < $1.ts }
     }
 
+    /// Closed [start, end] slice of timestamp-sorted `cleanHR` output.
+    static func tsSlice(_ seg: [(ts: Int, bpm: Double)], start: Int, end: Int)
+        -> ArraySlice<(ts: Int, bpm: Double)> {
+        var lo = 0, hi = seg.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if seg[mid].ts < start { lo = mid + 1 } else { hi = mid }
+        }
+        let a = lo
+        hi = seg.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if seg[mid].ts <= end { lo = mid + 1 } else { hi = mid }
+        }
+        return seg[a..<lo]
+    }
+
     /// Day resting-HR baseline = nearest-rank RESTING_PERCENTILE of bpm values.
     static func deriveRestingHR(_ hrSeg: [(ts: Int, bpm: Double)]) -> Double {
         let bpms = hrSeg.map { $0.bpm }.sorted()
@@ -513,13 +530,13 @@ public enum WorkoutDetector {
             if Double(end - start) < minDurS - motionSmoothS { f.droppedShort += 1; continue }
             // Qualify on the HR-elevated CORE (unchanged gates) so the warm-up's low intensity
             // can't dilute a real workout below the zone-2 bar and drop it (#148).
-            let core = hrSeg.filter { $0.ts >= start && $0.ts <= end }
+            let core = tsSlice(hrSeg, start: start, end: end)
             if core.isEmpty { f.droppedNoHR += 1; continue }
 
             var zonePct: [Int: Double] = [:]
             var avgHRR: Double? = nil
             if let m = effMaxHR, m > restHR {
-                (zonePct, avgHRR) = boutIntensity(core, restingHR: restHR, maxHR: m)
+                (zonePct, avgHRR) = boutIntensity(Array(core), restingHR: restHR, maxHR: m)
             }
 
             // Intensity qualification: require ≥ MIN_INTENSITY_Z2PLUS in zone 2+.
@@ -533,7 +550,7 @@ public enum WorkoutDetector {
             // resting BETWEEN two efforts (so bridgeRuns kept them separate) must not overlap the earlier one.
             let floor = idx > 0 ? runs[idx - 1].1 + 1 : Int.min
             let effStart = max(Self.backdatedStart(start, motionTs, smooth), floor)
-            let window = hrSeg.filter { $0.ts >= effStart && $0.ts <= end }
+            let window = tsSlice(hrSeg, start: effStart, end: end)
             if window.isEmpty { f.droppedNoHR += 1; continue }
             let bpms = window.map { $0.bpm }
             let hrSamples = window.map { HRSample(ts: $0.ts, bpm: Int($0.bpm.rounded())) }

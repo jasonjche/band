@@ -115,19 +115,11 @@ public struct SleepStageTrees: Sendable {
     /// One row's probabilities, in the file's class order. `row` holds one number per column.
     public func probabilities(_ row: [Double]) -> [Double] {
         precondition(row.count == columns.count, "a row carries one number per column")
-        var sums = base
-        for root in roots {
-            var node = Int(root)
-            while column[node] >= 0 {
-                node = Int(row[Int(column[node])] < value[node] ? yes[node] : no[node])
-            }
-            sums[Int(yes[node])] += value[node]
+        var out = [Double](repeating: 0, count: base.count)
+        row.withUnsafeBufferPointer { rowBuf in
+            fillProbabilities(rowBuf.baseAddress!, into: &out)
         }
-        let top = sums.max() ?? 0
-        let weights = sums.map { exp($0 - top) }
-        var total = 0.0
-        for w in weights { total += w }
-        return weights.map { $0 / total }
+        return out
     }
 
     /// A tree file shipped in this package. nil when the resource is missing or unreadable.
@@ -143,10 +135,54 @@ public struct SleepStageTrees: Sendable {
     public func probabilities(_ rows: [[Double]], order: [String]) -> [[Double]]? {
         let index = order.map { classes.firstIndex(of: $0) }
         guard index.allSatisfy({ $0 != nil }), rows.allSatisfy({ $0.count == columns.count }) else { return nil }
-        return rows.map { row in
-            let p = probabilities(row)
-            return index.map { p[$0!] }
+        let map = index.map { $0! }
+        let nClass = base.count
+        var raw = [Double](repeating: 0, count: nClass)
+        var out: [[Double]] = []
+        out.reserveCapacity(rows.count)
+        for row in rows {
+            row.withUnsafeBufferPointer { rowBuf in
+                fillProbabilities(rowBuf.baseAddress!, into: &raw)
+            }
+            var ordered = [Double](repeating: 0, count: map.count)
+            for i in 0..<map.count { ordered[i] = raw[map[i]] }
+            out.append(ordered)
         }
+        return out
+    }
+
+    /// Walk every tree into `out` (file class order) and softmax in place. `row` is `columns.count` long.
+    private func fillProbabilities(_ row: UnsafePointer<Double>, into out: inout [Double]) {
+        let nClass = base.count
+        out.replaceSubrange(0..<nClass, with: base)
+        column.withUnsafeBufferPointer { col in
+            value.withUnsafeBufferPointer { val in
+                yes.withUnsafeBufferPointer { yesB in
+                    no.withUnsafeBufferPointer { noB in
+                        let colP = col.baseAddress!
+                        let valP = val.baseAddress!
+                        let yesP = yesB.baseAddress!
+                        let noP = noB.baseAddress!
+                        for r in roots {
+                            var node = Int(r)
+                            while colP[node] >= 0 {
+                                node = Int(row[Int(colP[node])] < valP[node] ? yesP[node] : noP[node])
+                            }
+                            out[Int(yesP[node])] += valP[node]
+                        }
+                    }
+                }
+            }
+        }
+        var top = out[0]
+        for i in 1..<nClass where out[i] > top { top = out[i] }
+        var total = 0.0
+        for i in 0..<nClass {
+            let w = exp(out[i] - top)
+            out[i] = w
+            total += w
+        }
+        for i in 0..<nClass { out[i] = out[i] / total }
     }
 }
 

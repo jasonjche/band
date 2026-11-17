@@ -133,4 +133,84 @@ final class NativeHeartRateTests: XCTestCase {
         )
         XCTAssertFalse(past.showsNow)
     }
+
+    func testMakeStatsStayOnRawWhileThePlotIsSmoothed() {
+        var values = Array(repeating: 70.0, count: 21)
+        values[10] = 170
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let raw = points(values, every: 60, from: start)
+        let model = NativeHeartRateMath.make(
+            points: raw,
+            minBpm: 49, maxBpm: 170, avgBpm: 80, restingBpm: 52,
+            sleepStart: nil, sleepEnd: nil, dayStart: start,
+            now: start.addingTimeInterval(1_200), viewingToday: true
+        )
+        XCTAssertEqual(model.stats.minBpm ?? 0, 49, accuracy: 1e-9)
+        XCTAssertEqual(model.stats.maxBpm ?? 0, 170, accuracy: 1e-9)
+        XCTAssertLessThan(model.plot.map(\.value).max() ?? 0, 100)
+    }
+
+    func testXAxisDatesAreRoundHours() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = cal.date(from: DateComponents(year: 2026, month: 11, day: 17))!
+        let afternoon = NativeHeartRateMath.xAxisDates(
+            dayStart: start,
+            plotEnd: start.addingTimeInterval(16.4 * 3600),
+            calendar: cal
+        )
+        XCTAssertEqual(afternoon.map { cal.component(.hour, from: $0) }, [0, 6, 12])
+        XCTAssertTrue(afternoon.allSatisfy { cal.component(.minute, from: $0) == 0 })
+        let full = NativeHeartRateMath.xAxisDates(
+            dayStart: start,
+            plotEnd: start.addingTimeInterval(86_400),
+            calendar: cal
+        )
+        XCTAssertEqual(full.map { cal.component(.hour, from: $0) }, [0, 6, 12, 18])
+        let morning = NativeHeartRateMath.xAxisDates(
+            dayStart: start,
+            plotEnd: start.addingTimeInterval(8 * 3600),
+            calendar: cal
+        )
+        XCTAssertEqual(morning.map { cal.component(.hour, from: $0) }, [0, 3, 6])
+    }
+
+    func testHeroDateIsLatestUnlessScrubbing() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let time = cal.date(from: DateComponents(year: 2026, month: 11, day: 17, hour: 16, minute: 22))!
+        XCTAssertEqual(NativeHeartRateMath.heroDate(isScrubbing: false, time: time, calendar: cal), "Latest")
+        XCTAssertEqual(NativeHeartRateMath.heroDate(isScrubbing: true, time: time, calendar: cal), "4:22 PM")
+    }
+
+    func testClippedPlotAndSleepStayInsideTheDomain() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let domain = start...start.addingTimeInterval(3_600)
+        let raw = [
+            NativeHourPoint(time: start.addingTimeInterval(-60), value: 50),
+            NativeHourPoint(time: start.addingTimeInterval(120), value: 70),
+            NativeHourPoint(time: start.addingTimeInterval(4_000), value: 90),
+        ]
+        XCTAssertEqual(NativeHeartRateMath.clippedPlot(raw, xDomain: domain).map(\.value), [70])
+        XCTAssertEqual(
+            NativeHeartRateMath.clippedPlot(raw, xDomain: domain, yDomain: 60...80).map(\.value),
+            [70]
+        )
+        let sleep = NativeHeartRateMath.clippedSleep(
+            start: start.addingTimeInterval(-600),
+            end: start.addingTimeInterval(7_200),
+            xDomain: domain
+        )
+        XCTAssertEqual(sleep?.0, domain.lowerBound)
+        XCTAssertEqual(sleep?.1, domain.upperBound)
+    }
+
+    func testSparkDomainContainsTheMarks() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let raw = points([70, 72, 74], every: 60, from: start)
+        let domain = NativeHeartRateMath.sparkXDomain(points: raw, now: start.addingTimeInterval(180))
+        XCTAssertEqual(domain.lowerBound, raw.first?.time)
+        XCTAssertEqual(domain.upperBound, raw.last?.time)
+        XCTAssertEqual(NativeHeartRateMath.clippedPlot(raw, xDomain: domain).count, 3)
+    }
 }

@@ -290,6 +290,19 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
     var droppedOldest: Int? = nil
     var droppedNewest: Int? = nil
     var out = Streams()
+    let nFrames = parsed.count
+    if nFrames > 0 {
+        out.hr.reserveCapacity(nFrames)
+        out.rr.reserveCapacity(nFrames &* 2)
+        out.gravity.reserveCapacity(nFrames)
+        out.steps.reserveCapacity(nFrames)
+        out.skinTemp.reserveCapacity(nFrames)
+        out.sleepState.reserveCapacity(nFrames)
+        out.spo2.reserveCapacity(nFrames)
+        out.resp.reserveCapacity(nFrames)
+        out.v18Aux.reserveCapacity(nFrames)
+        out.events.reserveCapacity(min(nFrames, 64))
+    }
     // v26 optical-PPG records (issue #156): no measured HR/motion, just the 24 Hz waveform. Collect
     // (corrected-wall ts, samples) here and derive a per-second HR after the loop (PpgHr.derivePpgHr),
     // so the timeline stays continuous through the v26-heavy stretches that have no v18 HR summary.

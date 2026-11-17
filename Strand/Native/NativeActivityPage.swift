@@ -857,8 +857,23 @@ struct NativeActivityHRChart: View {
     @Environment(\.nativeStyle) private var style
     @State private var scrub = NativeScopeScrub()
 
+    private var xDomain: ClosedRange<Date> {
+        guard let first = points.first, let last = points.last, last.time >= first.time else {
+            let now = Date()
+            return now...now.addingTimeInterval(1)
+        }
+        return first.time...last.time
+    }
+
     private var yDomain: ClosedRange<Double> {
-        NativeChartDay.fittedDomain(points.map(\.value), fallback: 80...180)
+        NativePlotAxis.yDomain(points.map(\.value), fallback: 80...180)
+    }
+
+    private var plotPoints: [NativeHourPoint] {
+        points.filter {
+            NativePlotAxis.inTimeDomain($0.time, xDomain)
+                && NativePlotAxis.inValueDomain($0.value, yDomain)
+        }
     }
 
     var body: some View {
@@ -866,7 +881,8 @@ struct NativeActivityHRChart: View {
             NativeActivityHRHero(scrub: scrub, points: points)
                 .frame(height: 76, alignment: .topLeading)
             NativeActivityHRPlot(
-                points: points,
+                points: plotPoints,
+                xDomain: xDomain,
                 yDomain: yDomain,
                 lineTint: lineTint,
                 zoneSet: zoneSet,
@@ -912,6 +928,7 @@ private struct NativeActivityHRHero: View {
 
 private struct NativeActivityHRPlot: View {
     var points: [NativeHourPoint]
+    var xDomain: ClosedRange<Date>
     var yDomain: ClosedRange<Double>
     var lineTint: Color
     var zoneSet: HRZoneSet?
@@ -939,14 +956,12 @@ private struct NativeActivityHRPlot: View {
 
     var body: some View {
         Chart {
-            if let first = points.first {
-                RuleMark(x: .value("Start", first.time))
+            if xDomain.upperBound > xDomain.lowerBound {
+                RuleMark(x: .value("Start", xDomain.lowerBound))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     .foregroundStyle(Color.secondary.opacity(0.7))
                     .accessibilityHidden(true)
-            }
-            if let last = points.last, points.count > 1 {
-                RuleMark(x: .value("End", last.time))
+                RuleMark(x: .value("End", xDomain.upperBound))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     .foregroundStyle(Color.secondary.opacity(0.7))
                     .accessibilityHidden(true)
@@ -990,29 +1005,37 @@ private struct NativeActivityHRPlot: View {
                 }
             }
         }
+        .chartXScale(domain: xDomain)
         .chartYScale(domain: yDomain)
         .chartYAxis {
-            AxisMarks(position: .trailing, values: NativeChartTicks.values(in: yDomain, maxCount: 3)) { _ in
-                AxisGridLine(stroke: NativeChrome.gridStroke)
-                    .foregroundStyle(NativeChrome.hairline)
-                AxisValueLabel()
-                    .font(.caption2)
-                    .foregroundStyle(Color.secondary)
-            }
-        }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 2)) { value in
+            AxisMarks(position: .trailing, values: NativePlotAxis.yTicks(in: yDomain)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
-                    if let date = value.as(Date.self) {
-                        Text(date, format: .dateTime.hour().minute())
+                    if let bpm = value.as(Double.self) {
+                        Text("\(Int(bpm.rounded()))")
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
+                            .monospacedDigit()
                     }
                 }
             }
         }
+        .chartXAxis {
+            AxisMarks(values: NativePlotAxis.elapsedTicks(start: xDomain.lowerBound, end: xDomain.upperBound)) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativeChrome.hairline)
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(NativePlotAxis.elapsedLabel(date, start: xDomain.lowerBound))
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .chartPlotStyle { $0.clipped() }
         .modifier(NativeTimeSelect(selected: timeBinding, onChange: { _ in }))
         .chartOverlay { proxy in
             NativeActivityHRMarker(proxy: proxy, points: points, zoneSet: zoneSet, scrub: scrub)
@@ -1034,20 +1057,38 @@ private struct NativeActivityHRMarker: View {
     @ObservedObject var scrub: NativeScopeScrub
 
     var body: some View {
-        GeometryReader { _ in
+        GeometryReader { geo in
             if let time = scrub.time,
                let point = NativeChartScrubMath.nearestHour(
                 to: time,
                 in: points,
                 maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
                ),
-               let x = proxy.position(forX: point.time),
-               let y = proxy.position(forY: point.value) {
-                NativeSelectedVertex(tint: scrubTint(for: point.value))
-                    .position(x: x, y: y)
+               let xRel = proxy.position(forX: point.time),
+               let yRel = proxy.position(forY: point.value) {
+                let origin = plotOrigin(geo: geo)
+                let placed = NativeChartScrubMath.overlayPoint(plotOrigin: origin, x: xRel, y: yRel)
+                if insidePlot(placed, geo: geo) {
+                    NativeSelectedVertex(tint: scrubTint(for: point.value))
+                        .position(x: placed.x, y: placed.y)
+                }
             }
         }
         .allowsHitTesting(false)
+    }
+
+    private func plotOrigin(geo: GeometryProxy) -> CGPoint {
+        if #available(iOS 17.0, macOS 14.0, *), let frame = proxy.plotFrame {
+            return geo[frame].origin
+        }
+        return .zero
+    }
+
+    private func insidePlot(_ point: CGPoint, geo: GeometryProxy) -> Bool {
+        if #available(iOS 17.0, macOS 14.0, *), let frame = proxy.plotFrame {
+            return geo[frame].insetBy(dx: -1, dy: -1).contains(point)
+        }
+        return true
     }
 
     private func scrubTint(for bpm: Double) -> Color {

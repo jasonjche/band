@@ -249,7 +249,7 @@ public enum AutoWorkoutDetector {
                 overlaps(start, end, $0.startSec, $0.endSec + cooldownAfterSavedS)
             }) { continue }
 
-            let window = seg.filter { $0.ts >= start && $0.ts <= end }
+            let window = tsSlice(seg, start: start, end: end)
             if window.isEmpty { continue }
 
             let bpms = window.map { $0.bpm }
@@ -315,5 +315,25 @@ public enum AutoWorkoutDetector {
     /// Mirrors the Kotlin `overlaps`.
     static func overlaps(_ aStart: Int, _ aEnd: Int, _ bStart: Int, _ bEnd: Int) -> Bool {
         aStart <= bEnd && bStart <= aEnd
+    }
+
+    /// Closed [start, end] slice of a timestamp-sorted series.
+    static func tsSlice<T>(_ seg: [T], start: Int, end: Int, ts: (T) -> Int) -> ArraySlice<T> {
+        var lo = 0, hi = seg.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if ts(seg[mid]) < start { lo = mid + 1 } else { hi = mid }
+        }
+        let a = lo
+        hi = seg.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if ts(seg[mid]) <= end { lo = mid + 1 } else { hi = mid }
+        }
+        return seg[a..<lo]
+    }
+
+    static func tsSlice(_ seg: [(ts: Int, bpm: Int)], start: Int, end: Int) -> ArraySlice<(ts: Int, bpm: Int)> {
+        tsSlice(seg, start: start, end: end, ts: { $0.ts })
     }
 }

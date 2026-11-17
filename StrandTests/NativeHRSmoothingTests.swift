@@ -42,4 +42,15 @@ final class NativeHRSmoothingTests: XCTestCase {
         XCTAssertEqual(NativeHRSmoothing.gapLimit(in: raw, window: 45), 45)
         XCTAssertEqual(NativeHRSmoothing.gapLimit(in: raw, window: 10), 40)
     }
+
+    func testDaySmoothingAveragesAPerMinuteSpike() {
+        var values = Array(repeating: 70.0, count: 21)
+        values[10] = 170
+        let raw = points(values, every: 60)
+        let smoothed = NativeHRSmoothing.smoothDay(raw)
+        XCTAssertEqual(smoothed.count, raw.count)
+        let peak = smoothed.map(\.value).max() ?? 0
+        XCTAssertLessThan(peak, 100)
+        XCTAssertGreaterThan(smoothed.map(\.value).min() ?? 0, 60)
+    }
 }

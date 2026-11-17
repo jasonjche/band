@@ -134,12 +134,20 @@ public enum SleepStageLearned {
         let seconds = end - start
         if seconds <= 0 { return false }
         var moved = [Bool](repeating: false, count: seconds)
-        for g in grav where g.ts >= start && g.ts < end { moved[g.ts - start] = true }
+        var movedN = 0
+        for g in grav where g.ts >= start && g.ts < end {
+            let t = g.ts - start
+            if !moved[t] { moved[t] = true; movedN += 1 }
+        }
         let bins = (seconds + SleepStageFeatures.hrBin - 1) / SleepStageFeatures.hrBin
         var beat = [Bool](repeating: false, count: bins)
-        for h in hr where h.ts >= start && h.ts < end { beat[(h.ts - start) / SleepStageFeatures.hrBin] = true }
-        return Double(moved.filter { $0 }.count) >= minCoverage * Double(seconds)
-            && Double(beat.filter { $0 }.count) >= minCoverage * Double(bins)
+        var beatN = 0
+        for h in hr where h.ts >= start && h.ts < end {
+            let b = (h.ts - start) / SleepStageFeatures.hrBin
+            if !beat[b] { beat[b] = true; beatN += 1 }
+        }
+        return Double(movedN) >= minCoverage * Double(seconds)
+            && Double(beatN) >= minCoverage * Double(bins)
     }
 
     private static func stageUncached(_ model: SleepStageModel, start: Int, end: Int, grav: [GravitySample],

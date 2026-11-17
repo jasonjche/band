@@ -47,14 +47,16 @@ extension WhoopStore {
     /// The row for `(kind, day)`, or nil when that series has never been written.
     public func derivedSeries(kind: String, day: String) async throws -> DerivedSeriesRow? {
         try syncRead { db in
-            guard let row = try Row.fetchOne(db, sql: """
+            let stmt = try db.cachedStatement(sql: """
                 SELECT kind, day, version, computedAt, payload FROM derivedSeries
                 WHERE kind = ? AND day = ?
-                """, arguments: [kind, day]) else { return nil }
-            let payload: Data = row["payload"]
+                """)
+            try stmt.setArguments([kind, day])
+            guard let row = try Row.fetchOne(stmt) else { return nil }
+            let payload: Data = row[4]
             return DerivedSeriesRow(
-                kind: row["kind"], day: row["day"], version: row["version"],
-                computedAt: row["computedAt"], payload: payload
+                kind: row[0], day: row[1], version: row[2],
+                computedAt: row[3], payload: payload
             )
         }
     }

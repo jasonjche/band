@@ -372,46 +372,7 @@ public enum HealthspanEngine {
     // MARK: - Window summary
 
     public static func summarize(_ days: [Day], ending: String, windowDays: Int) -> Window {
-        guard windowDays > 0, let endEpoch = isoEpochDay(ending) else { return Window() }
-        let startEpoch = endEpoch - (windowDays - 1)
-        let slice = days.filter { day in
-            guard let e = isoEpochDay(day.day) else { return false }
-            return e >= startEpoch && e <= endEpoch
-        }
-        let weeks = Double(windowDays) / 7.0
-        let sleepHours = mean(slice.compactMap(\.sleepHours))
-        let consistency: Double?
-        let precomputed = slice.compactMap(\.sleepConsistency)
-        if precomputed.count >= 3 {
-            consistency = mean(precomputed)
-        } else {
-            let clocks: [(Int, Int)] = slice.compactMap {
-                guard let a = $0.sleepOnsetMin, let b = $0.sleepWakeMin else { return nil }
-                return (a, b)
-            }
-            let mapped = sleepConsistency(nights: clocks).filter { $0.isFinite }
-            consistency = mapped.count >= 3 ? mean(mapped) : nil
-        }
-        let z13 = sum(slice.compactMap(\.zone13Min))
-        let z45 = sum(slice.compactMap(\.zone45Min))
-        let strength = sum(slice.compactMap(\.strengthMin))
-        let used = Set(slice.compactMap { d -> String? in
-            if d.sleepHours != nil || d.restingHR != nil || d.steps != nil
-                || d.zone13Min != nil || d.vo2max != nil { return d.day }
-            return nil
-        })
-        return Window(
-            sleepHours: sleepHours,
-            sleepConsistency: consistency,
-            weeklyZone13Min: z13 > 0 ? z13 / weeks : nil,
-            weeklyZone45Min: z45 > 0 ? z45 / weeks : nil,
-            weeklyStrengthMin: strength > 0 ? strength / weeks : nil,
-            dailySteps: mean(slice.compactMap(\.steps)),
-            restingHR: mean(slice.compactMap(\.restingHR)),
-            vo2max: mean(slice.compactMap(\.vo2max)),
-            leanMassPct: mean(slice.compactMap(\.leanMassPct)),
-            daysWithData: used.count
-        )
+        DayIndex(days).window(ending: ending, windowDays: windowDays)
     }
 
     // MARK: - Contributors + score
@@ -419,8 +380,14 @@ public enum HealthspanEngine {
     public static func compute(profile: Profile, sixMonth: Window, thirtyDay: Window,
                                coverageDays: Int, asOfDay: String? = nil,
                                days: [Day] = []) -> Result {
+        compute(profile: profile, sixMonth: sixMonth, thirtyDay: thirtyDay,
+                coverageDays: coverageDays, asOfDay: asOfDay, days: days, index: nil)
+    }
+
+    static func compute(profile: Profile, sixMonth: Window, thirtyDay: Window,
+                        coverageDays: Int, asOfDay: String?,
+                        days: [Day], index: DayIndex?) -> Result {
         let age = profile.chronoAge
-        let sex = profile.sex
         let six = contributors(window: sixMonth, profile: profile)
         let thirty = contributors(window: thirtyDay, profile: profile)
         let merged: [Contributor] = six.enumerated().map { idx, c in
@@ -480,7 +447,7 @@ public enum HealthspanEngine {
 
         let trend: [TrendPoint]
         if let asOfDay, !days.isEmpty, canScore {
-            trend = trendPoints(days: days, profile: profile, asOfDay: asOfDay)
+            trend = trendPoints(days: days, profile: profile, asOfDay: asOfDay, index: index)
         } else {
             trend = []
         }
@@ -492,15 +459,18 @@ public enum HealthspanEngine {
 
     public static func compute(days: [Day], profile: Profile, asOfDay: String) -> Result {
         let filled = fillingConsistency(days)
-        let six = summarize(filled, ending: asOfDay, windowDays: ageWindowDays)
-        let thirty = summarize(filled, ending: asOfDay, windowDays: paceWindowDays)
+        let index = DayIndex(filled)
+        let six = index.window(ending: asOfDay, windowDays: ageWindowDays)
+        let thirty = index.window(ending: asOfDay, windowDays: paceWindowDays)
         return compute(profile: profile, sixMonth: six, thirtyDay: thirty,
-                       coverageDays: six.daysWithData, asOfDay: asOfDay, days: filled)
+                       coverageDays: six.daysWithData, asOfDay: asOfDay, days: filled,
+                       index: index)
     }
 
     /// Score each night's SRI once so 6-month / 30-day / trend windows reuse it.
     public static func fillingConsistency(_ days: [Day]) -> [Day] {
         let sorted = days.sorted { $0.day < $1.day }
+        if sorted.allSatisfy({ $0.sleepConsistency != nil }) { return sorted }
         let nights = sorted.map { d -> (onsetMin: Int, wakeMin: Int) in
             (d.sleepOnsetMin ?? 0, d.sleepWakeMin ?? 0)
         }
@@ -590,15 +560,20 @@ public enum HealthspanEngine {
     // MARK: - Trend (weekly lookbacks)
 
     public static func trendPoints(days: [Day], profile: Profile, asOfDay: String) -> [TrendPoint] {
+        trendPoints(days: days, profile: profile, asOfDay: asOfDay, index: nil)
+    }
+
+    static func trendPoints(days: [Day], profile: Profile, asOfDay: String, index: DayIndex?) -> [TrendPoint] {
         guard let end = isoEpochDay(asOfDay) else { return [] }
+        let table = index ?? DayIndex(days)
         var points: [TrendPoint] = []
         var cursor = end
-        let oldest = days.compactMap { isoEpochDay($0.day) }.min() ?? end
+        let oldest = table.oldestEpoch ?? end
         let start = max(oldest + 21, end - 180)
         while cursor >= start {
             guard let key = isoString(cursor) else { break }
-            let six = summarize(days, ending: key, windowDays: ageWindowDays)
-            let thirty = summarize(days, ending: key, windowDays: paceWindowDays)
+            let six = table.window(endingEpoch: cursor, windowDays: ageWindowDays)
+            let thirty = table.window(endingEpoch: cursor, windowDays: paceWindowDays)
             let ageThen = profile.chronoAge - Double(end - cursor) / 365.25
             let r = compute(profile: Profile(chronoAge: ageThen, sex: profile.sex),
                             sixMonth: six, thirtyDay: thirty,
@@ -611,9 +586,134 @@ public enum HealthspanEngine {
         return points.reversed()
     }
 
+    // MARK: - Prefix-sum day index (trend + summarize)
+
+    /// Sorted rows plus prefix sums so a 180-day window is O(log n) instead of a
+    /// full scan. Summation order is epoch-ascending (stable). Call out 1e-12 if
+    /// a caller passed days out of chronological order.
+    struct DayIndex {
+        struct Row {
+            var epoch: Int
+            var day: Day
+        }
+        struct Prefix {
+            var sleepH = 0.0, sleepN = 0
+            var cons = 0.0, consN = 0
+            var z13 = 0.0, z45 = 0.0, strength = 0.0
+            var steps = 0.0, stepsN = 0
+            var rhr = 0.0, rhrN = 0
+            var vo2 = 0.0, vo2N = 0
+            var lean = 0.0, leanN = 0
+            var uniqData = 0
+        }
+        var rows: [Row]
+        var prefix: [Prefix]
+        var oldestEpoch: Int?
+
+        init(_ days: [Day]) {
+            var parsed: [Row] = []
+            parsed.reserveCapacity(days.count)
+            for day in days {
+                guard let epoch = HealthspanEngine.isoEpochDay(day.day) else { continue }
+                parsed.append(Row(epoch: epoch, day: day))
+            }
+            parsed.sort { a, b in
+                if a.epoch != b.epoch { return a.epoch < b.epoch }
+                return a.day.day < b.day.day
+            }
+            rows = parsed
+            oldestEpoch = parsed.first?.epoch
+            var acc = Prefix()
+            var pref: [Prefix] = []
+            pref.reserveCapacity(parsed.count + 1)
+            pref.append(acc)
+            var lastDataDay: String?
+            for row in parsed {
+                let d = row.day
+                if let v = d.sleepHours, v.isFinite { acc.sleepH += v; acc.sleepN += 1 }
+                if let v = d.sleepConsistency, v.isFinite { acc.cons += v; acc.consN += 1 }
+                if let v = d.zone13Min, v.isFinite { acc.z13 += v }
+                if let v = d.zone45Min, v.isFinite { acc.z45 += v }
+                if let v = d.strengthMin, v.isFinite { acc.strength += v }
+                if let v = d.steps, v.isFinite { acc.steps += v; acc.stepsN += 1 }
+                if let v = d.restingHR, v.isFinite { acc.rhr += v; acc.rhrN += 1 }
+                if let v = d.vo2max, v.isFinite { acc.vo2 += v; acc.vo2N += 1 }
+                if let v = d.leanMassPct, v.isFinite { acc.lean += v; acc.leanN += 1 }
+                let hasData = d.sleepHours != nil || d.restingHR != nil || d.steps != nil
+                    || d.zone13Min != nil || d.vo2max != nil
+                if hasData, d.day != lastDataDay {
+                    acc.uniqData += 1
+                    lastDataDay = d.day
+                }
+                pref.append(acc)
+            }
+            prefix = pref
+        }
+
+        func window(ending: String, windowDays: Int) -> Window {
+            guard let end = HealthspanEngine.isoEpochDay(ending) else { return Window() }
+            return window(endingEpoch: end, windowDays: windowDays)
+        }
+
+        func window(endingEpoch: Int, windowDays: Int) -> Window {
+            guard windowDays > 0, !rows.isEmpty else { return Window() }
+            let startEpoch = endingEpoch - (windowDays - 1)
+            let lo = lowerBound(startEpoch)
+            let hi = lowerBound(endingEpoch + 1)
+            guard lo < hi else { return Window() }
+            let weeks = Double(windowDays) / 7.0
+            let a = prefix[lo]
+            let b = prefix[hi]
+            let sleepHours = meanDelta(b.sleepH - a.sleepH, b.sleepN - a.sleepN)
+            let consN = b.consN - a.consN
+            let consistency: Double?
+            if consN >= 3 {
+                consistency = meanDelta(b.cons - a.cons, consN)
+            } else {
+                var clocks: [(Int, Int)] = []
+                for i in lo..<hi {
+                    let d = rows[i].day
+                    if let x = d.sleepOnsetMin, let y = d.sleepWakeMin { clocks.append((x, y)) }
+                }
+                let mapped = HealthspanEngine.sleepConsistency(nights: clocks).filter { $0.isFinite }
+                consistency = mapped.count >= 3 ? HealthspanEngine.mean(mapped) : nil
+            }
+            let z13 = b.z13 - a.z13
+            let z45 = b.z45 - a.z45
+            let strength = b.strength - a.strength
+            return Window(
+                sleepHours: sleepHours,
+                sleepConsistency: consistency,
+                weeklyZone13Min: z13 > 0 ? z13 / weeks : nil,
+                weeklyZone45Min: z45 > 0 ? z45 / weeks : nil,
+                weeklyStrengthMin: strength > 0 ? strength / weeks : nil,
+                dailySteps: meanDelta(b.steps - a.steps, b.stepsN - a.stepsN),
+                restingHR: meanDelta(b.rhr - a.rhr, b.rhrN - a.rhrN),
+                vo2max: meanDelta(b.vo2 - a.vo2, b.vo2N - a.vo2N),
+                leanMassPct: meanDelta(b.lean - a.lean, b.leanN - a.leanN),
+                daysWithData: b.uniqData - a.uniqData
+            )
+        }
+
+        func lowerBound(_ epoch: Int) -> Int {
+            var lo = 0
+            var hi = rows.count
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2
+                if rows[mid].epoch < epoch { lo = mid + 1 }
+                else { hi = mid }
+            }
+            return lo
+        }
+
+        func meanDelta(_ sum: Double, _ n: Int) -> Double? {
+            n > 0 ? sum / Double(n) : nil
+        }
+    }
+
     // MARK: - Internals
 
-    private static func mean(_ xs: [Double]) -> Double? {
+    static func mean(_ xs: [Double]) -> Double? {
         let ys = xs.filter { $0.isFinite }
         guard !ys.isEmpty else { return nil }
         return ys.reduce(0, +) / Double(ys.count)

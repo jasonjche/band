@@ -95,9 +95,9 @@ struct RootTabView: View {
     /// Apple style uses the chrome accent. WHOOP is dark-only and wants the light tab glyph, which
     /// is `Color.primary` under that scheme. Never use `.primary` for the Apple style.
     private var tabTint: Color {
-        if nativeTodayEnabled && NativeStyle.resolve(nativeStyleRaw) == .whoop {
-            return Color.primary
-        }
+        // Neutral tint (white in dark mode), like WHOOP and Apple Fitness. NOOP's green accent
+        // tinted every control and read as a stray green cast.
+        if nativeTodayEnabled { return Color.primary }
         return StrandPalette.accent
     }
 

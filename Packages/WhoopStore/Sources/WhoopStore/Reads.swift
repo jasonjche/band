@@ -60,22 +60,35 @@ extension WhoopStore {
     /// scorable (#172). The PPG `bpm` is REAL, so it is ROUND-ed to the `HRSample.bpm` Int domain.
     public func hrSamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [HRSample] {
         try syncRead { db in
-            try Row.fetchAll(db, sql: """
-                SELECT ts, bpm FROM (
+            let sql: String
+            let arguments: StatementArguments
+            if try ReadFetch.hasPpgHr(db: db, deviceId: deviceId, from: from, to: to) {
+                sql = """
+                    SELECT ts, bpm FROM (
+                        SELECT ts, bpm FROM hrSample
+                        WHERE deviceId = ? AND ts >= ? AND ts <= ?
+                        UNION ALL
+                        SELECT p.ts, CAST(ROUND(p.bpm) AS INTEGER) AS bpm FROM ppgHrSample p
+                        WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
+                          AND NOT EXISTS (
+                            SELECT 1 FROM hrSample h
+                            WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
+                    )
+                    ORDER BY ts ASC LIMIT ?
+                    """
+                arguments = [deviceId, from, to, deviceId, from, to, limit]
+            } else {
+                // No optical fallback in the window: PK-ordered range scan, no UNION merge.
+                sql = """
                     SELECT ts, bpm FROM hrSample
                     WHERE deviceId = ? AND ts >= ? AND ts <= ?
-                    UNION ALL
-                    SELECT p.ts, CAST(ROUND(p.bpm) AS INTEGER) AS bpm FROM ppgHrSample p
-                    WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
-                      AND NOT EXISTS (
-                        SELECT 1 FROM hrSample h
-                        WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
-                )
-                ORDER BY ts ASC LIMIT ?
-                """, arguments: [deviceId, from, to,
-                                 deviceId, from, to,
-                                 limit])
-                .map { HRSample(ts: $0["ts"], bpm: $0["bpm"]) }
+                    ORDER BY ts ASC LIMIT ?
+                    """
+                arguments = [deviceId, from, to, limit]
+            }
+            return try ReadFetch.mapAll(db: db, sql: sql, arguments: arguments, reserve: limit) {
+                HRSample(ts: $0[0], bpm: $0[1])
+            }
         }
     }
 
@@ -400,27 +413,42 @@ extension WhoopStore {
             // autocorrelation conf — so a bucket touched by ANY weak-optical estimate reads as weak
             // (conservative), and a purely-measured bucket stays 1.0. Purely additive projection:
             // the bpm aggregate and the anti-join semantics are byte-identical. (ryanAtriumAi #988)
-            try Row.fetchAll(db, sql: """
-                SELECT (ts / ?) * ? AS bucket, AVG(bpm) AS avgBpm, MIN(conf) AS minConf,
-                       MIN(bpm) AS minBpm, MAX(bpm) AS maxBpm FROM (
-                    SELECT ts, bpm, 1.0 AS conf FROM hrSample
+            let sql: String
+            let arguments: StatementArguments
+            if try ReadFetch.hasPpgHr(db: db, deviceId: deviceId, from: from, to: to) {
+                sql = """
+                    SELECT (ts / ?) * ? AS bucket, AVG(bpm) AS avgBpm, MIN(conf) AS minConf,
+                           MIN(bpm) AS minBpm, MAX(bpm) AS maxBpm FROM (
+                        SELECT ts, bpm, 1.0 AS conf FROM hrSample
+                        WHERE deviceId = ? AND ts >= ? AND ts <= ?
+                        UNION ALL
+                        SELECT p.ts, p.bpm, p.conf FROM ppgHrSample p
+                        WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
+                          AND NOT EXISTS (
+                            SELECT 1 FROM hrSample h
+                            WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
+                    )
+                    GROUP BY ts / ?
+                    ORDER BY bucket ASC
+                    """
+                arguments = [bucket, bucket, deviceId, from, to, deviceId, from, to, bucket]
+            } else {
+                sql = """
+                    SELECT (ts / ?) * ? AS bucket, AVG(bpm) AS avgBpm, 1.0 AS minConf,
+                           MIN(bpm) AS minBpm, MAX(bpm) AS maxBpm
+                    FROM hrSample
                     WHERE deviceId = ? AND ts >= ? AND ts <= ?
-                    UNION ALL
-                    SELECT p.ts, p.bpm, p.conf FROM ppgHrSample p
-                    WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
-                      AND NOT EXISTS (
-                        SELECT 1 FROM hrSample h
-                        WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
-                )
-                GROUP BY ts / ?
-                ORDER BY bucket ASC
-                """, arguments: [bucket, bucket,
-                                 deviceId, from, to,
-                                 deviceId, from, to,
-                                 bucket])
-                .map { HRBucket(ts: $0["bucket"], bpm: $0["avgBpm"],
-                                minBpm: $0["minBpm"], maxBpm: $0["maxBpm"],
-                                conf: $0["minConf"] ?? 1.0) }
+                    GROUP BY ts / ?
+                    ORDER BY 1 ASC
+                    """
+                arguments = [bucket, bucket, deviceId, from, to, bucket]
+            }
+            let reserve = max(1, (to - from) / bucket + 2)
+            return try ReadFetch.mapAll(db: db, sql: sql, arguments: arguments, reserve: reserve) { row in
+                HRBucket(ts: row[0], bpm: row[1],
+                         minBpm: row[3], maxBpm: row[4],
+                         conf: (row[2] as Double?) ?? 1.0)
+            }
         }
     }
 
@@ -506,11 +534,29 @@ extension WhoopStore {
                         arguments: [deviceId, RRSourceChannel.whoop4Historical.rawValue]) ?? false
                 }
             }
-            let whoop5SourcePredicate = """
-                srcChannel = (SELECT MIN(srcChannel) FROM rrInterval
-                    WHERE deviceId = :d AND ts >= :f AND ts <= :t AND srcChannel IN \(Self.scorableWhoop5Channels)
-                    AND (tsSuspect IS NULL OR tsSuspect <> 1))
-                """
+            let whoop5MinSource: Int?
+            if strictWhoop5 {
+                // MIN(srcChannel) IN (5, 7) is 5 if any historical beat exists, else 7.
+                // EXISTS stops at the first match — a full-window MIN over 15M 1 Hz rows
+                // was the 6-month RR tax. Same answer: 5 < 7.
+                func exists(_ channel: Int) throws -> Bool {
+                    try Bool.fetchOne(db, sql: """
+                        SELECT EXISTS(SELECT 1 FROM rrInterval
+                            WHERE deviceId = ? AND ts >= ? AND ts <= ?
+                            AND srcChannel = ?
+                            AND (tsSuspect IS NULL OR tsSuspect <> 1))
+                        """, arguments: [deviceId, from, to, channel]) ?? false
+                }
+                if try exists(RRSourceChannel.whoop5Historical.rawValue) {
+                    whoop5MinSource = RRSourceChannel.whoop5Historical.rawValue
+                } else if try exists(RRSourceChannel.whoop5Standard.rawValue) {
+                    whoop5MinSource = RRSourceChannel.whoop5Standard.rawValue
+                } else {
+                    whoop5MinSource = nil
+                }
+            } else {
+                whoop5MinSource = nil
+            }
             // The WHOOP 4 source decision is per UTC hour. Materialize one choice per hour, then join
             // that small result to the requested beats. Counting the same hour from every beat made
             // wide HRV reads quadratic in the number of rows per hour and could stall metric screens.
@@ -544,12 +590,14 @@ extension WhoopStore {
                     ORDER BY r.ts ASC, r.ord ASC, r.rrMs ASC, r.seq ASC LIMIT :lim
                     """
             } else if strictWhoop5 {
+                // Bound the chosen transport as an equality so the range scan does not re-evaluate
+                // a scalar MIN subquery per candidate. Empty window (no 5/7 row) yields no match,
+                // same as `srcChannel = NULL` in SQL.
                 sql = """
                     SELECT ts, rrMs, srcChannel, ord, seq FROM rrInterval
                     WHERE deviceId = :d AND ts >= :f AND ts <= :t
-                    AND (srcChannel IS NULL OR srcChannel <> :rrx)
-                    AND \(whoop5SourcePredicate)
-                    AND (tsSuspect IS NULL OR tsSuspect <> 1)   -- exclude future-stamped (#1073) and 500 ms fill (#2371) beats
+                    AND srcChannel = :w5src
+                    AND (tsSuspect IS NULL OR tsSuspect <> 1)
                     ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC LIMIT :lim
                     """
             } else {
@@ -575,18 +623,24 @@ extension WhoopStore {
                     ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC LIMIT :lim
                     """
             }
-            let rows = try Row.fetchAll(db, sql: sql,
-                                        arguments: ["d": deviceId, "f": from, "t": to,
-                                                    "rrx": RRSourceChannel.spo2Ibi.rawValue,
-                                                    "whoop4Historical": RRSourceChannel.whoop4Historical.rawValue,
-                                                    "whoop4Realtime": RRSourceChannel.whoop4Realtime.rawValue,
-                                                    "whoop4Standard": RRSourceChannel.whoop4Standard.rawValue,
-                                                    "lim": limit])
-                .map { row in
-                    RRInterval(ts: row["ts"], rrMs: row["rrMs"],
-                               srcChannel: (row["srcChannel"] as Int?).flatMap(RRSourceChannel.init(rawValue:)),
-                               ord: row["ord"] as Int?, seq: row["seq"])
-                }
+            if strictWhoop5, whoop5MinSource == nil {
+                return []
+            }
+            let rows = try ReadFetch.mapAll(
+                db: db, sql: sql,
+                arguments: ["d": deviceId, "f": from, "t": to,
+                            "rrx": RRSourceChannel.spo2Ibi.rawValue,
+                            "whoop4Historical": RRSourceChannel.whoop4Historical.rawValue,
+                            "whoop4Realtime": RRSourceChannel.whoop4Realtime.rawValue,
+                            "whoop4Standard": RRSourceChannel.whoop4Standard.rawValue,
+                            "w5src": whoop5MinSource ?? 0,
+                            "lim": limit],
+                reserve: limit
+            ) { row in
+                RRInterval(ts: row[0], rrMs: row[1],
+                           srcChannel: (row[2] as Int?).flatMap(RRSourceChannel.init(rawValue:)),
+                           ord: row[3] as Int?, seq: row[4])
+            }
             // A ring record served twice is stored twice: each connection anchors on its own SyncTime,
             // so the second copy lands a second or two off the first and misses the row key instead of
             // colliding with it (#2456). Collapsed HERE rather than at one scorer, so every SCORING
@@ -710,14 +764,15 @@ extension WhoopStore {
 
     public func stepSamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [StepSample] {
         try syncRead { db in
-            try Row.fetchAll(db, sql: """
+            // activityClass (#316, v19) reads back nil for any pre-v19 row (the column defaulted null) and
+            // for any record whose @63 byte was 0xFF/invalid/absent, an absent class stays absent.
+            try ReadFetch.mapAll(db: db, sql: """
                 SELECT ts, counter, activityClass FROM stepSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts ASC LIMIT ?
-                """, arguments: [deviceId, from, to, limit])
-                // activityClass (#316, v19) reads back nil for any pre-v19 row (the column defaulted null) and
-                // for any record whose @63 byte was 0xFF/invalid/absent, an absent class stays absent.
-                .map { StepSample(ts: $0["ts"], counter: $0["counter"], activityClass: $0["activityClass"]) }
+                """, arguments: [deviceId, from, to, limit], reserve: limit) {
+                StepSample(ts: $0[0], counter: $0[1], activityClass: $0[2] as Int?)
+            }
         }
     }
 
@@ -876,15 +931,16 @@ extension WhoopStore {
 
     public func gravitySamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [GravitySample] {
         try syncRead { db in
-            try Row.fetchAll(db, sql: """
+            // dynAccel (v31) reads back nil for any pre-v31 row and for any WHOOP 4.0 record. The
+            // sleep stager reads x/y/z only — this column is carried, never scored.
+            try ReadFetch.mapAll(db: db, sql: """
                 SELECT ts, x, y, z, dynAccel FROM gravitySample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts ASC LIMIT ?
-                """, arguments: [deviceId, from, to, limit])
-                // dynAccel (v31) reads back nil for any pre-v31 row and for any WHOOP 4.0 record. The
-                // sleep stager reads x/y/z only — this column is carried, never scored.
-                .map { GravitySample(ts: $0["ts"], x: $0["x"], y: $0["y"], z: $0["z"],
-                                     dynAccel: $0["dynAccel"]) }
+                """, arguments: [deviceId, from, to, limit], reserve: limit) {
+                GravitySample(ts: $0[0], x: $0[1], y: $0[2], z: $0[3],
+                              dynAccel: $0[4] as Double?)
+            }
         }
     }
 

@@ -100,6 +100,22 @@ final class NativeSleepPlannerTests: XCTestCase {
         XCTAssertTrue(src.contains("LabeledContent(\"Strap Alarm\""))
     }
 
+    func testCardSubtitleUsesNeedWhenCheaplyAvailable() {
+        XCTAssertEqual(
+            NativeSleepPlannerLogic.cardSubtitle(needMin: nil, wakeMinutes: 7 * 60),
+            "Plan tonight's bedtime"
+        )
+        XCTAssertEqual(
+            NativeSleepPlannerLogic.cardSubtitle(needMin: 0, wakeMinutes: 7 * 60),
+            "Plan tonight's bedtime"
+        )
+        let line = NativeSleepPlannerLogic.cardSubtitle(
+            needMin: 480, wakeMinutes: 7 * 60, goal: .peak
+        )
+        XCTAssertTrue(line.hasPrefix("Tonight: in bed by "))
+        XCTAssertTrue(line.contains("PM") || line.contains("AM"))
+    }
+
     func testBedtimeReminderDefaultsOff() {
         XCTAssertEqual(NativeBedtimeReminder.requestId, "native.sleepPlanner.bedtime")
         XCTAssertFalse(

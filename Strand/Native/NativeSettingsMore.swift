@@ -3,7 +3,6 @@ import StrandDesign
 
 /// Personal-build More index. Order is the product contract the tests pin.
 enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
-    case journal
     case strap
     case dataBackup
     case profile
@@ -15,7 +14,6 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
-        case .journal: return "Journal"
         case .strap: return "Strap"
         case .dataBackup: return "Data & Backup"
         case .profile: return "Profile"
@@ -27,7 +25,6 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
 
     var icon: String {
         switch self {
-        case .journal: return "book.closed.fill"
         case .strap: return "badge.plus.radiowaves.right"
         case .dataBackup: return "externaldrive.fill"
         case .profile: return "person.fill"
@@ -39,7 +36,6 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
 
     var color: Color {
         switch self {
-        case .journal: return NativeChrome.sleep
         case .strap: return .blue
         case .dataBackup: return Color(white: 0.45)
         case .profile: return .blue
@@ -54,16 +50,11 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
     var subtitle: String? { nil }
 
     var usesAppleSettingsChrome: Bool {
-        switch self {
-        case .journal: return false
-        case .strap, .dataBackup, .profile, .settings, .notifications, .about:
-            return true
-        }
+        true
     }
 
     @ViewBuilder var destination: some View {
         switch self {
-        case .journal: NativeJournalView()
         case .strap: DevicesView()
         case .dataBackup: NativeDataBackupView()
         case .profile: NativeProfileView()
@@ -76,7 +67,6 @@ enum NativeMoreItem: String, CaseIterable, Identifiable, Hashable {
 
 /// Settings-style sections on the More index. Flattened `items` match `NativeMoreItem.allCases`.
 enum NativeMoreSection: String, CaseIterable, Identifiable {
-    case activity = "Activity & Journal"
     case strap = "Strap"
     case data = "Data"
     case app = "App"
@@ -86,7 +76,6 @@ enum NativeMoreSection: String, CaseIterable, Identifiable {
 
     var items: [NativeMoreItem] {
         switch self {
-        case .activity: return [.journal]
         case .strap: return [.strap]
         case .data: return [.dataBackup]
         case .app: return [.profile, .settings, .notifications, .about]
@@ -114,7 +103,7 @@ struct NativeMoreList: View {
                     } header: {
                         Text(section.title)
                     }
-                    .id(section == .activity ? "more-top" : section.id)
+                    .id(section == .strap ? "more-top" : section.id)
                 }
             }
             #if os(iOS)

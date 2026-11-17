@@ -26,25 +26,18 @@ final class NativeHealthTabTests: XCTestCase {
     func testHealthIndexOrder() {
         XCTAssertEqual(
             NativeHealthItem.titles,
-            ["Healthspan", "Health Monitor", "Stress Monitor", "Trends", "Reports"]
+            ["Healthspan", "Trends", "Reports"]
         )
+        XCTAssertEqual(NativeHealthItem.tabLinks, [.trends, .reports])  // Healthspan is the tab root
         XCTAssertEqual(NativeHealthItem.healthspan.icon, "sparkles")
         XCTAssertEqual(NativeHealthItem.trends.icon, "chart.xyaxis.line")
     }
 
-    func testHealthMonitorSummaryIsCheapAndMatchesHome() {
-        XCTAssertNil(NativeHealthTabLogic.liveSummary(for: .healthMonitor, days: [], todayKey: "2026-11-16"))
-        XCTAssertNil(NativeHealthTabLogic.liveSummary(for: .healthspan, days: [], todayKey: "2026-11-16"))
-
-        var days: [DailyMetric] = []
-        for offset in (1...20).reversed() {
-            days.append(sampleMetric(day: shift("2026-11-16", -offset), hrv: 66, rhr: 51, resp: 14.7, spo2: 98, skin: 34.5))
+    func testRowsShowTheirStaticSubtitle() {
+        for item in NativeHealthItem.allCases {
+            XCTAssertNil(NativeHealthTabLogic.liveSummary(for: item, days: [], todayKey: "2026-11-16"))
+            XCTAssertFalse(item.subtitle.isEmpty)
         }
-        days.append(sampleMetric(day: "2026-11-16", hrv: 66, rhr: 51, resp: 14.7, spo2: 98, skin: 34.5))
-        XCTAssertEqual(
-            NativeHealthTabLogic.liveSummary(for: .healthMonitor, days: days, todayKey: "2026-11-16"),
-            "Within Range"
-        )
     }
 
     private func sampleMetric(day: String, hrv: Double? = nil, rhr: Int? = nil,

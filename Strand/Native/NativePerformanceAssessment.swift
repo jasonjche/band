@@ -19,7 +19,7 @@ struct NativePerformanceAssessmentView: View {
                 content(model)
             } else {
                 NativeChrome.screen { ProgressView("Loading") }
-                    .navigationTitle("Assessments")
+                    .navigationTitle("Reports")
                     .modifier(NativeInlineTitle())
             }
         }
@@ -62,23 +62,26 @@ struct NativePerformanceAssessmentView: View {
                     .font(.body)
             }
         }
-        .navigationTitle("Assessments")
+        .navigationTitle("Reports")
         .modifier(NativeInlineTitle())
     }
 
     @ViewBuilder private func reportBody(_ report: PerformanceAssessment.Report,
                                          history: [PerformanceAssessment.Report]) -> some View {
         NativeChrome.panel {
-            NativeHeroValue(
-                caption: report.balance.state == .insufficient ? "Assessment" : report.balance.state.rawValue.capitalized,
-                value: NativePerformanceAssessmentCopy.heroValue(report),
-                unit: nil,
-                date: PerformanceAssessment.rangeLabel(report.window),
-                valueTint: NativePerformanceAssessmentCopy.balanceTint(report.balance.state)
-            )
-            Text(report.balance.sentence)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(NativePerformanceAssessmentCopy.heroHeadline(report))
+                    .font(.title.bold())
+                    .foregroundStyle(NativePerformanceAssessmentCopy.balanceTint(report.balance.state))
+                Text(PerformanceAssessment.rangeLabel(report.window))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text(NativePerformanceAssessmentCopy.balanceSentence(report.balance))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
         }
 
         if !report.averages.isEmpty {
@@ -86,15 +89,7 @@ struct NativePerformanceAssessmentView: View {
             NativeChrome.panel {
                 ForEach(Array(report.averages.enumerated()), id: \.element.metric) { index, row in
                     if index > 0 { Divider() }
-                    NativeContributorRow(
-                        symbol: NativePerformanceAssessmentCopy.symbol(row.metric),
-                        title: row.metric.label,
-                        value: NativePerformanceAssessmentCopy.valueText(row),
-                        prior: NativePerformanceAssessmentCopy.priorText(row),
-                        delta: NativePerformanceAssessmentCopy.delta(row),
-                        tint: NativePerformanceAssessmentCopy.tint(row.metric),
-                        valueTint: NativePerformanceAssessmentCopy.valueTint(row)
-                    )
+                    NativeReportsAverageRow(row: row)
                 }
             }
             NativeChrome.footnote("Compared with the prior \(report.window.kind == .weekly ? "week" : "month").")
@@ -343,12 +338,78 @@ private struct NativePerformanceDriverRow: View {
     }
 }
 
-enum NativePerformanceAssessmentCopy {
-    static func heroValue(_ report: PerformanceAssessment.Report) -> String {
-        if let rec = report.average(.recovery), rec.current.n > 0 {
-            return "\(Int(rec.current.mean.rounded()))%"
+/// Compact average row that keeps "rpm" (NativeContributorRow rewrites it to breaths/min).
+private struct NativeReportsAverageRow: View {
+    var row: PerformanceAssessment.MetricDelta
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: NativePerformanceAssessmentCopy.symbol(row.metric))
+                .font(.body)
+                .foregroundStyle(NativePerformanceAssessmentCopy.tint(row.metric))
+                .frame(width: 22)
+            Text(style == .whoop ? row.metric.label.uppercased() : row.metric.label)
+                .font(style == .whoop ? NativeTokens.whoopCaps(13) : .body)
+                .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(NativePerformanceAssessmentCopy.valueText(row))
+                        .font(style == .whoop
+                              ? NativeTokens.whoopNumber(17, weight: .semibold)
+                              : StrandFont.rounded(17, weight: .semibold))
+                        .foregroundStyle(style == .whoop ? Color.primary : NativePerformanceAssessmentCopy.valueTint(row))
+                        .lineLimit(1)
+                        .monospacedDigit()
+                    NativeDelta(delta: NativePerformanceAssessmentCopy.delta(row))
+                }
+                if let prior = NativePerformanceAssessmentCopy.priorText(row), NativeScoreMath.hasValue(prior) {
+                    Text(prior)
+                        .font(style == .whoop ? NativeTokens.whoopNumber(12, weight: .regular) : .footnote)
+                        .foregroundStyle(style == .whoop ? NativeTokens.whoopLabel : Color.secondary)
+                        .lineLimit(1)
+                        .monospacedDigit()
+                }
+            }
+            .layoutPriority(1)
         }
-        return PerformanceAssessment.rangeLabel(report.window)
+        .frame(minHeight: 48)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+enum NativePerformanceAssessmentCopy {
+    static func heroHeadline(_ report: PerformanceAssessment.Report) -> String {
+        switch report.balance.state {
+        case .optimal: return "Optimal"
+        case .overreaching: return "Overreaching"
+        case .restoring: return "Restoring"
+        case .insufficient: return "Not enough days"
+        }
+    }
+
+    static func balanceSentence(_ balance: PerformanceAssessment.BalanceRead) -> String {
+        let days = balance.classifiedDays
+        switch balance.state {
+        case .insufficient:
+            return balance.sentence
+        case .overreaching:
+            return "On \(balance.overreachingDays) of \(days) days your strain was higher than your recovery could support."
+        case .restoring:
+            return "On \(balance.restoringDays) of \(days) days your strain stayed below what recovery could support."
+        case .optimal:
+            if balance.optimalDays * 2 > days {
+                return "On \(balance.optimalDays) of \(days) days your strain stayed in range of what recovery could support."
+            }
+            return "Strain mixed this period: \(balance.optimalDays) days in range, \(balance.restoringDays) below, \(balance.overreachingDays) above."
+        }
+    }
+
+    static func heroValue(_ report: PerformanceAssessment.Report) -> String {
+        heroHeadline(report)
     }
 
     static func valueText(_ row: PerformanceAssessment.MetricDelta) -> String {
@@ -374,7 +435,7 @@ enum NativePerformanceAssessmentCopy {
         case .rhr:
             return "\(Int(value.rounded())) bpm"
         case .respRate:
-            return String(format: "%.1f breaths/min", value)
+            return String(format: "%.1f rpm", value)
         case .steps:
             return NativeDayLogic.countText(value)
         case .calories:

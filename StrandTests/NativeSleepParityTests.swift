@@ -119,20 +119,40 @@ final class NativeSleepParityTests: XCTestCase {
         ).byDay[todayKey]?.sleepNeed)
     }
 
-    func testConsistencyChartUsesLastFourNightsAndSkipsMissingDays() {
-        XCTAssertEqual(NativeSleepConsistency.chartNights, 4)
+    func testConsistencyChartUsesLastSevenNightsAndSkipsMissingDays() {
+        XCTAssertEqual(NativeSleepConsistency.chartNights, 7)
         XCTAssertEqual(NativeSleepConsistency.scoreNights, 5)
+        let dayKey = NativeSleepSnapshot.highlightKey
+        let keys = NativeSleepConsistency.chartKeys(dayKey: dayKey)
+        XCTAssertEqual(keys.count, 7)
+        XCTAssertEqual(keys.last, dayKey)
         let nights = NativeSleepConsistency.nights(
-            dayKey: NativeSleepSnapshot.highlightKey,
+            dayKey: dayKey,
             sleeps: NativeSleepSnapshot.snapshotSleeps
         )
         XCTAssertLessThanOrEqual(nights.count, NativeSleepConsistency.chartNights)
+        XCTAssertEqual(nights.count, 6)
         XCTAssertFalse(nights.contains { $0.key == "2026-11-12" })
-        XCTAssertEqual(nights.last?.key, NativeSleepSnapshot.highlightKey)
+        XCTAssertTrue(keys.contains("2026-11-12"))
+        XCTAssertEqual(nights.last?.key, dayKey)
         XCTAssertTrue(nights.last?.isToday == true)
         XCTAssertLessThan(nights.last?.bedFromEvening ?? 9_999, nights.last?.wakeFromEvening ?? 0)
         XCTAssertNotNil(nights.last?.bedtime)
         XCTAssertNotNil(nights.last?.wake)
+    }
+
+    func testSleepClockFittedPlotPadsOneHourAndUsesHourLabels() {
+        let bed = NativeSleepClock.minutesFromEvening(NativeSleepSnapshot.sleepStart)
+        let wake = NativeSleepClock.minutesFromEvening(NativeSleepSnapshot.sleepEnd)
+        let window = NativeSleepClock.fittedPlot(beds: [bed], wakes: [wake])
+        XCTAssertGreaterThanOrEqual(window.marks.count, 3)
+        XCTAssertLessThanOrEqual(window.marks.count, 5)
+        XCTAssertLessThanOrEqual(window.marks.first ?? 9_999, bed - 60 + 1)
+        XCTAssertGreaterThanOrEqual(window.marks.last ?? 0, wake + 60 - 1)
+        for mark in window.marks {
+            XCTAssertEqual(mark.truncatingRemainder(dividingBy: 60), 0, accuracy: 1e-9)
+        }
+        XCTAssertTrue(NativeSleepClock.label(180).contains(" "))
     }
 
     func testEfficiencyWakeEventsCountStageTransitionsIntoAwake() throws {

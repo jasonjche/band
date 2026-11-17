@@ -276,4 +276,23 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(cols, ["deviceId", "ts", "bpm", "synced"],
                        "v49 is index-only: no column added or reordered")
     }
+
+    /// v51 covering indexes for hrSample / ppgHrSample chart reads. Additive: no columns, no rewrite.
+    func testV51AddsCoveringReadIndexes() async throws {
+        let store = try await WhoopStore.inMemory()
+        let hr = try await store.indexNamesForTest(table: "hrSample")
+        XCTAssertTrue(hr.contains("idx_hrSample_device_ts_bpm"),
+                      "hrSample missing v51 covering (deviceId, ts, bpm) index")
+        XCTAssertTrue(hr.contains("idx_hrSample_ts"), "v51 must keep the v49 ts index")
+        let ppg = try await store.indexNamesForTest(table: "ppgHrSample")
+        XCTAssertTrue(ppg.contains("idx_ppgHrSample_device_ts_bpm_conf"),
+                      "ppgHrSample missing v51 covering (deviceId, ts, bpm, conf) index")
+        let pk = try await store.primaryKeyColumns("hrSample")
+        XCTAssertEqual(pk, ["deviceId", "ts"])
+        let hrCols = try await store.columnNamesForTest(table: "hrSample")
+        XCTAssertEqual(hrCols, ["deviceId", "ts", "bpm", "synced"],
+                       "v51 is index-only: no column added or reordered")
+        let ppgCols = try await store.columnNamesForTest(table: "ppgHrSample")
+        XCTAssertEqual(ppgCols, ["deviceId", "ts", "bpm", "conf"])
+    }
 }

@@ -64,7 +64,7 @@ enum NativeMetricScope: String, CaseIterable, Identifiable, Hashable {
 enum NativeScopeKind: String, Equatable {
     /// HRV, RHR, RR, recovery — weekly/monthly buckets take the mean of daily values.
     case rate
-    /// Steps, calories, sleep hours, strain — 6M caption is "Daily Average".
+    /// Steps, calories, sleep hours, strain — 6M caption is "Avg/day".
     case total
 }
 
@@ -259,7 +259,7 @@ struct NativeScopeSeries: Equatable {
         if kind == .total {
             switch scope {
             case .day: return "Total"
-            case .sixMonths, .year: return "Daily Average"
+            case .sixMonths, .year: return "Avg/day"
             case .week, .month: return "Average"
             }
         }
@@ -430,6 +430,8 @@ struct NativeScopeSeries: Equatable {
             let highs = values.compactMap(\.high)
             let lastDay = calendar.date(byAdding: .day, value: -1, to: interval.end) ?? interval.start
             let isPartial = lastDay > now
+            // Totals (steps, calories): weekly/monthly bar is the mean of daily totals (avg/day),
+            // never a period sum, so 6M stays on the same scale as M.
             buckets.append(
                 NativeScopeBucket(
                     start: interval.start,
@@ -701,16 +703,68 @@ enum NativeCountTicks {
     static func hourLabelDates(dayStart: Date, calendar: Calendar) -> [Date] {
         [0, 6, 12, 18].compactMap { calendar.date(byAdding: .hour, value: $0, to: calendar.startOfDay(for: dayStart)) }
     }
+
+    /// Round clock ticks inside `[dayStart, plotEnd]`. Full day: 12 AM / 6 AM / 12 PM / 6 PM.
+    /// Windows of 12 h or less step every 3 h. Compact `h a` labels (`6 AM`).
+    static func roundHourLabels(dayStart: Date, plotEnd: Date, calendar: Calendar) -> [Date] {
+        let start = calendar.startOfDay(for: dayStart)
+        let span = plotEnd.timeIntervalSince(start)
+        guard span > 0 else { return [start] }
+        let step = span <= 12 * 3600 ? 3 : 6
+        var dates: [Date] = []
+        var hour = 0
+        while hour <= 24 {
+            guard let date = calendar.date(byAdding: .hour, value: hour, to: start) else { break }
+            if date > plotEnd { break }
+            let isNextMidnight = hour > 0 && calendar.startOfDay(for: date) == date && date > start
+            if isNextMidnight { break }
+            if date >= start { dates.append(date) }
+            hour += step
+        }
+        return dates.isEmpty ? [start] : dates
+    }
 }
 
 /// Plot geometry that views must not recompute in `body`.
 enum NativeScopePlotMath {
     /// Join consecutive readings closer than this; a 14-day hole stays a hole.
     static let maxConnectGap: TimeInterval = 14 * 24 * 60 * 60
-    /// Trailing room so the latest-value label and last x tick are not clipped.
+    /// Trailing room so y labels sit outside the plot; bottom room for x labels.
     static let plotLeading: CGFloat = 8
     static let plotTrailing: CGFloat = 36
     static let plotTop: CGFloat = 20
+    static let plotBottom: CGFloat = 22
+
+    /// Hours drawn on a day plot, inclusive of the domain ends.
+    static func clippedHours(
+        _ hours: [NativeHourPoint],
+        start: Date,
+        end: Date
+    ) -> [NativeHourPoint] {
+        hours.filter { $0.time >= start && $0.time <= end }
+    }
+
+    /// Pad half a bucket each side so the first and last marks sit inside the plot.
+    static func paddedXDomain(buckets: [NativeScopeBucket], bars: Bool) -> ClosedRange<Date> {
+        guard let first = buckets.first, let last = buckets.last else {
+            let now = Date()
+            return now...now.addingTimeInterval(86_400)
+        }
+        let half = max(first.end.timeIntervalSince(first.start), 60) / 2
+        if bars {
+            let lo = first.start.addingTimeInterval(-half * 0.25)
+            let hi = last.end.addingTimeInterval(half * 0.25)
+            return lo < hi ? lo...hi : first.start...last.end
+        }
+        let lo = first.start.addingTimeInterval(-half)
+        let hi = last.start.addingTimeInterval(half)
+        return lo < hi ? lo...hi : first.start...max(last.end, first.start.addingTimeInterval(86_400))
+    }
+
+    static func paddedXDomain(start: Date, end: Date) -> ClosedRange<Date> {
+        guard end > start else { return start...start.addingTimeInterval(86_400) }
+        return start...end
+    }
 
     struct LinePoint: Identifiable, Equatable {
         var date: Date
@@ -811,7 +865,7 @@ enum NativeScopeYTicks {
     }
 }
 
-/// One-sentence Trend View copy under the hero.
+/// Generated Trend View sentences were slop. The period-delta chip stays; this always returns nil.
 enum NativeScopeSummary {
     static func sentence(
         title: String,
@@ -822,24 +876,8 @@ enum NativeScopeSummary {
         format: (Double) -> String,
         higherIsBetter: Bool?
     ) -> String? {
-        guard let current, current.isFinite else { return nil }
-        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return nil }
-        // Restating the hero ("Your average VO₂ Max this month was 43.1.") is slop.
-        guard let previous, previous.isFinite else { return nil }
-        let caption = kind == .total && scope == .day ? "total" : "average"
-        let period = periodPhrase(scope)
-        let formatted = format(current)
-        let denom = max(abs(previous), 1e-9)
-        let relation: String
-        if abs(current - previous) / denom <= 0.03 {
-            relation = "was about the same as"
-        } else if current < previous {
-            relation = "was below"
-        } else {
-            relation = "was above"
-        }
-        return "Your \(caption) \(name) \(period) (\(formatted)) \(relation) your previous \(priorPhrase(scope)) average of \(format(previous))."
+        _ = (title, scope, kind, current, previous, format, higherIsBetter)
+        return nil
     }
 
     static func periodPhrase(_ scope: NativeMetricScope) -> String {

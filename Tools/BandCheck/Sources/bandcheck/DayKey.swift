@@ -49,6 +49,35 @@ enum DayKey {
         let from = Int(start.addingTimeInterval(Double(rolloverHour) * 3600).timeIntervalSince1970)
         return (from, from + 86400 - 1)
     }
+
+    /// Walks a sorted timestamp stream and only asks Calendar at a local-day boundary.
+    /// Byte-identical to calling `logical(_:calendar:)` per sample.
+    struct LogicalCursor {
+        let calendar: Calendar
+        let rolloverHour: Int
+        private var key = ""
+        private var lo = Int.min
+        private var hi = Int.min
+
+        init(calendar: Calendar, rolloverHour: Int = DayKey.defaultRolloverHour) {
+            self.calendar = calendar
+            self.rolloverHour = rolloverHour
+        }
+
+        mutating func logical(_ ts: Int) -> String {
+            if ts >= lo && ts <= hi { return key }
+            let shifted = TimeInterval(ts - rolloverHour * 3600)
+            let date = Date(timeIntervalSince1970: shifted)
+            let start = calendar.startOfDay(for: date)
+            guard let next = calendar.date(byAdding: .day, value: 1, to: start) else {
+                return DayKey.logical(ts, calendar: calendar, rolloverHour: rolloverHour)
+            }
+            key = DayKey.local(start, calendar: calendar)
+            lo = Int(start.timeIntervalSince1970) + rolloverHour * 3600
+            hi = Int(next.timeIntervalSince1970) + rolloverHour * 3600 - 1
+            return key
+        }
+    }
 }
 
 /// Punctuation-insensitive journal title fold. JournalCatalog.titleKey (app target) is the

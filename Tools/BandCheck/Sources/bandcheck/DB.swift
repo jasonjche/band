@@ -280,6 +280,32 @@ extension ReadOnlyDB {
         return out
     }
 
+    func rrIntervals(device: String, from: Int, to: Int) throws -> [RRInterval] {
+        var out: [RRInterval] = []
+        let d = device.replacingOccurrences(of: "'", with: "''")
+        try query("""
+            SELECT ts, rrMs FROM rrInterval
+            WHERE deviceId = '\(d)' AND ts >= \(from) AND ts <= \(to)
+            ORDER BY ts
+            """) { s in
+            out.append(RRInterval(ts: ReadOnlyDB.int(s, 0), rrMs: ReadOnlyDB.int(s, 1)))
+        }
+        return out
+    }
+
+    func skinTemp(device: String, from: Int, to: Int) throws -> [SkinTempSample] {
+        var out: [SkinTempSample] = []
+        let d = device.replacingOccurrences(of: "'", with: "''")
+        try query("""
+            SELECT ts, raw FROM skinTempSample
+            WHERE deviceId = '\(d)' AND ts >= \(from) AND ts <= \(to)
+            ORDER BY ts
+            """) { s in
+            out.append(SkinTempSample(ts: ReadOnlyDB.int(s, 0), raw: ReadOnlyDB.int(s, 1), unit: "raw_adc"))
+        }
+        return out
+    }
+
     func workoutHasHR(start: Int, end: Int) throws -> Bool {
         var n = 0
         try query("""

@@ -6,6 +6,9 @@ import StrandAnalytics
 
 /// WHOOP-style Healthspan: Band Age (6-month) and Pace of Aging (30-day).
 struct NativeHealthspanPage: View {
+    /// Rows shown under Pace of Aging when this page is the Health tab root (Trends, Reports).
+    var links: [NativeHealthItem] = []
+    var title: String = "Healthspan"
     @EnvironmentObject private var profile: ProfileStore
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @State private var repoHandle: Repository?
@@ -20,15 +23,16 @@ struct NativeHealthspanPage: View {
     var body: some View {
         Group {
             if let result {
-                NativeHealthspanBody(result: result)
+                NativeHealthspanBody(result: result, links: links)
             } else {
                 NativeChrome.screen {
-                    ProgressView()
+                    ProgressView("Loading")
                         .frame(maxWidth: .infinity, minHeight: 200)
+                    if !links.isEmpty { NativeHealthLinks(items: links) }
                 }
             }
         }
-        .navigationTitle("Healthspan")
+        .navigationTitle(title)
         .modifier(NativeInlineTitle())
         .background {
             NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
@@ -84,12 +88,16 @@ struct NativeHealthspanPage: View {
 
 struct NativeHealthspanBody: View {
     var result: HealthspanEngine.Result
+    var links: [NativeHealthItem] = []
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
         NativeChrome.screen {
             hero
             NativeHealthspanPaceCard(pace: result.pace)
+            if !links.isEmpty {
+                NativeHealthLinks(items: links)
+            }
             if result.readiness != .ready {
                 calibration
             }
@@ -319,6 +327,43 @@ struct NativeHealthspanTrendCard: View {
     var points: [HealthspanEngine.TrendPoint]
     @Environment(\.nativeStyle) private var style
 
+    private struct PlotPoint: Identifiable {
+        var day: Date
+        var bandAge: Double
+        var chronoAge: Double
+        var pace: Double?
+        var id: Date { day }
+    }
+
+    private var plot: [PlotPoint] {
+        points.compactMap { point in
+            guard let day = NativeDayLogic.startOfLocalDay(point.day) else { return nil }
+            return PlotPoint(day: day, bandAge: point.bandAge, chronoAge: point.chronoAge, pace: point.pace)
+        }
+    }
+
+    private var xDomain: ClosedRange<Date> {
+        guard let first = plot.first, let last = plot.last, last.day >= first.day else {
+            let now = Date()
+            return now...now.addingTimeInterval(86_400)
+        }
+        return first.day...last.day
+    }
+
+    private var ageDomain: ClosedRange<Double> {
+        let values = plot.flatMap { [$0.bandAge, $0.chronoAge] }
+        return NativePlotAxis.yDomain(values, fallback: 20...40)
+    }
+
+    private var paceDomain: ClosedRange<Double> {
+        let values = plot.compactMap(\.pace) + [1]
+        return NativePlotAxis.yDomain(values, fallback: 0...2)
+    }
+
+    private var inWindow: [PlotPoint] {
+        plot.filter { NativePlotAxis.inTimeDomain($0.day, xDomain) }
+    }
+
     var body: some View {
         NativeChrome.panel {
             VStack(alignment: .leading, spacing: 16) {
@@ -326,22 +371,55 @@ struct NativeHealthspanTrendCard: View {
                     .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Chart {
-                    ForEach(points, id: \.day) { p in
-                        LineMark(
-                            x: .value("Day", p.day),
-                            y: .value("Age", p.bandAge),
-                            series: .value("Kind", "Band Age")
-                        )
-                        .foregroundStyle(NativePaint.recovery(style))
-                        LineMark(
-                            x: .value("Day", p.day),
-                            y: .value("Age", p.chronoAge),
-                            series: .value("Kind", "Chronological")
-                        )
-                        .foregroundStyle(Color.primary.opacity(0.45))
+                    ForEach(inWindow) { p in
+                        if NativePlotAxis.inValueDomain(p.bandAge, ageDomain) {
+                            LineMark(
+                                x: .value("Day", p.day),
+                                y: .value("Age", p.bandAge),
+                                series: .value("Kind", "Band Age")
+                            )
+                            .foregroundStyle(NativePaint.recovery(style))
+                        }
+                        if NativePlotAxis.inValueDomain(p.chronoAge, ageDomain) {
+                            LineMark(
+                                x: .value("Day", p.day),
+                                y: .value("Age", p.chronoAge),
+                                series: .value("Kind", "Chronological")
+                            )
+                            .foregroundStyle(Color.primary.opacity(0.45))
+                        }
                     }
                 }
-                .chartXAxis(.hidden)
+                .chartXScale(domain: xDomain)
+                .chartYScale(domain: ageDomain)
+                .chartYAxis {
+                    AxisMarks(position: .trailing, values: NativePlotAxis.yTicks(in: ageDomain)) { value in
+                        AxisGridLine(stroke: NativeChrome.gridStroke)
+                            .foregroundStyle(NativeChrome.hairline)
+                        AxisValueLabel {
+                            if let age = value.as(Double.self) {
+                                Text(NativeHealthspanFormat.ageText(age))
+                                    .font(.caption2)
+                                    .foregroundStyle(Color.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: NativePlotAxis.monthTicks(start: xDomain.lowerBound, end: xDomain.upperBound)) { value in
+                        AxisGridLine(stroke: NativeChrome.gridStroke)
+                            .foregroundStyle(NativeChrome.hairline)
+                        AxisValueLabel {
+                            if let date = value.as(Date.self) {
+                                Text(NativeScopeFormat.month(date, calendar: .current))
+                                    .font(.caption2)
+                                    .foregroundStyle(Color.secondary)
+                            }
+                        }
+                    }
+                }
+                .chartPlotStyle { $0.clipped() }
                 .frame(height: 160)
 
                 Text("PACE OF AGING TREND")
@@ -349,8 +427,8 @@ struct NativeHealthspanTrendCard: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 8)
                 Chart {
-                    ForEach(points, id: \.day) { p in
-                        if let pace = p.pace {
+                    ForEach(inWindow) { p in
+                        if let pace = p.pace, NativePlotAxis.inValueDomain(pace, paceDomain) {
                             LineMark(
                                 x: .value("Day", p.day),
                                 y: .value("Pace", pace)
@@ -358,11 +436,41 @@ struct NativeHealthspanTrendCard: View {
                             .foregroundStyle(NativePaint.strain(style))
                         }
                     }
-                    RuleMark(y: .value("1x", 1.0))
-                        .foregroundStyle(Color.secondary.opacity(0.4))
+                    if NativePlotAxis.inValueDomain(1, paceDomain) {
+                        RuleMark(y: .value("1x", 1.0))
+                            .foregroundStyle(Color.secondary.opacity(0.4))
+                    }
                 }
-                .chartYScale(domain: -1...3)
-                .chartXAxis(.hidden)
+                .chartXScale(domain: xDomain)
+                .chartYScale(domain: paceDomain)
+                .chartYAxis {
+                    AxisMarks(position: .trailing, values: NativePlotAxis.yTicks(in: paceDomain)) { value in
+                        AxisGridLine(stroke: NativeChrome.gridStroke)
+                            .foregroundStyle(NativeChrome.hairline)
+                        AxisValueLabel {
+                            if let pace = value.as(Double.self) {
+                                Text(NativeHealthspanFormat.paceText(pace))
+                                    .font(.caption2)
+                                    .foregroundStyle(Color.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: NativePlotAxis.monthTicks(start: xDomain.lowerBound, end: xDomain.upperBound)) { value in
+                        AxisGridLine(stroke: NativeChrome.gridStroke)
+                            .foregroundStyle(NativeChrome.hairline)
+                        AxisValueLabel {
+                            if let date = value.as(Date.self) {
+                                Text(NativeScopeFormat.month(date, calendar: .current))
+                                    .font(.caption2)
+                                    .foregroundStyle(Color.secondary)
+                            }
+                        }
+                    }
+                }
+                .chartPlotStyle { $0.clipped() }
                 .frame(height: 140)
             }
         }

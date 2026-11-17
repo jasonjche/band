@@ -90,7 +90,10 @@ struct NativeHealthMonitorPage: View {
 
     private var sparkPoints: [NativeHourPoint] {
         if storedSpark.isEmpty, viewingToday {
-            return NativeHRSmoothing.smooth(liveSamples)
+            return NativeHeartRateMath.spark(
+                from: liveSamples,
+                now: liveSamples.last?.time ?? Date()
+            )
         }
         return NativeHeartRateMath.appendLive(
             storedSpark,
@@ -196,6 +199,7 @@ struct NativeHealthMonitorBody: View {
                         NativeHealthMonitorTile(slot: slot)
                     }
                     .buttonStyle(.plain)
+                    .gridCellColumns(slot.columnSpan)
                 }
             }
         }
@@ -267,10 +271,16 @@ private struct NativeHealthMonitorSpark: View {
     var live: Bool
     var tint: Color
 
-    private var plot: [NativeHourPoint] { points }
+    private var xDomain: ClosedRange<Date> {
+        NativeHeartRateMath.sparkXDomain(points: points)
+    }
 
     private var yDomain: ClosedRange<Double> {
-        NativeHeartRateMath.fittedDomain(plot.map(\.value))
+        NativeHeartRateMath.fittedDomain(points.map(\.value))
+    }
+
+    private var plot: [NativeHourPoint] {
+        NativeHeartRateMath.clippedPlot(points, xDomain: xDomain, yDomain: yDomain)
     }
 
     var body: some View {
@@ -282,7 +292,8 @@ private struct NativeHealthMonitorSpark: View {
                     .lineStyle(StrokeStyle(lineWidth: 2))
                     .accessibilityHidden(true)
             }
-            if let last = plot.last {
+            if let last = plot.last,
+               last.time >= xDomain.lowerBound, last.time <= xDomain.upperBound {
                 PointMark(x: .value("Now", last.time), y: .value("BPM", last.value))
                     .foregroundStyle(tint)
                     .symbol { NativeSelectedVertex(tint: tint, size: live ? 8 : 6) }
@@ -291,8 +302,9 @@ private struct NativeHealthMonitorSpark: View {
         }
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
+        .chartXScale(domain: xDomain)
         .chartYScale(domain: yDomain)
-        .chartPlotStyle { $0.padding(.top, NoopMetrics.space1) }
+        .chartPlotStyle { $0.clipped() }
         .accessibilityHidden(true)
     }
 }
@@ -400,8 +412,8 @@ enum NativeHealthMonitorMath {
              unit: "BPM", heartFamily: true, route: .metric("rhr"), tileUnit: "bpm"),
         Spec(id: "hrv", title: "HRV", symbol: "waveform.path.ecg",
              unit: "ms", heartFamily: true, route: .metric("hrv"), tileUnit: "ms"),
-        Spec(id: "skin", title: "Skin Temp (from baseline)", symbol: "thermometer.medium",
-             unit: "°C", heartFamily: true, route: .metric("skin_temp"), tileUnit: "°"),
+        Spec(id: "skin", title: "Skin temp", symbol: "thermometer.medium",
+             unit: "°C", heartFamily: true, route: .metric("skin_temp"), tileUnit: "°C"),
     ]
 
     struct Slot: Identifiable, Equatable {
@@ -416,6 +428,7 @@ enum NativeHealthMonitorMath {
         var heartFamily: Bool
         var route: TabRoute
         var accessibility: String
+        var columnSpan: Int
 
         var chipTint: Color {
             switch chipTintName {
@@ -437,18 +450,19 @@ enum NativeHealthMonitorMath {
     static func slot(spec: Spec, vital: NativeHealthRange.Vital?) -> Slot {
         let hasValue = vital != nil
         let chip = chipText(status: vital?.status, hasValue: hasValue)
+        let title = skinTitle(spec: spec, vital: vital)
         let valueText: String
         let unit: String?
         if let vital {
             valueText = numberText(vital)
-            unit = spec.id == "spo2" ? nil : spec.tileUnit
+            unit = spec.id == "spo2" ? nil : (spec.id == "skin" ? vital.unit : spec.tileUnit)
         } else {
             valueText = "—"
             unit = nil
         }
         return Slot(
             id: spec.id,
-            title: spec.title,
+            title: title,
             symbol: spec.symbol,
             valueText: valueText,
             unit: unit,
@@ -458,11 +472,20 @@ enum NativeHealthMonitorMath {
             heartFamily: spec.heartFamily,
             route: spec.route,
             accessibility: NativeHealthMonitorFormat.accessibilityLabel(
-                title: spec.title,
+                title: title,
                 valueText: hasValue ? (vital?.valueText ?? valueText) : "unavailable",
                 chip: chip
-            )
+            ),
+            columnSpan: spec.id == "skin" ? 2 : 1
         )
+    }
+
+    /// Range logic in `NativeHealthRange` evaluates absolute °C when the stored
+    /// value is ≥ 20 °C (`VitalBands.isAbsoluteSkinTemp`), otherwise a signed deviation.
+    static func skinTitle(spec: Spec, vital: NativeHealthRange.Vital?) -> String {
+        guard spec.id == "skin" else { return spec.title }
+        guard let vital else { return spec.title }
+        return VitalBands.isAbsoluteSkinTemp(vital.value) ? "Skin temp" : "Skin temp vs baseline"
     }
 
     static func numberText(_ vital: NativeHealthRange.Vital) -> String {
@@ -471,7 +494,8 @@ enum NativeHealthMonitorMath {
             return String(format: "%.1f", vital.value)
         }
         if vital.unit == "°C" || vital.unit == "°F" {
-            return String(format: "%.1f", vital.value)
+            let signed = !VitalBands.isAbsoluteSkinTemp(vital.value)
+            return String(format: signed ? "%+.1f" : "%.1f", vital.value)
         }
         return String(Int(vital.value.rounded()))
     }

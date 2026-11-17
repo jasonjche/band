@@ -420,8 +420,30 @@ public enum SleepStager {
     /// HR in the interval, the answer is false (cannot vouch for the gap → treat as a real break).
     static func hrSleepBandAcross(_ a: Int, _ b: Int, hr: [HRSample], baseline: Double?) -> Bool {
         guard let baseline = baseline else { return false }
-        let seg = hr.filter { $0.ts > a && $0.ts <= b }
-        if seg.isEmpty { return false }
+        let seg: ArraySlice<HRSample>
+        var sorted = true
+        if hr.count >= 2 {
+            for i in 1..<hr.count where hr[i].ts < hr[i - 1].ts { sorted = false; break }
+        }
+        if sorted {
+            var lo = 0, hi = hr.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if hr[mid].ts <= a { lo = mid + 1 } else { hi = mid }
+            }
+            let first = lo
+            hi = hr.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if hr[mid].ts <= b { lo = mid + 1 } else { hi = mid }
+            }
+            if first >= lo { return false }
+            seg = hr[first..<lo]
+        } else {
+            let filtered = hr.filter { $0.ts > a && $0.ts <= b }
+            if filtered.isEmpty { return false }
+            seg = filtered[...]
+        }
         // MEDIAN, not mean (#1657). `confirmSleepWithHR` below already documents why the mean is the
         // wrong statistic here — "a real sleep night carries brief arousal / wake HR spikes (observed to
         // ~190 bpm)" that drag it above the band — and uses the median for exactly that reason. This gate
@@ -1974,18 +1996,25 @@ public enum SleepStager {
         if maskIdx.isEmpty { return [Double](repeating: 0, count: n) }
 
         // Linear interpolation over the grid (numpy.interp semantics: clamp at edges).
+        // maskIdx is strictly increasing; bisect instead of a linear scan per NaN.
         var filled = [Double](repeating: 0, count: n)
+        let firstKnown = maskIdx[0], lastKnown = maskIdx[maskIdx.count - 1]
         for i in 0..<n {
             if !hrPerEpoch[i].isNaN { filled[i] = hrPerEpoch[i]; continue }
-            // find surrounding known points
-            if i <= maskIdx.first! { filled[i] = hrPerEpoch[maskIdx.first!]; continue }
-            if i >= maskIdx.last! { filled[i] = hrPerEpoch[maskIdx.last!]; continue }
-            var lo = maskIdx.first!, hi = maskIdx.last!
-            for m in maskIdx { if m <= i { lo = m } ; if m >= i { hi = m; break } }
-            if hi == lo { filled[i] = hrPerEpoch[lo] }
+            if i <= firstKnown { filled[i] = hrPerEpoch[firstKnown]; continue }
+            if i >= lastKnown { filled[i] = hrPerEpoch[lastKnown]; continue }
+            var lo = 0, hi = maskIdx.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if maskIdx[mid] <= i { lo = mid + 1 } else { hi = mid }
+            }
+            let hiPos = lo
+            let loPos = hiPos - 1
+            let loI = maskIdx[loPos], hiI = maskIdx[hiPos]
+            if hiI == loI { filled[i] = hrPerEpoch[loI] }
             else {
-                let frac = Double(i - lo) / Double(hi - lo)
-                filled[i] = hrPerEpoch[lo] + frac * (hrPerEpoch[hi] - hrPerEpoch[lo])
+                let frac = Double(i - loI) / Double(hiI - loI)
+                filled[i] = hrPerEpoch[loI] + frac * (hrPerEpoch[hiI] - hrPerEpoch[loI])
             }
         }
 
@@ -2974,8 +3003,28 @@ public enum SleepStager {
     }
 
     public static func sessionRestingHR(start: Int, end: Int, hr: [HRSample]) -> Int? {
-        let seg = hr.filter { $0.ts >= start && $0.ts <= end }
-        guard !seg.isEmpty else { return nil }
+        // Same samples as `hr.filter { start...end }`, walked in timestamp order so each 5-min bin
+        // is a two-pointer slice instead of a fresh O(n) filter. Means are order-independent.
+        let ordered: [HRSample]
+        if hr.count >= 2 {
+            var sorted = true
+            for i in 1..<hr.count where hr[i].ts < hr[i - 1].ts { sorted = false; break }
+            ordered = sorted ? hr : hr.sorted { $0.ts < $1.ts }
+        } else {
+            ordered = hr
+        }
+        var lo = 0, hi = ordered.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if ordered[mid].ts < start { lo = mid + 1 } else { hi = mid }
+        }
+        let a = lo
+        hi = ordered.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if ordered[mid].ts <= end { lo = mid + 1 } else { hi = mid }
+        }
+        if a >= lo { return nil }
         let windowS = 5 * 60
         // #1943: a bin qualifies to WIN the floor only when it is well-populated (≥ rhrMinBinSamples)
         // and its mean is physiologically plausible (≥ rhrMinPlausibleBpm). A one-sample bin at the
@@ -2986,23 +3035,39 @@ public enum SleepStager {
         var gatedMeans: [Double] = []
         var allMeans: [Double] = []
         var t = start
+        var i = a
+        var allSum = 0
         repeat {
             // The last bin (its half-open end reaches or passes `end`) closes on `end` instead,
             // catching an endpoint sample the prefilter already admitted. `seg` holds nothing past
             // `end`, so "everything from t onwards" IS [t, end]. `repeat` runs once for a
             // zero-length window, where that single closed bin is the whole window.
             let isFinal = t + windowS >= end
-            let win = seg.filter { $0.ts >= t && (isFinal || $0.ts < t + windowS) }
-            if !win.isEmpty {
-                let mean = Double(win.reduce(0) { $0 + $1.bpm }) / Double(win.count)
+            let binHi = isFinal ? end : t + windowS - 1
+            while i < lo && ordered[i].ts < t { i += 1 }
+            var j = i, sum = 0, n = 0
+            if isFinal {
+                while j < lo {
+                    sum += ordered[j].bpm; n += 1; j += 1
+                }
+            } else {
+                while j < lo && ordered[j].ts <= binHi {
+                    sum += ordered[j].bpm; n += 1; j += 1
+                }
+            }
+            if n > 0 {
+                let mean = Double(sum) / Double(n)
                 allMeans.append(mean)
-                if win.count >= rhrMinBinSamples && mean >= rhrMinPlausibleBpm { gatedMeans.append(mean) }
+                allSum += sum
+                if n >= rhrMinBinSamples && mean >= rhrMinPlausibleBpm { gatedMeans.append(mean) }
             }
             t += windowS
+            i = j
         } while t < end
         if let m = gatedMeans.min() { return Int(m.rounded()) }
         if let m = allMeans.min() { return Int(m.rounded()) }
-        let all = Double(seg.reduce(0) { $0 + $1.bpm }) / Double(seg.count)
+        let nSeg = lo - a
+        let all = Double(allSum) / Double(nSeg)
         return Int(all.rounded())
     }
 

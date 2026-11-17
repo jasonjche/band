@@ -206,36 +206,68 @@ struct NativeSleepConsistencyChart: View {
     private var avgWake: Double? { NativeSleepConsistency.averageWake(nights) }
     private var selected: String? { selectedKey?.wrappedValue }
 
+    private var keys: [String] {
+        let end = nights.first(where: \.isToday)?.key ?? nights.last?.key
+        guard let end else { return nights.map(\.key) }
+        return NativeSleepConsistency.chartKeys(dayKey: end)
+    }
+
+    private var plotWindow: NativeSleepClock.PlotWindow {
+        NativeSleepClock.fittedPlot(beds: nights.map(\.bedFromEvening), wakes: nights.map(\.wakeFromEvening))
+    }
+
     var body: some View {
+        let yDomain = plotWindow.domain
         let chart = Chart {
-            ForEach(nights) { night in
+            ForEach(keys, id: \.self) { key in
                 BarMark(
-                    x: .value("Day", night.key),
-                    yStart: .value("Wake", NativeSleepClock.plotY(night.wakeFromEvening)),
-                    yEnd: .value("Bed", NativeSleepClock.plotY(night.bedFromEvening)),
-                    width: 14
+                    x: .value("Day", key),
+                    yStart: .value("Slot", yDomain.lowerBound),
+                    yEnd: .value("Slot top", yDomain.lowerBound)
                 )
-                .foregroundStyle(night.key == selected || (selected == nil && night.isToday) ? tint : Color.secondary.opacity(0.45))
-                .clipShape(Capsule())
-                .accessibilityLabel(NativeChartDay.longLabel(night.key))
-                .accessibilityValue("\(NativeSleepClock.clock(night.bedtime)) to \(NativeSleepClock.clock(night.wake))")
+                .foregroundStyle(Color.clear)
+                .accessibilityHidden(true)
+            }
+            ForEach(nights) { night in
+                let bedY = NativeSleepClock.plotY(night.bedFromEvening)
+                let wakeY = NativeSleepClock.plotY(night.wakeFromEvening)
+                if max(bedY, wakeY) >= yDomain.lowerBound, min(bedY, wakeY) <= yDomain.upperBound {
+                    BarMark(
+                        x: .value("Day", night.key),
+                        yStart: .value("Wake", wakeY),
+                        yEnd: .value("Bed", bedY),
+                        width: 14
+                    )
+                    .foregroundStyle(night.key == selected || (selected == nil && night.isToday) ? tint : Color.secondary.opacity(0.45))
+                    .clipShape(Capsule())
+                    .accessibilityLabel(NativeChartDay.longLabel(night.key))
+                    .accessibilityValue("\(NativeSleepClock.clock(night.bedtime)) to \(NativeSleepClock.clock(night.wake))")
+                }
             }
             if let avgBed {
-                RuleMark(y: .value("Avg bed", NativeSleepClock.plotY(avgBed)))
-                    .foregroundStyle(Color.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [6, 4]))
-                    .accessibilityLabel("Average bedtime")
+                let y = NativeSleepClock.plotY(avgBed)
+                if y >= yDomain.lowerBound, y <= yDomain.upperBound {
+                    RuleMark(y: .value("Avg bed", y))
+                        .foregroundStyle(Color.secondary)
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [6, 4]))
+                        .accessibilityLabel("Average bedtime")
+                }
             }
             if let avgWake {
-                RuleMark(y: .value("Avg wake", NativeSleepClock.plotY(avgWake)))
-                    .foregroundStyle(Color.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [6, 4]))
-                    .accessibilityLabel("Average wake")
+                let y = NativeSleepClock.plotY(avgWake)
+                if y >= yDomain.lowerBound, y <= yDomain.upperBound {
+                    RuleMark(y: .value("Avg wake", y))
+                        .foregroundStyle(Color.secondary)
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [6, 4]))
+                        .accessibilityLabel("Average wake")
+                }
             }
         }
-        .chartYScale(domain: NativeSleepClock.plotY(1140)...NativeSleepClock.plotY(180))
+        .chartXScale(domain: keys)
+        .chartYScale(domain: yDomain)
+        .chartPlotStyle { $0.clipped() }
         .chartYAxis {
-            AxisMarks(position: .trailing, values: NativeSleepClock.axisMarks.map(NativeSleepClock.plotY)) { value in
+            AxisMarks(position: .trailing, values: plotWindow.marks.map(NativeSleepClock.plotY)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
@@ -248,19 +280,17 @@ struct NativeSleepConsistencyChart: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: nights.map(\.key)) { value in
+            AxisMarks(values: keys) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
                     if let key = value.as(String.self) {
-                        Text(NativeChartDay.weekday(key))
-                            .font(.caption2.weight(key == nights.first(where: \.isToday)?.key ? .semibold : .regular))
-                            .foregroundStyle(key == nights.first(where: \.isToday)?.key ? Color.primary : Color.secondary)
+                        NativeChartAxisLabel(key: key, highlighted: key == nights.first(where: \.isToday)?.key)
                     }
                 }
             }
         }
-        .accessibilityLabel("Sleep consistency, last \(nights.count) nights")
+        .accessibilityLabel("Sleep consistency, last \(keys.count) nights")
 
         if #available(iOS 17.0, macOS 14.0, *), let selectedKey {
             chart.chartXSelection(value: selectedKey)
@@ -436,9 +466,24 @@ struct NativeSleepStressPlot: View {
         )
     }
 
+    private var xDomain: ClosedRange<Date>? {
+        guard let first = points.map(\.time).min(), let last = points.map(\.time).max(), last > first else {
+            return nil
+        }
+        return first...last
+    }
+
+    private var domainPoints: [NativeHourPoint] {
+        guard let xDomain else { return points.filter { $0.value >= 0 && $0.value <= 3 } }
+        return points.filter {
+            $0.time >= xDomain.lowerBound && $0.time <= xDomain.upperBound
+                && $0.value >= 0 && $0.value <= 3
+        }
+    }
+
     var body: some View {
         let marks = Chart {
-            ForEach(points) { point in
+            ForEach(domainPoints) { point in
                 LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
                     .foregroundStyle(tint)
                     .interpolationMethod(.linear)
@@ -448,6 +493,8 @@ struct NativeSleepStressPlot: View {
             }
         }
         .chartYScale(domain: 0...3)
+        .chartXScale(domain: xDomain ?? Date()...Date())
+        .chartPlotStyle { $0.clipped() }
         .chartYAxis {
             AxisMarks(position: .trailing, values: [0, 1, 2, 3]) { _ in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
@@ -458,12 +505,12 @@ struct NativeSleepStressPlot: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { value in
+            AxisMarks(values: xDomain.map { NativeChartTicks.hourDates(from: $0.lowerBound, to: $0.upperBound) } ?? []) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
                     if let date = value.as(Date.self) {
-                        Text(NativeScopeFormat.time(date))
+                        Text(NativeScopeFormat.hourClock(date, calendar: .current))
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                     }
@@ -477,7 +524,8 @@ struct NativeSleepStressPlot: View {
                 marks
                     .chartXSelection(value: timeBinding)
                     .chartOverlay { proxy in
-                        NativeSleepStressMarker(proxy: proxy, points: points, tint: tint, scrub: box)
+                        NativeSleepStressMarker(proxy: proxy, points: domainPoints, tint: tint, scrub: box)
+                            .clipped()
                     }
             } else {
                 marks
@@ -524,11 +572,23 @@ struct NativeSleepDualLineCard: View {
 
     private var knownSlept: [NativeDayPoint] { slept.filter { $0.value.isFinite } }
     private var knownNeeded: [NativeDayPoint] { needed.filter { $0.value.isFinite } }
+    private var axisTicks: [Double] {
+        let values = (knownSlept + knownNeeded).map(\.value) + typicalBounds
+        let lo = values.min() ?? 0
+        let hi = values.max() ?? 480
+        return NativeChartTicks.nice(min: lo, max: hi, targetCount: 4)
+    }
+
     private var yDomain: ClosedRange<Double> {
-        NativeChartDay.fittedDomain(
-            (knownSlept + knownNeeded).map(\.value) + typicalBounds,
-            fallback: 0...480
-        )
+        NativeChartTicks.domain(from: axisTicks, fallback: 0...480)
+    }
+
+    private var typicalClipped: ClosedRange<Double>? {
+        guard let typical else { return nil }
+        let lo = max(typical.lowerBound, yDomain.lowerBound)
+        let hi = min(typical.upperBound, yDomain.upperBound)
+        guard hi > lo else { return nil }
+        return lo...hi
     }
 
     private var typicalBounds: [Double] {
@@ -540,68 +600,73 @@ struct NativeSleepDualLineCard: View {
         NativeChrome.panel {
             header
             hero
-                .frame(height: 76, alignment: .topLeading)
             plot.frame(height: 200)
         }
         .modifier(NativeSelectionFeedback(trigger: selectedKey ?? ""))
     }
 
     @ViewBuilder private var header: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "clock.fill")
-                .foregroundStyle(NativePaint.sleep(style))
-            Text(title)
-                .foregroundStyle(NativePaint.sleep(style))
-            Spacer(minLength: 8)
-            NativeSleepSeriesKey(color: NativeTokens.sleep, name: "Hours of Sleep")
-            NativeSleepSeriesKey(color: Color.secondary, name: "Sleep Needed")
-            if onOpen != nil {
-                Image(systemName: "chevron.forward")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+        let titleRow = NativeCardHeader(
+            title: title,
+            symbol: "clock.fill",
+            tint: NativePaint.sleep(style),
+            chevron: onOpen != nil
+        )
+        VStack(alignment: .leading, spacing: 8) {
+            if let onOpen {
+                Button(action: onOpen) { titleRow }
+                    .buttonStyle(.plain)
+            } else {
+                titleRow
+            }
+            HStack(spacing: 10) {
+                NativeSleepSeriesKey(color: NativeTokens.sleep, name: "Hours of Sleep")
+                NativeSleepSeriesKey(color: Color.secondary, name: "Sleep Needed")
             }
         }
-        .font(.footnote.weight(.semibold))
         .contentShape(Rectangle())
         .nativeOpenButton(action: onOpen)
     }
 
     @ViewBuilder private var hero: some View {
         if let selectedKey, let sleptPoint = NativeChartScrubMath.finitePoint(key: selectedKey, in: slept) {
-            NativeClockHero(caption: NativeChartDay.longLabel(selectedKey), minutes: sleptPoint.value)
-            if let neededPoint = NativeChartScrubMath.finitePoint(key: selectedKey, in: needed) {
-                Text("Needed \(NativeScoreMath.duration(neededPoint.value))")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
+            let neededLine = NativeChartScrubMath.finitePoint(key: selectedKey, in: needed)
+                .map { "Needed \(NativeScoreMath.duration($0.value))" }
+            NativeClockHero(
+                caption: NativeChartDay.longLabel(selectedKey),
+                minutes: sleptPoint.value,
+                date: neededLine
+            )
         } else if let average = NativeScoreMath.mean(knownSlept.map(\.value)) {
-            NativeClockHero(caption: "Average", minutes: average)
-            if let first = slept.first?.key, let last = slept.last?.key {
-                Text(NativeChartDay.rangeLabel(from: first, to: last))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            let range: String? = {
+                guard let first = slept.first?.key, let last = slept.last?.key else { return nil }
+                return NativeChartDay.rangeLabel(from: first, to: last)
+            }()
+            NativeClockHero(caption: "Average", minutes: average, date: range)
         }
     }
 
     private var plot: some View {
         Chart {
             ForEach(slept) { point in
-                BarMark(x: .value("Day", point.key), y: .value("Slot", 0))
-                    .foregroundStyle(Color.clear)
-                    .accessibilityHidden(true)
-                if let typical {
+                BarMark(
+                    x: .value("Day", point.key),
+                    yStart: .value("Slot", yDomain.lowerBound),
+                    yEnd: .value("Slot top", yDomain.lowerBound)
+                )
+                .foregroundStyle(Color.clear)
+                .accessibilityHidden(true)
+                if let typicalClipped {
                     BarMark(
                         x: .value("Day", point.key),
-                        yStart: .value("Typical lo", typical.lowerBound),
-                        yEnd: .value("Typical hi", typical.upperBound)
+                        yStart: .value("Typical lo", typicalClipped.lowerBound),
+                        yEnd: .value("Typical hi", typicalClipped.upperBound)
                     )
                     .foregroundStyle(NativeTokens.sleep.opacity(0.14))
                     .accessibilityHidden(true)
                 }
             }
-            ForEach(NativeChartDay.linePoints(slept)) { point in
+            ForEach(NativeChartDay.linePoints(slept).filter { $0.value >= yDomain.lowerBound && $0.value <= yDomain.upperBound }) { point in
                 LineMark(
                     x: .value("Day", point.key),
                     y: .value("Hours", point.value),
@@ -620,7 +685,7 @@ struct NativeSleepDualLineCard: View {
                         }
                     }
             }
-            ForEach(NativeChartDay.linePoints(needed)) { point in
+            ForEach(NativeChartDay.linePoints(needed).filter { $0.value >= yDomain.lowerBound && $0.value <= yDomain.upperBound }) { point in
                 LineMark(
                     x: .value("Day", point.key),
                     y: .value("Hours", point.value),
@@ -632,9 +697,11 @@ struct NativeSleepDualLineCard: View {
             }
         }
         .chartLegend(.hidden)
+        .chartXScale(domain: slept.map(\.key))
         .chartYScale(domain: yDomain)
+        .chartPlotStyle { $0.clipped() }
         .chartYAxis {
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+            AxisMarks(position: .trailing, values: axisTicks) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
@@ -652,9 +719,7 @@ struct NativeSleepDualLineCard: View {
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
                     if let key = value.as(String.self) {
-                        Text(NativeChartDay.weekday(key))
-                            .font(.caption2.weight(key == highlightKey ? .semibold : .regular))
-                            .foregroundStyle(key == highlightKey ? Color.primary : Color.secondary)
+                        NativeChartAxisLabel(key: key, highlighted: key == highlightKey)
                     }
                 }
             }
@@ -735,7 +800,6 @@ struct NativeSleepTimeInBedWeekCard: View {
                 header
             }
             hero
-                .frame(height: 76, alignment: .topLeading)
             plot.frame(height: 200)
         }
         .modifier(NativeSelectionFeedback(trigger: selectedKey ?? ""))
@@ -745,46 +809,63 @@ struct NativeSleepTimeInBedWeekCard: View {
         if let selectedKey, let point = NativeChartScrubMath.finitePoint(key: selectedKey, in: points) {
             NativeClockHero(caption: NativeChartDay.longLabel(selectedKey), minutes: point.value)
         } else if let average = NativeScoreMath.mean(known.compactMap { $0.value.isFinite ? $0.value : nil }) {
-            NativeClockHero(caption: "Average", minutes: average)
-            if let first = points.first?.key, let last = points.last?.key {
-                Text(NativeChartDay.rangeLabel(from: first, to: last))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            let range: String? = {
+                guard let first = points.first?.key, let last = points.last?.key else { return nil }
+                return NativeChartDay.rangeLabel(from: first, to: last)
+            }()
+            NativeClockHero(caption: "Average", minutes: average, date: range)
         }
     }
 
+    private var plotWindow: NativeSleepClock.PlotWindow {
+        NativeSleepClock.fittedPlot(
+            beds: points.compactMap(\.low),
+            wakes: points.compactMap(\.high)
+        )
+    }
+
     private var plot: some View {
-        Chart {
+        let yDomain = plotWindow.domain
+        return Chart {
             ForEach(points) { point in
-                BarMark(x: .value("Day", point.key), y: .value("Slot", 0))
-                    .foregroundStyle(Color.clear)
-                    .accessibilityHidden(true)
+                BarMark(
+                    x: .value("Day", point.key),
+                    yStart: .value("Slot", yDomain.lowerBound),
+                    yEnd: .value("Slot top", yDomain.lowerBound)
+                )
+                .foregroundStyle(Color.clear)
+                .accessibilityHidden(true)
                 if let low = point.low, let high = point.high, high >= low {
-                    BarMark(
-                        x: .value("Day", point.key),
-                        yStart: .value("Wake", NativeSleepClock.plotY(high)),
-                        yEnd: .value("Bed", NativeSleepClock.plotY(low)),
-                        width: 14
-                    )
-                    .foregroundStyle(
-                        point.key == selectedKey || (selectedKey == nil && point.key == highlightKey)
-                            ? NativePaint.sleep(style)
-                            : Color.secondary.opacity(0.45)
-                    )
-                    .opacity(NativeChartScrubMath.barOpacity(
-                        isSelected: point.key == selectedKey,
-                        hasSelection: selectedKey != nil && known.contains(where: { $0.key == selectedKey })
-                    ))
-                    .clipShape(Capsule())
-                    .accessibilityLabel(NativeChartDay.longLabel(point.key))
-                    .accessibilityValue(NativeScoreMath.duration(point.value))
+                    let bedY = NativeSleepClock.plotY(low)
+                    let wakeY = NativeSleepClock.plotY(high)
+                    if max(bedY, wakeY) >= yDomain.lowerBound, min(bedY, wakeY) <= yDomain.upperBound {
+                        BarMark(
+                            x: .value("Day", point.key),
+                            yStart: .value("Wake", wakeY),
+                            yEnd: .value("Bed", bedY),
+                            width: 14
+                        )
+                        .foregroundStyle(
+                            point.key == selectedKey || (selectedKey == nil && point.key == highlightKey)
+                                ? NativePaint.sleep(style)
+                                : Color.secondary.opacity(0.45)
+                        )
+                        .opacity(NativeChartScrubMath.barOpacity(
+                            isSelected: point.key == selectedKey,
+                            hasSelection: selectedKey != nil && known.contains(where: { $0.key == selectedKey })
+                        ))
+                        .clipShape(Capsule())
+                        .accessibilityLabel(NativeChartDay.longLabel(point.key))
+                        .accessibilityValue(NativeScoreMath.duration(point.value))
+                    }
                 }
             }
         }
-        .chartYScale(domain: NativeSleepClock.plotY(1140)...NativeSleepClock.plotY(180))
+        .chartXScale(domain: points.map(\.key))
+        .chartYScale(domain: yDomain)
+        .chartPlotStyle { $0.clipped() }
         .chartYAxis {
-            AxisMarks(position: .trailing, values: NativeSleepClock.axisMarks.map(NativeSleepClock.plotY)) { value in
+            AxisMarks(position: .trailing, values: plotWindow.marks.map(NativeSleepClock.plotY)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
@@ -802,9 +883,7 @@ struct NativeSleepTimeInBedWeekCard: View {
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
                     if let key = value.as(String.self) {
-                        Text(NativeChartDay.weekday(key))
-                            .font(.caption2.weight(key == highlightKey ? .semibold : .regular))
-                            .foregroundStyle(key == highlightKey ? Color.primary : Color.secondary)
+                        NativeChartAxisLabel(key: key, highlighted: key == highlightKey)
                     }
                 }
             }
@@ -901,8 +980,13 @@ struct NativeSleepRestorativeChart: View {
         return (rem + deep).map(\.key).filter { seen.insert($0).inserted }
     }
 
+    private var axisTicks: [Double] {
+        let hi = max(known.map(\.value).max() ?? 0, 120)
+        return NativeChartTicks.nice(min: 0, max: hi, targetCount: 4)
+    }
+
     private var ceiling: Double {
-        max(known.map(\.value).max() ?? 0, 120) * 1.22
+        max(axisTicks.last ?? 120, 1)
     }
 
     private var selectedPoint: NativeDayPoint? {
@@ -911,8 +995,8 @@ struct NativeSleepRestorativeChart: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            hero.frame(height: 76, alignment: .topLeading)
+        VStack(alignment: .leading, spacing: 10) {
+            hero
             plot.frame(height: plotHeight)
         }
         .onAppear {
@@ -923,16 +1007,14 @@ struct NativeSleepRestorativeChart: View {
 
     @ViewBuilder private var hero: some View {
         if let selectedPoint {
-            NativeClockHero(minutes: selectedPoint.value)
-            Text(NativeChartDay.longLabel(selectedPoint.key))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            NativeClockHero(minutes: selectedPoint.value, date: NativeChartDay.longLabel(selectedPoint.key))
         } else if let average = NativeScoreMath.mean(known.map(\.value)),
                   let first = totals.first?.key, let last = totals.last?.key {
-            NativeClockHero(caption: "Average", minutes: average)
-            Text(NativeChartDay.rangeLabel(from: first, to: last))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            NativeClockHero(
+                caption: "Average",
+                minutes: average,
+                date: NativeChartDay.rangeLabel(from: first, to: last)
+            )
         } else {
             NativeHeroValue(caption: "Average", value: "No data")
         }
@@ -946,7 +1028,8 @@ struct NativeSleepRestorativeChart: View {
             ForEach(keys, id: \.self) { key in
                 BarMark(
                     x: .value("Day", key),
-                    y: .value("Slot", 0),
+                    yStart: .value("Slot", 0),
+                    yEnd: .value("Slot top", 0),
                     width: .ratio(whoop ? 0.42 : 0.5)
                 )
                 .foregroundStyle(Color.clear)
@@ -989,9 +1072,11 @@ struct NativeSleepRestorativeChart: View {
             "REM": remTint,
         ])
         .chartLegend(.hidden)
+        .chartXScale(domain: keys)
         .chartYScale(domain: 0...max(ceiling, 1))
+        .chartPlotStyle { $0.clipped() }
         .chartYAxis {
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+            AxisMarks(position: .trailing, values: axisTicks) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
@@ -1009,9 +1094,7 @@ struct NativeSleepRestorativeChart: View {
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
                     if let key = value.as(String.self) {
-                        Text(NativeChartDay.weekday(key))
-                            .font(.caption2.weight(key == highlightKey ? .semibold : .regular))
-                            .foregroundStyle(key == highlightKey ? Color.primary : Color.secondary)
+                        NativeChartAxisLabel(key: key, highlighted: key == highlightKey)
                     }
                 }
             }

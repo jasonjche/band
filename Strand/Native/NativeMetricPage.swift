@@ -105,8 +105,10 @@ struct NativeMetricPage: View {
         case "hrv": return "ms"
         case "rhr", "resting_hr", "avg_hr", "max_hr": return "BPM"
         case "resp_rate": return "breaths/min"
-        case "steps": return "steps"
-        case "energy_kcal", "active_kcal": return "cal"
+        case "steps":
+            return (scope == .sixMonths || scope == .year) ? "avg/day" : "steps"
+        case "energy_kcal", "active_kcal":
+            return (scope == .sixMonths || scope == .year) ? "avg/day" : "cal"
         case "vo2max", "vo2max_est": return "ml/kg·min"
         default:
             let unit = metric?.unit ?? ""

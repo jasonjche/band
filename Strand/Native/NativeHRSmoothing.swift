@@ -2,15 +2,27 @@ import Foundation
 
 /// Display-only heart-rate smoother. Raw samples stay for maxima, zones, and stats.
 ///
-/// Callers pass already-bucketed chart points. Other charts should use the same helper:
-/// `NativeHRSmoothing.smooth(points)` or `NativeHRSmoothing.smooth(points, window: 45)`.
+/// Callers pass already-bucketed chart points. Day traces use `smoothDay`
+/// (per-minute means, then a centred ~5-minute mean). Short traces keep
+/// `smooth(points)` or `smooth(points, window:)`.
 enum NativeHRSmoothing {
-    /// Default centred window, in seconds. WHOOP-like 30–60 s smoothing.
+    /// Default centred window, in seconds. Short traces (workout, live).
     static let defaultWindow: TimeInterval = 45
+    /// Centred window for a WHOOP-like day HR line, in seconds.
+    static let dayWindow: TimeInterval = 300
+    /// Per-minute bucket used by `smoothDay` and long runs.
+    static let minuteBucket: TimeInterval = 60
     /// Runs longer than this are reduced to bucket means before the rolling filters.
     static let longSpan: TimeInterval = 3 * 3600
     /// Bucket width used on long runs, in seconds.
-    static let longBucket: TimeInterval = 20
+    static let longBucket: TimeInterval = minuteBucket
+
+    /// Per-minute means, then a centred ~5-minute mean. Day HR and Health Monitor spark.
+    static func smoothDay(_ points: [NativeHourPoint]) -> [NativeHourPoint] {
+        guard points.count >= 3 else { return points }
+        let ordered = points.sorted { $0.time < $1.time }
+        return smooth(bucketMeans(ordered, seconds: minuteBucket), window: dayWindow)
+    }
 
     /// Smooth `points` for charting.
     ///

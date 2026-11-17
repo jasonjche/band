@@ -139,6 +139,10 @@ final class FieldBuilder {
     init(_ frame: [UInt8], collectFields: Bool = true) {
         self.frame = frame
         self.collectFields = collectFields
+        // A v18 historical record writes ~40 parsed keys. Reserving avoids the dictionary's
+        // geometric reallocs on every 1 Hz offload frame.
+        parsed.reserveCapacity(48)
+        if collectFields { fields.reserveCapacity(64) }
     }
 
     @discardableResult
@@ -181,7 +185,7 @@ public func parseFrame(_ frame: [UInt8], collectFields: Bool = false) -> ParsedF
     // (collectFields:false) never reads `rawHex` — only inspector/diagnostic surfaces (whoop-decode,
     // PuffinCapture, field-asserting tests) do — so on a 1Hz stream or an offload burst this skips a
     // per-byte `String(format:)` allocation pass whose result was discarded.
-    let rawHex = collectFields ? frame.map { String(format: "%02x", $0) }.joined() : ""
+    let rawHex = collectFields ? frame.hexLower : ""
     let check = verifyFrame(frame)
     // Below the family minimum there is no inner record at all — every offset a field would use
     // lands in the checksum trailer — so nothing is decoded, not even a packet type.
@@ -203,12 +207,15 @@ public func parseFrame(_ frame: [UInt8], collectFields: Bool = false) -> ParsedF
     let seq = readU8(frame, 5, limit)
 
     let fb = FieldBuilder(frame, collectFields: collectFields)
-    // envelope
-    fb.add(0, 1, "SOF", "frame", value: .string("0xAA"))
-    fb.add(1, 2, "length", "frame", value: length.map { .int($0) })
-    fb.add(3, 1, "crc8", "frame", value: .string(String(format: "0x%02X", frame[3])))
-    fb.add(4, 1, "packet_type", "frame", value: .string(typeName))
-    if let seq = seq { fb.add(5, 1, "seq", "frame", value: .int(seq)) }
+    // Envelope fields are cat "frame" and never enter `parsed`. Skip building them on the ingest
+    // fast path (collectFields: false) — whoop-decode still requests the full path.
+    if collectFields {
+        fb.add(0, 1, "SOF", "frame", value: .string("0xAA"))
+        fb.add(1, 2, "length", "frame", value: length.map { .int($0) })
+        fb.add(3, 1, "crc8", "frame", value: .string(String(format: "0x%02X", frame[3])))
+        fb.add(4, 1, "packet_type", "frame", value: .string(typeName))
+        if let seq = seq { fb.add(5, 1, "seq", "frame", value: .int(seq)) }
+    }
 
     let spec = schema.packet(forType: t)
     if spec == nil {
@@ -233,8 +240,8 @@ public func parseFrame(_ frame: [UInt8], collectFields: Bool = false) -> ParsedF
         }
     }
 
-    // crc32 trailer field
-    if let length = length, length + 4 <= frame.count {
+    // crc32 trailer field (inspector-only; cat "frame" is not in `parsed`)
+    if collectFields, let length = length, length + 4 <= frame.count {
         let crcVal = UInt32(frame[length]) | (UInt32(frame[length + 1]) << 8)
             | (UInt32(frame[length + 2]) << 16) | (UInt32(frame[length + 3]) << 24)
         fb.add(length, 4, "crc32", "frame", value: .string(String(format: "0x%08X", crcVal)),
@@ -300,7 +307,7 @@ public func parseFrame(_ frame: [UInt8], family: DeviceFamily, collectFields: Bo
 
 private func parseFrameWhoop5(_ frame: [UInt8], collectFields: Bool) -> ParsedFrame {
     // D#969: gated identically to parseFrame — build the hex only when a consumer reads it.
-    let rawHex = collectFields ? frame.map { String(format: "%02x", $0) }.joined() : ""
+    let rawHex = collectFields ? frame.hexLower : ""
     let check = verifyFrame(frame, family: .whoop5)
     // Minimum whoop5 frame: 8 header bytes + 1 payload byte + 4 CRC32 trailer. Below that, the type
     // byte at [8] would be the first byte of the frame's own CRC32 trailer, so nothing is decoded.
@@ -324,16 +331,18 @@ private func parseFrameWhoop5(_ frame: [UInt8], collectFields: Bool) -> ParsedFr
     let seq = readU8(frame, innerStart + 1, limit)
 
     let fb = FieldBuilder(frame, collectFields: collectFields)
-    // envelope
-    fb.add(0, 1, "SOF", "frame", value: .string("0xAA"))
-    fb.add(1, 1, "format", "frame", value: .int(Int(frame[1])))
-    fb.add(2, 2, "length", "frame", value: declaredLength.map { .int($0) })
-    fb.add(4, 2, "header", "frame", value: .string(hexFrameSlice(frame, 4, 6)))
-    let hdrCRC = UInt16(frame[6]) | (UInt16(frame[7]) << 8)
-    fb.add(6, 2, "crc16", "frame", value: .string(String(format: "0x%04X", hdrCRC)),
-           note: check.crc8OK == true ? "OK" : "MISMATCH")
-    fb.add(innerStart, 1, "packet_type", "frame", value: .string(typeName))
-    if let seq = seq { fb.add(innerStart + 1, 1, "seq", "frame", value: .int(seq)) }
+    // Envelope fields are cat "frame" and never enter `parsed`. Skip them on the ingest fast path.
+    if collectFields {
+        fb.add(0, 1, "SOF", "frame", value: .string("0xAA"))
+        fb.add(1, 1, "format", "frame", value: .int(Int(frame[1])))
+        fb.add(2, 2, "length", "frame", value: declaredLength.map { .int($0) })
+        fb.add(4, 2, "header", "frame", value: .string(hexFrameSlice(frame, 4, 6)))
+        let hdrCRC = UInt16(frame[6]) | (UInt16(frame[7]) << 8)
+        fb.add(6, 2, "crc16", "frame", value: .string(String(format: "0x%04X", hdrCRC)),
+               note: check.crc8OK == true ? "OK" : "MISMATCH")
+        fb.add(innerStart, 1, "packet_type", "frame", value: .string(typeName))
+        if let seq = seq { fb.add(innerStart + 1, 1, "seq", "frame", value: .int(seq)) }
+    }
 
     // WHOOP 5.0 field offsets are the WHOOP 4.0 layout shifted by +4: the inner record starts at
     // byte 8 here vs byte 4 on 4.0, so every field sits at its 4.0 offset + `delta`. Verified on real
@@ -393,8 +402,8 @@ private func parseFrameWhoop5(_ frame: [UInt8], collectFields: Bool) -> ParsedFr
         }
     }
 
-    // crc32 trailer field
-    if let payloadEnd = payloadEnd, payloadEnd + 4 <= frame.count {
+    // crc32 trailer field (inspector-only; cat "frame" is not in `parsed`)
+    if collectFields, let payloadEnd = payloadEnd, payloadEnd + 4 <= frame.count {
         let crcVal = UInt32(frame[payloadEnd]) | (UInt32(frame[payloadEnd + 1]) << 8)
             | (UInt32(frame[payloadEnd + 2]) << 16) | (UInt32(frame[payloadEnd + 3]) << 24)
         fb.add(payloadEnd, 4, "crc32", "frame",

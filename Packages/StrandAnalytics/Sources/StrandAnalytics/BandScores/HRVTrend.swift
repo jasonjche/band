@@ -130,14 +130,43 @@ public enum HRVTrend {
     public static func evaluate(nights: [Night]) -> [DayResult] {
         let ordered = uniqueSorted(nights)
         guard !ordered.isEmpty else { return [] }
-        var byDay: [String: Double] = [:]
-        byDay.reserveCapacity(ordered.count)
+        var rows: [(day: String, epoch: Int, rmssdMs: Double?, ln: Double?)] = []
+        rows.reserveCapacity(ordered.count)
         for n in ordered {
-            if let ln = lnRmssd(n.rmssdMs) { byDay[n.day] = ln }
+            guard let epoch = HealthspanEngine.isoEpochDay(n.day) else { continue }
+            rows.append((n.day, epoch, n.rmssdMs, lnRmssd(n.rmssdMs)))
         }
-        return ordered.map { night in
-            result(day: night.day, rmssdMs: night.rmssdMs, lnByDay: byDay)
+        guard !rows.isEmpty else { return [] }
+        var out: [DayResult] = []
+        out.reserveCapacity(rows.count)
+        var tLo = 0
+        var bLo = 0
+        var trendBuf: [Double] = []
+        var baseBuf: [Double] = []
+        trendBuf.reserveCapacity(trendWindowDays)
+        baseBuf.reserveCapacity(baselineWindowDays)
+        for i in 0..<rows.count {
+            let e = rows[i].epoch
+            let tMin = e - (trendWindowDays - 1)
+            let bMin = e - (baselineWindowDays - 1)
+            while tLo < i, rows[tLo].epoch < tMin { tLo += 1 }
+            while bLo < i, rows[bLo].epoch < bMin { bLo += 1 }
+            trendBuf.removeAll(keepingCapacity: true)
+            var j = tLo
+            while j <= i {
+                if let ln = rows[j].ln { trendBuf.append(ln) }
+                j += 1
+            }
+            baseBuf.removeAll(keepingCapacity: true)
+            j = bLo
+            while j <= i {
+                if let ln = rows[j].ln { baseBuf.append(ln) }
+                j += 1
+            }
+            out.append(result(day: rows[i].day, rmssdMs: rows[i].rmssdMs,
+                              trendVals: trendBuf, baseVals: baseBuf))
         }
+        return out
     }
 
     public static func result(on day: String, nights: [Night]) -> DayResult? {
@@ -146,9 +175,8 @@ public enum HRVTrend {
 
     // MARK: - Internals
 
-    private static func result(day: String, rmssdMs: Double?, lnByDay: [String: Double]) -> DayResult {
-        let trendVals = windowValues(ending: day, days: trendWindowDays, lnByDay: lnByDay)
-        let baseVals = windowValues(ending: day, days: baselineWindowDays, lnByDay: lnByDay)
+    private static func result(day: String, rmssdMs: Double?,
+                               trendVals: [Double], baseVals: [Double]) -> DayResult {
         let trendN = trendVals.count
         let baseN = baseVals.count
         let trendLn = mean(trendVals)
@@ -188,17 +216,6 @@ public enum HRVTrend {
         )
     }
 
-    private static func windowValues(ending day: String, days: Int, lnByDay: [String: Double]) -> [Double] {
-        guard days > 0 else { return [] }
-        var vals: [Double] = []
-        vals.reserveCapacity(days)
-        for offset in (1 - days)...0 {
-            guard let key = BandDayKey.addDays(day, offset), let v = lnByDay[key] else { continue }
-            vals.append(v)
-        }
-        return vals
-    }
-
     private static func uniqueSorted(_ nights: [Night]) -> [Night] {
         var seen: [String: Night] = [:]
         for n in nights { seen[n.day] = n }
@@ -222,22 +239,7 @@ public enum HRVTrend {
 /// Gregorian UTC day-key arithmetic so calendar windows do not follow the
 /// host time zone. Keys are `yyyy-MM-dd`.
 enum BandDayKey {
-    private static let calendar: Calendar = {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(secondsFromGMT: 0)!
-        return cal
-    }()
-
     static func addDays(_ ymd: String, _ delta: Int) -> String? {
-        let parts = ymd.split(separator: "-")
-        guard parts.count == 3,
-              let y = Int(parts[0]), let m = Int(parts[1]), let d = Int(parts[2]) else { return nil }
-        var comps = DateComponents()
-        comps.year = y; comps.month = m; comps.day = d
-        guard let date = calendar.date(from: comps),
-              let shifted = calendar.date(byAdding: .day, value: delta, to: date) else { return nil }
-        let c = calendar.dateComponents([.year, .month, .day], from: shifted)
-        guard let yy = c.year, let mm = c.month, let dd = c.day else { return nil }
-        return String(format: "%04d-%02d-%02d", yy, mm, dd)
+        CivilDay.addDays(ymd, delta)
     }
 }

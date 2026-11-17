@@ -279,6 +279,8 @@ struct NativeScoreView: View {
     var hrvTrend: HRVTrend.DayResult? = nil
     var overnightLoad: BandIllnessSignal.DayResult? = nil
     @Environment(\.nativeNavigationPath) private var path
+    @AppStorage("native.sleepPlanner.wakeMinutes") private var plannerWakeMinutes = 7 * 60
+    @AppStorage("native.sleepPlanner.goal") private var plannerGoalRaw = SleepPlanner.Goal.peak.rawValue
 
     private var visibleRows: [NativeScore.Row] {
         var rows = score.rows.filter { NativeScoreMath.hasValue($0.value) }
@@ -432,6 +434,9 @@ struct NativeScoreView: View {
                 hypnogramEstimated: sleepDetail?.hypnogramEstimated ?? false,
                 onHypnogram: { path.wrappedValue.append(NativeSleepHypnogramRoute()) }
             )
+            sleepPlannerLink
+        } else if kind == .sleep {
+            sleepPlannerLink
         }
         if kind == .sleep {
             NativeOvernightHeartCard(
@@ -639,7 +644,7 @@ struct NativeScoreView: View {
                 plotHeight: 200,
                 accessibilityName: card.title,
                 clockHero: card.format == .duration,
-                yTicks: card.format == .strain ? NativeDayLogic.strainYTicks(maxY: card.maxY) : nil,
+                yTicks: weekYTicks(card),
                 stacks: card.stacks
             )
             .nativeChartButton(action: { openCard(card) })
@@ -702,7 +707,15 @@ struct NativeScoreView: View {
         }
     }
 
-    @ViewBuilder private var sleepDetailCards: some View {
+    private func weekYTicks(_ card: NativeWeek.Card) -> [Double]? {
+        switch card.format {
+        case .percent: return NativeChartTicks.percent
+        case .strain: return NativeDayLogic.strainYTicks(maxY: card.maxY)
+        default: return nil
+        }
+    }
+
+    @ViewBuilder private var sleepPlannerLink: some View {
         NavigationLink {
             NativeSleepPlanner()
         } label: {
@@ -713,9 +726,24 @@ struct NativeScoreView: View {
                     tint: NativePaint.sleep(style),
                     chevron: true
                 )
+                Text(plannerSubtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Sleep Planner, \(plannerSubtitle)")
+    }
+
+    private var plannerSubtitle: String {
+        NativeSleepPlannerLogic.cardSubtitle(
+            needMin: needMinutes ?? sleepDetail?.need?.needMin,
+            wakeMinutes: plannerWakeMinutes,
+            goal: SleepPlanner.Goal(rawValue: plannerGoalRaw) ?? .peak
+        )
+    }
+
+    @ViewBuilder private var sleepDetailCards: some View {
         if let need = sleepDetail?.need ?? hoursNeededFromPage,
            need.percent != nil || need.hoursSleptMin != nil {
             NativeSleepHoursVsNeededCard(
@@ -1181,6 +1209,7 @@ struct NativeWhoopCompareChip: View {
 struct NativeClockHero: View {
     var caption: String? = nil
     var minutes: Double
+    var date: String? = nil
 
     var body: some View {
         let parts = NativeScoreMath.clockParts(minutes)
@@ -1206,7 +1235,13 @@ struct NativeClockHero: View {
                     .foregroundStyle(.secondary)
             }
             .monospacedDigit()
+            if let date, !date.isEmpty {
+                Text(date)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(caption ?? "Duration"), \(parts.hours) hours \(parts.minutes) minutes")
     }

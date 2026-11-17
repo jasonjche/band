@@ -121,12 +121,14 @@ private struct NativeHeartRateBody: View {
                 liveBpm: liveBpm,
                 scrub: scrub
             )
-            NativeHeartRatePlot(
-                model: model,
-                tint: NativePaint.heart(style),
-                scrub: scrub
-            )
-            .frame(height: 280)
+            NativeChrome.panel {
+                NativeHeartRatePlot(
+                    model: model,
+                    tint: NativePaint.heart(style),
+                    scrub: scrub
+                )
+                .frame(height: 280)
+            }
             stats
         }
     }
@@ -185,21 +187,21 @@ private struct NativeHeartRateHero: View {
                 caption: "Heart Rate",
                 value: "\(Int(point.value.rounded()))",
                 unit: "BPM",
-                date: NativeScopeFormat.time(point.time)
+                date: NativeHeartRateMath.heroDate(isScrubbing: true, time: point.time)
             )
         } else if let liveBpm {
             NativeHeroValue(
                 caption: "Heart Rate",
                 value: "\(liveBpm)",
                 unit: "BPM",
-                date: model.plot.last.map { NativeScopeFormat.time($0.time) }
+                date: NativeHeartRateMath.latestLabel
             )
         } else if let last = model.plot.last {
             NativeHeroValue(
                 caption: "Heart Rate",
                 value: "\(Int(last.value.rounded()))",
                 unit: "BPM",
-                date: NativeScopeFormat.time(last.time)
+                date: NativeHeartRateMath.latestLabel
             )
         } else {
             NativeHeroValue(caption: "Heart Rate", value: "No data")
@@ -210,7 +212,7 @@ private struct NativeHeartRateHero: View {
 private struct NativeHeartRatePlot: View {
     var model: NativeHeartRateMath.Model
     var tint: Color
-    var scrub: NativeScopeScrub
+    @ObservedObject var scrub: NativeScopeScrub
     @Environment(\.nativeStyle) private var style
 
     private var timeBinding: Binding<Date?> {
@@ -220,23 +222,33 @@ private struct NativeHeartRatePlot: View {
         )
     }
 
+    private var xDomain: ClosedRange<Date> { model.dayStart...model.plotEnd }
+
+    private var plot: [NativeHourPoint] {
+        NativeHeartRateMath.clippedPlot(model.plot, xDomain: xDomain, yDomain: model.yDomain)
+    }
+
     var body: some View {
         Group {
-            if model.plot.count < 2 {
+            if plot.count < 2 {
                 NativeEmptyState(text: "No data", symbol: "heart")
             } else {
                 Chart {
-                    if let sleepStart = model.sleepStart, let sleepEnd = model.sleepEnd {
+                    if let sleep = NativeHeartRateMath.clippedSleep(
+                        start: model.sleepStart,
+                        end: model.sleepEnd,
+                        xDomain: xDomain
+                    ) {
                         RectangleMark(
-                            xStart: .value("Sleep shade start", sleepStart),
-                            xEnd: .value("Sleep shade end", sleepEnd),
+                            xStart: .value("Sleep shade start", sleep.0),
+                            xEnd: .value("Sleep shade end", sleep.1),
                             yStart: .value("Plot", model.yDomain.lowerBound),
                             yEnd: .value("Top", model.yDomain.upperBound)
                         )
                         .foregroundStyle(NativePaint.separator(style).opacity(0.16))
                         .accessibilityHidden(true)
                     }
-                    ForEach(model.plot) { point in
+                    ForEach(plot) { point in
                         LineMark(
                             x: .value("Time", point.time),
                             y: .value("BPM", point.value)
@@ -247,7 +259,9 @@ private struct NativeHeartRatePlot: View {
                         .accessibilityLabel(NativeScopeFormat.time(point.time))
                         .accessibilityValue("\(Int(point.value.rounded()))")
                     }
-                    if model.showsNow, let last = model.plot.last {
+                    if model.showsNow, let last = plot.last,
+                       last.time >= xDomain.lowerBound, last.time <= xDomain.upperBound,
+                       scrub.time == nil {
                         RuleMark(x: .value("Now", last.time))
                             .foregroundStyle(NativePaint.separator(style))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
@@ -260,9 +274,24 @@ private struct NativeHeartRatePlot: View {
                         .symbol { NativeSelectedVertex(tint: tint, size: 8) }
                         .accessibilityHidden(true)
                     }
+                    if let time = scrub.time,
+                       let point = NativeChartScrubMath.nearestHour(
+                        to: time,
+                        in: plot,
+                        maxGap: NativeChartScrubMath.inferredMaxGap(in: plot)
+                       ),
+                       point.time >= xDomain.lowerBound, point.time <= xDomain.upperBound {
+                        PointMark(
+                            x: .value("Scrub", point.time),
+                            y: .value("BPM", point.value)
+                        )
+                        .foregroundStyle(tint)
+                        .symbol { NativeSelectedVertex(tint: tint) }
+                        .accessibilityHidden(true)
+                    }
                 }
                 .chartYScale(domain: model.yDomain)
-                .chartXScale(domain: model.dayStart...model.plotEnd)
+                .chartXScale(domain: xDomain)
                 .chartYAxis {
                     AxisMarks(position: .trailing, values: NativeChartTicks.values(in: model.yDomain, maxCount: 3)) { _ in
                         AxisGridLine(stroke: NativeChrome.gridStroke)
@@ -273,33 +302,31 @@ private struct NativeHeartRatePlot: View {
                     }
                 }
                 .chartXAxis {
-                    AxisMarks(values: NativeStressMonitorMath.xAxisDates(dayStart: model.dayStart, plotEnd: model.plotEnd)) { value in
+                    AxisMarks(values: NativeHeartRateMath.xAxisDates(dayStart: model.dayStart, plotEnd: model.plotEnd)) { value in
                         AxisGridLine(stroke: NativeChrome.gridStroke)
                             .foregroundStyle(NativeChrome.hairline)
                         AxisValueLabel {
                             if let date = value.as(Date.self) {
-                                Text(NativeScopeFormat.time(date))
+                                Text(NativeScopeFormat.hourClock(date, calendar: .current))
                                     .font(.caption2)
                                     .foregroundStyle(Color.secondary)
                             }
                         }
                     }
                 }
+                .chartPlotStyle { $0.clipped() }
                 .modifier(NativeTimeSelect(
                     selected: timeBinding,
                     snap: { time in
                         guard let time else { return nil }
                         return NativeChartScrubMath.nearestHour(
                             to: time,
-                            in: model.plot,
-                            maxGap: NativeChartScrubMath.inferredMaxGap(in: model.plot)
+                            in: plot,
+                            maxGap: NativeChartScrubMath.inferredMaxGap(in: plot)
                         )?.time
                     },
                     onChange: { _ in }
                 ))
-                .chartOverlay { proxy in
-                    NativeHeartRateMarker(proxy: proxy, points: model.plot, tint: tint, scrub: scrub)
-                }
             }
         }
         .frame(maxWidth: .infinity)
@@ -309,7 +336,7 @@ private struct NativeHeartRatePlot: View {
                 title: "Heart rate",
                 unit: "BPM",
                 xKind: .date,
-                points: model.plot.map {
+                points: plot.map {
                     NativeChartDescriptor.Point(
                         xLabel: NativeScopeFormat.time($0.time),
                         xValue: $0.time.timeIntervalSince1970,
@@ -322,26 +349,4 @@ private struct NativeHeartRatePlot: View {
     }
 }
 
-private struct NativeHeartRateMarker: View {
-    var proxy: ChartProxy
-    var points: [NativeHourPoint]
-    var tint: Color
-    @ObservedObject var scrub: NativeScopeScrub
 
-    var body: some View {
-        GeometryReader { _ in
-            if let time = scrub.time,
-               let point = NativeChartScrubMath.nearestHour(
-                to: time,
-                in: points,
-                maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
-               ),
-               let x = proxy.position(forX: point.time),
-               let y = proxy.position(forY: point.value) {
-                NativeSelectedVertex(tint: tint)
-                    .position(x: x, y: y)
-            }
-        }
-        .allowsHitTesting(false)
-    }
-}

@@ -166,12 +166,21 @@ public enum HRVAnalyzer {
     /// the difference across a removed beat. `CleanSeries.nn` equals `cleanRR` value for value. Kotlin twin
     /// of `HrvAnalyzer.cleanRRGapAware`.
     public static func cleanRRGapAware(_ rr: [Double]) -> CleanSeries {
+        cleanRRGapAware(ms: rr, start: 0, end: rr.count)
+    }
+
+    /// Clean `ms[start..<end]` as a local window. Indices in `CleanSeries.contiguous` are
+    /// relative to `start`, matching `cleanRRGapAware(Array(ms[start..<end]))`.
+    static func cleanRRGapAware(ms: [Double], start: Int, end: Int) -> CleanSeries {
+        let n = max(0, end - start)
         // Pass 1: range filter, keeping each survivor's index in the ORIGINAL series.
-        var rangedIdx: [Int] = []; rangedIdx.reserveCapacity(rr.count)
-        var rangedVal: [Double] = []; rangedVal.reserveCapacity(rr.count)
-        for i in 0..<rr.count {
-            let v = rr[i]
-            if v >= rrMinMs && v <= rrMaxMs { rangedIdx.append(i); rangedVal.append(v) }
+        var rangedIdx: [Int] = []; rangedIdx.reserveCapacity(n)
+        var rangedVal: [Double] = []; rangedVal.reserveCapacity(n)
+        var i = start
+        while i < end {
+            let v = ms[i]
+            if v >= rrMinMs && v <= rrMaxMs { rangedIdx.append(i - start); rangedVal.append(v) }
+            i += 1
         }
         // Pass 2: Malik ectopic rejection over the range-filtered values, mirroring `rejectEctopic`
         // (same windows, same median, same threshold) so the kept values match `cleanRR` exactly, while
@@ -355,6 +364,9 @@ public enum HRVAnalyzer {
         guard windowSec > 0, rr.count >= minBeatsPerWindow else { return [] }
         // Stable: preserves the store's #823 emission order for same-second beats, which RMSSD needs.
         let sorted = rr.sortedByTsStable()
+        var ms: [Double] = []
+        ms.reserveCapacity(sorted.count)
+        for sample in sorted { ms.append(Double(sample.rrMs)) }
         var out: [RollingRmssdPoint] = []
         var lastEmitTs: Int? = nil
         var left = 0   // index of the oldest interval still inside the trailing window
@@ -374,8 +386,7 @@ public enum HRVAnalyzer {
             // survivor gate is unchanged, and `rmssdGapAware` equals `rmssdRaw` on a window with no gaps:
             // only windows that actually lost a beat move. A window whose survivors share NO adjacent
             // pair now emits nothing rather than a number built entirely from splices.
-            let windowRaw = sorted[left...right].map { Double($0.rrMs) }
-            let cleaned = cleanRRGapAware(windowRaw)
+            let cleaned = cleanRRGapAware(ms: ms, start: left, end: right + 1)
             guard cleaned.nn.count >= minBeatsPerWindow,
                   let r = rmssdGapAware(cleaned.nn, cleaned.contiguous) else { continue }
             out.append(RollingRmssdPoint(ts: edgeTs, rmssd: r))
@@ -964,11 +975,40 @@ public enum HRVAnalyzer {
     // MARK: - Helpers
 
     /// Median of a non-empty array. (Caller guarantees non-empty.)
+    /// n≤4 (Malik radius-2 neighbourhood) is unrolled so the ectopic filter
+    /// does not allocate a sort buffer per beat.
     static func median(_ values: [Double]) -> Double {
-        let s = values.sorted()
-        let n = s.count
-        if n == 0 { return 0 }
-        if n % 2 == 1 { return s[n / 2] }
-        return (s[n / 2 - 1] + s[n / 2]) / 2.0
+        let n = values.count
+        switch n {
+        case 0: return 0
+        case 1: return values[0]
+        case 2: return (values[0] + values[1]) / 2.0
+        case 3: return median3(values[0], values[1], values[2])
+        case 4: return median4(values[0], values[1], values[2], values[3])
+        default:
+            let s = values.sorted()
+            if n % 2 == 1 { return s[n / 2] }
+            return (s[n / 2 - 1] + s[n / 2]) / 2.0
+        }
+    }
+
+    static func median3(_ a: Double, _ b: Double, _ c: Double) -> Double {
+        if a > b {
+            if b > c { return b }
+            return a > c ? c : a
+        }
+        if a > c { return a }
+        return b > c ? c : b
+    }
+
+    /// Average of the 2nd and 3rd of four values (even-n median). Sorting network.
+    static func median4(_ a: Double, _ b: Double, _ c: Double, _ d: Double) -> Double {
+        var w = a, x = b, y = c, z = d
+        if w > x { swap(&w, &x) }
+        if y > z { swap(&y, &z) }
+        if w > y { swap(&w, &y) }
+        if x > z { swap(&x, &z) }
+        if x > y { swap(&x, &y) }
+        return (x + y) / 2.0
     }
 }

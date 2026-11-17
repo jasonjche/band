@@ -48,7 +48,7 @@ enum NativeHeartRateMath {
     ) -> [NativeHourPoint] {
         let cutoff = now.addingTimeInterval(-span)
         let window = points.filter { $0.time >= cutoff }
-        return downsample(NativeHRSmoothing.smooth(window), maxPoints: maxPoints)
+        return downsample(NativeHRSmoothing.smoothDay(window), maxPoints: maxPoints)
     }
 
     /// Live BPM rides the end of an already-smoothed spark. Does not resmooth.
@@ -132,6 +132,62 @@ enum NativeHeartRateMath {
         NativeStressMonitorMath.showsNow(dayStart: dayStart, now: now)
     }
 
+    /// Hero subline: "Latest" at rest, the scrubbed clock while dragging.
+    static let latestLabel = "Latest"
+
+    static func heroDate(isScrubbing: Bool, time: Date, calendar: Calendar = .current) -> String {
+        isScrubbing ? NativeScopeFormat.time(time, calendar: calendar) : latestLabel
+    }
+
+    /// Round-hour ticks. 12 AM / 6 AM / 12 PM / 6 PM on a ≥12 h window; every 3 h when shorter.
+    static func xAxisDates(dayStart: Date, plotEnd: Date, calendar: Calendar = .current) -> [Date] {
+        let span = plotEnd.timeIntervalSince(dayStart)
+        guard span > 0 else { return [dayStart] }
+        let stepHours = span >= 12 * 3600 ? 6 : 3
+        let dayEnd = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: dayStart)) ?? plotEnd
+        var dates: [Date] = []
+        var date = calendar.startOfDay(for: dayStart)
+        while date <= plotEnd {
+            if date >= dayEnd { break }
+            if date >= dayStart { dates.append(date) }
+            guard let next = calendar.date(byAdding: .hour, value: stepHours, to: date) else { break }
+            date = next
+        }
+        return dates.isEmpty ? [dayStart] : dates
+    }
+
+    static func clippedPlot(
+        _ points: [NativeHourPoint],
+        xDomain: ClosedRange<Date>,
+        yDomain: ClosedRange<Double>? = nil
+    ) -> [NativeHourPoint] {
+        points.filter { point in
+            guard point.time >= xDomain.lowerBound && point.time <= xDomain.upperBound else { return false }
+            guard let yDomain else { return true }
+            return point.value >= yDomain.lowerBound && point.value <= yDomain.upperBound
+        }
+    }
+
+    static func clippedSleep(
+        start: Date?,
+        end: Date?,
+        xDomain: ClosedRange<Date>
+    ) -> (Date, Date)? {
+        guard let start, let end else { return nil }
+        let lo = max(start, xDomain.lowerBound)
+        let hi = min(end, xDomain.upperBound)
+        guard hi > lo else { return nil }
+        return (lo, hi)
+    }
+
+    static func sparkXDomain(points: [NativeHourPoint], now: Date = Date()) -> ClosedRange<Date> {
+        if let first = points.first?.time, let last = points.last?.time, last > first {
+            return first...last
+        }
+        let end = points.last?.time ?? now
+        return end.addingTimeInterval(-sparkSpan)...end
+    }
+
     static func make(
         points: [NativeHourPoint],
         minBpm: Double?,
@@ -145,7 +201,7 @@ enum NativeHeartRateMath {
         viewingToday: Bool,
         maxPoints: Int = drawBudget
     ) -> Model {
-        let smoothed = NativeHRSmoothing.smooth(points)
+        let smoothed = NativeHRSmoothing.smoothDay(points)
         let plot = downsample(smoothed, maxPoints: maxPoints)
         let values = points.map(\.value)
         let domainValues = plot.map(\.value)

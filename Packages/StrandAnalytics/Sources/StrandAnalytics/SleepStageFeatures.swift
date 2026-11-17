@@ -154,23 +154,27 @@ public enum SleepStageFeatures {
         }
         var bin = [Double](repeating: .nan, count: nBin)
         for b in 0..<nBin where bCnt[b] > 0 { bin[b] = bSum[b] / Double(bCnt[b]) }
-        /// Present bins of `[a, b)` seconds relative to `lo`, clamped to the padded range.
-        func bins(_ a: Int, _ b: Int) -> [(Double, Double)] {       // (bin centre in seconds, bpm)
-            var out: [(Double, Double)] = []
-            let first = max(0, a) / hrBin, last = min(nSec, b) / hrBin
-            if last <= first { return out }
-            for k in first..<last where !bin[k].isNaN { out.append((Double(k * hrBin) + Double(hrBin) / 2, bin[k])) }
-            return out
+        /// Present bins of `[a, b)` seconds relative to `lo`, same order as the old allocated list.
+        func binRange(_ a: Int, _ b: Int) -> (Int, Int) {
+            (max(0, a) / hrBin, min(nSec, b) / hrBin)
         }
         func meanBpm(_ a: Int, _ b: Int) -> Double? {
-            let v = bins(a, b)
-            return v.isEmpty ? nil : v.reduce(0) { $0 + $1.1 } / Double(v.count)
+            let (first, last) = binRange(a, b)
+            if last <= first { return nil }
+            var s = 0.0, n = 0
+            for k in first..<last where !bin[k].isNaN { s += bin[k]; n += 1 }
+            return n == 0 ? nil : s / Double(n)
         }
         func sdBpm(_ a: Int, _ b: Int) -> Double? {
-            let v = bins(a, b)
-            if v.count < 3 { return nil }
-            let m = v.reduce(0) { $0 + $1.1 } / Double(v.count)
-            return (v.reduce(0) { $0 + ($1.1 - m) * ($1.1 - m) } / Double(v.count)).squareRoot()
+            let (first, last) = binRange(a, b)
+            if last <= first { return nil }
+            var s = 0.0, n = 0
+            for k in first..<last where !bin[k].isNaN { s += bin[k]; n += 1 }
+            if n < 3 { return nil }
+            let m = s / Double(n)
+            var ss = 0.0
+            for k in first..<last where !bin[k].isNaN { let d = bin[k] - m; ss += d * d }
+            return (ss / Double(n)).squareRoot()
         }
         var epochHR = [Double?](repeating: nil, count: nEp)
         for i in 0..<nEp { epochHR[i] = meanBpm(i * 30, i * 30 + 30) }
@@ -210,12 +214,26 @@ public enum SleepStageFeatures {
             let e = (w0 + k) * 30                                 // epoch start, seconds from `lo`
             rawHRsd5[k] = sdBpm(e - 150, e + 180)
             rawHRsd11[k] = sdBpm(e - 330, e + 390)
-            let v = bins(e - 150, e + 180)
-            if v.count >= 6 {
-                let mt = v.reduce(0) { $0 + $1.0 } / Double(v.count)
-                let mh = v.reduce(0) { $0 + $1.1 } / Double(v.count)
-                let sxx = v.reduce(0) { $0 + ($1.0 - mt) * ($1.0 - mt) }
-                if sxx > 0 { rawSlope[k] = v.reduce(0) { $0 + ($1.0 - mt) * ($1.1 - mh) } / sxx * 60 }
+            let (sf, sl) = binRange(e - 150, e + 180)
+            if sl > sf {
+                var n = 0, st = 0.0, sh = 0.0
+                for b in sf..<sl where !bin[b].isNaN {
+                    n += 1
+                    st += Double(b * hrBin) + Double(hrBin) / 2
+                    sh += bin[b]
+                }
+                if n >= 6 {
+                    let dn = Double(n)
+                    let mt = st / dn, mh = sh / dn
+                    var sxx = 0.0, sxy = 0.0
+                    for b in sf..<sl where !bin[b].isNaN {
+                        let t = Double(b * hrBin) + Double(hrBin) / 2
+                        let dt = t - mt, dh = bin[b] - mh
+                        sxx += dt * dt
+                        sxy += dt * dh
+                    }
+                    if sxx > 0 { rawSlope[k] = sxy / sxx * 60 }
+                }
             }
             if !beatT.isEmpty {
                 let r5 = beatRange(e - 150, e + 180)
@@ -242,8 +260,17 @@ public enum SleepStageFeatures {
         }
         var rawRange = [Double?](repeating: nil, count: nWin)     // heart-rate range over 90 s, bpm
         for k in 0..<nWin {
-            let near = bins((w0 + k) * 30 - 30, (w0 + k) * 30 + 60).map { $0.1 }
-            if near.count >= 3 { rawRange[k] = near.max()! - near.min()! }
+            let (first, last) = binRange((w0 + k) * 30 - 30, (w0 + k) * 30 + 60)
+            if last <= first { continue }
+            var n = 0, loH = Double.infinity, hiH = -Double.infinity
+            for b in first..<last {
+                let h = bin[b]
+                if h.isNaN { continue }
+                n += 1
+                if h < loH { loH = h }
+                if h > hiH { hiH = h }
+            }
+            if n >= 3 { rawRange[k] = hiH - loH }
         }
         // A rank, not night-SD units: how wide a 90 s swing reads depends on how hard the device smooths
         // its heart rate (the same statistic is 0.9, 0.3 and 0.7 night-SDs on three devices).

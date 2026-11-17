@@ -64,7 +64,52 @@ final class NativePerformanceAssessmentTests: XCTestCase {
         )
         XCTAssertEqual(
             NativePerformanceAssessmentCopy.format(15.14, metric: .respRate),
-            "15.1 breaths/min"
+            "15.1 rpm"
+        )
+    }
+
+    func testScreenTitleMatchesHealthTabReports() {
+        XCTAssertEqual(NativeHealthItem.reports.title, "Reports")
+    }
+
+    func testHeroHeadlineIsTheWeekLabelNotAPercent() {
+        var recovery: [String: Double] = [:]
+        var strain: [String: Double] = [:]
+        for d in 8...14 {
+            recovery[String(format: "2026-06-%02d", d)] = 20
+            strain[String(format: "2026-06-%02d", d)] = 18
+        }
+        let report = PerformanceAssessment.build(
+            kind: .weekly,
+            series: .init(recovery: recovery, strain21: strain),
+            asOfDay: "2026-06-15"
+        )!
+        XCTAssertEqual(report.balance.state, .overreaching)
+        XCTAssertEqual(NativePerformanceAssessmentCopy.heroHeadline(report), "Overreaching")
+        XCTAssertFalse(NativePerformanceAssessmentCopy.heroValue(report).contains("%"))
+    }
+
+    func testBalanceSentenceDropsInternalTerms() {
+        let over = PerformanceAssessment.BalanceRead(
+            state: .overreaching, optimalDays: 4, overreachingDays: 3, restoringDays: 0,
+            classifiedDays: 7, meanStrain: 11, meanTargetLo: 8, meanTargetHi: 12.4,
+            sentence: "Strain ran above the recovery target on 3 of 7 days (mean 11.0, band top 12.4)"
+        )
+        XCTAssertEqual(
+            NativePerformanceAssessmentCopy.balanceSentence(over),
+            "On 3 of 7 days your strain was higher than your recovery could support."
+        )
+        XCTAssertFalse(NativePerformanceAssessmentCopy.balanceSentence(over).contains("band top"))
+        XCTAssertFalse(NativePerformanceAssessmentCopy.balanceSentence(over).contains("mean"))
+
+        let restore = PerformanceAssessment.BalanceRead(
+            state: .restoring, optimalDays: 2, overreachingDays: 0, restoringDays: 5,
+            classifiedDays: 7, meanStrain: 5, meanTargetLo: 8, meanTargetHi: 14,
+            sentence: "internal"
+        )
+        XCTAssertEqual(
+            NativePerformanceAssessmentCopy.balanceSentence(restore),
+            "On 5 of 7 days your strain stayed below what recovery could support."
         )
     }
 

@@ -184,12 +184,15 @@ struct NativeAddActivityDayChart: View {
 
     @Environment(\.nativeStyle) private var style
 
+    private var xDomain: ClosedRange<Date> { dayStart...dayEnd }
+
     private var points: [NativeAddActivityChartLogic.SegmentPoint] {
         NativeAddActivityChartLogic.segments(samples: NativeAddActivityChartLogic.smoothed(samples))
+            .filter { NativePlotAxis.inTimeDomain($0.time, xDomain) }
     }
 
     private var yDomain: ClosedRange<Double> {
-        NativeChartDay.fittedDomain(points.map(\.value), fallback: 80...180)
+        NativePlotAxis.yDomain(points.map(\.value), fallback: 80...180)
     }
 
     private var bandStart: Date { max(windowStart, dayStart) }
@@ -253,30 +256,36 @@ struct NativeAddActivityDayChart: View {
                 .lineStyle(StrokeStyle(lineWidth: 2.5))
             }
         }
-        .chartXScale(domain: dayStart...dayEnd)
+        .chartXScale(domain: xDomain)
         .chartYScale(domain: yDomain)
         .chartYAxis {
-            AxisMarks(position: .trailing, values: NativeChartTicks.values(in: yDomain, maxCount: 3)) { _ in
+            AxisMarks(position: .trailing, values: NativePlotAxis.yTicks(in: yDomain)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
-                AxisValueLabel()
-                    .font(.caption2)
-                    .foregroundStyle(Color.secondary)
+                AxisValueLabel {
+                    if let bpm = value.as(Double.self) {
+                        Text("\(Int(bpm.rounded()))")
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                            .monospacedDigit()
+                    }
+                }
             }
         }
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { value in
+            AxisMarks(values: NativePlotAxis.timeTicks(start: dayStart, end: dayEnd)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
                     if let date = value.as(Date.self) {
-                        Text(AppClock.hourMinute(date))
+                        Text(NativePlotAxis.clockLabel(date))
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                     }
                 }
             }
         }
+        .chartPlotStyle { $0.clipped() }
         .chartLegend(.hidden)
         .chartOverlay { proxy in
             GeometryReader { geo in
@@ -304,5 +313,127 @@ struct NativeAddActivityDayChart: View {
             return proxy.value(atX: location.x - origin.x)
         }
         return proxy.value(atX: location.x)
+    }
+}
+
+/// Round axis ticks and plot domains for Native Charts. Copied small from
+/// `NativeScopeYTicks` / `chartTimeTicks` so those files stay untouched.
+enum NativePlotAxis {
+    /// 1 / 2 / 2.5 / 5 × 10^n, next step up so a domain does not sprout extra ticks.
+    static func niceStep(_ raw: Double) -> Double {
+        let v = max(abs(raw), 1e-9)
+        let exp = floor(log10(v))
+        let mag = pow(10, exp)
+        let n = v / mag
+        let nice: Double
+        if n <= 1 { nice = 1 }
+        else if n <= 2 { nice = 2 }
+        else if n <= 2.5 { nice = 2.5 }
+        else if n <= 5 { nice = 5 }
+        else { nice = 10 }
+        return nice * mag
+    }
+
+    static func yTicks(in domain: ClosedRange<Double>, maxCount: Int = 3) -> [Double] {
+        let lo = domain.lowerBound
+        let hi = domain.upperBound
+        let span = hi - lo
+        guard span > 0, maxCount >= 2 else { return [lo] }
+        let step = niceStep(span / Double(max(maxCount, 2)))
+        guard step > 0 else { return [lo, hi] }
+        let start = ceil(lo / step - 1e-9) * step
+        var ticks: [Double] = []
+        var cursor = start
+        while cursor <= hi + step * 0.01 {
+            ticks.append((cursor * 1e9).rounded() / 1e9)
+            cursor += step
+            if ticks.count > 8 { break }
+        }
+        if ticks.count < 2 { return [lo, hi] }
+        return ticks
+    }
+
+    /// Fitted data domain expanded to cover the outer nice ticks.
+    static func yDomain(_ values: [Double], fallback: ClosedRange<Double>, maxCount: Int = 3) -> ClosedRange<Double> {
+        let fitted = NativeChartDay.fittedDomain(values, fallback: fallback)
+        let ticks = yTicks(in: fitted, maxCount: maxCount)
+        guard let first = ticks.first, let last = ticks.last, last > first else { return fitted }
+        return min(fitted.lowerBound, first)...max(fitted.upperBound, last)
+    }
+
+    /// Wall-clock ticks. A full day is 12 AM / 6 AM / 12 PM / 6 PM (end exclusive).
+    static func timeTicks(start: Date, end: Date, calendar: Calendar = .current) -> [Date] {
+        let ticks = chartTimeTicks(start: start, end: end, calendar: calendar)
+        let span = end.timeIntervalSince(start)
+        if span >= 20 * 3600 {
+            return ticks.filter { $0 >= start && $0 < end }
+        }
+        return ticks.filter { $0 >= start && $0 <= end }
+    }
+
+    /// Compact "6 AM"; sub-hour ticks keep minutes ("6:15 AM").
+    static func clockLabel(_ date: Date, calendar: Calendar = .current) -> String {
+        if calendar.component(.minute, from: date) == 0 {
+            return NativeScopeFormat.hourClock(date, calendar: calendar)
+        }
+        return NativeScopeFormat.time(date, calendar: calendar)
+    }
+
+    /// Workout elapsed ticks: 15 min under an hour, 1 h for short windows, 3 h after that.
+    static func elapsedTicks(start: Date, end: Date) -> [Date] {
+        let span = end.timeIntervalSince(start)
+        guard span > 0 else { return [] }
+        let step: TimeInterval
+        if span < 3600 { step = 15 * 60 }
+        else if span < 6 * 3600 { step = 3600 }
+        else { step = 3 * 3600 }
+        var ticks: [Date] = []
+        var cursor = start.addingTimeInterval(step)
+        var steps = 0
+        while cursor <= end + 0.5, steps < 64 {
+            ticks.append(cursor)
+            cursor = cursor.addingTimeInterval(step)
+            steps += 1
+        }
+        return ticks
+    }
+
+    static func elapsedLabel(_ date: Date, start: Date) -> String {
+        let total = max(0, Int(date.timeIntervalSince(start).rounded()))
+        let minutes = total / 60
+        if minutes >= 60 {
+            return String(format: "%d:%02d", minutes / 60, minutes % 60)
+        }
+        return String(format: "0:%02d", minutes)
+    }
+
+    static func monthTicks(start: Date, end: Date, calendar: Calendar = .current) -> [Date] {
+        guard end > start else { return [start] }
+        var out: [Date] = [start]
+        var components = calendar.dateComponents([.year, .month], from: start)
+        components.day = 1
+        components.hour = 0
+        components.minute = 0
+        components.second = 0
+        var tick = calendar.date(from: components) ?? start
+        tick = calendar.date(byAdding: .month, value: 1, to: tick) ?? end
+        var steps = 0
+        while tick <= end, steps < 36 {
+            if tick > start { out.append(tick) }
+            tick = calendar.date(byAdding: .month, value: 1, to: tick) ?? end
+            steps += 1
+        }
+        if let last = out.last, last < end {
+            out.append(end)
+        }
+        return out
+    }
+
+    static func inTimeDomain(_ date: Date, _ domain: ClosedRange<Date>) -> Bool {
+        date >= domain.lowerBound && date <= domain.upperBound
+    }
+
+    static func inValueDomain(_ value: Double, _ domain: ClosedRange<Double>) -> Bool {
+        value.isFinite && value >= domain.lowerBound && value <= domain.upperBound
     }
 }

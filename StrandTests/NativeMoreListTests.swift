@@ -6,11 +6,11 @@ final class NativeMoreListTests: XCTestCase {
     func testPersonalMoreListOrder() {
         XCTAssertEqual(
             NativeMoreItem.titles,
-            ["Journal", "Strap", "Data & Backup", "Profile", "Settings", "Notifications", "About"]
+            ["Strap", "Data & Backup", "Profile", "Settings", "Notifications", "About"]
         )
         XCTAssertEqual(
             NativeMoreItem.allCases.map(\.rawValue),
-            ["journal", "strap", "dataBackup", "profile", "settings", "notifications", "about"]
+            ["strap", "dataBackup", "profile", "settings", "notifications", "about"]
         )
         XCTAssertEqual(NativeMoreSection.allCases.flatMap(\.items), NativeMoreItem.allCases)
     }
@@ -27,6 +27,6 @@ final class NativeMoreListTests: XCTestCase {
         XCTAssertFalse(titles.contains("Test Centre"))
         XCTAssertFalse(NativeMoreItem.allCases.map(\.icon).contains("alarm.fill"))
         XCTAssertTrue(titles.contains("Notifications"))
-        XCTAssertTrue(titles.contains("Journal"))
+        XCTAssertFalse(titles.contains("Journal"))  // Journal lives on Home
     }
 }

@@ -105,7 +105,9 @@ func agreementChecks(whoopDays: [WhoopDay], whoopWorkouts: [WhoopWorkout],
 
     // Replay BandScores over export-period inputs (NativeBandScores-equivalent package path).
     let inputs = bandDayInputs(from: whoopDays, workouts: whoopWorkouts, sleeps: whoopSleeps)
-    let scored = BandScores.evaluate(days: inputs, params: cfg.scoreParams)
+    let scored = Perf.measure("BandScores.evaluate", days: inputs.count) {
+        BandScores.evaluate(days: inputs, params: cfg.scoreParams)
+    }
     var rec2: [String: Double] = [:], rec3: [String: Double] = [:], perf: [String: Double] = [:]
     for s in scored {
         if let v = s.recovery { rec2[s.day] = v }
@@ -123,8 +125,10 @@ func agreementChecks(whoopDays: [WhoopDay], whoopWorkouts: [WhoopWorkout],
         .merging(byDay(daily, device: cfg.importedDevice) { $0.restingHr }) { a, _ in a }
     for (day, samples) in hrByDay {
         let rhr = rhrByDay[day] ?? storedRhr[day] ?? BandStrain.defaultRestingHR
-        if let s = BandStrain.strain(samples, maxHR: cfg.hrMax, restingHR: rhr, params: cfg.strainParams) {
-            hrStrain[day] = s
+        Perf.measureDay("BandStrain.strain", day: day) {
+            if let s = BandStrain.strain(samples, maxHR: cfg.hrMax, restingHR: rhr, params: cfg.strainParams) {
+                hrStrain[day] = s
+            }
         }
     }
     add("replay.day_strain_hr", whoop: wStrain, band: hrStrain, tol: 1.5)
@@ -215,8 +219,10 @@ func agreementChecks(whoopDays: [WhoopDay], whoopWorkouts: [WhoopWorkout],
     var hrEnergy: [String: Double] = [:]
     for (day, samples) in hrByDay {
         let rhr = rhrByDayFromWhoop(whoopDays)[day]
-        hrEnergy[day] = Calories.estimateDayCalories(
-            samples, profile: cfg.profile, hrmax: cfg.hrMax, restingHR: rhr, elapsedSeconds: 86_400)
+        Perf.measureDay("Calories.estimateDayCalories", day: day) {
+            hrEnergy[day] = Calories.estimateDayCalories(
+                samples, profile: cfg.profile, hrmax: cfg.hrMax, restingHR: rhr, elapsedSeconds: 86_400)
+        }
     }
     add("replay.day_calories_hr", whoop: wEnergy, band: hrEnergy, tol: 400)
 
@@ -244,16 +250,18 @@ func detectionChecks(whoopWorkouts: [WhoopWorkout], dbWorkouts: [WorkoutDBRow],
                      cfg: CheckConfig) -> [String: MatchStats] {
     var predicted: [TimeSpan] = []
     for (day, hr) in hrByDay.sorted(by: { $0.key < $1.key }) {
-        let rhr = rhrByDay[day].map { Int($0.rounded()) }
-        let motion = AutoWorkoutDetector.motionPoints(gravByDay[day] ?? [])
-        let hits = AutoWorkoutDetector.detect(
-            hr: hr.map { (ts: $0.ts, bpm: $0.bpm) },
-            restingBpm: rhr,
-            motion: motion.isEmpty ? nil : motion,
-            savedSpans: [],
-            minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin)
-        for h in hits {
-            predicted.append(TimeSpan(start: h.startSec, end: h.endSec, day: day))
+        Perf.measureDay("AutoWorkoutDetector.detect", day: day) {
+            let rhr = rhrByDay[day].map { Int($0.rounded()) }
+            let motion = AutoWorkoutDetector.motionPoints(gravByDay[day] ?? [])
+            let hits = AutoWorkoutDetector.detect(
+                hr: hr.map { (ts: $0.ts, bpm: $0.bpm) },
+                restingBpm: rhr,
+                motion: motion.isEmpty ? nil : motion,
+                savedSpans: [],
+                minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin)
+            for h in hits {
+                predicted.append(TimeSpan(start: h.startSec, end: h.endSec, day: day))
+            }
         }
     }
     let hrDays = Set(hrByDay.keys)

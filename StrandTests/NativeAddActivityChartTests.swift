@@ -247,4 +247,59 @@ final class NativeAddActivityChartTests: XCTestCase {
         XCTAssertEqual(bands[1].start, at(23))
         XCTAssertEqual(bands[1].end, Date(timeIntervalSince1970: TimeInterval(next)))
     }
+
+    // MARK: - Plot axis
+
+    func testNiceStepUsesOneTwoTwoFiveFive() {
+        XCTAssertEqual(NativePlotAxis.niceStep(0.9), 1, accuracy: 1e-9)
+        XCTAssertEqual(NativePlotAxis.niceStep(1.1), 2, accuracy: 1e-9)
+        XCTAssertEqual(NativePlotAxis.niceStep(2.2), 2.5, accuracy: 1e-9)
+        XCTAssertEqual(NativePlotAxis.niceStep(3.1), 5, accuracy: 1e-9)
+        XCTAssertEqual(NativePlotAxis.niceStep(38), 50, accuracy: 1e-9)
+    }
+
+    func testYTicksSitOnRoundStepsInsideTheDomain() {
+        XCTAssertEqual(NativePlotAxis.yTicks(in: 40...170, maxCount: 3), [50, 100, 150])
+    }
+
+    func testYDomainContainsEveryValue() {
+        let domain = NativePlotAxis.yDomain([47, 163], fallback: 80...180)
+        XCTAssertLessThanOrEqual(domain.lowerBound, 47)
+        XCTAssertGreaterThanOrEqual(domain.upperBound, 163)
+    }
+
+    func testFullDayTimeTicksAreSixHourMarks() {
+        let calendar = gmt()
+        let start = dayStart()
+        let end = calendar.date(byAdding: .day, value: 1, to: start)!
+        let labels = NativePlotAxis.timeTicks(start: start, end: end, calendar: calendar)
+            .map { NativePlotAxis.clockLabel($0, calendar: calendar) }
+        XCTAssertEqual(labels, ["12 AM", "6 AM", "12 PM", "6 PM"])
+    }
+
+    func testElapsedTicksUnderAnHourAreQuarterHours() {
+        let start = dayStart()
+        let end = start.addingTimeInterval(45 * 60)
+        let labels = NativePlotAxis.elapsedTicks(start: start, end: end)
+            .map { NativePlotAxis.elapsedLabel($0, start: start) }
+        XCTAssertEqual(labels, ["0:15", "0:30", "0:45"])
+    }
+
+    func testElapsedTicksOnAShortWorkoutAreHours() {
+        let start = dayStart()
+        let end = start.addingTimeInterval(2 * 3600)
+        let labels = NativePlotAxis.elapsedTicks(start: start, end: end)
+            .map { NativePlotAxis.elapsedLabel($0, start: start) }
+        XCTAssertEqual(labels, ["1:00", "2:00"])
+    }
+
+    func testMonthTicksIncludeStartAndLaterMonthStarts() {
+        let calendar = gmt()
+        let start = calendar.date(from: DateComponents(year: 2026, month: 1, day: 15))!
+        let end = calendar.date(from: DateComponents(year: 2026, month: 3, day: 10))!
+        let ticks = NativePlotAxis.monthTicks(start: start, end: end, calendar: calendar)
+        XCTAssertEqual(ticks.first, start)
+        XCTAssertEqual(calendar.component(.month, from: ticks[1]), 2)
+        XCTAssertEqual(ticks.last, end)
+    }
 }

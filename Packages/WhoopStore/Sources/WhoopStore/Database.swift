@@ -1177,6 +1177,19 @@ extension WhoopStore {
                 t.primaryKey(["kind", "day"])
             }
         }
+        // v51: covering indexes for the chart/analysis read path.
+        // `hrSample` PK is (deviceId, ts), so a range scan still heap-looks-up `bpm`.
+        // Covering (deviceId, ts, bpm) makes `hrSamples` / `hrBuckets` index-only.
+        // `ppgHrSample` is the sparse optical fallback; covering (deviceId, ts, bpm, conf)
+        // keeps the UNION anti-join from touching the table. Additive, ifNotExists.
+        // Gravity/step covering indexes were measured and dropped: they duplicate almost
+        // the whole 1 Hz table on a 180-day library for a Swift-allocation-bound read.
+        migrator.registerMigration("v51-read-covering-indexes") { db in
+            try db.create(index: "idx_hrSample_device_ts_bpm", on: "hrSample",
+                          columns: ["deviceId", "ts", "bpm"], options: [.ifNotExists])
+            try db.create(index: "idx_ppgHrSample_device_ts_bpm_conf", on: "ppgHrSample",
+                          columns: ["deviceId", "ts", "bpm", "conf"], options: [.ifNotExists])
+        }
         return migrator
     }
 }

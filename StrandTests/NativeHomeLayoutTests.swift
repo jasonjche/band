@@ -8,6 +8,38 @@ import StrandDesign
 @MainActor
 final class NativeHomeLayoutTests: XCTestCase {
 
+    func testDayAverageAndWeekBarShareMinuteSeriesMean() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let hours = [
+            NativeHourPoint(time: start, value: 0.4),
+            NativeHourPoint(time: start.addingTimeInterval(60), value: 0.6),
+        ]
+        let mean = 0.5
+        let key = "2023-11-14"
+        let day = DailyMetric(
+            day: key,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 62, avgHrv: 40, recovery: nil, strain: nil,
+            exerciseCount: nil
+        )
+        let average = NativeStressHistory.dayAverage(hours: hours, days: [day], dayKey: key)
+        XCTAssertEqual(average ?? -1, mean, accuracy: 0.01)
+
+        let fallback = NativeStressHistory.dayAverage(hours: [], days: [day], dayKey: key)
+        XCTAssertEqual(fallback, NativeStressHistory.dailyScore(days: [day], dayKey: key))
+        XCTAssertNotNil(fallback)
+        XCTAssertGreaterThan(abs((fallback ?? 0) - mean), 0.05)
+
+        let weekPoints = NativeStressHistory.daily(
+            days: [day], ending: key, minuteMeans: [key: mean]
+        )
+        XCTAssertEqual(weekPoints.first?.value ?? -1, mean, accuracy: 0.01)
+        XCTAssertEqual(weekPoints.first?.value, average)
+
+        let fallbackPoints = NativeStressHistory.daily(days: [day], ending: key)
+        XCTAssertEqual(fallbackPoints.first?.value, fallback)
+    }
+
     func testHomeAndStressPageShareOneLevelResolver() {
         let samples = [(ts: 100, bpm: 48), (ts: 200, bpm: 86), (ts: 300, bpm: 124)]
         let hours = NativeHomeCharts.stressSeries(samples: samples, stride: 1)

@@ -46,9 +46,41 @@ public enum BandStrain {
     /// Empty series → nil. Otherwise 0–21, clipped.
     public static func strain(_ samples: [HRSample], maxHR: Double, restingHR: Double,
                               params: Params) -> Double? {
-        strain(times: samples.map { Double($0.ts) },
-               hr: samples.map { Double($0.bpm) },
-               maxHR: maxHR, restingHR: restingHR, params: params)
+        guard !samples.isEmpty, maxHR > 1e-6 else { return nil }
+        let L = load(samples, maxHR: maxHR, restingHR: restingHR, params: params)
+        return strain(load: L, params: params)
+    }
+
+    /// Same load as `load(times:hr:)` over `HRSample`s, without two full Double copies of the day.
+    public static func load(_ samples: [HRSample], maxHR: Double, restingHR: Double,
+                            params: Params) -> Double {
+        let n = samples.count
+        guard n > 0, maxHR > 1e-6 else { return 0 }
+        let dt = durationsSeconds(samples)
+        let xRest = restingHR / maxHR
+        var L = 0.0
+        for i in 0..<n {
+            L += weight(hr: Double(samples[i].bpm), maxHR: maxHR, xRest: xRest, params: params) * (dt[i] / 60.0)
+        }
+        return L
+    }
+
+    /// `dt_i` from integer timestamps, same rule as `durationsSeconds([Double])`.
+    public static func durationsSeconds(_ samples: [HRSample]) -> [Double] {
+        let n = samples.count
+        if n == 0 { return [] }
+        if n == 1 { return [1.0] }
+        var raw = [Double]()
+        raw.reserveCapacity(n - 1)
+        for i in 0..<(n - 1) {
+            let d = Double(samples[i + 1].ts - samples[i].ts)
+            raw.append(d > 0 ? d : 1.0)
+        }
+        let cap = max(2.0 * BandScores.median(raw), 60.0)
+        var dt = raw
+        for i in 0..<dt.count { dt[i] = min(dt[i], cap) }
+        dt.append(dt[dt.count - 1])
+        return dt
     }
 
     /// Empty series → nil. `times` in seconds, `hr` in bpm, same length, time-ordered.

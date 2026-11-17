@@ -476,6 +476,15 @@ public enum PerformanceAssessment {
     static func balanceRead(window: Window, series: Series) -> BalanceRead {
         let minDays = window.kind == .weekly ? minDaysForBalanceWeekly : minDaysForBalanceMonthly
         let days = dayKeys(start: window.start, end: window.end)
+        var strainKeys: [String] = []
+        var strainVals: [Double] = []
+        strainKeys.reserveCapacity(series.strain21.count)
+        strainVals.reserveCapacity(series.strain21.count)
+        for (key, value) in series.strain21 where value.isFinite {
+            strainKeys.append(key)
+        }
+        strainKeys.sort()
+        for key in strainKeys { strainVals.append(series.strain21[key]!) }
         var optimal = 0
         var over = 0
         var restore = 0
@@ -485,7 +494,7 @@ public enum PerformanceAssessment {
         for day in days {
             guard let recovery = series.recovery[day], recovery.isFinite else { continue }
             guard let strain = series.strain21[day], strain.isFinite else { continue }
-            let history = daysBefore(day, in: series.strain21)
+            let history = prefixBefore(day, keys: strainKeys, vals: strainVals)
             guard let target = BandStrainTarget.recommend(recovery: recovery, recentStrain21: history) else {
                 continue
             }
@@ -553,6 +562,18 @@ public enum PerformanceAssessment {
             .filter { $0.key < day && $0.value.isFinite }
             .sorted { $0.key < $1.key }
             .map(\.value)
+    }
+
+    static func prefixBefore(_ day: String, keys: [String], vals: [Double]) -> [Double] {
+        var lo = 0
+        var hi = keys.count
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2
+            if keys[mid] < day { lo = mid + 1 }
+            else { hi = mid }
+        }
+        guard lo > 0 else { return [] }
+        return Array(vals[0..<lo])
     }
 
     // MARK: - Sleep
