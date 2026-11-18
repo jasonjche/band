@@ -29,15 +29,6 @@ enum NativeHealthspanFormat {
         return String(format: "%.1f years older", -delta)
     }
 
-    static func compactDeltaValue(_ delta: Double) -> String {
-        String(format: "%.1f", abs(delta))
-    }
-
-    static func compactDeltaCaption(_ delta: Double) -> String {
-        if abs(delta) < 0.05 { return "YEARS" }
-        return delta > 0 ? "YEARS YOUNGER" : "YEARS OLDER"
-    }
-
     static func valueText(_ value: Double, unit: String, key: String) -> String {
         switch key {
         case "sleep": return NativeScoreMath.duration(value * 60) + " h"

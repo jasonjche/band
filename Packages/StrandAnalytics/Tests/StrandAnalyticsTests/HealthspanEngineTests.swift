@@ -302,6 +302,26 @@ final class HealthspanEngineTests: XCTestCase {
         XCTAssertNotNil(r.bandAge)
         XCTAssertFalse(r.trend.isEmpty)
         XCTAssertEqual(r.trend.last?.day, "2026-11-14")
+        XCTAssertEqual(r.trend.last?.bandAge ?? -1, r.bandAge ?? -1, accuracy: 1e-12)
+        XCTAssertEqual(r.trend.last?.chronoAge ?? -1, r.chronoAge, accuracy: 1e-12)
+        XCTAssertEqual(r.trend.last?.pace ?? -1, r.pace ?? -1, accuracy: 1e-12)
+    }
+
+    func testLastTrendPointEqualsHeroBandAge() {
+        var days: [HealthspanEngine.Day] = []
+        let end = HealthspanEngine.isoEpochDay("2026-11-14")!
+        for i in 0..<180 {
+            let key = HealthspanEngine.isoString(end - (179 - i))!
+            let vo2 = i >= 173 ? 52.0 : 40.0
+            days.append(.init(day: key, sleepHours: 7.5, sleepOnsetMin: 23 * 60, sleepWakeMin: 7 * 60,
+                              steps: 9_000, restingHR: 58, vo2max: vo2,
+                              zone13Min: 20, zone45Min: 2, strengthMin: i % 7 == 0 ? 45 : 0))
+        }
+        let r = HealthspanEngine.compute(days: days, profile: .init(chronoAge: 28, sex: "male"),
+                                         asOfDay: "2026-11-14")
+        XCTAssertEqual(r.trend.last?.day, "2026-11-14")
+        XCTAssertEqual(r.trend.last?.bandAge ?? -1, r.bandAge ?? -1, accuracy: 1e-12)
+        XCTAssertEqual(r.trend.last?.pace ?? -1, r.pace ?? -1, accuracy: 1e-12)
     }
 
     func testReferentZeroes() {

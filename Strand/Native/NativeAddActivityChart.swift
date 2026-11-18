@@ -407,24 +407,32 @@ enum NativePlotAxis {
         return String(format: "0:%02d", minutes)
     }
 
+    /// First-of-month ticks inside the domain. The range start/end are omitted so a
+    /// mid-month window (May 16…Jun 1) cannot print overlapping "May" + "Jun" labels.
     static func monthTicks(start: Date, end: Date, calendar: Calendar = .current) -> [Date] {
         guard end > start else { return [start] }
-        var out: [Date] = [start]
         var components = calendar.dateComponents([.year, .month], from: start)
         components.day = 1
         components.hour = 0
         components.minute = 0
         components.second = 0
         var tick = calendar.date(from: components) ?? start
-        tick = calendar.date(byAdding: .month, value: 1, to: tick) ?? end
+        if tick < start {
+            tick = calendar.date(byAdding: .month, value: 1, to: tick) ?? end
+        }
+        var candidates: [Date] = []
         var steps = 0
         while tick <= end, steps < 36 {
-            if tick > start { out.append(tick) }
+            candidates.append(tick)
             tick = calendar.date(byAdding: .month, value: 1, to: tick) ?? end
             steps += 1
         }
-        if let last = out.last, last < end {
-            out.append(end)
+        if candidates.isEmpty { return [start] }
+        let minGap = max(end.timeIntervalSince(start) * 0.12, 1)
+        var out: [Date] = []
+        for date in candidates {
+            if let prev = out.last, date.timeIntervalSince(prev) < minGap { continue }
+            out.append(date)
         }
         return out
     }

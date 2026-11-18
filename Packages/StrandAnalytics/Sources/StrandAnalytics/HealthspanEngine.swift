@@ -450,11 +450,17 @@ public enum HealthspanEngine {
             pace = clamp(1 + (delta30 - delta180) / 0.5, minPace, maxPace)
         }
 
-        let trend: [TrendPoint]
+        var trend: [TrendPoint] = []
         if let asOfDay, !days.isEmpty, canScore {
             trend = trendPoints(days: days, profile: profile, asOfDay: asOfDay, index: index)
-        } else {
-            trend = []
+            if let bandAge {
+                let hero = TrendPoint(day: asOfDay, bandAge: bandAge, chronoAge: age, pace: pace)
+                if let idx = trend.lastIndex(where: { $0.day == asOfDay }) {
+                    trend[idx] = hero
+                } else {
+                    trend.append(hero)
+                }
+            }
         }
 
         return Result(bandAge: bandAge, chronoAge: age, deltaYears: deltaYears, pace: pace,

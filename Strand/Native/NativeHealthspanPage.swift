@@ -100,77 +100,27 @@ struct NativeHealthspanBody: View {
     var result: HealthspanEngine.Result?
     var links: [NativeHealthItem] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        NativeHealthspanScrollChrome(
-            bandAge: result?.bandAge,
-            deltaYears: result?.deltaYears,
-            forming: result == nil,
-            reduceMotion: reduceMotion,
-            overlay: {
-                if let result {
-                    NativeHealthspanCompactHeader(
-                        bandAge: result.bandAge,
-                        deltaYears: result.deltaYears,
-                        pace: result.pace,
-                        forming: false
-                    )
-                }
-            }
-        ) {
-            NativeHealthspanMainStack(result: result, links: links)
-                .equatable()
-        }
-    }
-}
-
-/// Scroll-driven compact progress lives here so trend charts and contributors stay Equatable.
-private struct NativeHealthspanScrollChrome<Overlay: View, Content: View>: View {
-    var bandAge: Double?
-    var deltaYears: Double?
-    var forming: Bool
-    var reduceMotion: Bool
-    @ViewBuilder var overlay: () -> Overlay
-    @ViewBuilder var content: () -> Content
     @Environment(\.nativeStyle) private var style
-    @State private var compactProgress: CGFloat = 0
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: style == .whoop ? 12 : 10) {
                 NativeHealthspanOrb(
-                    value: bandAge,
-                    delta: deltaYears,
-                    isLoading: forming,
-                    compact: false,
+                    value: result?.bandAge,
+                    delta: result?.deltaYears,
+                    isLoading: result == nil,
                     reduceMotion: reduceMotion
                 )
                 .frame(maxWidth: .infinity)
                 .padding(.top, 8)
                 .padding(.bottom, 4)
-                .opacity(1 - compactProgress)
-                .modifier(NativeHealthspanHeroPhaseFade())
-                .background(NativeHealthspanHeroAnchor())
-                content()
+                NativeHealthspanMainStack(result: result, links: links)
+                    .equatable()
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 160)
         }
-        .coordinateSpace(name: NativeHealthspanScroll.name)
         .background(NativePageFill().ignoresSafeArea())
-        .modifier(NativeHealthspanScrollCompact(progress: $compactProgress))
-        .onPreferenceChange(NativeHealthspanHeroMinYKey.self) { minY in
-            if #available(iOS 18.0, macOS 15.0, *) { return }
-            let next = NativeHealthspanScroll.progress(heroMinY: minY)
-            if abs(next - compactProgress) > 0.01 {
-                compactProgress = next
-            }
-        }
-        .overlay(alignment: .top) {
-            overlay()
-                .opacity(compactProgress)
-                .allowsHitTesting(false)
-        }
     }
 }
 
@@ -247,69 +197,6 @@ private struct NativeHealthspanMainStack: View, Equatable {
     }
 }
 
-enum NativeHealthspanScroll {
-    static let name = "healthspan"
-    static let fadeStart: CGFloat = 24
-    static let fadeSpan: CGFloat = 140
-
-    static func progress(offset: CGFloat) -> CGFloat {
-        min(1, max(0, (offset - fadeStart) / fadeSpan))
-    }
-
-    static func progress(heroMinY: CGFloat) -> CGFloat {
-        progress(offset: -heroMinY)
-    }
-}
-
-private struct NativeHealthspanHeroMinYKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private struct NativeHealthspanHeroAnchor: View {
-    var body: some View {
-        GeometryReader { geo in
-            Color.clear.preference(
-                key: NativeHealthspanHeroMinYKey.self,
-                value: geo.frame(in: .named(NativeHealthspanScroll.name)).minY
-            )
-        }
-    }
-}
-
-private struct NativeHealthspanHeroPhaseFade: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 17.0, macOS 14.0, *) {
-            content.scrollTransition { view, phase in
-                view.scaleEffect(phase.isIdentity ? 1 : 0.92)
-            }
-        } else {
-            content
-        }
-    }
-}
-
-private struct NativeHealthspanScrollCompact: ViewModifier {
-    @Binding var progress: CGFloat
-
-    func body(content: Content) -> some View {
-        if #available(iOS 18.0, macOS 15.0, *) {
-            content.onScrollGeometryChange(for: CGFloat.self) { geo in
-                geo.contentOffset.y + geo.contentInsets.top
-            } action: { _, y in
-                let next = min(1, max(0, (y - NativeHealthspanScroll.fadeStart) / NativeHealthspanScroll.fadeSpan))
-                if abs(next - progress) > 0.01 {
-                    progress = next
-                }
-            }
-        } else {
-            content
-        }
-    }
-}
-
 enum NativeHealthspanBuild {
     static func map(_ rows: [(day: String, value: Double)]) -> [String: Double] {
         Dictionary(rows.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
@@ -317,6 +204,55 @@ enum NativeHealthspanBuild {
 
     static func hoursFromMinutes(_ rows: [(day: String, value: Double)]) -> [String: Double] {
         Dictionary(rows.map { ($0.day, $0.value / 60) }, uniquingKeysWith: { _, last in last })
+    }
+
+    /// One VO₂ series for every day. Own estimate (`vo2max_est`) wins when any day has it;
+    /// Apple Watch VO₂ sits well below WHOOP's Nes/Uth number and moved Band Age by years
+    /// when the two were mixed. A newly written Saturday estimate is carried across the
+    /// window so it cannot retarget only today.
+    static func resolvedVO2(
+        vo2EstByDay: [String: Double],
+        appleVO2ByDay: [String: Double],
+        vo2ByDay: [String: Double],
+        days: [String]
+    ) -> [String: Double] {
+        func positive(_ map: [String: Double]) -> [String: Double] {
+            map.filter { $0.value > 0 && $0.value.isFinite }
+        }
+        let own = positive(vo2EstByDay)
+        let apple = positive(appleVO2ByDay)
+        let imported = positive(vo2ByDay)
+        let source: [String: Double]
+        if !own.isEmpty {
+            source = own
+        } else {
+            source = apple.merging(imported) { apple, _ in apple }
+        }
+        guard !source.isEmpty else { return [:] }
+        let allDays = Array(Set(days).union(source.keys)).sorted()
+        if own.isEmpty {
+            return source
+        }
+        return carry(source, across: allDays)
+    }
+
+    /// Last-observation-carried-forward, then backfill the leading gap.
+    static func carry(_ values: [String: Double], across days: [String]) -> [String: Double] {
+        let sorted = days.sorted()
+        var out: [String: Double] = [:]
+        var last: Double?
+        for day in sorted {
+            if let v = values[day], v > 0 { last = v }
+            if let last { out[day] = last }
+        }
+        guard let firstKnown = sorted.compactMap({ values[$0] }).first(where: { $0 > 0 }) else {
+            return out
+        }
+        for day in sorted {
+            if out[day] != nil { break }
+            out[day] = firstKnown
+        }
+        return out
     }
 
     static func clockMin(_ ts: Int) -> Int {
@@ -387,14 +323,11 @@ enum NativeHealthspanBuild {
             byDay[day] = row
         }
 
-        // VO₂ max: one source for the whole window, never a mix. WHOOP scores its own estimate, so Band
-        // prefers its own (vo2max_est) when it has one; Apple Watch VO₂ max reads well below WHOOP's for
-        // the same person and moved Band Age by ~2 years. Apple Health is the fallback.
-        let preferOwnVO2 = vo2EstByDay.values.contains { $0 > 0 }
+        var appleVO2ByDay: [String: Double] = [:]
         for a in apple {
             var row = slot(a.day)
             if let s = a.steps, s > 0 { row.steps = Double(s) }
-            if !preferOwnVO2, let v = a.vo2max, v > 0 { row.vo2max = v }
+            if let v = a.vo2max, v > 0 { appleVO2ByDay[a.day] = v }
             byDay[a.day] = row
         }
 
@@ -413,14 +346,15 @@ enum NativeHealthspanBuild {
             if row.steps == nil { row.steps = s }
             byDay[day] = row
         }
-        for (day, v) in vo2ByDay where v > 0 && !preferOwnVO2 {
+        let vo2 = resolvedVO2(
+            vo2EstByDay: vo2EstByDay,
+            appleVO2ByDay: appleVO2ByDay,
+            vo2ByDay: vo2ByDay,
+            days: Array(byDay.keys)
+        )
+        for (day, v) in vo2 {
             var row = slot(day)
-            if row.vo2max == nil { row.vo2max = v }
-            byDay[day] = row
-        }
-        for (day, v) in vo2EstByDay where v > 0 {
-            var row = slot(day)
-            if row.vo2max == nil { row.vo2max = v }
+            row.vo2max = v
             byDay[day] = row
         }
         for (day, stored) in leanByDay {

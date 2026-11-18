@@ -293,13 +293,29 @@ final class NativeAddActivityChartTests: XCTestCase {
         XCTAssertEqual(labels, ["1:00", "2:00"])
     }
 
-    func testMonthTicksIncludeStartAndLaterMonthStarts() {
+    func testMonthTicksAreMonthStartsInsideTheRange() {
         let calendar = gmt()
         let start = calendar.date(from: DateComponents(year: 2026, month: 1, day: 15))!
         let end = calendar.date(from: DateComponents(year: 2026, month: 3, day: 10))!
         let ticks = NativePlotAxis.monthTicks(start: start, end: end, calendar: calendar)
-        XCTAssertEqual(ticks.first, start)
-        XCTAssertEqual(calendar.component(.month, from: ticks[1]), 2)
-        XCTAssertEqual(ticks.last, end)
+        XCTAssertEqual(ticks.map { calendar.component(.month, from: $0) }, [2, 3])
+        XCTAssertTrue(ticks.allSatisfy { calendar.component(.day, from: $0) == 1 })
+    }
+
+    func testMonthTicksDropALateStartThatWouldOverlapTheNextMonth() {
+        let calendar = gmt()
+        let start = calendar.date(from: DateComponents(year: 2026, month: 5, day: 16))!
+        let end = calendar.date(from: DateComponents(year: 2026, month: 11, day: 16))!
+        let ticks = NativePlotAxis.monthTicks(start: start, end: end, calendar: calendar)
+        let months = ticks.map { calendar.component(.month, from: $0) }
+        XCTAssertEqual(months.first, 6)
+        XCTAssertFalse(months.contains(5))
+        XCTAssertEqual(Set(months).count, months.count)
+        for index in 1..<ticks.count {
+            XCTAssertGreaterThanOrEqual(
+                ticks[index].timeIntervalSince(ticks[index - 1]),
+                14 * 86_400
+            )
+        }
     }
 }

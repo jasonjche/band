@@ -145,10 +145,6 @@ final class NativeHealthspanTests: XCTestCase {
         XCTAssertEqual(NativeHealthspanFormat.yearsImpact(0.5, available: true), "+0.5 years")
         XCTAssertEqual(NativeHealthspanFormat.yearsImpact(-1.4, available: true), "-1.4 years")
         XCTAssertEqual(NativeHealthspanFormat.yearsImpact(0.0, available: true), "0.0 years")
-        XCTAssertEqual(NativeHealthspanFormat.compactDeltaValue(1.9), "1.9")
-        XCTAssertEqual(NativeHealthspanFormat.compactDeltaCaption(1.9), "YEARS YOUNGER")
-        XCTAssertEqual(NativeHealthspanFormat.compactDeltaCaption(-0.8), "YEARS OLDER")
-        XCTAssertEqual(NativeHealthspanFormat.compactDeltaCaption(0), "YEARS")
     }
 
     func testPaceChipReadsLastTwoWeeklyPoints() {
@@ -201,8 +197,81 @@ final class NativeHealthspanTests: XCTestCase {
         XCTAssertEqual(six.map(\.day), ["2026-10-01", "2026-11-01", "2026-11-15"])
         XCTAssertEqual(NativeHealthspanTrendScope.month.label, "M")
         XCTAssertEqual(NativeHealthspanTrendScope.sixMonths.label, "6M")
-        XCTAssertEqual(NativeHealthspanScroll.progress(heroMinY: 8), 0, accuracy: 0.001)
-        XCTAssertEqual(NativeHealthspanScroll.progress(offset: 0), 0, accuracy: 0.001)
-        XCTAssertEqual(NativeHealthspanScroll.progress(offset: 24 + 140), 1, accuracy: 0.001)
+    }
+
+    func testResolvedVO2PrefersOwnAndCarriesAcrossDays() {
+        let days = (1...14).map { String(format: "2026-11-%02d", $0) }
+        let apple = Dictionary(uniqueKeysWithValues: days.map { ($0, 40.0) })
+        let resolved = NativeHealthspanBuild.resolvedVO2(
+            vo2EstByDay: ["2026-11-08": 52],
+            appleVO2ByDay: apple,
+            vo2ByDay: [:],
+            days: days
+        )
+        XCTAssertEqual(Set(resolved.keys), Set(days))
+        for day in days {
+            XCTAssertEqual(resolved[day] ?? 0, 52, accuracy: 0.01, day)
+        }
+    }
+
+    func testResolvedVO2FallsBackToAppleWhenOwnIsMissing() {
+        let resolved = NativeHealthspanBuild.resolvedVO2(
+            vo2EstByDay: [:],
+            appleVO2ByDay: ["2026-11-01": 40],
+            vo2ByDay: ["2026-11-01": 44, "2026-11-02": 41],
+            days: ["2026-11-01", "2026-11-02"]
+        )
+        XCTAssertEqual(resolved["2026-11-01"] ?? 0, 40, accuracy: 0.01)
+        XCTAssertEqual(resolved["2026-11-02"] ?? 0, 41, accuracy: 0.01)
+    }
+
+    func testMergeOwnVO2FillsEveryDayAndLastTrendMatchesHero() throws {
+        var metrics: [DailyMetric] = []
+        var apple: [AppleDaily] = []
+        let end = HealthspanEngine.isoEpochDay("2026-11-14")!
+        for i in 0..<180 {
+            let key = HealthspanEngine.isoString(end - (179 - i))!
+            metrics.append(DailyMetric(
+                day: key, totalSleepMin: 450, efficiency: 0.9,
+                deepMin: nil, remMin: nil, lightMin: nil, disturbances: nil,
+                restingHr: 58, avgHrv: 40, recovery: nil, strain: nil, exerciseCount: 1,
+                steps: 9_000
+            ))
+            apple.append(AppleDaily(
+                day: key, steps: 9_000, activeKcal: nil, basalKcal: nil,
+                vo2max: 40, avgHr: nil, maxHr: nil, walkingHr: nil, weightKg: 73
+            ))
+        }
+        let days = NativeHealthspanBuild.merge(
+            metrics: metrics,
+            sleeps: [],
+            workouts: [],
+            apple: apple,
+            sleepHoursByDay: [:],
+            consistencyByDay: [:],
+            stepsByDay: [:],
+            vo2ByDay: [:],
+            vo2EstByDay: ["2026-11-14": 52],
+            leanByDay: [:],
+            weightByDay: [:],
+            profileWeightKg: 73
+        )
+        for day in days {
+            XCTAssertEqual(day.vo2max ?? 0, 52, accuracy: 0.01, day.day)
+        }
+        let result = HealthspanEngine.compute(
+            days: days,
+            profile: .init(chronoAge: 28, sex: "male"),
+            asOfDay: "2026-11-14"
+        )
+        let last = try XCTUnwrap(result.trend.last)
+        let hero = try XCTUnwrap(result.bandAge)
+        XCTAssertEqual(last.day, "2026-11-14")
+        XCTAssertEqual(last.bandAge, hero, accuracy: 1e-12)
+        XCTAssertEqual(last.chronoAge, result.chronoAge, accuracy: 1e-12)
+        XCTAssertEqual(last.pace ?? -1, result.pace ?? -1, accuracy: 1e-12)
+        if let previous = result.trend.dropLast().last {
+            XCTAssertEqual(previous.bandAge, hero, accuracy: 0.15)
+        }
     }
 }
