@@ -1173,7 +1173,7 @@ struct NativeLabeledLine: View {
     private var known: [NativeDayPoint] { points.filter { $0.value.isFinite } }
     private var whoop: Bool { style == .whoop }
     private var segments: [NativeChartDay.LinePoint] { NativeChartDay.linePoints(points) }
-    /// Rest emphasises the viewing day; scrub replaces that with the touched day. No hairline.
+    /// Rest emphasises the viewing day; scrub replaces that with the touched day plus a hairline.
     private var emphasizedKey: String? { selectedDay?.wrappedValue ?? highlightKey }
 
     private var axisTicks: [Double] {
@@ -1208,6 +1208,13 @@ struct NativeLabeledLine: View {
                     )
                     .foregroundStyle(Color.clear)
                     .accessibilityHidden(true)
+                }
+                if let selected = selectedDay?.wrappedValue,
+                   points.contains(where: { $0.key == selected && $0.value.isFinite }) {
+                    RuleMark(x: .value("Day", selected))
+                        .foregroundStyle(NativeTokens.separator)
+                        .lineStyle(NativeChartScrubMath.hairlineStyle)
+                        .accessibilityHidden(true)
                 }
                 ForEach(plotSegments) { point in
                     LineMark(
@@ -1325,9 +1332,7 @@ struct NativeStrainRecoveryChart: View {
         .onAppear {
             if selectedDay == nil { selectedDay = previewSelected }
         }
-        #if os(iOS)
-        .sensoryFeedback(.selection, trigger: selectedDay ?? "")
-        #endif
+        .modifier(NativeSelectionFeedback(trigger: selectedDay ?? ""))
     }
 
     private var plot: some View {
@@ -1335,6 +1340,12 @@ struct NativeStrainRecoveryChart: View {
             ForEach(axisKeys, id: \.self) { key in
                 BarMark(x: .value("Day", key), y: .value("Slot", 0))
                     .foregroundStyle(Color.clear)
+                    .accessibilityHidden(true)
+            }
+            if let selectedDay, inspectCaption(selectedDay) != nil {
+                RuleMark(x: .value("Day", selectedDay))
+                    .foregroundStyle(NativeTokens.separator)
+                    .lineStyle(NativeChartScrubMath.hairlineStyle)
                     .accessibilityHidden(true)
             }
             ForEach(lines) { point in
@@ -2099,6 +2110,10 @@ struct NativeOvernightLine: View {
                     if let point = scrubPoint(in: model),
                        point.value >= model.yDomain.lowerBound, point.value <= model.yDomain.upperBound,
                        model.xDomain.map({ point.time >= $0.lowerBound && point.time <= $0.upperBound }) ?? true {
+                        RuleMark(x: .value("Scrub", point.time))
+                            .foregroundStyle(NativeTokens.separator)
+                            .lineStyle(NativeChartScrubMath.hairlineStyle)
+                            .accessibilityHidden(true)
                         PointMark(x: .value("Scrub", point.time), y: .value("HR", point.value))
                             .foregroundStyle(tint)
                             .symbol { NativeSelectedVertex(tint: tint) }
@@ -2137,14 +2152,7 @@ struct NativeOvernightLine: View {
                 }
                 .modifier(NativeTimeSelect(
                     selected: selection,
-                    snap: { time in
-                        guard let time else { return nil }
-                        return NativeChartScrubMath.nearestHour(
-                            to: time,
-                            in: points,
-                            maxGap: model.maxGap
-                        )?.time
-                    },
+                    snap: { NativeChartScrubMath.snapTime($0, in: points, maxGap: model.maxGap) },
                     onChange: { _ in }
                 ))
                 .onAppear { if selection.wrappedValue == nil { selection.wrappedValue = previewSelected } }
@@ -2375,6 +2383,10 @@ struct NativeStressMonitor: View {
            ),
            point.time >= dayStart, point.time <= plotEnd,
            point.value >= 0, point.value <= 3 {
+            RuleMark(x: .value("Scrub", point.time))
+                .foregroundStyle(NativePaint.separator(style))
+                .lineStyle(NativeChartScrubMath.hairlineStyle)
+                .accessibilityHidden(true)
             PointMark(x: .value("Scrub", point.time), y: .value("Stress", point.value))
                 .foregroundStyle(NativeChrome.stressBandColor(point.value))
                 .symbol { NativeSelectedVertex(tint: NativeChrome.stressBandColor(point.value)) }

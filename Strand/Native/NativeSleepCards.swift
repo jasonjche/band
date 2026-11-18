@@ -159,6 +159,7 @@ private struct NativeSleepConsistencyHost: View, Equatable {
         }
         .contentShape(Rectangle())
         .nativeChartButton(action: onOpen)
+        .modifier(NativeSelectionFeedback(trigger: selectedKey ?? ""))
     }
 
     @ViewBuilder private var hero: some View {
@@ -261,6 +262,10 @@ struct NativeSleepConsistencyChart: View {
                         width: 14
                     )
                     .foregroundStyle(night.key == litKey ? tint : Color.secondary.opacity(0.45))
+                    .opacity(NativeChartScrubMath.barOpacity(
+                        isSelected: night.key == selected,
+                        hasSelection: selected != nil && nights.contains(where: { $0.key == selected })
+                    ))
                     .clipShape(Capsule())
                     .accessibilityLabel(NativeChartDay.longLabel(night.key))
                     .accessibilityValue("\(NativeSleepClock.clock(night.bedtime)) to \(NativeSleepClock.clock(night.wake))")
@@ -314,12 +319,7 @@ struct NativeSleepConsistencyChart: View {
             }
         }
         .accessibilityLabel("Sleep consistency, last \(keys.count) nights")
-
-        if #available(iOS 17.0, macOS 14.0, *), let selectedKey {
-            chart.chartXSelection(value: selectedKey)
-        } else {
-            chart
-        }
+        .modifier(NativeSleepDaySelect(selected: selectedKey, keys: nights.map(\.key)))
     }
 }
 
@@ -450,6 +450,7 @@ private struct NativeSleepStressHost: View, Equatable {
         }
         .contentShape(Rectangle())
         .nativeChartButton(action: onOpen)
+        .modifier(NativeSelectionFeedback(trigger: scrub.time ?? .distantPast))
     }
 
     private func bandRow(_ band: NativeSleepStress.Band, symbol: String) -> some View {
@@ -551,18 +552,16 @@ struct NativeSleepStressPlot: View {
         }
         .accessibilityLabel("Overnight sleep stress")
 
-        Group {
-            if #available(iOS 17.0, macOS 14.0, *) {
-                marks
-                    .chartXSelection(value: timeBinding)
-                    .chartOverlay { proxy in
-                        NativeSleepStressMarker(proxy: proxy, points: model.domainPoints, scrub: scrub)
-                            .clipped()
-                    }
-            } else {
-                marks
+        marks
+            .chartOverlay { proxy in
+                NativeSleepStressMarker(proxy: proxy, points: model.domainPoints, scrub: scrub)
+                    .clipped()
             }
-        }
+            .modifier(NativeTimeSelect(
+                selected: timeBinding,
+                snap: { NativeChartScrubMath.snapTime($0, in: points) },
+                onChange: { _ in }
+            ))
     }
 }
 
@@ -573,29 +572,19 @@ private struct NativeSleepStressMarker: View {
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
-        GeometryReader { geo in
-            if let time = scrub.time,
-               let point = NativeChartScrubMath.nearestHour(
-                to: time,
-                in: points,
-                maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
-               ),
-               let xRel = proxy.position(forX: point.time),
-               let yRel = proxy.position(forY: point.value) {
-                let origin = plotOrigin(geo: geo)
-                let placed = NativeChartScrubMath.overlayPoint(plotOrigin: origin, x: xRel, y: yRel)
-                NativeSelectedVertex(tint: NativePaint.stressBand(point.value, style: style))
-                    .position(x: placed.x, y: placed.y)
-            }
+        if let time = scrub.time,
+           let point = NativeChartScrubMath.nearestHour(
+            to: time,
+            in: points,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+           ) {
+            NativeChartTimeScrubGuide(
+                proxy: proxy,
+                time: point.time,
+                y: point.value,
+                tint: NativePaint.stressBand(point.value, style: style)
+            )
         }
-        .allowsHitTesting(false)
-    }
-
-    private func plotOrigin(geo: GeometryProxy) -> CGPoint {
-        if #available(iOS 17.0, macOS 14.0, *), let frame = proxy.plotFrame {
-            return geo[frame].origin
-        }
-        return .zero
     }
 }
 
@@ -706,6 +695,12 @@ private struct NativeSleepDualLineHost: View, Equatable {
                     .accessibilityHidden(true)
                 }
             }
+            if let selectedKey, slept.contains(where: { $0.key == selectedKey && $0.value.isFinite }) {
+                RuleMark(x: .value("Day", selectedKey))
+                    .foregroundStyle(NativeTokens.separator)
+                    .lineStyle(NativeChartScrubMath.hairlineStyle)
+                    .accessibilityHidden(true)
+            }
             ForEach(model.sleptLine) { point in
                 LineMark(
                     x: .value("Day", point.key),
@@ -766,15 +761,24 @@ private struct NativeSleepDualLineHost: View, Equatable {
             }
         }
         .accessibilityLabel("Hours slept and hours needed")
-        .modifier(NativeSleepDaySelect(selected: $selectedKey))
+        .modifier(NativeSleepDaySelect(selected: $selectedKey, keys: slept.map(\.key)))
     }
 }
 
 private struct NativeSleepDaySelect: ViewModifier {
-    @Binding var selected: String?
+    var selected: Binding<String?>?
+    var keys: [String] = []
+
     func body(content: Content) -> some View {
-        if #available(iOS 17.0, macOS 14.0, *) {
-            content.chartXSelection(value: $selected)
+        if #available(iOS 17.0, macOS 14.0, *), let selected {
+            content.chartXSelection(value: Binding(
+                get: { selected.wrappedValue },
+                set: { new in
+                    selected.wrappedValue = keys.isEmpty
+                        ? new
+                        : NativeChartScrubMath.snapKey(new, in: keys)
+                }
+            ))
         } else {
             content
         }
@@ -956,7 +960,7 @@ private struct NativeSleepTimeInBedWeekHost: View, Equatable {
             }
         }
         .accessibilityLabel("Time in bed, last 7 days")
-        .modifier(NativeSleepDaySelect(selected: $selectedKey))
+        .modifier(NativeSleepDaySelect(selected: $selectedKey, keys: points.map(\.key)))
     }
 }
 
@@ -1163,7 +1167,7 @@ struct NativeSleepRestorativeChart: View {
             }
         }
         .accessibilityLabel("Restorative sleep, deep and REM")
-        .modifier(NativeSleepDaySelect(selected: $selectedKey))
+        .modifier(NativeSleepDaySelect(selected: $selectedKey, keys: keys))
     }
 }
 

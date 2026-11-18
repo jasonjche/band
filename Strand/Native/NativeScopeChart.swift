@@ -525,44 +525,41 @@ private struct NativeScopeHairline: View {
     var color: ((Double) -> Color)?
 
     var body: some View {
-        GeometryReader { geo in
-            let frame = plotFrame(geo: geo)
-            ZStack(alignment: .topLeading) {
-                if let key = scrub.key,
-                   let bucket = NativeScopeVisible.selected(key: key, in: visible),
-                   let value = bucket.value,
-                   let xRel = proxy.position(forX: bucket.start),
-                   let yRel = proxy.position(forY: value) {
-                    let point = NativeChartScrubMath.overlayPoint(plotOrigin: frame.origin, x: xRel, y: yRel)
-                    if frame.insetBy(dx: -1, dy: -1).contains(point) {
-                        Path { path in
-                            path.move(to: CGPoint(x: point.x, y: frame.minY))
-                            path.addLine(to: CGPoint(x: point.x, y: frame.maxY))
-                        }
-                        .stroke(NativeTokens.separator, lineWidth: 1)
-                        NativeSelectedVertex(tint: color?(value) ?? tint)
-                            .position(x: point.x, y: point.y)
-                    }
-                }
-            }
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-            .clipShape(NativePlotClip(frame: frame))
+        if let key = scrub.key,
+           let bucket = NativeScopeVisible.selected(key: key, in: visible),
+           let value = bucket.value {
+            NativeChartTimeScrubGuide(
+                proxy: proxy,
+                time: bucket.start,
+                y: value,
+                tint: color?(value) ?? tint
+            )
         }
-        .allowsHitTesting(false)
-    }
-
-    private func plotFrame(geo: GeometryProxy) -> CGRect {
-        if #available(iOS 17.0, macOS 14.0, *), let anchor = proxy.plotFrame {
-            return geo[anchor]
-        }
-        return geo[proxy.plotAreaFrame]
     }
 }
 
-/// Clips overlay chrome to the plot so a lookback vertex cannot paint in the screen margin.
-private struct NativePlotClip: Shape {
-    var frame: CGRect
-    func path(in _: CGRect) -> Path { Path(frame) }
+/// Hour-line scrub cursor. Observes `scrub` so LineMarks stay on the static chart.
+private struct NativeScopeHourScrub: View {
+    var proxy: ChartProxy
+    var points: [NativeHourPoint]
+    @ObservedObject var scrub: NativeScopeScrub
+    var tint: Color
+
+    var body: some View {
+        if let time = scrub.time,
+           let point = NativeChartScrubMath.nearestHour(
+            to: time,
+            in: points,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+           ) {
+            NativeChartTimeScrubGuide(
+                proxy: proxy,
+                time: point.time,
+                y: point.value,
+                tint: tint
+            )
+        }
+    }
 }
 
 /// Chart marks. Bar opacity follows `selectedKey`; line selection is the overlay hairline.
@@ -912,14 +909,6 @@ private struct NativeScopeHourLineChart: View {
         let labels = NativeCountTicks.roundHourLabels(
             dayStart: dayStart, plotEnd: plotEnd, calendar: calendar
         )
-        let selected: NativeHourPoint? = {
-            guard let time = scrub.time ?? previewTime else { return nil }
-            return NativeChartScrubMath.nearestHour(
-                to: time,
-                in: drawn,
-                maxGap: NativeChartScrubMath.inferredMaxGap(in: drawn)
-            )
-        }()
         Chart {
             ForEach(drawn) { point in
                 LineMark(x: .value("Time", point.time), y: .value("Value", point.value))
@@ -928,12 +917,6 @@ private struct NativeScopeHourLineChart: View {
                     .lineStyle(StrokeStyle(lineWidth: 2, lineJoin: .round))
                     .accessibilityLabel(NativeScopeFormat.time(point.time))
                     .accessibilityValue(format(point.value))
-            }
-            if let selected {
-                PointMark(x: .value("Scrub", selected.time), y: .value("Value", selected.value))
-                    .foregroundStyle(tint)
-                    .symbol { NativeSelectedVertex(tint: tint) }
-                    .accessibilityHidden(true)
             }
         }
         .chartYScale(domain: yDomain)
@@ -966,16 +949,12 @@ private struct NativeScopeHourLineChart: View {
             }
         }
         .nativeClippedChartPlot()
+        .chartOverlay { proxy in
+            NativeScopeHourScrub(proxy: proxy, points: drawn, scrub: scrub, tint: tint)
+        }
         .modifier(NativeTimeSelect(
             selected: timeBinding,
-            snap: { time in
-                guard let time else { return nil }
-                return NativeChartScrubMath.nearestHour(
-                    to: time,
-                    in: points,
-                    maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
-                )?.time
-            },
+            snap: { NativeChartScrubMath.snapTime($0, in: points) },
             onChange: { _ in }
         ))
         .onAppear { if scrub.time == nil { scrub.time = previewTime } }
