@@ -266,6 +266,48 @@ final class NativeChartPerfModelTests: XCTestCase {
         XCTAssertEqual(NativeHealthspanRangeBarMath.band(index: 7, higherIsBetter: false), 0)
     }
 
+    func testHeartRatePlotModelMatchesPreviousBodyGetters() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let raw = (0..<180).map { index in
+            NativeHourPoint(
+                time: start.addingTimeInterval(TimeInterval(index) * 60),
+                value: 58 + Double(index % 17)
+            )
+        }
+        let now = start.addingTimeInterval(4 * 3600)
+        let sleepEnd = start.addingTimeInterval(2 * 3600)
+        let model = NativeHeartRateMath.make(
+            points: raw,
+            minBpm: 50, maxBpm: 90, avgBpm: 70, restingBpm: 52,
+            sleepStart: start, sleepEnd: sleepEnd,
+            dayStart: start, now: now, viewingToday: true
+        )
+        let xDomain = model.dayStart...model.plotEnd
+        XCTAssertEqual(model.xDomain, xDomain)
+        XCTAssertEqual(
+            model.domainPoints,
+            NativeHeartRateMath.clippedPlot(model.plot, xDomain: xDomain, yDomain: model.yDomain)
+        )
+        XCTAssertEqual(model.segments, NativeHeartRateMath.splitGaps(model.domainPoints))
+        XCTAssertEqual(
+            model.hourLabels,
+            NativeHeartRateMath.xAxisDates(dayStart: model.dayStart, plotEnd: model.plotEnd)
+        )
+        XCTAssertEqual(model.yTicks, NativeChartTicks.values(in: model.yDomain, maxCount: 3))
+        let sleep = NativeHeartRateMath.clippedSleep(
+            start: model.sleepStart, end: model.sleepEnd, xDomain: xDomain
+        )
+        XCTAssertEqual(model.sleepVisible?.start, sleep?.0)
+        XCTAssertEqual(model.sleepVisible?.end, sleep?.1)
+        XCTAssertEqual(model.maxGap, NativeChartScrubMath.inferredMaxGap(in: model.plot))
+        XCTAssertEqual(model.chartPoints.count, model.domainPoints.count)
+        XCTAssertEqual(
+            model.pointValueText[model.domainPoints[0].time.timeIntervalSince1970],
+            "\(Int(model.domainPoints[0].value.rounded()))"
+        )
+        XCTAssertLessThanOrEqual(model.plot.count, NativeHeartRateMath.drawBudget)
+    }
+
     func testStressDayPlotDownsamplesDrawnMinutesTo300() {
         let dayStart = Date(timeIntervalSince1970: 1_700_000_000)
         let hours = (0..<1_440).map { index in

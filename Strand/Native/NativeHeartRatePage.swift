@@ -16,6 +16,7 @@ struct NativeHeartRatePage: View {
     @State private var model = NativeHeartRateMath.Model.empty
     @State private var liveBpm: Int?
     @State private var liveSamples: [NativeHourPoint] = []
+    @State private var lastLivePlotSecond = 0
     @State private var scrub = NativeScopeScrub()
 
     private var selectedDay: Date {
@@ -29,19 +30,10 @@ struct NativeHeartRatePage: View {
         handlesReady ? "\(dayKey)|\(refreshSeq)" : "boot"
     }
 
-    private var displayModel: NativeHeartRateMath.Model {
-        guard viewingToday else { return model }
-        return NativeHeartRateMath.appendLive(
-            to: model,
-            bpm: liveBpm,
-            at: liveSamples.last?.time ?? Date()
-        )
-    }
-
     var body: some View {
         NativeChrome.screen {
             NativeHeartRateBody(
-                model: displayModel,
+                model: model,
                 liveBpm: viewingToday ? liveBpm : nil,
                 scrub: scrub
             )
@@ -63,8 +55,25 @@ struct NativeHeartRatePage: View {
             if key != NativeDayLogic.logicalToday() {
                 liveBpm = nil
                 liveSamples = []
+                lastLivePlotSecond = 0
             }
         }
+        .onChangeCompat(of: liveBpm) { _ in
+            applyLivePlot()
+        }
+        .onChangeCompat(of: liveSamples.last?.time) { _ in
+            applyLivePlot()
+        }
+    }
+
+    /// Live BPM can tick faster than 1 Hz; the polyline model rebuilds at most once a second.
+    private func applyLivePlot() {
+        guard viewingToday, liveBpm != nil else { return }
+        let time = liveSamples.last?.time ?? Date()
+        let second = Int(time.timeIntervalSince1970)
+        guard second != lastLivePlotSecond else { return }
+        lastLivePlotSecond = second
+        model = NativeHeartRateMath.appendLive(to: model, bpm: liveBpm, at: time)
     }
 
     private func load(repo: Repository) async {
@@ -105,6 +114,8 @@ struct NativeHeartRatePage: View {
         }.value
         if Task.isCancelled || key != dayKey { return }
         model = built
+        lastLivePlotSecond = 0
+        applyLivePlot()
     }
 }
 
@@ -181,7 +192,7 @@ private struct NativeHeartRateHero: View {
            let point = NativeChartScrubMath.nearestHour(
             to: time,
             in: model.plot,
-            maxGap: NativeChartScrubMath.inferredMaxGap(in: model.plot)
+            maxGap: model.maxGap
            ) {
             NativeHeroValue(
                 caption: "Heart Rate",
@@ -212,121 +223,15 @@ private struct NativeHeartRateHero: View {
 private struct NativeHeartRatePlot: View {
     var model: NativeHeartRateMath.Model
     var tint: Color
-    @ObservedObject var scrub: NativeScopeScrub
-    @Environment(\.nativeStyle) private var style
-
-    private var timeBinding: Binding<Date?> {
-        Binding(
-            get: { scrub.time },
-            set: { scrub.time = $0 }
-        )
-    }
-
-    private var xDomain: ClosedRange<Date> { model.dayStart...model.plotEnd }
-
-    private var plot: [NativeHourPoint] {
-        NativeHeartRateMath.clippedPlot(model.plot, xDomain: xDomain, yDomain: model.yDomain)
-    }
+    var scrub: NativeScopeScrub
 
     var body: some View {
         Group {
-            if plot.count < 2 {
+            if model.domainPoints.count < 2 {
                 NativeEmptyState(text: "No data", symbol: "heart")
             } else {
-                Chart {
-                    if let sleep = NativeHeartRateMath.clippedSleep(
-                        start: model.sleepStart,
-                        end: model.sleepEnd,
-                        xDomain: xDomain
-                    ) {
-                        RectangleMark(
-                            xStart: .value("Sleep shade start", sleep.0),
-                            xEnd: .value("Sleep shade end", sleep.1),
-                            yStart: .value("Plot", model.yDomain.lowerBound),
-                            yEnd: .value("Top", model.yDomain.upperBound)
-                        )
-                        .foregroundStyle(NativePaint.separator(style).opacity(0.16))
-                        .accessibilityHidden(true)
-                    }
-                    ForEach(plot) { point in
-                        LineMark(
-                            x: .value("Time", point.time),
-                            y: .value("BPM", point.value)
-                        )
-                        .foregroundStyle(tint)
-                        .interpolationMethod(.linear)
-                        .lineStyle(StrokeStyle(lineWidth: 2))
-                        .accessibilityLabel(NativeScopeFormat.time(point.time))
-                        .accessibilityValue("\(Int(point.value.rounded()))")
-                    }
-                    if model.showsNow, let last = plot.last,
-                       last.time >= xDomain.lowerBound, last.time <= xDomain.upperBound,
-                       scrub.time == nil {
-                        RuleMark(x: .value("Now", last.time))
-                            .foregroundStyle(NativePaint.separator(style))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                            .accessibilityHidden(true)
-                        PointMark(
-                            x: .value("Now dot", last.time),
-                            y: .value("BPM", last.value)
-                        )
-                        .foregroundStyle(tint)
-                        .symbol { NativeSelectedVertex(tint: tint, size: 8) }
-                        .accessibilityHidden(true)
-                    }
-                    if let time = scrub.time,
-                       let point = NativeChartScrubMath.nearestHour(
-                        to: time,
-                        in: plot,
-                        maxGap: NativeChartScrubMath.inferredMaxGap(in: plot)
-                       ),
-                       point.time >= xDomain.lowerBound, point.time <= xDomain.upperBound {
-                        PointMark(
-                            x: .value("Scrub", point.time),
-                            y: .value("BPM", point.value)
-                        )
-                        .foregroundStyle(tint)
-                        .symbol { NativeSelectedVertex(tint: tint) }
-                        .accessibilityHidden(true)
-                    }
-                }
-                .chartYScale(domain: model.yDomain)
-                .chartXScale(domain: xDomain)
-                .chartYAxis {
-                    AxisMarks(position: .trailing, values: NativeChartTicks.values(in: model.yDomain, maxCount: 3)) { _ in
-                        AxisGridLine(stroke: NativeChrome.gridStroke)
-                            .foregroundStyle(NativeChrome.hairline)
-                        AxisValueLabel()
-                            .font(.caption2)
-                            .foregroundStyle(Color.secondary)
-                    }
-                }
-                .chartXAxis {
-                    AxisMarks(values: NativeHeartRateMath.xAxisDates(dayStart: model.dayStart, plotEnd: model.plotEnd)) { value in
-                        AxisGridLine(stroke: NativeChrome.gridStroke)
-                            .foregroundStyle(NativeChrome.hairline)
-                        AxisValueLabel {
-                            if let date = value.as(Date.self) {
-                                Text(NativeScopeFormat.hourClock(date, calendar: .current))
-                                    .font(.caption2)
-                                    .foregroundStyle(Color.secondary)
-                            }
-                        }
-                    }
-                }
-                .chartPlotStyle { $0.clipped() }
-                .modifier(NativeTimeSelect(
-                    selected: timeBinding,
-                    snap: { time in
-                        guard let time else { return nil }
-                        return NativeChartScrubMath.nearestHour(
-                            to: time,
-                            in: plot,
-                            maxGap: NativeChartScrubMath.inferredMaxGap(in: plot)
-                        )?.time
-                    },
-                    onChange: { _ in }
-                ))
+                NativeHeartRateLineChart(model: model, tint: tint, scrub: scrub)
+                    .equatable()
             }
         }
         .frame(maxWidth: .infinity)
@@ -336,16 +241,160 @@ private struct NativeHeartRatePlot: View {
                 title: "Heart rate",
                 unit: "BPM",
                 xKind: .date,
-                points: plot.map {
-                    NativeChartDescriptor.Point(
-                        xLabel: NativeScopeFormat.time($0.time),
-                        xValue: $0.time.timeIntervalSince1970,
-                        y: $0.value
-                    )
+                points: model.chartPoints.map {
+                    NativeChartDescriptor.Point(xLabel: $0.xLabel, xValue: $0.xValue, y: $0.y)
                 },
                 yRange: model.yDomain
             )
         )
+    }
+}
+
+/// Line marks keyed on the plot model. Scrub lives in the overlay so a drag does not rebuild the line.
+private struct NativeHeartRateLineChart: View, Equatable {
+    var model: NativeHeartRateMath.Model
+    var tint: Color
+    var scrub: NativeScopeScrub
+    @Environment(\.nativeStyle) private var style
+
+    static func == (lhs: NativeHeartRateLineChart, rhs: NativeHeartRateLineChart) -> Bool {
+        lhs.model == rhs.model && lhs.tint == rhs.tint
+    }
+
+    private var timeBinding: Binding<Date?> {
+        Binding(
+            get: { scrub.time },
+            set: { scrub.time = $0 }
+        )
+    }
+
+    var body: some View {
+        Chart {
+            if let sleep = model.sleepVisible {
+                RectangleMark(
+                    xStart: .value("Sleep shade start", sleep.start),
+                    xEnd: .value("Sleep shade end", sleep.end),
+                    yStart: .value("Plot", model.yDomain.lowerBound),
+                    yEnd: .value("Top", model.yDomain.upperBound)
+                )
+                .foregroundStyle(NativePaint.separator(style).opacity(0.16))
+                .accessibilityHidden(true)
+            }
+            ForEach(Array(model.segments.enumerated()), id: \.offset) { index, segment in
+                ForEach(segment) { point in
+                    LineMark(
+                        x: .value("Time", point.time),
+                        y: .value("BPM", point.value),
+                        series: .value("Segment", index)
+                    )
+                    .foregroundStyle(tint)
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+                    .accessibilityLabel(model.pointTimeText[point.time.timeIntervalSince1970] ?? "")
+                    .accessibilityValue(model.pointValueText[point.time.timeIntervalSince1970] ?? "")
+                }
+            }
+        }
+        .chartYScale(domain: model.yDomain)
+        .chartXScale(domain: model.xDomain)
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: model.yTicks) { _ in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativeChrome.hairline)
+                AxisValueLabel()
+                    .font(.caption2)
+                    .foregroundStyle(Color.secondary)
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: model.hourLabels) { value in
+                AxisGridLine(stroke: NativeChrome.gridStroke)
+                    .foregroundStyle(NativeChrome.hairline)
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(model.hourLabelText[date.timeIntervalSince1970] ?? "")
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                    }
+                }
+            }
+        }
+        .chartPlotStyle { $0.clipped() }
+        .chartOverlay { proxy in
+            NativeHeartRateScrubOverlay(proxy: proxy, model: model, tint: tint, scrub: scrub)
+        }
+        .modifier(NativeTimeSelect(
+            selected: timeBinding,
+            snap: { time in
+                guard let time else { return nil }
+                return NativeChartScrubMath.nearestHour(
+                    to: time,
+                    in: model.plot,
+                    maxGap: model.maxGap
+                )?.time
+            },
+            onChange: { _ in }
+        ))
+    }
+}
+
+private struct NativeHeartRateScrubOverlay: View {
+    var proxy: ChartProxy
+    var model: NativeHeartRateMath.Model
+    var tint: Color
+    @ObservedObject var scrub: NativeScopeScrub
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
+        GeometryReader { geo in
+            let origin = plotOrigin(geo: geo)
+            let frame = plotFrame(geo: geo)
+            ZStack(alignment: .topLeading) {
+                if let time = scrub.time,
+                   let point = NativeChartScrubMath.nearestHour(
+                    to: time,
+                    in: model.plot,
+                    maxGap: model.maxGap
+                   ),
+                   point.time >= model.xDomain.lowerBound, point.time <= model.xDomain.upperBound,
+                   let xRel = proxy.position(forX: point.time),
+                   let yRel = proxy.position(forY: point.value) {
+                    let placed = NativeChartScrubMath.overlayPoint(plotOrigin: origin, x: xRel, y: yRel)
+                    if frame.insetBy(dx: -1, dy: -1).contains(placed) {
+                        NativeSelectedVertex(tint: tint)
+                            .position(x: placed.x, y: placed.y)
+                    }
+                } else if model.showsNow, let last = model.plot.last,
+                          last.time >= model.xDomain.lowerBound, last.time <= model.xDomain.upperBound,
+                          let xRel = proxy.position(forX: last.time) {
+                    let x = origin.x + xRel
+                    ZStack {
+                        Path { path in
+                            path.move(to: CGPoint(x: x, y: frame.minY))
+                            path.addLine(to: CGPoint(x: x, y: frame.maxY))
+                        }
+                        .stroke(NativePaint.separator(style), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        if let yRel = proxy.position(forY: last.value) {
+                            NativeSelectedVertex(tint: tint, size: 8)
+                                .position(x: x, y: origin.y + yRel)
+                        }
+                    }
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func plotOrigin(geo: GeometryProxy) -> CGPoint {
+        plotFrame(geo: geo).origin
+    }
+
+    private func plotFrame(geo: GeometryProxy) -> CGRect {
+        if #available(iOS 17.0, macOS 14.0, *), let frame = proxy.plotFrame {
+            return geo[frame]
+        }
+        return geo.frame(in: .local)
     }
 }
 

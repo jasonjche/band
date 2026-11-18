@@ -1,7 +1,8 @@
 import Foundation
 
-/// Display-only heart-rate series: spark window, draw budget, y-domain, live append.
+/// Display-only heart-rate series: spark window, draw budget, domains, labels, live append.
 /// Stats (min / avg / max) stay on the raw buckets; Charts never see more than `drawBudget` points.
+/// `Model` is the plot payload — built off the main thread, drawn as-is in `body`.
 enum NativeHeartRateMath {
     /// Health Monitor spark: last few hours of today's trace.
     static let sparkSpan: TimeInterval = 4 * 3600
@@ -17,25 +18,59 @@ enum NativeHeartRateMath {
         var restingBpm: Int?
     }
 
+    struct SleepSpan: Equatable {
+        var start: Date
+        var end: Date
+    }
+
+    struct ChartPoint: Equatable {
+        var xLabel: String
+        var xValue: Double
+        var y: Double
+    }
+
+    /// Display polyline, domains, ticks, and labels. Built once per series, not in `body`.
     struct Model: Equatable {
         var plot: [NativeHourPoint]
+        var domainPoints: [NativeHourPoint]
+        var segments: [[NativeHourPoint]]
         var yDomain: ClosedRange<Double>
+        var xDomain: ClosedRange<Date>
+        var yTicks: [Double]
         var stats: Stats
         var sleepStart: Date?
         var sleepEnd: Date?
+        var sleepVisible: SleepSpan?
         var dayStart: Date
         var plotEnd: Date
         var showsNow: Bool
+        var hourLabels: [Date]
+        var hourLabelText: [TimeInterval: String]
+        var pointTimeText: [TimeInterval: String]
+        var pointValueText: [TimeInterval: String]
+        var chartPoints: [ChartPoint]
+        var maxGap: TimeInterval?
 
         static let empty = Model(
             plot: [],
+            domainPoints: [],
+            segments: [],
             yDomain: 40...180,
+            xDomain: Date(timeIntervalSince1970: 0)...Date(timeIntervalSince1970: 86_400),
+            yTicks: NativeChartTicks.values(in: 40...180, maxCount: 3),
             stats: Stats(),
             sleepStart: nil,
             sleepEnd: nil,
+            sleepVisible: nil,
             dayStart: Date(timeIntervalSince1970: 0),
             plotEnd: Date(timeIntervalSince1970: 86_400),
-            showsNow: false
+            showsNow: false,
+            hourLabels: [],
+            hourLabelText: [:],
+            pointTimeText: [:],
+            pointValueText: [:],
+            chartPoints: [],
+            maxGap: nil
         )
     }
 
@@ -94,6 +129,27 @@ enum NativeHeartRateMath {
             out.append(NativeHourPoint(time: time, value: totals[key] / Double(counts[key])))
         }
         return out
+    }
+
+    /// Split a polyline where adjacent samples are farther than the stress-plot connect
+    /// gap (5 minutes). Charts then does not interpolate across off-wrist holes.
+    static func splitGaps(_ points: [NativeHourPoint]) -> [[NativeHourPoint]] {
+        guard !points.isEmpty else { return [] }
+        guard points.count >= 2 else { return [points] }
+        let limit = NativeStressMonitorMath.drawConnectGap
+        var segments: [[NativeHourPoint]] = []
+        var current: [NativeHourPoint] = []
+        current.reserveCapacity(points.count)
+        for point in points {
+            if let last = current.last, point.time.timeIntervalSince(last.time) > limit {
+                segments.append(current)
+                current = [point]
+            } else {
+                current.append(point)
+            }
+        }
+        if !current.isEmpty { segments.append(current) }
+        return segments
     }
 
     /// Bucket width (seconds) that keeps a `span` under `maxPoints`. Floor 60 s.
@@ -201,15 +257,18 @@ enum NativeHeartRateMath {
         dayStart: Date,
         now: Date,
         viewingToday: Bool,
-        maxPoints: Int = drawBudget
+        maxPoints: Int = drawBudget,
+        calendar: Calendar = .current
     ) -> Model {
         let smoothed = NativeHRSmoothing.smoothDay(points)
         let plot = downsample(smoothed, maxPoints: maxPoints)
         let values = points.map(\.value)
         let domainValues = plot.map(\.value)
-        return Model(
+        let yDomain = fittedDomain(domainValues.isEmpty ? values : domainValues)
+        let end = plotEnd(dayStart: dayStart, now: now)
+        return finish(
             plot: plot,
-            yDomain: fittedDomain(domainValues.isEmpty ? values : domainValues),
+            yDomain: yDomain,
             stats: Stats(
                 minBpm: minBpm ?? values.filter(\.isFinite).min(),
                 avgBpm: avgBpm ?? NativeScoreMath.mean(values.filter(\.isFinite)),
@@ -219,24 +278,94 @@ enum NativeHeartRateMath {
             sleepStart: sleepStart,
             sleepEnd: sleepEnd,
             dayStart: dayStart,
-            plotEnd: plotEnd(dayStart: dayStart, now: now),
-            showsNow: viewingToday && showsNow(dayStart: dayStart, now: now)
+            plotEnd: end,
+            showsNow: viewingToday && showsNow(dayStart: dayStart, now: now),
+            calendar: calendar
         )
     }
 
-    static func appendLive(to model: Model, bpm: Int?, at time: Date) -> Model {
+    static func appendLive(to model: Model, bpm: Int?, at time: Date, calendar: Calendar = .current) -> Model {
         let plot = appendLive(model.plot, bpm: bpm, at: time)
         guard plot != model.plot else { return model }
-        var next = model
-        next.plot = plot
+        var yDomain = model.yDomain
         if let last = plot.last,
            last.value < model.yDomain.lowerBound || last.value > model.yDomain.upperBound {
-            next.yDomain = fittedDomain(plot.map(\.value), fallback: model.yDomain)
+            yDomain = fittedDomain(plot.map(\.value), fallback: model.yDomain)
         }
+        var end = model.plotEnd
+        var showsNow = model.showsNow
         if NativeStressMonitorMath.showsNow(dayStart: model.dayStart, now: time) {
-            next.plotEnd = max(model.plotEnd, time)
-            next.showsNow = true
+            end = max(model.plotEnd, time)
+            showsNow = true
         }
-        return next
+        return finish(
+            plot: plot,
+            yDomain: yDomain,
+            stats: model.stats,
+            sleepStart: model.sleepStart,
+            sleepEnd: model.sleepEnd,
+            dayStart: model.dayStart,
+            plotEnd: end,
+            showsNow: showsNow,
+            calendar: calendar
+        )
+    }
+
+    /// Labels, clips, segments, and ticks for a finished polyline. No smoothing.
+    static func finish(
+        plot: [NativeHourPoint],
+        yDomain: ClosedRange<Double>,
+        stats: Stats,
+        sleepStart: Date?,
+        sleepEnd: Date?,
+        dayStart: Date,
+        plotEnd: Date,
+        showsNow: Bool,
+        calendar: Calendar = .current
+    ) -> Model {
+        let xDomain = dayStart...plotEnd
+        let domainPoints = clippedPlot(plot, xDomain: xDomain, yDomain: yDomain)
+        let segments = splitGaps(domainPoints)
+        let hourLabels = xAxisDates(dayStart: dayStart, plotEnd: plotEnd, calendar: calendar)
+        var hourLabelText: [TimeInterval: String] = [:]
+        hourLabelText.reserveCapacity(hourLabels.count)
+        for date in hourLabels {
+            hourLabelText[date.timeIntervalSince1970] = NativeScopeFormat.hourClock(date, calendar: calendar)
+        }
+        var pointTimeText: [TimeInterval: String] = [:]
+        var pointValueText: [TimeInterval: String] = [:]
+        var chartPoints: [ChartPoint] = []
+        pointTimeText.reserveCapacity(domainPoints.count)
+        pointValueText.reserveCapacity(domainPoints.count)
+        chartPoints.reserveCapacity(domainPoints.count)
+        for point in domainPoints {
+            let key = point.time.timeIntervalSince1970
+            let timeText = NativeScopeFormat.time(point.time, calendar: calendar)
+            pointTimeText[key] = timeText
+            pointValueText[key] = "\(Int(point.value.rounded()))"
+            chartPoints.append(ChartPoint(xLabel: timeText, xValue: key, y: point.value))
+        }
+        let sleep = clippedSleep(start: sleepStart, end: sleepEnd, xDomain: xDomain)
+        return Model(
+            plot: plot,
+            domainPoints: domainPoints,
+            segments: segments,
+            yDomain: yDomain,
+            xDomain: xDomain,
+            yTicks: NativeChartTicks.values(in: yDomain, maxCount: 3),
+            stats: stats,
+            sleepStart: sleepStart,
+            sleepEnd: sleepEnd,
+            sleepVisible: sleep.map { SleepSpan(start: $0.0, end: $0.1) },
+            dayStart: dayStart,
+            plotEnd: plotEnd,
+            showsNow: showsNow,
+            hourLabels: hourLabels,
+            hourLabelText: hourLabelText,
+            pointTimeText: pointTimeText,
+            pointValueText: pointValueText,
+            chartPoints: chartPoints,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: plot)
+        )
     }
 }

@@ -213,4 +213,76 @@ final class NativeHeartRateTests: XCTestCase {
         XCTAssertEqual(domain.upperBound, raw.last?.time)
         XCTAssertEqual(NativeHeartRateMath.clippedPlot(raw, xDomain: domain).count, 3)
     }
+
+    func testPlotModelRespectsBudgetPreservesGapsAndBucketRange() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let gapped = points([70, 71, 72], every: 60, from: start)
+            + points([90, 91, 92], every: 60, from: start.addingTimeInterval(3 * 3600))
+        XCTAssertEqual(NativeHeartRateMath.splitGaps(gapped).count, 2)
+        XCTAssertEqual(NativeHeartRateMath.splitGaps(points([70, 72, 74], every: 60, from: start)).count, 1)
+
+        var raw: [NativeHourPoint] = []
+        raw.reserveCapacity(1_440)
+        for i in 0..<(3 * 60) {
+            raw.append(NativeHourPoint(
+                time: start.addingTimeInterval(TimeInterval(i) * 60),
+                value: 60 + Double(i % 21)
+            ))
+        }
+        let evening = start.addingTimeInterval(8 * 3600)
+        for i in 0..<(3 * 60) {
+            raw.append(NativeHourPoint(
+                time: evening.addingTimeInterval(TimeInterval(i) * 60),
+                value: 100 + Double(i % 21)
+            ))
+        }
+        let model = NativeHeartRateMath.make(
+            points: raw,
+            minBpm: 49, maxBpm: 170, avgBpm: 80, restingBpm: 52,
+            sleepStart: start, sleepEnd: start.addingTimeInterval(6 * 3600),
+            dayStart: start,
+            now: start.addingTimeInterval(12 * 3600),
+            viewingToday: true
+        )
+        XCTAssertLessThanOrEqual(model.plot.count, NativeHeartRateMath.drawBudget)
+        XCTAssertLessThanOrEqual(model.domainPoints.count, NativeHeartRateMath.drawBudget)
+        XCTAssertEqual(model.segments.count, 2)
+        XCTAssertEqual(model.segments.reduce(0) { $0 + $1.count }, model.domainPoints.count)
+        let morningEnd = start.addingTimeInterval(TimeInterval(3 * 60 - 1) * 60)
+        let holeLo = morningEnd.addingTimeInterval(30 * 60)
+        let holeHi = evening.addingTimeInterval(-30 * 60)
+        XCTAssertTrue(model.plot.allSatisfy { $0.time < holeLo || $0.time > holeHi })
+        XCTAssertEqual(model.xDomain, model.dayStart...model.plotEnd)
+        XCTAssertEqual(
+            model.sleepVisible?.start,
+            NativeHeartRateMath.clippedSleep(
+                start: model.sleepStart, end: model.sleepEnd, xDomain: model.xDomain
+            )?.0
+        )
+
+        let dense = (0..<2_000).map { index -> NativeHourPoint in
+            let value = index < 1_000 ? Double(40 + index % 10) : Double(140 + index % 10)
+            return NativeHourPoint(time: start.addingTimeInterval(TimeInterval(index)), value: value)
+        }
+        let budget = 80
+        let drawn = NativeHeartRateMath.downsample(dense, maxPoints: budget)
+        XCTAssertLessThanOrEqual(drawn.count, budget)
+        let first = dense.first!.time
+        let width = dense.last!.time.timeIntervalSince(first) / Double(budget)
+        var mins = [Double](repeating: .infinity, count: budget)
+        var maxs = [Double](repeating: -.infinity, count: budget)
+        for point in dense {
+            let key = min(budget - 1, Int(point.time.timeIntervalSince(first) / width))
+            mins[key] = min(mins[key], point.value)
+            maxs[key] = max(maxs[key], point.value)
+        }
+        for point in drawn {
+            let key = min(
+                budget - 1,
+                max(0, Int(((point.time.timeIntervalSince(first) - width / 2) / width).rounded()))
+            )
+            XCTAssertGreaterThanOrEqual(point.value, mins[key] - 1e-9)
+            XCTAssertLessThanOrEqual(point.value, maxs[key] + 1e-9)
+        }
+    }
 }
