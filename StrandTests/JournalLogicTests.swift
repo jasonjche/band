@@ -388,6 +388,9 @@ final class JournalLogicTests: XCTestCase {
         XCTAssertEqual(daily.count, JournalCatalogStore.starterQuestions.count)
         XCTAssertEqual(store.libraryItems().count, JournalCatalogStore.libraryEntries.count)
         XCTAssertGreaterThan(store.libraryItems().count, daily.count)
+        for item in store.libraryItems(imported: []) {
+            XCTAssertEqual(item.hidden, !store.isOnDailyForm(item.canonical, imported: []), item.canonical)
+        }
 
         let extra = "Did you take a cold plunge?"
         XCTAssertFalse(daily.contains { $0.canonical == extra })
@@ -401,6 +404,9 @@ final class JournalLogicTests: XCTestCase {
         let afterRemove = store.resolvedItems(imported: [])
         XCTAssertEqual(afterRemove.count, JournalCatalogStore.starterQuestions.count)
         XCTAssertFalse(store.isOnDailyForm(extra))
+        for item in store.libraryItems(imported: []) {
+            XCTAssertEqual(item.hidden, !store.isOnDailyForm(item.canonical), item.canonical)
+        }
     }
 
     @MainActor
@@ -412,6 +418,17 @@ final class JournalLogicTests: XCTestCase {
         XCTAssertEqual(daily.filter { $0.canonical == "Did you have caffeine?" }.count, 1)
         XCTAssertEqual(daily.count, JournalCatalogStore.starterQuestions.count + 1)
         XCTAssertFalse(store.isOnDailyForm("Did you train late?", imported: imported))
+        let library = store.libraryItems(imported: imported)
+        XCTAssertEqual(library.count, JournalCatalogStore.libraryEntries.count)
+        for item in library {
+            XCTAssertEqual(
+                item.hidden,
+                !store.isOnDailyForm(item.canonical, imported: imported),
+                item.canonical
+            )
+        }
+        XCTAssertEqual(library.first { $0.canonical == "Did you have sex?" }?.hidden, false)
+        XCTAssertEqual(library.first { $0.canonical == "Did you train late?" }?.hidden, true)
     }
 
     func testLibrarySearchMatchesShortTitleAndCategory() {

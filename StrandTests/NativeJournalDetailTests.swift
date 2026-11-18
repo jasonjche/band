@@ -157,4 +157,29 @@ final class NativeJournalDetailTests: XCTestCase {
         XCTAssertEqual(answers.first { $0.question == "Caffeine" }?.value, "No")
         XCTAssertEqual(answers.first { $0.question == "Shared bed" }?.value, "Yes")
     }
+
+    func testSectionsGroupFilterAndSort() {
+        let nap = JournalCatalogItem(
+            canonical: "Did you nap?", displayName: nil, kind: .bool,
+            group: .sleep, sortIndex: 2, hidden: false, custom: false
+        )
+        let read = JournalCatalogItem(
+            canonical: "Did you read before bed?", displayName: nil, kind: .bool,
+            group: .sleep, sortIndex: 1, hidden: false, custom: false
+        )
+        let alcohol = JournalCatalogItem(
+            canonical: "Did you drink any alcohol?", displayName: nil, kind: .bool,
+            group: .nutrition, sortIndex: 0, hidden: false, custom: false
+        )
+        let sections = NativeJournalSections.make([nap, read, alcohol])
+        XCTAssertEqual(sections.map(\.group), [.nutrition, .sleep])
+        XCTAssertEqual(sections[0].items.map(\.canonical), ["Did you drink any alcohol?"])
+        XCTAssertEqual(sections[1].items.map(\.canonical), ["Did you read before bed?", "Did you nap?"])
+
+        let filtered = NativeJournalSections.make([nap, read, alcohol], query: "nap")
+        XCTAssertEqual(filtered.map(\.group), [.sleep])
+        XCTAssertEqual(filtered[0].items.map(\.canonical), ["Did you nap?"])
+
+        XCTAssertTrue(NativeJournalSections.make([nap, read, alcohol], query: "  ").map(\.group) == sections.map(\.group))
+    }
 }

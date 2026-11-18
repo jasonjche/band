@@ -314,16 +314,26 @@ final class JournalCatalogStore: ObservableObject {
     }
 
     /// Every library behaviour as a catalog item, with `hidden` reflecting daily-form membership.
+    /// One saved-item index and one imported-id set for the whole library so the add-behaviours
+    /// page does not fold titles once per row.
     func libraryItems(imported: [String] = []) -> [JournalCatalogItem] {
-        Self.libraryEntries.enumerated().map { index, entry in
-            if var saved = item(for: entry.canonical) {
+        var savedByNorm: [String: JournalCatalogItem] = [:]
+        savedByNorm.reserveCapacity(items.count)
+        for it in items {
+            let key = Self.norm(Self.canonicalId(for: it.canonical))
+            if savedByNorm[key] == nil { savedByNorm[key] = it }
+        }
+        let importedIds = Set(imported.map { Self.norm(Self.canonicalId(for: $0)) })
+        return Self.libraryEntries.enumerated().map { index, entry in
+            let key = Self.norm(entry.canonical)
+            if var saved = savedByNorm[key] {
                 saved.canonical = entry.canonical
                 return saved
             }
+            let onForm = Self.starterQuestions.contains(entry.canonical) || importedIds.contains(key)
             return JournalCatalogItem(
                 canonical: entry.canonical, displayName: nil, kind: entry.kind, group: entry.group,
-                sortIndex: index, hidden: !isOnDailyForm(entry.canonical, imported: imported),
-                custom: false)
+                sortIndex: index, hidden: !onForm, custom: false)
         }
     }
 

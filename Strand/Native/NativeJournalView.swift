@@ -24,10 +24,7 @@ struct NativeJournalView: View {
     @State private var nativeAnswers: [String: Bool] = [:]
     @State private var nativeNumeric: [String: Double] = [:]
     @State private var logging: Bool
-    @State private var draftYes: [String: Bool] = [:]
-    @State private var draftNumeric: [String: Double] = [:]
-    @State private var draftTime: [String: Date] = [:]
-    @State private var confirmDiscard = false
+    @State private var formItems: [JournalCatalogItem] = []
 
     init(startsLogging: Bool = false) {
         self.startsLogging = startsLogging
@@ -47,23 +44,23 @@ struct NativeJournalView: View {
         }.first { !$0.isEmpty }
     }
 
-    private var items: [JournalCatalogItem] {
-        catalog.resolvedItems(imported: importedQuestions)
-    }
-
     private var hasEntry: Bool { !answers.isEmpty }
 
     var body: some View {
         Group {
             if logging {
                 NativeJournalEditor(
-                    items: items,
+                    items: formItems,
                     day: selectedDay,
-                    answers: $draftYes,
-                    numeric: $draftNumeric,
-                    times: $draftTime,
+                    initialAnswers: seededYes,
+                    initialNumeric: seededNumeric,
+                    initialTimes: seededTime,
                     catalog: catalog,
-                    imported: importedQuestions
+                    imported: importedQuestions,
+                    onSave: { yes, numeric, times in
+                        await saveDraft(yes: yes, numeric: numeric, times: times)
+                    },
+                    onCancel: { logging = false }
                 )
             } else {
                 journalBody
@@ -73,20 +70,7 @@ struct NativeJournalView: View {
         .modifier(NativeInlineTitle())
         .nativeDateSubtitle(selectedDay)
         .toolbar {
-            if logging {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        if draftIsEdited {
-                            confirmDiscard = true
-                        } else {
-                            logging = false
-                        }
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await saveDraft() } }
-                }
-            } else {
+            if !logging {
                 ToolbarItem(placement: .primaryAction) {
                     Button(hasEntry ? "Edit" : "Log") { beginEditing() }
                 }
@@ -105,17 +89,10 @@ struct NativeJournalView: View {
             await reload()
             if logging { seedDraft() }
         }
+        .onChange(of: catalog.items) { _ in refreshFormItems() }
         .navigationDestination(for: NativeJournalImpactRoute.self) { _ in
             NativeJournalImpactView()
         }
-        .confirmationDialog("Discard this entry?", isPresented: $confirmDiscard, titleVisibility: .visible) {
-            Button("Discard", role: .destructive) { logging = false }
-            Button("Keep editing", role: .cancel) {}
-        }
-    }
-
-    private var draftIsEdited: Bool {
-        draftYes != seededYes || draftNumeric != seededNumeric || draftTime != seededTime
     }
 
     @ViewBuilder private var journalBody: some View {
@@ -156,8 +133,13 @@ struct NativeJournalView: View {
     }
 
     private func beginEditing() {
+        refreshFormItems()
         seedDraft()
         logging = true
+    }
+
+    private func refreshFormItems() {
+        formItems = catalog.resolvedItems(imported: importedQuestions)
     }
 
     private func seedDraft() {
@@ -177,16 +159,13 @@ struct NativeJournalView: View {
         for (question, value) in nativeNumeric {
             qty[JournalCatalogStore.canonicalId(for: question)] = value
         }
-        draftYes = yes
-        draftNumeric = qty
-        draftTime = time
         seededYes = yes
         seededNumeric = qty
         seededTime = time
     }
 
-    private func saveDraft() async {
-        for item in items {
+    private func saveDraft(yes draftYes: [String: Bool], numeric draftNumeric: [String: Double], times draftTime: [String: Date]) async {
+        for item in formItems {
             // Write only what the user changed, so an untouched row cannot overwrite an imported answer.
             let key = item.canonical
             if draftYes[key] == seededYes[key], draftNumeric[key] == seededNumeric[key],
@@ -218,6 +197,7 @@ struct NativeJournalView: View {
         importedQuestions = Array(Set(imported.map(\.question))).sorted()
         nativeAnswers = await repo.nativeJournalAnswers(day: dayKey)
         nativeNumeric = await repo.nativeJournalNumeric(day: dayKey)
+        refreshFormItems()
     }
 }
 
@@ -270,6 +250,7 @@ struct NativeJournalLogForm: View {
     }
 
     var body: some View {
+        let sections = NativeJournalSections.make(items)
         NativeChrome.screen {
             if items.isEmpty {
                 NativeChrome.panel {
@@ -278,22 +259,29 @@ struct NativeJournalLogForm: View {
             } else {
                 progressCard
                 if allAnswered { completionCard }
-                ForEach(JournalGroup.displayOrder, id: \.self) { group in
-                    let groupItems = items.filter { $0.group == group }
-                        .sorted { ($0.sortIndex, $0.display) < ($1.sortIndex, $1.display) }
-                    if !groupItems.isEmpty {
-                        NativeChrome.panel {
-                            NativeCardHeader(
-                                title: group.title,
-                                symbol: Self.symbol(for: group),
-                                tint: Self.tint(for: group, style: style)
-                            )
-                            ForEach(Array(groupItems.enumerated()), id: \.element.id) { index, item in
-                                if index > 0 {
-                                    Divider()
-                                }
-                                row(item)
+                ForEach(sections) { section in
+                    NativeChrome.panel {
+                        NativeCardHeader(
+                            title: section.group.title,
+                            symbol: Self.symbol(for: section.group),
+                            tint: Self.tint(for: section.group, style: style)
+                        )
+                        ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
+                            if index > 0 {
+                                Divider()
                             }
+                            NativeJournalLogRow(
+                                item: item,
+                                selected: answers[item.canonical],
+                                quantity: numeric[item.canonical],
+                                time: times[item.canonical],
+                                day: day,
+                                reduceMotion: reduceMotion,
+                                onToggle: { setAnswer(item, $0) },
+                                onNumeric: { onNumeric(item.canonical, $0) },
+                                onTime: { onTime(item.canonical, $0) }
+                            )
+                            .equatable()
                         }
                     }
                 }
@@ -314,7 +302,6 @@ struct NativeJournalLogForm: View {
                 .buttonStyle(.plain)
             }
         }
-        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: allAnswered)
         #if os(iOS)
         .sensoryFeedback(.impact(weight: .light), trigger: hapticTick)
         #endif
@@ -352,71 +339,9 @@ struct NativeJournalLogForm: View {
             }
         }
         .transition(reduceMotion ? .opacity : .scale(scale: 0.96).combined(with: .opacity))
+        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: allAnswered)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("All logged. Save to keep this day")
-    }
-
-    @ViewBuilder private func row(_ item: JournalCatalogItem) -> some View {
-        let follow = NativeJournalFollowUp.forItem(item)
-        let yes = answers[item.canonical] == true
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 12) {
-                Text(verbatim: item.display)
-                    .font(StrandFont.body)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                yesNo(item)
-            }
-            .frame(minHeight: 44)
-            if yes, follow.hasQuantity {
-                Stepper(value: numericBinding(item), in: 0...99, step: 1) {
-                    LabeledContent("Amount", value: numericLabel(item, follow: follow))
-                }
-                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
-            }
-            if yes, follow.hasTime {
-                DatePicker(
-                    "Last at",
-                    selection: timeBinding(item),
-                    displayedComponents: .hourAndMinute
-                )
-                #if os(macOS)
-                .datePickerStyle(.compact)
-                #endif
-                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: answers[item.canonical])
-        .accessibilityElement(children: .contain)
-    }
-
-    private func yesNo(_ item: JournalCatalogItem) -> some View {
-        let selected = answers[item.canonical]
-        return HStack(spacing: 8) {
-            choice("No", selected: selected == false) { setAnswer(item, false) }
-            choice("Yes", selected: selected == true) { setAnswer(item, true) }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(item.display)
-        .accessibilityValue(selected == true ? "Yes" : selected == false ? "No" : "Not answered")
-    }
-
-    private func choice(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(StrandFont.body.weight(.semibold))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .frame(minWidth: 64)
-                .foregroundStyle(selected ? NativePaint.page(style) : Color.primary)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(selected
-                              ? Color.primary
-                              : (style == .whoop ? NativeTokens.whoopHighlight : NativeTokens.highlight))
-                )
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
     private func setAnswer(_ item: JournalCatalogItem, _ yes: Bool) {
@@ -424,29 +349,6 @@ struct NativeJournalLogForm: View {
         withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78)) {
             onToggle(item.canonical, yes)
         }
-    }
-
-    private func numericBinding(_ item: JournalCatalogItem) -> Binding<Double> {
-        Binding(
-            get: { numeric[item.canonical] ?? NativeJournalFollowUp.forItem(item).defaultQuantity },
-            set: { onNumeric(item.canonical, $0) }
-        )
-    }
-
-    private func timeBinding(_ item: JournalCatalogItem) -> Binding<Date> {
-        Binding(
-            get: { times[item.canonical] ?? NativeJournalNotes.defaultTime(on: day) },
-            set: { onTime(item.canonical, $0) }
-        )
-    }
-
-    private func numericLabel(_ item: JournalCatalogItem, follow: NativeJournalFollowUp) -> String {
-        let value = numeric[item.canonical] ?? follow.defaultQuantity
-        let number = value.rounded() == value ? String(Int(value.rounded())) : String(format: "%g", value)
-        if let unit = follow.unitLabel, !unit.isEmpty {
-            return "\(number) \(unit)"
-        }
-        return number
     }
 
     static func symbol(for group: JournalGroup) -> String {
@@ -477,6 +379,114 @@ struct NativeJournalLogForm: View {
         case .womensHealth: return NativePaint.heart(style)
         case .other: return Color.secondary
         }
+    }
+}
+
+/// One behaviour row. Equatable so a Yes/No tap does not rebuild every other row.
+private struct NativeJournalLogRow: View, Equatable {
+    var item: JournalCatalogItem
+    var selected: Bool?
+    var quantity: Double?
+    var time: Date?
+    var day: Date
+    var reduceMotion: Bool
+    var onToggle: (Bool) -> Void
+    var onNumeric: (Double) -> Void
+    var onTime: (Date) -> Void
+    @Environment(\.nativeStyle) private var style
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.item == rhs.item
+            && lhs.selected == rhs.selected
+            && lhs.quantity == rhs.quantity
+            && lhs.time == rhs.time
+            && lhs.day == rhs.day
+            && lhs.reduceMotion == rhs.reduceMotion
+    }
+
+    var body: some View {
+        let follow = NativeJournalFollowUp.forItem(item)
+        let yes = selected == true
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                Text(verbatim: item.display)
+                    .font(StrandFont.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                yesNo
+            }
+            .frame(minHeight: 44)
+            if yes, follow.hasQuantity {
+                Stepper(value: numericBinding(follow), in: 0...99, step: 1) {
+                    LabeledContent("Amount", value: numericLabel(follow))
+                }
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+            }
+            if yes, follow.hasTime {
+                DatePicker(
+                    "Last at",
+                    selection: timeBinding,
+                    displayedComponents: .hourAndMinute
+                )
+                #if os(macOS)
+                .datePickerStyle(.compact)
+                #endif
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: selected)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var yesNo: some View {
+        HStack(spacing: 8) {
+            choice("No", selected: selected == false) { onToggle(false) }
+            choice("Yes", selected: selected == true) { onToggle(true) }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(item.display)
+        .accessibilityValue(selected == true ? "Yes" : selected == false ? "No" : "Not answered")
+    }
+
+    private func choice(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(StrandFont.body.weight(.semibold))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .frame(minWidth: 64)
+                .foregroundStyle(selected ? NativePaint.page(style) : Color.primary)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(selected
+                              ? Color.primary
+                              : (style == .whoop ? NativeTokens.whoopHighlight : NativeTokens.highlight))
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private func numericBinding(_ follow: NativeJournalFollowUp) -> Binding<Double> {
+        Binding(
+            get: { quantity ?? follow.defaultQuantity },
+            set: { onNumeric($0) }
+        )
+    }
+
+    private var timeBinding: Binding<Date> {
+        Binding(
+            get: { time ?? NativeJournalNotes.defaultTime(on: day) },
+            set: { onTime($0) }
+        )
+    }
+
+    private func numericLabel(_ follow: NativeJournalFollowUp) -> String {
+        let value = quantity ?? follow.defaultQuantity
+        let number = value.rounded() == value ? String(Int(value.rounded())) : String(format: "%g", value)
+        if let unit = follow.unitLabel, !unit.isEmpty {
+            return "\(number) \(unit)"
+        }
+        return number
     }
 }
 

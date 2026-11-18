@@ -1,6 +1,30 @@
 import Foundation
 import WhoopStore
 
+/// Grouped journal rows for the day's form and the add-behaviours library.
+/// Built once per render so SwiftUI does not filter/sort the catalog inside each section.
+enum NativeJournalSections {
+    struct Section: Equatable, Identifiable {
+        var group: JournalGroup
+        var items: [JournalCatalogItem]
+        var id: JournalGroup { group }
+    }
+
+    static func make(_ items: [JournalCatalogItem], query: String = "") -> [Section] {
+        let filtered = items.filter { JournalCatalogStore.libraryMatches($0, query: query) }
+        var buckets: [JournalGroup: [JournalCatalogItem]] = [:]
+        buckets.reserveCapacity(JournalGroup.displayOrder.count)
+        for item in filtered {
+            buckets[item.group, default: []].append(item)
+        }
+        return JournalGroup.displayOrder.compactMap { group in
+            guard var groupItems = buckets[group], !groupItems.isEmpty else { return nil }
+            groupItems.sort { ($0.sortIndex, $0.display) < ($1.sortIndex, $1.display) }
+            return Section(group: group, items: groupItems)
+        }
+    }
+}
+
 /// Follow-up shown under a Yes answer: quantity, a clock time, or both.
 enum NativeJournalFollowUp: Equatable {
     case none
