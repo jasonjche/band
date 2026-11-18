@@ -36,9 +36,18 @@ settings:
     # Build for both Apple Silicon and Intel so the release runs on every Mac.
     ARCHS: "$(ARCHS_STANDARD)"
   configs:
+    Debug:
+      # Pin incremental Debug settings so generic iOS Simulator loops do not
+      # silently compile x86_64 as well as arm64 (ONLY_ACTIVE_ARCH is ignored
+      # for generic destinations).
+      ONLY_ACTIVE_ARCH: YES
+      SWIFT_COMPILATION_MODE: singlefile
+      DEBUG_INFORMATION_FORMAT: dwarf
+      "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
     Release:
       # Distribution builds must produce a universal binary, not just the host arch.
       ONLY_ACTIVE_ARCH: NO
+      SWIFT_COMPILATION_MODE: wholemodule
 packages:
   # Renders the Coach's LLM replies (GitHub-flavored Markdown — bold, lists,
   # headings, tables). Pinned exactly for reproducible community builds.

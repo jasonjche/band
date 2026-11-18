@@ -333,143 +333,24 @@ private struct DevicesContent: View {
 
     private var deviceRootWithSheets: some View {
         deviceRoot
-        // Add a device — guided, branching wizard (asks the device TYPE first, then runs the right
-        // scan/register path: WHOOP present-scan for WHOOP families, StandardHRSource for HR straps).
-        .sheet(isPresented: $showAddWizard) {
-            AddDeviceWizard(live: live) { showAddWizard = false }
-                .environmentObject(model)
-                .environmentObject(live)
-        }
-        // Switch confirm
-        .alert("Make this your active strap?",
-               isPresented: Binding(get: { switchTarget != nil },
-                                    set: { if !$0 { switchTarget = nil } }),
-               presenting: switchTarget) { device in
-            Button("Cancel", role: .cancel) { switchTarget = nil }
-            Button("Make active") {
-                registry.setActive(device.id)
-                switchTarget = nil
-            }
-        } message: { device in
-            Text("Make \(device.displayName) your active strap? From now on it provides your live data. \(currentActiveName)'s history stays exactly as it is. Only new days come from \(device.displayName).")
-        }
-        // Rename
-        .alert("Rename device",
-               isPresented: Binding(get: { renameTarget != nil },
-                                    set: { if !$0 { renameTarget = nil } }),
-               presenting: renameTarget) { device in
-            TextField("Name", text: $renameDraft)
-            Button("Cancel", role: .cancel) { renameTarget = nil }
-            Button("Save") {
-                registry.rename(device.id, to: renameDraft)
-                renameTarget = nil
-            }
-        } message: { device in
-            Text("Give \(device.brand) \(device.model) a name you'll recognise.")
-        }
-        // Remove confirm
-        .alert("Remove this device?",
-               isPresented: Binding(get: { removeTarget != nil },
-                                    set: { if !$0 { removeTarget = nil } }),
-               presenting: removeTarget) { device in
-            Button("Cancel", role: .cancel) { removeTarget = nil }
-            Button("Remove", role: .destructive) { confirmRemove(device) }
-        } message: { device in
-            Text("Remove \(device.displayName)? Band will stop connecting to it. Its recorded data is kept and you can re-add it any time.")
-        }
-        // Restart strap confirm (#166)
-        .alert("Restart this strap?",
-               isPresented: Binding(get: { rebootTarget != nil },
-                                    set: { if !$0 { rebootTarget = nil } }),
-               presenting: rebootTarget) { _ in
-            Button("Cancel", role: .cancel) { rebootTarget = nil }
-            Button("Restart") { model.rebootStrap(); rebootTarget = nil }
-        } message: { device in
-            Text("Restart \(device.displayName)? It disconnects for about 30 seconds while it reboots, then reconnects on its own. Your recorded data is kept.")
-        }
-        // WHOOP 4.0 reboot probe (#235): only reachable with Test Centre → Connection on and a 4.0 connected.
-        // Tries each candidate frame one at a time so the strap log shows which one actually reboots.
-        .confirmationDialog("WHOOP 4.0 reboot probe",
-                            isPresented: Binding(get: { probeTarget != nil },
-                                                 set: { if !$0 { probeTarget = nil } }),
-                            titleVisibility: .visible,
-                            presenting: probeTarget) { _ in
-            ForEach(RebootProbeVariant.allCases, id: \.self) { variant in
-                Button(variant.menuLabel) { model.rebootProbe(variant); probeTarget = nil }
-            }
-            Button("Cancel", role: .cancel) { probeTarget = nil }
-        } message: { _ in
-            Text("The WHOOP 4.0 reboot frame isn't confirmed — a normal Restart is ignored (#235). Send each candidate and watch BOTH the strap log and the strap itself. “no disconnect within 12s” means the strap ignored the frame. A “link dropped” line means the frame reached the strap — but a dropped link alone isn't a reboot: a real reboot also switches the strap's sensor light off for a few seconds, so if the light stayed on it was just a dropped connection, not a reboot. Non-destructive — your data is kept. Please share the log so we can pin the real frame.")
-        }
-        // #592 extended-battery opcode probe: read-only, dumps the strap's full raw reply so a capture
-        // settles the disputed GET_EXTENDED_BATTERY_INFO number (98 vs an APK decompile's 87).
-        .confirmationDialog("Battery-info probe (#592 RE)",
-                            isPresented: Binding(get: { batteryProbeTarget != nil },
-                                                 set: { if !$0 { batteryProbeTarget = nil } }),
-                            titleVisibility: .visible,
-                            presenting: batteryProbeTarget) { _ in
-            Button("Send probe (read-only)") { model.probeExtendedBatteryInfo(); batteryProbeTarget = nil }
-            Button("Cancel", role: .cancel) { batteryProbeTarget = nil }
-        } message: { _ in
-            Text("Two independent protocol tables disagree on the extended-battery opcode (98 vs 87). This sends the curated read-only 98 and shows the strap's full raw reply. A battery-style payload confirms 98 on your firmware; a short stub means it stays ambiguous. Nothing is written to the strap.")
-        }
-        // #592 probe result: the strap's reply (or a "waiting…" state), readable + copyable in place.
-        .sheet(isPresented: Binding(get: { live.extendedBatteryProbe != nil },
-                                    set: { if !$0 { model.clearExtendedBatteryProbe() } })) {
-            ExtendedBatteryProbeResultView(
-                text: live.extendedBatteryProbe ?? "",
-                onClose: { model.clearExtendedBatteryProbe() })
-        }
-        // #690 body-location probe (confirm + result), isolated into a ViewModifier so its two heavy
-        // dialog modifiers type-check in their OWN scope — the DevicesView dialog chain is already near the
-        // iOS Swift type-checker's budget, and inlining a 6th/7th modifier here tips it over ("unable to
-        // type-check in reasonable time"). macOS tolerates the inline form; iOS's type-inference is stricter.
-        .modifier(BodyLocationProbeSheets(target: $bodyLocationProbeTarget))
-        // #761 feature-flag enumeration probe (confirm + result) — same ViewModifier isolation.
-        .modifier(FeatureFlagProbeSheets(target: $featureFlagProbeTarget))
-        // MG ECG probe (actions + the separate wrist confirm + result), isolated into its own
-        // ViewModifier for the same iOS type-checker reason as the #690 block above.
-        .modifier(EcgProbeSheets(target: $ecgProbeTarget, wristTarget: $ecgWristTarget))
-        // #103 device-config READ probe (confirm + result) — same ViewModifier isolation.
-        .modifier(DeviceConfigProbeSheets(target: $deviceConfigProbeTarget))
-        // Second, strongly-worded delete-data confirm (reached from the Remove card's secondary control)
-        .alert("Delete all of this device's data?",
-               isPresented: Binding(get: { deleteDataTarget != nil },
-                                    set: { if !$0 { deleteDataTarget = nil } }),
-               presenting: deleteDataTarget) { device in
-            Button("Cancel", role: .cancel) { deleteDataTarget = nil }
-            Button("Delete data", role: .destructive) {
-                // Route the heavy 16+-table delete through the WhoopStore actor (off the main thread) so a
-                // large device dataset can't freeze the UI. Resolve the store handle inside the Task, then
-                // await the delete; the registry reloads the (now-emptied) list on completion.
-                let deviceId = device.id
-                Task {
-                    guard let store = await model.repo.storeHandle() else { return }
-                    await registry.deleteDeviceData(deviceId, store: store)
-                }
-                deleteDataTarget = nil
-            }
-        } message: { device in
-            Text("This permanently deletes all data recorded from \(device.displayName). This can't be undone.")
-        }
-        // Hard-delete confirm (reached from a REMOVED card's ⋮ menu): purge the registry entry itself,
-        // not just its data — the only way to get a duplicate/stale strap out of the list for good (#1193).
-        // Isolated into its own ViewModifier for the same iOS type-checker-budget reason as the probe
-        // sheets above (the dialog chain is already near the limit; a 6th/7th inline modifier tips it over).
-        .modifier(ForgetDeviceSheet(registry: registry, target: $forgetTarget))
-        // After removing the active device, offer to pick a new active one (if any remain).
-        .confirmationDialog("Pick a new active strap",
-                            isPresented: $pickNewActive,
-                            titleVisibility: .visible) {
-            // I-1: import sources (Oura cloud import, file imports) are excluded — they're data
-            // partitions, not live devices, and must never be offered as an active-strap candidate.
-            ForEach(activatableDevices) { device in
-                Button(device.displayName) { registry.setActive(device.id) }
-            }
-            Button("Leave none active", role: .cancel) { }
-        } message: {
-            Text("You removed your active strap. Choose which paired band provides your live data, or leave none active and pair one later.")
-        }
+            .modifier(DeviceAddWizardSheet(isPresented: $showAddWizard))
+            .modifier(DeviceSwitchAlert(
+                target: $switchTarget, registry: registry, currentActiveName: currentActiveName
+            ))
+            .modifier(DeviceRenameAlert(target: $renameTarget, draft: $renameDraft, registry: registry))
+            .modifier(DeviceRemoveAlert(target: $removeTarget, onConfirm: confirmRemove))
+            .modifier(DeviceRebootAlert(target: $rebootTarget))
+            .modifier(DeviceRebootProbeDialog(target: $probeTarget))
+            .modifier(DeviceBatteryProbeSheets(target: $batteryProbeTarget))
+            .modifier(BodyLocationProbeSheets(target: $bodyLocationProbeTarget))
+            .modifier(FeatureFlagProbeSheets(target: $featureFlagProbeTarget))
+            .modifier(EcgProbeSheets(target: $ecgProbeTarget, wristTarget: $ecgWristTarget))
+            .modifier(DeviceConfigProbeSheets(target: $deviceConfigProbeTarget))
+            .modifier(DeviceDeleteDataAlert(target: $deleteDataTarget, registry: registry))
+            .modifier(ForgetDeviceSheet(registry: registry, target: $forgetTarget))
+            .modifier(DevicePickNewActiveDialog(
+                isPresented: $pickNewActive, devices: activatableDevices, registry: registry
+            ))
     }
 
     #if os(iOS)
@@ -1522,6 +1403,199 @@ private struct ForgetDeviceSheet: ViewModifier {
             } message: { _ in
                 Text("Band removes this device from your list and deletes its recorded data here. You can re-pair the strap to pull its recent history back.")
             }
+    }
+}
+
+private struct DeviceAddWizardSheet: ViewModifier {
+    @Binding var isPresented: Bool
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var live: LiveState
+
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: $isPresented) {
+            AddDeviceWizard(live: live) { isPresented = false }
+                .environmentObject(model)
+                .environmentObject(live)
+        }
+    }
+}
+
+private struct DeviceSwitchAlert: ViewModifier {
+    @Binding var target: PairedDevice?
+    @ObservedObject var registry: DeviceRegistry
+    var currentActiveName: String
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "Make this your active strap?",
+            isPresented: Binding(get: { target != nil }, set: { if !$0 { target = nil } }),
+            presenting: target
+        ) { device in
+            Button("Cancel", role: .cancel) { target = nil }
+            Button("Make active") {
+                registry.setActive(device.id)
+                target = nil
+            }
+        } message: { device in
+            Text("Make \(device.displayName) your active strap? From now on it provides your live data. \(currentActiveName)'s history stays exactly as it is. Only new days come from \(device.displayName).")
+        }
+    }
+}
+
+private struct DeviceRenameAlert: ViewModifier {
+    @Binding var target: PairedDevice?
+    @Binding var draft: String
+    @ObservedObject var registry: DeviceRegistry
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "Rename device",
+            isPresented: Binding(get: { target != nil }, set: { if !$0 { target = nil } }),
+            presenting: target
+        ) { device in
+            TextField("Name", text: $draft)
+            Button("Cancel", role: .cancel) { target = nil }
+            Button("Save") {
+                registry.rename(device.id, to: draft)
+                target = nil
+            }
+        } message: { device in
+            Text("Give \(device.brand) \(device.model) a name you'll recognise.")
+        }
+    }
+}
+
+private struct DeviceRemoveAlert: ViewModifier {
+    @Binding var target: PairedDevice?
+    var onConfirm: (PairedDevice) -> Void
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "Remove this device?",
+            isPresented: Binding(get: { target != nil }, set: { if !$0 { target = nil } }),
+            presenting: target
+        ) { device in
+            Button("Cancel", role: .cancel) { target = nil }
+            Button("Remove", role: .destructive) { onConfirm(device) }
+        } message: { device in
+            Text("Remove \(device.displayName)? Band will stop connecting to it. Its recorded data is kept and you can re-add it any time.")
+        }
+    }
+}
+
+private struct DeviceRebootAlert: ViewModifier {
+    @Binding var target: PairedDevice?
+    @EnvironmentObject var model: AppModel
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "Restart this strap?",
+            isPresented: Binding(get: { target != nil }, set: { if !$0 { target = nil } }),
+            presenting: target
+        ) { _ in
+            Button("Cancel", role: .cancel) { target = nil }
+            Button("Restart") { model.rebootStrap(); target = nil }
+        } message: { device in
+            Text("Restart \(device.displayName)? It disconnects for about 30 seconds while it reboots, then reconnects on its own. Your recorded data is kept.")
+        }
+    }
+}
+
+private struct DeviceRebootProbeDialog: ViewModifier {
+    @Binding var target: PairedDevice?
+    @EnvironmentObject var model: AppModel
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            "WHOOP 4.0 reboot probe",
+            isPresented: Binding(get: { target != nil }, set: { if !$0 { target = nil } }),
+            titleVisibility: .visible,
+            presenting: target
+        ) { _ in
+            ForEach(RebootProbeVariant.allCases, id: \.self) { variant in
+                Button(variant.menuLabel) { model.rebootProbe(variant); target = nil }
+            }
+            Button("Cancel", role: .cancel) { target = nil }
+        } message: { _ in
+            Text("The WHOOP 4.0 reboot frame isn't confirmed — a normal Restart is ignored (#235). Send each candidate and watch BOTH the strap log and the strap itself. “no disconnect within 12s” means the strap ignored the frame. A “link dropped” line means the frame reached the strap — but a dropped link alone isn't a reboot: a real reboot also switches the strap's sensor light off for a few seconds, so if the light stayed on it was just a dropped connection, not a reboot. Non-destructive — your data is kept. Please share the log so we can pin the real frame.")
+        }
+    }
+}
+
+private struct DeviceBatteryProbeSheets: ViewModifier {
+    @Binding var target: PairedDevice?
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var live: LiveState
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                "Battery-info probe (#592 RE)",
+                isPresented: Binding(get: { target != nil }, set: { if !$0 { target = nil } }),
+                titleVisibility: .visible,
+                presenting: target
+            ) { _ in
+                Button("Send probe (read-only)") { model.probeExtendedBatteryInfo(); target = nil }
+                Button("Cancel", role: .cancel) { target = nil }
+            } message: { _ in
+                Text("Two independent protocol tables disagree on the extended-battery opcode (98 vs 87). This sends the curated read-only 98 and shows the strap's full raw reply. A battery-style payload confirms 98 on your firmware; a short stub means it stays ambiguous. Nothing is written to the strap.")
+            }
+            .sheet(isPresented: Binding(
+                get: { live.extendedBatteryProbe != nil },
+                set: { if !$0 { model.clearExtendedBatteryProbe() } }
+            )) {
+                ExtendedBatteryProbeResultView(
+                    text: live.extendedBatteryProbe ?? "",
+                    onClose: { model.clearExtendedBatteryProbe() }
+                )
+            }
+    }
+}
+
+private struct DeviceDeleteDataAlert: ViewModifier {
+    @Binding var target: PairedDevice?
+    @ObservedObject var registry: DeviceRegistry
+    @EnvironmentObject var model: AppModel
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "Delete all of this device's data?",
+            isPresented: Binding(get: { target != nil }, set: { if !$0 { target = nil } }),
+            presenting: target
+        ) { device in
+            Button("Cancel", role: .cancel) { target = nil }
+            Button("Delete data", role: .destructive) {
+                let deviceId = device.id
+                Task {
+                    guard let store = await model.repo.storeHandle() else { return }
+                    await registry.deleteDeviceData(deviceId, store: store)
+                }
+                target = nil
+            }
+        } message: { device in
+            Text("This permanently deletes all data recorded from \(device.displayName). This can't be undone.")
+        }
+    }
+}
+
+private struct DevicePickNewActiveDialog: ViewModifier {
+    @Binding var isPresented: Bool
+    var devices: [PairedDevice]
+    @ObservedObject var registry: DeviceRegistry
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            "Pick a new active strap",
+            isPresented: $isPresented,
+            titleVisibility: .visible
+        ) {
+            ForEach(devices) { device in
+                Button(device.displayName) { registry.setActive(device.id) }
+            }
+            Button("Leave none active", role: .cancel) { }
+        } message: {
+            Text("You removed your active strap. Choose which paired band provides your live data, or leave none active and pair one later.")
+        }
     }
 }
 

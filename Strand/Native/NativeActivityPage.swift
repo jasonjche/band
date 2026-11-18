@@ -972,54 +972,9 @@ private struct NativeActivityHRPlot: View {
 
     var body: some View {
         Chart {
-            if xDomain.upperBound > xDomain.lowerBound {
-                RuleMark(x: .value("Start", xDomain.lowerBound))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    .foregroundStyle(Color.secondary.opacity(0.7))
-                    .accessibilityHidden(true)
-                RuleMark(x: .value("End", xDomain.upperBound))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    .foregroundStyle(Color.secondary.opacity(0.7))
-                    .accessibilityHidden(true)
-            }
-            ForEach(plotPoints) { point in
-                AreaMark(
-                    x: .value("Time", point.time),
-                    yStart: .value("Low", yDomain.lowerBound),
-                    yEnd: .value("HR", point.value)
-                )
-                .foregroundStyle(lineTint.opacity(selectedZone == nil ? 0.18 : 0.05))
-                .interpolationMethod(.linear)
-                LineMark(x: .value("Time", point.time), y: .value("HR", point.value))
-                    .foregroundStyle(lineTint.opacity(selectedZone == nil ? 1 : 0.18))
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5))
-            }
-            ForEach(Array(zoneRuns.enumerated()), id: \.offset) { offset, run in
-                ForEach(run) { point in
-                    AreaMark(
-                        x: .value("Time", point.time),
-                        yStart: .value("Low", yDomain.lowerBound),
-                        yEnd: .value("HR", point.value),
-                        series: .value("Zone", "z\(offset)")
-                    )
-                    .foregroundStyle(highlightTint.opacity(0.28))
-                    .interpolationMethod(.linear)
-                    LineMark(
-                        x: .value("Time", point.time),
-                        y: .value("HR", point.value),
-                        series: .value("Zone", "z\(offset)")
-                    )
-                    .foregroundStyle(highlightTint)
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5))
-                }
-                if run.count == 1, let point = run.first {
-                    PointMark(x: .value("Time", point.time), y: .value("HR", point.value))
-                        .foregroundStyle(highlightTint)
-                        .symbolSize(24)
-                }
-            }
+            boundMarks
+            seriesMarks
+            zoneMarks
         }
         .chartXScale(domain: xDomain)
         .chartYScale(domain: yDomain)
@@ -1063,6 +1018,63 @@ private struct NativeActivityHRPlot: View {
         .accessibilityHint(selectedZone == nil ? "" : "Clears the zone highlight")
         .accessibilityAddTraits(selectedZone == nil ? AccessibilityTraits() : .isSelected)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: selectedZone)
+    }
+
+    @ChartContentBuilder private var boundMarks: some ChartContent {
+        if xDomain.upperBound > xDomain.lowerBound {
+            RuleMark(x: .value("Start", xDomain.lowerBound))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .foregroundStyle(Color.secondary.opacity(0.7))
+                .accessibilityHidden(true)
+            RuleMark(x: .value("End", xDomain.upperBound))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .foregroundStyle(Color.secondary.opacity(0.7))
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ChartContentBuilder private var seriesMarks: some ChartContent {
+        ForEach(plotPoints) { point in
+            AreaMark(
+                x: .value("Time", point.time),
+                yStart: .value("Low", yDomain.lowerBound),
+                yEnd: .value("HR", point.value)
+            )
+            .foregroundStyle(lineTint.opacity(selectedZone == nil ? 0.18 : 0.05))
+            .interpolationMethod(.linear)
+            LineMark(x: .value("Time", point.time), y: .value("HR", point.value))
+                .foregroundStyle(lineTint.opacity(selectedZone == nil ? 1 : 0.18))
+                .interpolationMethod(.linear)
+                .lineStyle(StrokeStyle(lineWidth: 2.5))
+        }
+    }
+
+    @ChartContentBuilder private var zoneMarks: some ChartContent {
+        ForEach(Array(zoneRuns.enumerated()), id: \.offset) { offset, run in
+            ForEach(run) { point in
+                AreaMark(
+                    x: .value("Time", point.time),
+                    yStart: .value("Low", yDomain.lowerBound),
+                    yEnd: .value("HR", point.value),
+                    series: .value("Zone", "z\(offset)")
+                )
+                .foregroundStyle(highlightTint.opacity(0.28))
+                .interpolationMethod(.linear)
+                LineMark(
+                    x: .value("Time", point.time),
+                    y: .value("HR", point.value),
+                    series: .value("Zone", "z\(offset)")
+                )
+                .foregroundStyle(highlightTint)
+                .interpolationMethod(.linear)
+                .lineStyle(StrokeStyle(lineWidth: 2.5))
+            }
+            if run.count == 1, let point = run.first {
+                PointMark(x: .value("Time", point.time), y: .value("HR", point.value))
+                    .foregroundStyle(highlightTint)
+                    .symbolSize(24)
+            }
+        }
     }
 }
 

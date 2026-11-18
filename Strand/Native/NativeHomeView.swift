@@ -157,6 +157,74 @@ struct NativeHomeView: View {
     private var selectedKey: String { NativeDaySelection.resolvedKey(from: selectedDayKey) }
 
     var body: some View {
+        homeScroll
+            .background(NativePageFill().ignoresSafeArea())
+            .background {
+                NativeHomeEnvSink(
+                    refreshSeq: $refreshSeq,
+                    loaded: $loaded,
+                    handlesReady: $handlesReady,
+                    onHandles: { repo, ble, profile in
+                        repoHandle = repo
+                        bleHandle = ble
+                        profileHandle = profile
+                    }
+                )
+            }
+            .refreshable {
+                guard let ble = bleHandle, let repo = repoHandle else { return }
+                await NativeHomeSync.pull(ble: ble, repo: repo, reload: reload)
+            }
+            .navigationTitle("Home")
+            .environment(\.nativeSelectedDay, selectedDay)
+            .nativeStyleBridge()
+            .task(id: handlesReady ? "\(refreshSeq)-\(selectedKey)" : "boot") {
+                guard handlesReady else { return }
+                await reload()
+            }
+            .onChange(of: effortScaleRaw) { _ in Task { await rebuildModel() } }
+            .onChange(of: smartAlarmEnabled) { _ in Task { await rebuildModel() } }
+            .onChange(of: smartAlarmMinutes) { _ in Task { await rebuildModel() } }
+            .onChange(of: dashboardJSON) { _ in Task { await rebuildModel() } }
+            .navigationDestination(for: NativePairRoute.self) { _ in
+                DevicesView()
+            }
+            .navigationDestination(for: NativeAlarmRoute.self) { _ in
+                SmartAlarmView()
+            }
+            .sheet(isPresented: $addingActivity) {
+                HomeAddActivitySheet { await reload() }
+            }
+            .sheet(isPresented: $editingDashboard) {
+                HomeDashboardEditor(selectedIds: HomeDashboardStore.decode(dashboardJSON)) { ids in
+                    let encoded = HomeDashboardStore.encode(ids)
+                    HomeDashboardStore.save(ids)
+                    dashboardJSON = encoded
+                }
+            }
+            .toolbar {
+                #if os(macOS)
+                ToolbarItem(placement: streakPlacement) {
+                    HomeStreakBadge(count: sleepStreak)
+                }
+                ToolbarItem(placement: .principal) {
+                    HomeDateStepper(
+                        title: HomeDayTitle.text(for: selectedDay),
+                        canGoBack: canGoBack,
+                        canGoForward: canGoForward,
+                        onBack: { shiftDay(-1) },
+                        onForward: { shiftDay(1) }
+                    )
+                }
+                ToolbarItem(placement: .automatic) {
+                    HomeStrapStatus()
+                }
+                #endif
+            }
+            .accessibilityElement(children: .contain)
+    }
+
+    private var homeScroll: some View {
         ScrollView {
             NativeChrome.stack {
                 #if os(iOS)
@@ -200,70 +268,6 @@ struct NativeHomeView: View {
             }
             .padding(.bottom, 136)
         }
-        .background(NativePageFill().ignoresSafeArea())
-        .background {
-            NativeHomeEnvSink(
-                refreshSeq: $refreshSeq,
-                loaded: $loaded,
-                handlesReady: $handlesReady,
-                onHandles: { repo, ble, profile in
-                    repoHandle = repo
-                    bleHandle = ble
-                    profileHandle = profile
-                }
-            )
-        }
-        .refreshable {
-            guard let ble = bleHandle, let repo = repoHandle else { return }
-            await NativeHomeSync.pull(ble: ble, repo: repo, reload: reload)
-        }
-        .navigationTitle("Home")
-        .environment(\.nativeSelectedDay, selectedDay)
-        .nativeStyleBridge()
-        .task(id: handlesReady ? "\(refreshSeq)-\(selectedKey)" : "boot") {
-            guard handlesReady else { return }
-            await reload()
-        }
-        .onChange(of: effortScaleRaw) { _ in Task { await rebuildModel() } }
-        .onChange(of: smartAlarmEnabled) { _ in Task { await rebuildModel() } }
-        .onChange(of: smartAlarmMinutes) { _ in Task { await rebuildModel() } }
-        .onChange(of: dashboardJSON) { _ in Task { await rebuildModel() } }
-        .navigationDestination(for: NativePairRoute.self) { _ in
-            DevicesView()
-        }
-        .navigationDestination(for: NativeAlarmRoute.self) { _ in
-            SmartAlarmView()
-        }
-        .sheet(isPresented: $addingActivity) {
-            HomeAddActivitySheet { await reload() }
-        }
-        .sheet(isPresented: $editingDashboard) {
-            HomeDashboardEditor(selectedIds: HomeDashboardStore.decode(dashboardJSON)) { ids in
-                let encoded = HomeDashboardStore.encode(ids)
-                HomeDashboardStore.save(ids)
-                dashboardJSON = encoded
-            }
-        }
-        .toolbar {
-            #if os(macOS)
-            ToolbarItem(placement: streakPlacement) {
-                HomeStreakBadge(count: sleepStreak)
-            }
-            ToolbarItem(placement: .principal) {
-                HomeDateStepper(
-                    title: HomeDayTitle.text(for: selectedDay),
-                    canGoBack: canGoBack,
-                    canGoForward: canGoForward,
-                    onBack: { shiftDay(-1) },
-                    onForward: { shiftDay(1) }
-                )
-            }
-            ToolbarItem(placement: .automatic) {
-                HomeStrapStatus()
-            }
-            #endif
-        }
-        .accessibilityElement(children: .contain)
     }
 
     #if os(macOS)

@@ -1302,77 +1302,11 @@ struct NativeStressDayPlot: View {
 
     var body: some View {
         Chart {
-            if let visible = model.sleepVisible {
-                RectangleMark(
-                    xStart: .value("Sleep shade start", visible.start),
-                    xEnd: .value("Sleep shade end", visible.end),
-                    yStart: .value("Plot", 0),
-                    yEnd: .value("Top", 3)
-                )
-                .foregroundStyle(sleepFill)
-                .accessibilityHidden(true)
-                RectangleMark(
-                    xStart: .value("Sleep accent start", visible.start),
-                    xEnd: .value("Sleep accent end", visible.end),
-                    yStart: .value("Accent", NativeStressLaneIcon.accentLow),
-                    yEnd: .value("Accent top", NativeStressLaneIcon.accentHigh)
-                )
-                .foregroundStyle(sleepAccent)
-                .accessibilityLabel("Sleep")
-            }
-            ForEach(Array(model.workoutVisible.enumerated()), id: \.offset) { _, visible in
-                RectangleMark(
-                    xStart: .value("Activity shade start", visible.start),
-                    xEnd: .value("Activity shade end", visible.end),
-                    yStart: .value("Plot", 0),
-                    yEnd: .value("Top", 3)
-                )
-                .foregroundStyle(workoutFill)
-                .accessibilityHidden(true)
-                RectangleMark(
-                    xStart: .value("Activity accent start", visible.start),
-                    xEnd: .value("Activity accent end", visible.end),
-                    yStart: .value("Accent", NativeStressLaneIcon.accentLow),
-                    yEnd: .value("Accent top", NativeStressLaneIcon.accentHigh)
-                )
-                .foregroundStyle(workoutAccent)
-                .accessibilityLabel("Activity")
-            }
-            ForEach(Array(model.hourSegments.enumerated()), id: \.offset) { index, segment in
-                ForEach(segment) { point in
-                    LineMark(
-                        x: .value("Time", point.time),
-                        y: .value("Stress", point.value),
-                        series: .value("Segment", index)
-                    )
-                    .foregroundStyle(lineGradient)
-                    .interpolationMethod(.monotone)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
-                    .accessibilityLabel(model.pointTimeText[point.time.timeIntervalSince1970] ?? NativeScopeFormat.time(point.time))
-                    .accessibilityValue(String(format: "%.1f", point.value))
-                }
-            }
-            if model.showsNow {
-                RuleMark(x: .value("Now", model.now))
-                    .foregroundStyle(NativePaint.separator(style))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    .accessibilityHidden(true)
-                PointMark(x: .value("Now dot", model.now), y: .value("Base", 0))
-                    .foregroundStyle(Color.primary)
-                    .symbolSize(28)
-                    .accessibilityHidden(true)
-            }
-            if let selectedTime,
-               let point = NativeChartScrubMath.nearestHour(
-                to: selectedTime,
-                in: model.hours,
-                maxGap: model.maxGap
-               ) {
-                PointMark(x: .value("Scrub", point.time), y: .value("Stress", point.value))
-                    .foregroundStyle(NativePaint.stressBand(point.value, style: style))
-                    .symbol { NativeSelectedVertex(tint: NativePaint.stressBand(point.value, style: style)) }
-                    .accessibilityHidden(true)
-            }
+            sleepLaneMarks
+            activityLaneMarks
+            stressLineMarks
+            nowLaneMarks
+            scrubLaneMarks
         }
         .chartYScale(domain: 0...3)
         .chartXScale(domain: model.xDomain)
@@ -1443,6 +1377,92 @@ struct NativeStressDayPlot: View {
                 yRange: 0...3
             )
         )
+    }
+
+    @ChartContentBuilder private var sleepLaneMarks: some ChartContent {
+        if let visible = model.sleepVisible {
+            RectangleMark(
+                xStart: .value("Sleep shade start", visible.start),
+                xEnd: .value("Sleep shade end", visible.end),
+                yStart: .value("Plot", 0),
+                yEnd: .value("Top", 3)
+            )
+            .foregroundStyle(sleepFill)
+            .accessibilityHidden(true)
+            RectangleMark(
+                xStart: .value("Sleep accent start", visible.start),
+                xEnd: .value("Sleep accent end", visible.end),
+                yStart: .value("Accent", NativeStressLaneIcon.accentLow),
+                yEnd: .value("Accent top", NativeStressLaneIcon.accentHigh)
+            )
+            .foregroundStyle(sleepAccent)
+            .accessibilityLabel("Sleep")
+        }
+    }
+
+    @ChartContentBuilder private var activityLaneMarks: some ChartContent {
+        ForEach(Array(model.workoutVisible.enumerated()), id: \.offset) { _, visible in
+            RectangleMark(
+                xStart: .value("Activity shade start", visible.start),
+                xEnd: .value("Activity shade end", visible.end),
+                yStart: .value("Plot", 0),
+                yEnd: .value("Top", 3)
+            )
+            .foregroundStyle(workoutFill)
+            .accessibilityHidden(true)
+            RectangleMark(
+                xStart: .value("Activity accent start", visible.start),
+                xEnd: .value("Activity accent end", visible.end),
+                yStart: .value("Accent", NativeStressLaneIcon.accentLow),
+                yEnd: .value("Accent top", NativeStressLaneIcon.accentHigh)
+            )
+            .foregroundStyle(workoutAccent)
+            .accessibilityLabel("Activity")
+        }
+    }
+
+    @ChartContentBuilder private var stressLineMarks: some ChartContent {
+        ForEach(Array(model.hourSegments.enumerated()), id: \.offset) { index, segment in
+            ForEach(segment) { point in
+                LineMark(
+                    x: .value("Time", point.time),
+                    y: .value("Stress", point.value),
+                    series: .value("Segment", index)
+                )
+                .foregroundStyle(lineGradient)
+                .interpolationMethod(.monotone)
+                .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
+                .accessibilityLabel(model.pointTimeText[point.time.timeIntervalSince1970] ?? NativeScopeFormat.time(point.time))
+                .accessibilityValue(String(format: "%.1f", point.value))
+            }
+        }
+    }
+
+    @ChartContentBuilder private var nowLaneMarks: some ChartContent {
+        if model.showsNow {
+            RuleMark(x: .value("Now", model.now))
+                .foregroundStyle(NativePaint.separator(style))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .accessibilityHidden(true)
+            PointMark(x: .value("Now dot", model.now), y: .value("Base", 0))
+                .foregroundStyle(Color.primary)
+                .symbolSize(28)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ChartContentBuilder private var scrubLaneMarks: some ChartContent {
+        if let selectedTime,
+           let point = NativeChartScrubMath.nearestHour(
+            to: selectedTime,
+            in: model.hours,
+            maxGap: model.maxGap
+           ) {
+            PointMark(x: .value("Scrub", point.time), y: .value("Stress", point.value))
+                .foregroundStyle(NativePaint.stressBand(point.value, style: style))
+                .symbol { NativeSelectedVertex(tint: NativePaint.stressBand(point.value, style: style)) }
+                .accessibilityHidden(true)
+        }
     }
 }
 

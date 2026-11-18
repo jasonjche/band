@@ -211,27 +211,28 @@ struct NativeGallerySnapshot {
     }
 
     static var sections: [Section] {
-        [
-            Section(name: "rings", title: "Rings", view: AnyView(rings)),
-            Section(name: "card-header", title: "Card Header", view: AnyView(cardHeader)),
-            Section(name: "hero", title: "Hero", view: AnyView(hero)),
-            Section(name: "sleep-contributors", title: "Sleep Contributors", view: AnyView(sleepContributors)),
-            Section(name: "recovery-contributors", title: "Recovery Contributors", view: AnyView(recoveryContributors)),
-            Section(name: "bar-chart", title: "Weekly Bar Chart", view: AnyView(barChart)),
-            Section(name: "line-chart", title: "Weekly Line Chart", view: AnyView(lineChart)),
-            Section(name: "dual-chart", title: "Strain & Recovery", view: AnyView(dualChart)),
-            Section(name: "no-data", title: "No data", view: AnyView(noData)),
-            Section(name: "inset-row", title: "Inset Row", view: AnyView(insetRow)),
-            Section(name: "last-night", title: "Last Night", view: AnyView(lastNight)),
-            Section(name: "sleep-week", title: "Sleep Week", view: AnyView(sleepWeek)),
-            Section(name: "recovery-week", title: "Recovery Week", view: AnyView(recoveryWeek)),
-            Section(name: "strain-week", title: "Strain Week", view: AnyView(strainWeek)),
-            Section(name: "sleep-page", title: "Sleep Page", padded: false, view: AnyView(sleepPage)),
-            Section(name: "sleep-page-empty", title: "Sleep Page Empty", padded: false, view: AnyView(sleepPageEmpty)),
-            Section(name: "recovery-page", title: "Recovery Page", padded: false, view: AnyView(recoveryPage)),
-            Section(name: "strain-page", title: "Strain Page", padded: false, view: AnyView(strainPage)),
-            Section(name: "activity-page", title: "Activity Page", padded: false, view: AnyView(activityPage)),
-        ]
+        var out: [Section] = []
+        out.reserveCapacity(19)
+        out.append(Section(name: "rings", title: "Rings", view: AnyView(rings)))
+        out.append(Section(name: "card-header", title: "Card Header", view: AnyView(cardHeader)))
+        out.append(Section(name: "hero", title: "Hero", view: AnyView(hero)))
+        out.append(Section(name: "sleep-contributors", title: "Sleep Contributors", view: AnyView(sleepContributors)))
+        out.append(Section(name: "recovery-contributors", title: "Recovery Contributors", view: AnyView(recoveryContributors)))
+        out.append(Section(name: "bar-chart", title: "Weekly Bar Chart", view: AnyView(barChart)))
+        out.append(Section(name: "line-chart", title: "Weekly Line Chart", view: AnyView(lineChart)))
+        out.append(Section(name: "dual-chart", title: "Strain & Recovery", view: AnyView(dualChart)))
+        out.append(Section(name: "no-data", title: "No data", view: AnyView(noData)))
+        out.append(Section(name: "inset-row", title: "Inset Row", view: AnyView(insetRow)))
+        out.append(Section(name: "last-night", title: "Last Night", view: AnyView(lastNight)))
+        out.append(Section(name: "sleep-week", title: "Sleep Week", view: AnyView(sleepWeek)))
+        out.append(Section(name: "recovery-week", title: "Recovery Week", view: AnyView(recoveryWeek)))
+        out.append(Section(name: "strain-week", title: "Strain Week", view: AnyView(strainWeek)))
+        out.append(Section(name: "sleep-page", title: "Sleep Page", padded: false, view: AnyView(sleepPage)))
+        out.append(Section(name: "sleep-page-empty", title: "Sleep Page Empty", padded: false, view: AnyView(sleepPageEmpty)))
+        out.append(Section(name: "recovery-page", title: "Recovery Page", padded: false, view: AnyView(recoveryPage)))
+        out.append(Section(name: "strain-page", title: "Strain Page", padded: false, view: AnyView(strainPage)))
+        out.append(Section(name: "activity-page", title: "Activity Page", padded: false, view: AnyView(activityPage)))
+        return out
     }
 
     static var strainScore: NativeScore { snapshotModel.strain }

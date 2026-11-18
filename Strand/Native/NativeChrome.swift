@@ -1735,7 +1735,7 @@ struct NativeStackedWeekBars: View {
                 "Zone 3": NativeTokens.hrZone3,
                 "Zone 4": NativeTokens.hrZone4,
                 "Zone 5": NativeTokens.hrZone5,
-            ])
+            ] as KeyValuePairs<String, Color>)
             .chartLegend(.hidden)
             .chartYScale(domain: 0...plotCeiling)
             .modifier(NativeChartChrome(
@@ -2191,98 +2191,11 @@ struct NativeStressMonitor: View {
 
     var body: some View {
         Chart {
-            if let sleepStart, let sleepEnd {
-                RectangleMark(
-                    xStart: .value("Sleep shade start", max(sleepStart, dayStart)),
-                    xEnd: .value("Sleep shade end", min(sleepEnd, plotEnd)),
-                    yStart: .value("Plot", 0),
-                    yEnd: .value("Top", 3)
-                )
-                .foregroundStyle(laneTint.opacity(0.16))
-                .accessibilityHidden(true)
-                RectangleMark(
-                    xStart: .value("Sleep start", max(sleepStart, dayStart)),
-                    xEnd: .value("Sleep end", min(sleepEnd, plotEnd)),
-                    yStart: .value("Lane", NativeStressMonitorMath.spanBarLow),
-                    yEnd: .value("Lane top", NativeStressMonitorMath.spanBarHigh)
-                )
-                .foregroundStyle(spanBar.opacity(0.85))
-                .accessibilityLabel("Sleep")
-                PointMark(
-                    x: .value("Sleep icon", NativeStressMonitorMath.midpoint(sleepStart, sleepEnd)),
-                    y: .value("Lane icon", NativeStressMonitorMath.spanIconY)
-                )
-                .foregroundStyle(laneTint)
-                .symbol {
-                    Image(systemName: "moon.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.secondary)
-                }
-                .accessibilityHidden(true)
-            }
-            ForEach(Array(activities.enumerated()), id: \.offset) { _, bout in
-                RectangleMark(
-                    xStart: .value("Activity start", bout.start),
-                    xEnd: .value("Activity end", bout.end),
-                    yStart: .value("Lane", NativeStressMonitorMath.spanBarLow),
-                    yEnd: .value("Lane top", NativeStressMonitorMath.spanBarHigh)
-                )
-                .foregroundStyle(spanBar.opacity(0.85))
-                .accessibilityLabel("Activity")
-            }
-            ForEach(iconClusters) { cluster in
-                PointMark(
-                    x: .value("Activity icon \(cluster.id)", cluster.mid),
-                    y: .value("Lane icon", NativeStressMonitorMath.spanIconY)
-                )
-                .foregroundStyle(Color.secondary)
-                .symbol {
-                    if cluster.count > 1 {
-                        Text("\(cluster.count)")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(Color.secondary)
-                            .monospacedDigit()
-                    } else {
-                        Image(systemName: cluster.symbol)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.secondary)
-                    }
-                }
-                .accessibilityHidden(true)
-            }
-            ForEach(Array(hourSegments.enumerated()), id: \.offset) { _, segment in
-                ForEach(segment.filter { $0.time >= dayStart && $0.time <= plotEnd && $0.value >= 0 && $0.value <= 3 }) { point in
-                    LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
-                        .foregroundStyle(lineGradient)
-                        .interpolationMethod(.monotone)
-                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
-                        .accessibilityLabel(NativeScopeFormat.time(point.time))
-                        .accessibilityValue(String(format: "%.1f", point.value))
-                }
-            }
-            if showsNow {
-                RuleMark(x: .value("Now", now))
-                    .foregroundStyle(NativePaint.separator(style))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    .accessibilityHidden(true)
-                PointMark(x: .value("Now dot", now), y: .value("Base", 0))
-                    .foregroundStyle(Color.primary)
-                    .symbolSize(28)
-                    .accessibilityHidden(true)
-            }
-            if let selectedTime,
-               let point = NativeChartScrubMath.nearestHour(
-                to: selectedTime,
-                in: hours,
-                maxGap: NativeChartScrubMath.inferredMaxGap(in: hours)
-               ),
-               point.time >= dayStart, point.time <= plotEnd,
-               point.value >= 0, point.value <= 3 {
-                PointMark(x: .value("Scrub", point.time), y: .value("Stress", point.value))
-                    .foregroundStyle(NativeChrome.stressBandColor(point.value))
-                    .symbol { NativeSelectedVertex(tint: NativeChrome.stressBandColor(point.value)) }
-                    .accessibilityHidden(true)
-            }
+            sleepMarks
+            activityMarks
+            lineMarks
+            nowMarks
+            scrubMarks
         }
         .chartYScale(domain: 0...NativeStressMonitorMath.yTop)
         .chartXScale(domain: dayStart...plotEnd)
@@ -2336,6 +2249,113 @@ struct NativeStressMonitor: View {
         .onAppear { if selectedTime == nil { selectedTime = previewSelected } }
         .modifier(NativeSelectionFeedback(trigger: selectedTime ?? .distantPast))
         .accessibilityLabel("Stress monitor \(String(format: "%.1f", score))")
+    }
+
+    @ChartContentBuilder private var sleepMarks: some ChartContent {
+        if let sleepStart, let sleepEnd {
+            RectangleMark(
+                xStart: .value("Sleep shade start", max(sleepStart, dayStart)),
+                xEnd: .value("Sleep shade end", min(sleepEnd, plotEnd)),
+                yStart: .value("Plot", 0),
+                yEnd: .value("Top", 3)
+            )
+            .foregroundStyle(laneTint.opacity(0.16))
+            .accessibilityHidden(true)
+            RectangleMark(
+                xStart: .value("Sleep start", max(sleepStart, dayStart)),
+                xEnd: .value("Sleep end", min(sleepEnd, plotEnd)),
+                yStart: .value("Lane", NativeStressMonitorMath.spanBarLow),
+                yEnd: .value("Lane top", NativeStressMonitorMath.spanBarHigh)
+            )
+            .foregroundStyle(spanBar.opacity(0.85))
+            .accessibilityLabel("Sleep")
+            PointMark(
+                x: .value("Sleep icon", NativeStressMonitorMath.midpoint(sleepStart, sleepEnd)),
+                y: .value("Lane icon", NativeStressMonitorMath.spanIconY)
+            )
+            .foregroundStyle(laneTint)
+            .symbol {
+                Image(systemName: "moon.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.secondary)
+            }
+            .accessibilityHidden(true)
+        }
+    }
+
+    @ChartContentBuilder private var activityMarks: some ChartContent {
+        ForEach(Array(activities.enumerated()), id: \.offset) { _, bout in
+            RectangleMark(
+                xStart: .value("Activity start", bout.start),
+                xEnd: .value("Activity end", bout.end),
+                yStart: .value("Lane", NativeStressMonitorMath.spanBarLow),
+                yEnd: .value("Lane top", NativeStressMonitorMath.spanBarHigh)
+            )
+            .foregroundStyle(spanBar.opacity(0.85))
+            .accessibilityLabel("Activity")
+        }
+        ForEach(iconClusters) { cluster in
+            PointMark(
+                x: .value("Activity icon \(cluster.id)", cluster.mid),
+                y: .value("Lane icon", NativeStressMonitorMath.spanIconY)
+            )
+            .foregroundStyle(Color.secondary)
+            .symbol {
+                if cluster.count > 1 {
+                    Text("\(cluster.count)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(Color.secondary)
+                        .monospacedDigit()
+                } else {
+                    Image(systemName: cluster.symbol)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.secondary)
+                }
+            }
+            .accessibilityHidden(true)
+        }
+    }
+
+    @ChartContentBuilder private var lineMarks: some ChartContent {
+        ForEach(Array(hourSegments.enumerated()), id: \.offset) { _, segment in
+            ForEach(segment.filter { $0.time >= dayStart && $0.time <= plotEnd && $0.value >= 0 && $0.value <= 3 }) { point in
+                LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
+                    .foregroundStyle(lineGradient)
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
+                    .accessibilityLabel(NativeScopeFormat.time(point.time))
+                    .accessibilityValue(String(format: "%.1f", point.value))
+            }
+        }
+    }
+
+    @ChartContentBuilder private var nowMarks: some ChartContent {
+        if showsNow {
+            RuleMark(x: .value("Now", now))
+                .foregroundStyle(NativePaint.separator(style))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .accessibilityHidden(true)
+            PointMark(x: .value("Now dot", now), y: .value("Base", 0))
+                .foregroundStyle(Color.primary)
+                .symbolSize(28)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ChartContentBuilder private var scrubMarks: some ChartContent {
+        if let selectedTime,
+           let point = NativeChartScrubMath.nearestHour(
+            to: selectedTime,
+            in: hours,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: hours)
+           ),
+           point.time >= dayStart, point.time <= plotEnd,
+           point.value >= 0, point.value <= 3 {
+            PointMark(x: .value("Scrub", point.time), y: .value("Stress", point.value))
+                .foregroundStyle(NativeChrome.stressBandColor(point.value))
+                .symbol { NativeSelectedVertex(tint: NativeChrome.stressBandColor(point.value)) }
+                .accessibilityHidden(true)
+        }
     }
 
 }

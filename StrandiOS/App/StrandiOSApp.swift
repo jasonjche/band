@@ -597,18 +597,17 @@ enum DemoScreens {
     static var requested: AnyView? {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--demo-screen"), i + 1 < args.count else { return nil }
-        switch args[i + 1].lowercased() {
-        case "today", "nativetoday": return AnyView(NativeHomeView())
-        case "live":     return AnyView(LiveView())
-        case "workouts": return AnyView(WorkoutsView())
-        case "insights": return AnyView(InsightsView())
-        case "settings": return AnyView(NativeAppSettingsView())
-        case "devices":  return AnyView(DevicesView())
-        case "devicescatalog": return AnyView(DeviceCardCatalog())
-        case "addwizard": return AnyView(AddWizardDemoHost())
-        case "bondrefused": return AnyView(BondRefusedDemoScreen())
-        default:         return nil
-        }
+        let name = args[i + 1].lowercased()
+        if name == "today" || name == "nativetoday" { return AnyView(NativeHomeView()) }
+        if name == "live" { return AnyView(LiveView()) }
+        if name == "workouts" { return AnyView(WorkoutsView()) }
+        if name == "insights" { return AnyView(InsightsView()) }
+        if name == "settings" { return AnyView(NativeAppSettingsView()) }
+        if name == "devices" { return AnyView(DevicesView()) }
+        if name == "devicescatalog" { return AnyView(DeviceCardCatalog()) }
+        if name == "addwizard" { return AnyView(AddWizardDemoHost()) }
+        if name == "bondrefused" { return AnyView(BondRefusedDemoScreen()) }
+        return nil
     }
 }
 #endif

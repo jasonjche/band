@@ -573,92 +573,12 @@ private struct NativeScopeStaticChart: View {
         let bandStart = visible.first?.start ?? plotBuckets.first?.start
         let bandEnd = visible.last?.end ?? plotBuckets.last?.end
         return Chart {
-            if let band, let bandStart, let bandEnd, bandEnd > bandStart {
-                RectangleMark(
-                    xStart: .value("Range start", bandStart),
-                    xEnd: .value("Range end", bandEnd),
-                    yStart: .value("Typical low", band.lowerBound),
-                    yEnd: .value("Typical high", band.upperBound)
-                )
-                .foregroundStyle(Color.secondary.opacity(0.08))
-                .accessibilityLabel("Typical range")
-                .accessibilityValue(NativeTypicalRange.caption(range: band, format: format, unit: nil))
-            }
-            if bars {
-                ForEach(plotBuckets.filter { $0.start >= xDomain.lowerBound && $0.start <= xDomain.upperBound }) { bucket in
-                    if let value = bucket.value {
-                        BarMark(
-                            x: .value("Day", bucket.start, unit: barUnit),
-                            y: .value("Value", value),
-                            width: .ratio(0.62)
-                        )
-                        .foregroundStyle(color?(value) ?? tint)
-                        .cornerRadius(3)
-                        .opacity(NativeChartScrubMath.barOpacity(
-                            isSelected: bucket.key == selectedKey,
-                            hasSelection: selectedKey != nil
-                        ))
-                        .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
-                        .accessibilityValue(format(value))
-                    }
-                }
-            } else if plotBuckets.contains(where: { $0.low != nil && $0.high != nil }) {
-                ForEach(plotBuckets.filter { $0.start >= xDomain.lowerBound && $0.start <= xDomain.upperBound }) { bucket in
-                    if let low = bucket.low, let high = bucket.high, let value = bucket.value {
-                        BarMark(
-                            x: .value("Day", bucket.start, unit: barUnit),
-                            yStart: .value("Low", low),
-                            yEnd: .value("High", high)
-                        )
-                        .foregroundStyle(tint)
-                        .clipShape(Capsule())
-                        .opacity(NativeChartScrubMath.barOpacity(
-                            isSelected: bucket.key == selectedKey,
-                            hasSelection: selectedKey != nil
-                        ))
-                        .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
-                        .accessibilityValue(format(value))
-                    }
-                }
-            } else {
-                ForEach(segments) { point in
-                    LineMark(
-                        x: .value("Day", point.date),
-                        y: .value("Value", point.value),
-                        series: .value("Segment", point.segment)
-                    )
-                    .foregroundStyle(lineTint)
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
-                    .accessibilityHidden(true)
-                }
-                if showVertices {
-                    ForEach(segments.filter { visibleKeys.contains($0.key) || $0.key == lastKnown?.key }) { point in
-                        PointMark(x: .value("Day", point.date), y: .value("Value", point.value))
-                            .foregroundStyle(color?(point.value) ?? tint)
-                            .symbol {
-                                NativeScopeVertex(
-                                    tint: color?(point.value) ?? tint,
-                                    size: visibleKnown.count <= 4 ? 10 : 8
-                                )
-                            }
-                            .accessibilityLabel(NativeChartDay.longLabel(point.key))
-                            .accessibilityValue(format(point.value))
-                    }
-                }
-                if let lastKnown {
-                    PointMark(x: .value("Day", lastKnown.date), y: .value("Value", lastKnown.value))
-                        .foregroundStyle(.clear)
-                        .annotation(position: .top, spacing: 4) {
-                            Text(format(lastKnown.value))
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(Color.primary)
-                                .monospacedDigit()
-                                .padding(.horizontal, 2)
-                        }
-                        .accessibilityHidden(true)
-                }
-            }
+            typicalBandMarks(band: band, start: bandStart, end: bandEnd)
+            valueMarks(
+                xDomain: xDomain, barUnit: barUnit, segments: segments,
+                visibleKeys: visibleKeys, showVertices: showVertices,
+                lastKnown: lastKnown, lineTint: lineTint, visibleKnownCount: visibleKnown.count
+            )
             if let average {
                 RuleMark(y: .value("Average", average))
                     .foregroundStyle(Color.secondary)
@@ -699,6 +619,111 @@ private struct NativeScopeStaticChart: View {
             }
         }
         .nativeClippedChartPlot()
+    }
+
+    @ChartContentBuilder
+    private func typicalBandMarks(
+        band: ClosedRange<Double>?, start: Date?, end: Date?
+    ) -> some ChartContent {
+        if let band, let start, let end, end > start {
+            RectangleMark(
+                xStart: .value("Range start", start),
+                xEnd: .value("Range end", end),
+                yStart: .value("Typical low", band.lowerBound),
+                yEnd: .value("Typical high", band.upperBound)
+            )
+            .foregroundStyle(Color.secondary.opacity(0.08))
+            .accessibilityLabel("Typical range")
+            .accessibilityValue(NativeTypicalRange.caption(range: band, format: format, unit: nil))
+        }
+    }
+
+    @ChartContentBuilder
+    private func valueMarks(
+        xDomain: ClosedRange<Date>,
+        barUnit: Calendar.Component,
+        segments: [NativeScopePlotMath.LinePoint],
+        visibleKeys: Set<String>,
+        showVertices: Bool,
+        lastKnown: NativeScopePlotMath.LinePoint?,
+        lineTint: Color,
+        visibleKnownCount: Int
+    ) -> some ChartContent {
+        if bars {
+            ForEach(plotBuckets.filter { $0.start >= xDomain.lowerBound && $0.start <= xDomain.upperBound }) { bucket in
+                if let value = bucket.value {
+                    BarMark(
+                        x: .value("Day", bucket.start, unit: barUnit),
+                        y: .value("Value", value),
+                        width: .ratio(0.62)
+                    )
+                    .foregroundStyle(color?(value) ?? tint)
+                    .cornerRadius(3)
+                    .opacity(NativeChartScrubMath.barOpacity(
+                        isSelected: bucket.key == selectedKey,
+                        hasSelection: selectedKey != nil
+                    ))
+                    .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
+                    .accessibilityValue(format(value))
+                }
+            }
+        } else if plotBuckets.contains(where: { $0.low != nil && $0.high != nil }) {
+            ForEach(plotBuckets.filter { $0.start >= xDomain.lowerBound && $0.start <= xDomain.upperBound }) { bucket in
+                if let low = bucket.low, let high = bucket.high, let value = bucket.value {
+                    BarMark(
+                        x: .value("Day", bucket.start, unit: barUnit),
+                        yStart: .value("Low", low),
+                        yEnd: .value("High", high)
+                    )
+                    .foregroundStyle(tint)
+                    .clipShape(Capsule())
+                    .opacity(NativeChartScrubMath.barOpacity(
+                        isSelected: bucket.key == selectedKey,
+                        hasSelection: selectedKey != nil
+                    ))
+                    .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
+                    .accessibilityValue(format(value))
+                }
+            }
+        } else {
+            ForEach(segments) { point in
+                LineMark(
+                    x: .value("Day", point.date),
+                    y: .value("Value", point.value),
+                    series: .value("Segment", point.segment)
+                )
+                .foregroundStyle(lineTint)
+                .interpolationMethod(.linear)
+                .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
+                .accessibilityHidden(true)
+            }
+            if showVertices {
+                ForEach(segments.filter { visibleKeys.contains($0.key) || $0.key == lastKnown?.key }) { point in
+                    PointMark(x: .value("Day", point.date), y: .value("Value", point.value))
+                        .foregroundStyle(color?(point.value) ?? tint)
+                        .symbol {
+                            NativeScopeVertex(
+                                tint: color?(point.value) ?? tint,
+                                size: visibleKnownCount <= 4 ? 10 : 8
+                            )
+                        }
+                        .accessibilityLabel(NativeChartDay.longLabel(point.key))
+                        .accessibilityValue(format(point.value))
+                }
+            }
+            if let lastKnown {
+                PointMark(x: .value("Day", lastKnown.date), y: .value("Value", lastKnown.value))
+                    .foregroundStyle(.clear)
+                    .annotation(position: .top, spacing: 4) {
+                        Text(format(lastKnown.value))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Color.primary)
+                            .monospacedDigit()
+                            .padding(.horizontal, 2)
+                    }
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
     private func labelDates(in buckets: [NativeScopeBucket]) -> [Date] {

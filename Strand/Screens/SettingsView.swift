@@ -1482,6 +1482,11 @@ struct SettingsView: View {
         if appleSettingsStyle {
             nativeAppearanceSections
         } else {
+            appearanceClassicCard
+        }
+    }
+
+    @ViewBuilder private var appearanceClassicCard: some View {
         SettingsSection(
             icon: "circle.lefthalf.filled",
             title: "Appearance",
@@ -1769,7 +1774,6 @@ struct SettingsView: View {
                 rowDivider
                 backgroundImageControls
             }
-        }
         }
     }
 
@@ -3092,6 +3096,11 @@ struct SettingsView: View {
         if appleSettingsStyle {
             nativeAboutSections
         } else {
+            aboutClassicCard
+        }
+    }
+
+    @ViewBuilder private var aboutClassicCard: some View {
         SettingsSection(
             icon: "info.circle.fill",
             title: "About",
@@ -3395,7 +3404,6 @@ struct SettingsView: View {
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
             }
-        }
         }
     }
 
