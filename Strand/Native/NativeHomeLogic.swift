@@ -597,11 +597,7 @@ enum NativeHomeRebuild {
                 kind: .recovery, days: input.days, todayKey: input.selectedKey,
                 sleeps: input.sleeps, workouts: input.workouts, importedSleep: input.importedSleep
             ),
-            weekStrain: NativeWeek.points(
-                kind: .strain, days: input.days, todayKey: input.selectedKey,
-                effortScale: input.effortScale,
-                sleeps: input.sleeps, workouts: input.workouts, importedSleep: input.importedSleep
-            ),
+            weekStrain: weekStrain(input, liveDay: liveDay),
             sleepStreak: HomeSleepStreak.days(
                 sleeps: input.sleeps,
                 imported: input.importedSleep,
@@ -618,6 +614,37 @@ enum NativeHomeRebuild {
                 ids: HomeDashboardStore.decode(input.dashboardJSON)
             )
         )
+    }
+
+    /// Today's week-chart point uses the same `NativeStrain.day` funnel as the Home Strain ring,
+    /// including `liveTodayStrain`. A missing or zero stored row is omitted (NaN) rather than a 0 cliff.
+    static func weekStrain(_ input: Input, liveDay: String) -> [NativeDayPoint] {
+        let live = input.selectedKey == liveDay ? input.liveTodayStrain : nil
+        var points = NativeWeek.points(
+            kind: .strain, days: input.days, todayKey: input.selectedKey,
+            effortScale: input.effortScale,
+            sleeps: input.sleeps, workouts: input.workouts, importedSleep: input.importedSleep,
+            liveTodayStrain: live
+        )
+        guard input.selectedKey == liveDay,
+              let idx = points.firstIndex(where: { $0.key == input.selectedKey }) else {
+            return points
+        }
+        let resolved = NativeStrain.day(
+            stored: input.days.last { $0.day == input.selectedKey }?.strain,
+            live: live,
+            imported: NativeStrain.isImportedDay(input.importedSleep[input.selectedKey]),
+            workoutMax: NativeStrain.workoutMaxByDay(input.workouts)[input.selectedKey]
+        )
+        if let resolved, resolved > 0 {
+            points[idx] = NativeDayPoint(
+                key: input.selectedKey,
+                value: NativeDayLogic.strainDisplayValue(resolved, scale: input.effortScale)
+            )
+        } else {
+            points[idx] = NativeDayPoint(key: input.selectedKey, value: .nan)
+        }
+        return points
     }
 }
 

@@ -41,16 +41,18 @@ enum NativeWeek {
                        effortScale: EffortScale = .whoop,
                        sleeps: [CachedSleepSession] = [],
                        workouts: [WorkoutRow] = [],
-                       importedSleep: [String: ImportedSleepFigures] = [:]) -> [NativeDayPoint] {
+                       importedSleep: [String: ImportedSleepFigures] = [:],
+                       liveTodayStrain: Double? = nil) -> [NativeDayPoint] {
         let scores = NativeBandScores.resolve(
             days: days, sleeps: sleeps, workouts: workouts, importedSleep: importedSleep
         )
         let workoutMax = NativeStrain.workoutMaxByDay(workouts)
-        return series(days, todayKey: todayKey) { day in
+        var points = series(days, todayKey: todayKey) { day in
             switch kind {
             case .strain:
                 return NativeStrain.day(
-                    stored: day.strain, live: nil,
+                    stored: day.strain,
+                    live: day.day == todayKey ? liveTodayStrain : nil,
                     imported: NativeStrain.isImportedDay(importedSleep[day.day]),
                     workoutMax: workoutMax[day.day]
                 ).map { NativeDayLogic.strainDisplayValue($0, scale: effortScale) }
@@ -58,6 +60,21 @@ enum NativeWeek {
             case .sleep: return scores.byDay[day.day]?.sleepPerformance
             }
         }
+        if kind == .strain, let idx = points.firstIndex(where: { $0.key == todayKey }),
+           !points[idx].value.isFinite {
+            if let resolved = NativeStrain.day(
+                stored: days.last { $0.day == todayKey }?.strain,
+                live: liveTodayStrain,
+                imported: NativeStrain.isImportedDay(importedSleep[todayKey]),
+                workoutMax: workoutMax[todayKey]
+            ) {
+                points[idx] = NativeDayPoint(
+                    key: todayKey,
+                    value: NativeDayLogic.strainDisplayValue(resolved, scale: effortScale)
+                )
+            }
+        }
+        return points
     }
 
     /// Last seven days, weekday labels, NaN when that day has no value.
@@ -296,7 +313,10 @@ enum NativeDay {
                 known: strain != nil,
                 fraction: strain.map { $0 / 100 },
                 tint: NativeChrome.strain,
-                rows: strainRows(today: today, prior: prior, workouts: workouts, todayKey: todayKey),
+                rows: strainRows(
+                    today: today, prior: prior, workouts: workouts, todayKey: todayKey,
+                    viewingToday: viewingToday
+                ),
                 insight: strainInsight(strain),
                 route: .metric(HeroRingMetric.effort)
             ),
@@ -311,7 +331,10 @@ enum NativeDay {
             sleepStart: sleepStart,
             sleepEnd: sleepEnd,
             awakeTypical: NativeScoreMath.mean(prior.compactMap(awakeMinutes)),
-            dashboard: dashboardRows(day: today ?? source, prior: prior, workouts: workouts, todayKey: todayKey),
+            dashboard: dashboardRows(
+                day: today ?? source, prior: prior, workouts: workouts, todayKey: todayKey,
+                viewingToday: viewingToday
+            ),
             journalDays: NativeDayLogic.journalChecks(entries: journalEntries, todayKey: todayKey),
             connected: connected,
             sleepNeedMin: sleepScoreRow?.sleepNeed ?? todayScore?.sleepNeed,
@@ -333,7 +356,8 @@ enum NativeDay {
     }
 
     private static func dashboardRows(day: DailyMetric?, prior: [DailyMetric],
-                                      workouts: [WorkoutRow], todayKey: String) -> [NativeScore.Row] {
+                                      workouts: [WorkoutRow], todayKey: String,
+                                      viewingToday: Bool) -> [NativeScore.Row] {
         let todayWorkouts = workouts.filter {
             Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs))) == todayKey
         }
@@ -352,11 +376,11 @@ enum NativeDay {
             metric("Resting Heart Rate", day?.restingHr.map(Double.init),
                    prior.compactMap { $0.restingHr.map(Double.init) }, "", "heart", .metric("resting_hr"), decimals: 0),
             metric("Respiratory Rate", day?.respRateBpm, prior.compactMap(\.respRateBpm), "breaths/min", "lungs", .metric("resp_rate"), decimals: 1),
-            metric("Steps", day?.steps.map(Double.init), prior.compactMap { $0.steps.map(Double.init) }, "", "figure.walk", .metric("steps"), grouped: true),
-            durationRow("Heart Rate Zones 1–3", z13, priorZ13, "heart", .metric("hr_zones13_min")),
-            durationRow("Heart Rate Zones 4–5", z45, priorZ45, "heart.fill", .metric("hr_zones45_min")),
-            durationRow("Strength Activity Time", strength, priorStrength, "dumbbell", .metric("strength_min")),
-            metric("Calories", day?.activeKcalEst, prior.compactMap(\.activeKcalEst), "", "flame", .metric("energy_kcal"), grouped: true),
+            metric("Steps", day?.steps.map(Double.init), prior.compactMap { $0.steps.map(Double.init) }, "", "figure.walk", .metric("steps"), grouped: true, inProgress: viewingToday),
+            durationRow("Heart Rate Zones 1–3", z13, priorZ13, "heart", .metric("hr_zones13_min"), inProgress: viewingToday),
+            durationRow("Heart Rate Zones 4–5", z45, priorZ45, "heart.fill", .metric("hr_zones45_min"), inProgress: viewingToday),
+            durationRow("Strength Activity Time", strength, priorStrength, "dumbbell", .metric("strength_min"), inProgress: viewingToday),
+            metric("Calories", day?.activeKcalEst, prior.compactMap(\.activeKcalEst), "", "flame", .metric("energy_kcal"), grouped: true, inProgress: viewingToday),
         ]
     }
 
@@ -381,7 +405,8 @@ enum NativeDay {
     }
 
     private static func strainRows(today: DailyMetric?, prior: [DailyMetric],
-                                   workouts: [WorkoutRow], todayKey: String) -> [NativeScore.Row] {
+                                   workouts: [WorkoutRow], todayKey: String,
+                                   viewingToday: Bool) -> [NativeScore.Row] {
         let todayWorkouts = workouts.filter {
             Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs))) == todayKey
         }
@@ -396,10 +421,10 @@ enum NativeDay {
         let priorZ45 = priorKeys.compactMap { zoneMinutes(priorByDay[$0] ?? [], zones: 3..<5) }
         let priorStrength = priorKeys.compactMap { strengthMinutes(priorByDay[$0] ?? []) }
         return [
-            durationRow("Heart Rate Zones 1–3", z13, priorZ13, "heart", .metric("hr_zones13_min")),
-            durationRow("Heart Rate Zones 4–5", z45, priorZ45, "heart.fill", .metric("hr_zones45_min")),
-            durationRow("Strength Activity Time", strength, priorStrength, "dumbbell", .metric("strength_min")),
-            metric("Steps", today?.steps.map(Double.init), prior.compactMap { $0.steps.map(Double.init) }, "", "figure.walk", .metric("steps"), grouped: true),
+            durationRow("Heart Rate Zones 1–3", z13, priorZ13, "heart", .metric("hr_zones13_min"), inProgress: viewingToday),
+            durationRow("Heart Rate Zones 4–5", z45, priorZ45, "heart.fill", .metric("hr_zones45_min"), inProgress: viewingToday),
+            durationRow("Strength Activity Time", strength, priorStrength, "dumbbell", .metric("strength_min"), inProgress: viewingToday),
+            metric("Steps", today?.steps.map(Double.init), prior.compactMap { $0.steps.map(Double.init) }, "", "figure.walk", .metric("steps"), grouped: true, inProgress: viewingToday),
         ]
     }
 
@@ -447,7 +472,7 @@ enum NativeDay {
 
     private static func metric(_ title: String, _ value: Double?, _ prior: [Double], _ unit: String,
                                _ symbol: String, _ route: TabRoute, decimals: Int = 0,
-                               grouped: Bool = false) -> NativeScore.Row {
+                               grouped: Bool = false, inProgress: Bool = false) -> NativeScore.Row {
         let key: String? = {
             if case .metric(let metricKey) = route { return metricKey }
             return nil
@@ -458,21 +483,32 @@ enum NativeDay {
             value: NativeScoreMath.labeled(value, unit: unit, decimals: decimals, grouped: grouped),
             prior: NativeScoreMath.priorText(prior, unit: unit, decimals: decimals, grouped: grouped),
             symbol: symbol,
-            delta: NativeScoreMath.delta(value, prior, higherIsBetter: higherIsBetter),
+            delta: inProgressDelta(value, prior, higherIsBetter: higherIsBetter, inProgress: inProgress),
             route: route
         )
     }
 
     private static func durationRow(_ title: String, _ minutes: Double?, _ prior: [Double],
-                                    _ symbol: String, _ route: TabRoute) -> NativeScore.Row {
+                                    _ symbol: String, _ route: TabRoute,
+                                    inProgress: Bool = false) -> NativeScore.Row {
         NativeScore.Row(
             title: title,
             value: minutes.map { NativeDayLogic.durationText($0) } ?? "—",
             prior: NativeScoreMath.mean(prior).map { NativeDayLogic.durationText($0) } ?? "—",
             symbol: symbol,
-            delta: NativeScoreMath.delta(minutes, prior),
+            delta: inProgressDelta(minutes, prior, inProgress: inProgress),
             route: route
         )
+    }
+
+    /// In-progress day totals (steps, calories, zones, strength) are still accruing. A downward
+    /// comparison against a finished 30-day mean is withheld until the day completes.
+    static func inProgressDelta(
+        _ value: Double?, _ prior: [Double], higherIsBetter: Bool = true, inProgress: Bool
+    ) -> NativeScore.Delta {
+        let delta = NativeScoreMath.delta(value, prior, higherIsBetter: higherIsBetter)
+        if inProgress, delta == .down { return .none }
+        return delta
     }
 
     /// Minutes in `zones` (0-based Z1…Z5) for the day's workouts. Nil when none of those zones have time.

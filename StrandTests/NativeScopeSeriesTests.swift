@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import StrandAnalytics
 import StrandDesign
+import WhoopStore
 @testable import Strand
 
 final class NativeScopeSeriesTests: XCTestCase {
@@ -582,5 +583,93 @@ final class NativeScopeSeriesTests: XCTestCase {
         let domain = NativeScopeYTicks.niceDomain([46, 52, 48], fallback: 0...1)
         XCTAssertLessThanOrEqual(domain.lowerBound, 46)
         XCTAssertGreaterThanOrEqual(domain.upperBound, 52)
+    }
+
+    func testNiceDomainKeepsTightDecimalRanges() {
+        let skin = NativeScopeYTicks.niceDomain([33.4, 33.4, 33.3], fallback: 0...1)
+        XCTAssertGreaterThan(skin.lowerBound, 30)
+        XCTAssertLessThan(skin.upperBound, 38)
+        XCTAssertLessThanOrEqual(skin.lowerBound, 33.3)
+        XCTAssertGreaterThanOrEqual(skin.upperBound, 33.4)
+
+        let resp = NativeScopeYTicks.niceDomain([14.5, 15.5, 15.0], fallback: 0...1)
+        XCTAssertGreaterThan(resp.lowerBound, 10)
+        XCTAssertLessThan(resp.upperBound, 22)
+        XCTAssertLessThanOrEqual(resp.lowerBound, 14.5)
+        XCTAssertGreaterThanOrEqual(resp.upperBound, 15.5)
+    }
+
+    func testSkinTempUsesAbsoluteCelsiusAndOneDecimal() {
+        let day = DailyMetric(
+            day: "2026-11-13",
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: nil, avgHrv: nil, recovery: nil, strain: nil,
+            exerciseCount: nil, skinTempDevC: nil, skinTempC: 33.4
+        )
+        XCTAssertEqual(NativeMetricPage.derivedValue(key: "skin_temp", day: day) ?? -1, 33.4, accuracy: 1e-9)
+        XCTAssertEqual(
+            NativeMetricPage.displayValue(33.4, key: "skin_temp", scale: .whoop) ?? -1,
+            33.4,
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(
+            NativeMetricPage.displayValue(33.4, key: "skin_temp", scale: .whoop, temperature: .fahrenheit) ?? -1,
+            UnitFormatter.celsiusToFahrenheit(33.4),
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(NativeMetricPage.formatValue(33.4, key: "skin_temp", scale: .whoop), "33.4")
+        XCTAssertNil(
+            NativeMetricPage.derivedValue(
+                key: "skin_temp",
+                day: DailyMetric(
+                    day: "2026-11-14",
+                    totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+                    disturbances: nil, restingHr: nil, avgHrv: nil, recovery: nil, strain: nil,
+                    exerciseCount: nil, skinTempDevC: 0.2
+                )
+            )
+        )
+    }
+
+    func testLookbackBucketIsNotSelectableOrLabeled() {
+        let cal = calendar(firstWeekday: 1)
+        let points = [
+            point("2026-11-11", 14.8),
+            point("2026-11-12", 15.1),
+            point("2026-11-13", 15.0),
+            point("2026-11-14", 14.9),
+            point("2026-11-15", 15.2),
+            point("2026-11-16", 15.1),
+            point("2026-11-17", 14.7),
+            point("2026-11-18", 15.0),
+        ]
+        let now = NativeScopeSeries.date(from: "2026-11-18", calendar: cal)!
+        let series = NativeScopeSeries.make(
+            points: points, scope: .week, kind: .rate, calendar: cal, now: now, ending: now
+        )
+        let visible = series.latestWindow()
+        XCTAssertEqual(visible.map(\.key).first, "2026-11-12")
+        XCTAssertEqual(visible.map(\.key).last, "2026-11-18")
+        XCTAssertTrue(series.buckets.contains { $0.key == "2026-11-11" })
+        XCTAssertNil(NativeScopeVisible.selected(key: "2026-11-11", in: visible))
+        XCTAssertEqual(NativeScopeVisible.selected(key: "2026-11-18", in: visible)?.key, "2026-11-18")
+        XCTAssertNil(NativeChartScrubMath.snapBucket(
+            date: series.buckets.first?.start, buckets: visible, bars: false
+        ).flatMap { $0.key == "2026-11-11" ? $0 : nil })
+        let snappedLookback = NativeChartScrubMath.snapBucket(
+            date: NativeScopeSeries.date(from: "2026-11-11", calendar: cal),
+            buckets: visible,
+            bars: false
+        )
+        XCTAssertNotEqual(snappedLookback?.key, "2026-11-11")
+        let segments = NativeScopePlotMath.lineSegments(series.buckets)
+        let visibleKeys = Set(visible.compactMap { $0.value == nil ? nil : $0.key })
+        XCTAssertFalse(
+            NativeScopeVisible.vertexSegments(segments, visibleKeys: visibleKeys)
+                .contains { $0.key == "2026-11-11" }
+        )
+        let lastKnown = NativeScopeVisible.vertexSegments(segments, visibleKeys: visibleKeys).last
+        XCTAssertEqual(lastKnown?.key, "2026-11-18")
+        XCTAssertTrue(NativeScopeVisible.isTrailing(lastKnown!, visible: visible))
     }
 }

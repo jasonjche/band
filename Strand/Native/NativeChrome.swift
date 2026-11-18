@@ -27,6 +27,14 @@ enum NativeChrome {
     static let stress = stressHigh
     static let cardRadius: CGFloat = 26
     static let gridStroke = StrokeStyle(lineWidth: 0.5, dash: [2, 2])
+    /// Extra scroll room so the last card clears the iOS 26 floating tab bar.
+    static var screenScrollBottomExtra: CGFloat {
+        #if os(iOS)
+        48
+        #else
+        0
+        #endif
+    }
 
     /// 0 red / 1 yellow / 2 green. 37% is the middle WHOOP band (34–66).
     static func recoveryBandIndex(_ value: Double) -> Int {
@@ -127,7 +135,7 @@ private struct NativeScreen<Content: View>: View {
     var body: some View {
         ScrollView {
             NativeStack(lazy: lazy, content: { content })
-                .padding(.bottom, 136)
+                .padding(.bottom, 136 + NativeChrome.screenScrollBottomExtra)
         }
         .background(NativePageFill().ignoresSafeArea())
     }
@@ -980,13 +988,13 @@ enum NativeChartDay {
     static func fittedDomain(_ values: [Double], fallback: ClosedRange<Double>) -> ClosedRange<Double> {
         let finite = values.filter(\.isFinite)
         guard let lo0 = finite.min(), let hi0 = finite.max() else { return fallback }
-        if lo0 == hi0 {
-            let pad = max(abs(lo0) * 0.15, 1)
+        let span = hi0 - lo0
+        if span == 0 {
+            // Tight vitals (skin temp 33.4, resp 15.0) must not expand to a 30...38 axis.
+            let pad = max(abs(lo0) * 0.02, 0.5)
             return (lo0 - pad)...(hi0 + pad)
         }
-        let mean = finite.reduce(0, +) / Double(finite.count)
-        let range = hi0 - lo0
-        let pad = max(range * 0.25, abs(mean) * 0.05, 1e-6)
+        let pad = max(span * 0.25, 0.05)
         return (lo0 - pad)...(hi0 + pad)
     }
 }
@@ -1208,7 +1216,7 @@ struct NativeLabeledLine: View {
                             NativeHollowVertex(tint: tint, size: 8)
                         }
                     }
-                    .nativeValueLabel {
+                    .nativeValueLabel(trailing: point.key == plotSegments.last?.key) {
                         if showsValueLabels && (whoop || point.key == emphasizedKey) {
                             Text(format(point.value))
                                 .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
@@ -1335,7 +1343,7 @@ struct NativeStrainRecoveryChart: View {
                             NativeStrainRecoveryVertex(tint: point.dotTint)
                         }
                     }
-                    .nativeValueLabel {
+                    .nativeValueLabel(trailing: point.day == strain.last?.key || point.day == recovery.last?.key) {
                         if point.day == selectedDay {
                             Text(label(point))
                                 .font(.caption2.weight(.semibold))
@@ -1519,7 +1527,7 @@ struct NativeScoreWeekBars: View {
                                 $0.key == selectedDay?.wrappedValue || $0.day == selectedDay?.wrappedValue
                             })
                         ))
-                        .nativeValueLabel {
+                        .nativeValueLabel(trailing: point.key == known.last?.key) {
                             if showsValueLabels && (whoop || point.key == selectedDay?.wrappedValue) {
                                 Text(format(point.value))
                                     .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
