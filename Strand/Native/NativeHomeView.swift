@@ -95,6 +95,7 @@ enum NativeLiveStrainMemo {
 
 struct NativeHomeView: View {
     @Environment(\.nativeNavigationPath) private var path
+    @Environment(\.nativeContinuityActiveID) private var continuityID
     @State private var showingCalendar = false
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
@@ -199,6 +200,7 @@ struct NativeHomeView: View {
             }
             .sheet(isPresented: $addingActivity) {
                 HomeAddActivitySheet { await reload() }
+                    .nativeZoomDestination(fallback: .addActivity)
             }
             .sheet(isPresented: $editingDashboard) {
                 HomeDashboardEditor(selectedIds: HomeDashboardStore.decode(dashboardJSON)) { ids in
@@ -216,6 +218,7 @@ struct NativeHomeView: View {
                         .environment(\.nativeNavigationPath, $morningJournalPath)
                         .nativeStyleBridge()
                 }
+                .nativeZoomDestination(fallback: .homeJournal)
             }
             .onChangeCompat(of: scenePhase) { phase in
                 if phase == .active {
@@ -444,6 +447,7 @@ struct NativeHomeView: View {
             sleepPresent: sleepPresent
         ) else { return }
         promptedJournalDay = selectedKey
+        continuityID.select(.homeJournal)
         showingMorningJournal = true
     }
 
@@ -486,6 +490,7 @@ struct NativeHomeView: View {
         .padding(.bottom, HomeMonitorTileLayout.ringsGap)
         HStack(alignment: .top, spacing: HomeMonitorTileLayout.spacing) {
             Button {
+                continuityID.select(.homeHealthTile)
                 path.wrappedValue.append(TabRoute.healthMonitor)
             } label: {
                 HomeHealthMonitorTile(report: healthReport)
@@ -493,8 +498,10 @@ struct NativeHomeView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .buttonStyle(.plain)
+            .nativeZoomSource(.homeHealthTile)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             Button {
+                continuityID.select(.homeStressTile)
                 path.wrappedValue.append(TabRoute.stress)
             } label: {
                 HomeStressMonitorTile(level: stressLevel, updated: stressUpdatedAt)
@@ -502,6 +509,7 @@ struct NativeHomeView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .buttonStyle(.plain)
+            .nativeZoomSource(.homeStressTile)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -509,9 +517,18 @@ struct NativeHomeView: View {
         NativeChrome.section("My Day")
         HomeActivitiesCard(
             items: activityItems,
-            onSleep: { path.wrappedValue.append(TabRoute.sleep) },
-            onActivity: { path.wrappedValue.append(NativeActivityRoute(startTs: $0)) },
-            onAdd: { addingActivity = true }
+            onSleep: {
+                continuityID.select(.homeActivitySleep)
+                path.wrappedValue.append(TabRoute.sleep)
+            },
+            onActivity: {
+                continuityID.select(.activity($0))
+                path.wrappedValue.append(NativeActivityRoute(startTs: $0))
+            },
+            onAdd: {
+                continuityID.select(.addActivity)
+                addingActivity = true
+            }
         )
         if let tonight {
             HomeTonightSleepCard(
@@ -522,8 +539,14 @@ struct NativeHomeView: View {
         HomeJournalCard(
             dots: journalDots,
             hasEntry: journalHasEntry,
-            onOpen: { path.wrappedValue.append(TabRoute.journal) },
-            onLog: { path.wrappedValue.append(TabRoute.journalLog) }
+            onOpen: {
+                continuityID.select(.homeJournal)
+                path.wrappedValue.append(TabRoute.journal)
+            },
+            onLog: {
+                continuityID.select(.homeJournalLog)
+                path.wrappedValue.append(TabRoute.journalLog)
+            }
         )
         HStack(alignment: .firstTextBaseline) {
             NativeChrome.section("My Dashboard")
@@ -538,12 +561,14 @@ struct NativeHomeView: View {
         }
         ForEach(dashboardItems) { item in
             Button {
+                continuityID.select(NativeContinuity.dashboard(item))
                 path.wrappedValue.append(item.route)
             } label: {
                 HomeMetricCard(item: item)
                     .equatable()
             }
             .buttonStyle(.plain)
+            .nativeZoomSource(NativeContinuity.dashboard(item))
         }
         HomeStressMonitorHost(
             level: stressLevel,
@@ -554,7 +579,10 @@ struct NativeHomeView: View {
             dayStart: stressDayStart,
             now: stressNow,
             plot: stressPlot,
-            onOpen: { path.wrappedValue.append(TabRoute.stress) }
+            onOpen: {
+                continuityID.select(.homeStressChart)
+                path.wrappedValue.append(TabRoute.stress)
+            }
         )
         .equatable()
         .id(selectedKey)
@@ -959,6 +987,7 @@ struct HomeRingsRow: View {
     var onOpen: (TabRoute) -> Void
     var strainTargetFraction: ClosedRange<Double>? = nil
     @Environment(\.nativeStyle) private var style
+    @Environment(\.nativeContinuityActiveID) private var continuityID
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -977,7 +1006,9 @@ struct HomeRingsRow: View {
     }
 
     private func ring(_ score: NativeScore, tint: Color, targetFraction: ClosedRange<Double>? = nil) -> some View {
-        Button {
+        let id = NativeContinuity.ring(for: score.route)
+        return Button {
+            continuityID.select(id)
             onOpen(score.route)
         } label: {
             NativeRing(
@@ -992,6 +1023,7 @@ struct HomeRingsRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .nativeZoomSource(id)
         .accessibilityHint("Opens \(score.name)")
     }
 }
@@ -1279,6 +1311,7 @@ struct HomeStressMonitorCard: View {
                 scrubTime: $scrubTime
             )
         }
+        .nativeZoomSource(.homeStressChart)
     }
 }
 
@@ -1385,6 +1418,7 @@ struct HomeActivitiesCard: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(NativeChrome.strain)
+                    .nativeZoomSource(.addActivity)
                     .accessibilityLabel("Add Activity")
                 }
             }
@@ -1412,6 +1446,9 @@ struct HomeActivitiesCard: View {
                                 .equatable()
                         }
                         .buttonStyle(.plain)
+                        .nativeZoomSource(
+                            item.startTs.map(NativeContinuityID.activity) ?? .homeActivitySleep
+                        )
                     }
                 }
             }
@@ -1568,6 +1605,7 @@ struct HomeJournalCard: View {
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                         .buttonStyle(.plain)
+                        .nativeZoomSource(.homeJournalLog)
                 }
             }
             Button(action: onOpen) {
@@ -1580,6 +1618,7 @@ struct HomeJournalCard: View {
             }
             .buttonStyle(.plain)
         }
+        .nativeZoomSource(.homeJournal)
         .accessibilityLabel("Journal")
     }
 }

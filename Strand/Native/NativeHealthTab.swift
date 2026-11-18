@@ -106,6 +106,7 @@ struct NativeHealthLinks: View {
     var items: [NativeHealthItem]
     @Environment(\.nativeNavigationPath) private var navigationPath
     @Environment(\.nativeHealthLinkTapped) private var onTap
+    @Environment(\.nativeContinuityActiveID) private var continuityID
 
     var body: some View {
         NativeChrome.panel {
@@ -114,6 +115,7 @@ struct NativeHealthLinks: View {
                     if index > 0 { Divider().padding(.leading, 41) }
                     Button {
                         onTap()
+                        continuityID.select(.healthItem(item))
                         navigationPath.wrappedValue.append(item)
                     } label: {
                         HStack(spacing: 0) {
@@ -125,6 +127,7 @@ struct NativeHealthLinks: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .nativeZoomSource(.healthItem(item))
                     .accessibilityHint("Opens \(item.title)")
                 }
             }

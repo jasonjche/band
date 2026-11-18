@@ -210,10 +210,14 @@ struct NativeStressChartPage: View {
     var typicalDurations: NativeStressBandDurations? = nil
     var typicalSameWeekday: Bool = false
     var dayPlot: NativeStressDayPlotModel = .placeholder
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         NativeChrome.screen {
-            Picker("Range", selection: Binding(get: { scope }, set: onScope)) {
+            Picker("Range", selection: Binding(
+                get: { scope },
+                set: { new in NativeContinuity.animate(reduced: reduceMotion) { onScope(new) } }
+            )) {
                 ForEach(NativeMetricScope.pickerCases) { item in
                     Text(item.label).tag(item)
                 }

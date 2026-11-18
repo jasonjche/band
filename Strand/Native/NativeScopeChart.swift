@@ -1055,10 +1055,14 @@ struct NativeMetricChartPage: View {
     var sourceCaption: String? = nil
     var scopes: [NativeMetricScope] = NativeMetricScope.pickerCases
     var showsNavigationTitle: Bool = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         NativeChrome.screen {
-            Picker("Range", selection: Binding(get: { scope }, set: onScope)) {
+            Picker("Range", selection: Binding(
+                get: { scope },
+                set: { new in NativeContinuity.animate(reduced: reduceMotion) { onScope(new) } }
+            )) {
                 ForEach(scopes) { item in
                     Text(item.label).tag(item)
                 }

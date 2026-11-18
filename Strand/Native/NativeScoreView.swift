@@ -9,7 +9,7 @@ import WhoopProtocol
 // Screenshot shape: back is the system bar, then the ring, four contributor
 // rows, the comparison legend, one sentence, and a week of bars.
 
-enum NativeScoreKind { case recovery, strain, sleep }
+enum NativeScoreKind: Hashable { case recovery, strain, sleep }
 
 /// Pushed from Home. Same model as the rings, so the number cannot disagree.
 private struct NativeSleepEditTarget: Identifiable {
@@ -564,6 +564,7 @@ private struct NativeScoreContributors: View {
     @Environment(\.nativeStyle) private var style
     @Environment(\.nativeNavigationPath) private var path
     @Environment(\.nativeScoreRouteData) private var routeData
+    @Environment(\.nativeContinuityActiveID) private var continuityID
 
     var body: some View {
         NativeChrome.panel {
@@ -574,6 +575,7 @@ private struct NativeScoreContributors: View {
                         Divider().padding(.leading, 34)
                     }
                     Button {
+                        continuityID.select(NativeContinuity.row(row))
                         NativeScoreRoutes.openRow(row, path: path, data: routeData)
                     } label: {
                         HStack(spacing: 8) {
@@ -594,6 +596,7 @@ private struct NativeScoreContributors: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .nativeZoomSource(NativeContinuity.row(row))
                 }
             }
         }
@@ -636,6 +639,7 @@ private struct NativeSleepScoreSection: View {
     var onEditSleep: (() -> Void)?
     @Environment(\.nativeNavigationPath) private var path
     @Environment(\.nativeScoreRouteData) private var routeData
+    @Environment(\.nativeContinuityActiveID) private var continuityID
 
     private var hasLastNight: Bool {
         asleepMinutes != nil || sleepHours != nil || !stages.isEmpty || sleepStart != nil
@@ -656,22 +660,34 @@ private struct NativeSleepScoreSection: View {
                 spans: sleepDetail?.hypnogram ?? [],
                 hypnogramLayout: sleepDetail?.hypnogramLayout,
                 hypnogramEstimated: sleepDetail?.hypnogramEstimated ?? false,
-                onHypnogram: { path.wrappedValue.append(NativeSleepHypnogramRoute(data: routeData)) }
+                onHypnogram: {
+                    continuityID.select(.sleepHypnogram)
+                    path.wrappedValue.append(NativeSleepHypnogramRoute(data: routeData))
+                }
             )
+            .nativeZoomSource(.sleepHypnogram)
         }
         NativeSleepPlannerLink(needMinutes: needMinutes ?? sleepDetail?.need?.needMin)
         NativeOvernightHeartCard(
             points: overnightHr,
             average: overnightHrAverage,
             plot: overnightPlot,
-            onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "avg_hr")) }
+            onOpen: {
+                continuityID.select(.scoreMetric("avg_hr"))
+                path.wrappedValue.append(NativeScoreMetricRoute(key: "avg_hr"))
+            }
         )
+        .nativeZoomSource(.scoreMetric("avg_hr"))
         if let need = sleepDetail?.need ?? hoursNeededFromPage,
            need.percent != nil || need.hoursSleptMin != nil {
             NativeSleepHoursVsNeededCard(
                 model: need,
-                onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "hours_vs_needed_pct")) }
+                onOpen: {
+                    continuityID.select(.scoreMetric("hours_vs_needed_pct"))
+                    path.wrappedValue.append(NativeScoreMetricRoute(key: "hours_vs_needed_pct"))
+                }
             )
+            .nativeZoomSource(.scoreMetric("hours_vs_needed_pct"))
         }
         if let nights = sleepDetail?.consistencyNights, !nights.isEmpty {
             NativeSleepConsistencyCard(
@@ -679,21 +695,33 @@ private struct NativeSleepScoreSection: View {
                 percent: NativeScoreMath.percentValue(
                     score.rows.first { $0.title == "Sleep Consistency" }?.value ?? ""
                 ),
-                onOpen: { path.wrappedValue.append(NativeSleepConsistencyRoute(data: routeData)) }
+                onOpen: {
+                    continuityID.select(.sleepConsistency)
+                    path.wrappedValue.append(NativeSleepConsistencyRoute(data: routeData))
+                }
             )
+            .nativeZoomSource(.sleepConsistency)
         }
         if let efficiency = sleepDetail?.efficiency {
             NativeSleepEfficiencyCard(
                 model: efficiency,
-                onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "sleep_efficiency")) }
+                onOpen: {
+                    continuityID.select(.scoreMetric("sleep_efficiency"))
+                    path.wrappedValue.append(NativeScoreMetricRoute(key: "sleep_efficiency"))
+                }
             )
+            .nativeZoomSource(.scoreMetric("sleep_efficiency"))
         }
         if let stress = sleepDetail?.stress {
             NativeSleepStressCard(
                 model: stress,
                 plot: sleepDetail?.stressPlot,
-                onOpen: { path.wrappedValue.append(TabRoute.stress) }
+                onOpen: {
+                    continuityID.select(.sleepStress)
+                    path.wrappedValue.append(TabRoute.stress)
+                }
             )
+            .nativeZoomSource(.sleepStress)
         }
     }
 
@@ -749,6 +777,8 @@ private struct NativeSleepPlannerLink: View {
 private struct NativeStrainActivitiesCard: View {
     var activities: [NativeDay.Activity]
     @Environment(\.nativeStyle) private var style
+    @Environment(\.nativeNavigationPath) private var path
+    @Environment(\.nativeContinuityActiveID) private var continuityID
 
     var body: some View {
         NativeChrome.panel {
@@ -766,7 +796,10 @@ private struct NativeStrainActivitiesCard: View {
                         if activity.id != firstActivityID {
                             Divider().padding(.vertical, 4)
                         }
-                        NavigationLink(value: NativeActivityRoute(startTs: activity.startTs)) {
+                        Button {
+                            continuityID.select(.activity(activity.startTs))
+                            path.wrappedValue.append(NativeActivityRoute(startTs: activity.startTs))
+                        } label: {
                             NativeActivityRow(
                                 symbol: activity.symbol,
                                 tint: NativePaint.strain(style),
@@ -777,6 +810,7 @@ private struct NativeStrainActivitiesCard: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        .nativeZoomSource(.activity(activity.startTs))
                     }
                 }
             }
@@ -792,39 +826,44 @@ private struct NativeScoreWeekCard: View {
     var sleepDetail: NativeSleepPageDetail?
     @Environment(\.nativeNavigationPath) private var path
     @Environment(\.nativeScoreRouteData) private var routeData
+    @Environment(\.nativeContinuityActiveID) private var continuityID
 
     var body: some View {
-        if kind == .sleep, card.title == "Hours vs. Needed", let detail = sleepDetail {
-            NativeSleepDualLineCard(
-                title: card.title,
-                slept: card.points,
-                needed: detail.hoursNeededWeek,
-                highlightKey: dayKey,
-                typical: detail.hoursTypical,
-                plot: detail.dualLine,
-                onOpen: open
-            )
-        } else if kind == .sleep, card.title == "Time in Bed" {
-            NativeSleepTimeInBedWeekCard(
-                points: card.points,
-                highlightKey: dayKey,
-                plot: sleepDetail?.timeInBedPlot,
-                onOpen: open
-            )
-        } else if kind == .sleep, card.title == "Restorative Sleep" {
-            NativeSleepRestorativeWeekCard(
-                deep: card.stacks.first { $0.title == "Deep" }?.points ?? [],
-                rem: card.stacks.first { $0.title == "REM" }?.points ?? [],
-                highlightKey: dayKey,
-                plot: sleepDetail?.restorativePlot,
-                onOpen: open
-            )
-        } else {
-            NativeScoreWeekChartCard(card: card, kind: kind, dayKey: dayKey, onOpen: open)
+        Group {
+            if kind == .sleep, card.title == "Hours vs. Needed", let detail = sleepDetail {
+                NativeSleepDualLineCard(
+                    title: card.title,
+                    slept: card.points,
+                    needed: detail.hoursNeededWeek,
+                    highlightKey: dayKey,
+                    typical: detail.hoursTypical,
+                    plot: detail.dualLine,
+                    onOpen: open
+                )
+            } else if kind == .sleep, card.title == "Time in Bed" {
+                NativeSleepTimeInBedWeekCard(
+                    points: card.points,
+                    highlightKey: dayKey,
+                    plot: sleepDetail?.timeInBedPlot,
+                    onOpen: open
+                )
+            } else if kind == .sleep, card.title == "Restorative Sleep" {
+                NativeSleepRestorativeWeekCard(
+                    deep: card.stacks.first { $0.title == "Deep" }?.points ?? [],
+                    rem: card.stacks.first { $0.title == "REM" }?.points ?? [],
+                    highlightKey: dayKey,
+                    plot: sleepDetail?.restorativePlot,
+                    onOpen: open
+                )
+            } else {
+                NativeScoreWeekChartCard(card: card, kind: kind, dayKey: dayKey, onOpen: open)
+            }
         }
+        .nativeZoomSource(NativeContinuity.weekCard(title: card.title))
     }
 
     private func open() {
+        continuityID.select(NativeContinuity.weekCard(title: card.title))
         NativeScoreRoutes.openCard(card, path: path, data: routeData)
     }
 }
@@ -999,15 +1038,19 @@ struct NativeScoreDestinations: ViewModifier {
         content
             .navigationDestination(for: NativeScoreMetricRoute.self) { route in
                 NativeMetricPage(key: route.key)
+                    .nativeZoomDestination(fallback: .scoreMetric(route.key))
             }
             .navigationDestination(for: NativeScoreTrendRoute.self) { route in
                 NativeScoreTrendDestination(data: route.data ?? NativeScoreRouteData(), title: route.title)
+                    .nativeZoomDestination(fallback: NativeContinuity.weekCard(title: route.title))
             }
             .navigationDestination(for: NativeSleepConsistencyRoute.self) { route in
                 NativeSleepConsistencyDestination(data: route.data ?? NativeScoreRouteData())
+                    .nativeZoomDestination(fallback: .sleepConsistency)
             }
             .navigationDestination(for: NativeSleepHypnogramRoute.self) { route in
                 NativeSleepHypnogramDestination(data: route.data ?? NativeScoreRouteData())
+                    .nativeZoomDestination(fallback: .sleepHypnogram)
             }
     }
 }

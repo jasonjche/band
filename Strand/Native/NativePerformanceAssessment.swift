@@ -12,6 +12,7 @@ struct NativePerformanceAssessmentView: View {
     @State private var model: NativePerformanceAssessmentModel?
     @State private var selectedStart: String?
     @AppStorage("behavior.weeklyReportNudge") private var notifyReady = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -40,7 +41,10 @@ struct NativePerformanceAssessmentView: View {
 
     @ViewBuilder private func content(_ model: NativePerformanceAssessmentModel) -> some View {
         NativeChrome.screen {
-            Picker("Period", selection: $kind) {
+            Picker("Period", selection: Binding(
+                get: { kind },
+                set: { new in NativeContinuity.animate(reduced: reduceMotion) { kind = new } }
+            )) {
                 Text("Weekly").tag(PerformanceAssessment.Kind.weekly)
                 Text("Monthly").tag(PerformanceAssessment.Kind.monthly)
             }

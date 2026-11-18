@@ -8,9 +8,11 @@ struct NativeHealthspanTrendCard: View {
     var kind: NativeHealthspanTrendKind
     @Environment(\.nativeStyle) private var style
     @Environment(\.nativeNavigationPath) private var navigationPath
+    @Environment(\.nativeContinuityActiveID) private var continuityID
 
     var body: some View {
         Button {
+            continuityID.select(.healthspanTrend(kind))
             navigationPath.wrappedValue.append(kind)
         } label: {
             NativeChrome.panel {
@@ -34,6 +36,7 @@ struct NativeHealthspanTrendCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .nativeZoomSource(.healthspanTrend(kind))
         .accessibilityHint("Opens \(kind.title)")
     }
 }
@@ -43,10 +46,14 @@ struct NativeHealthspanTrendPage: View {
     var points: [HealthspanEngine.TrendPoint]
     @State private var scope: NativeHealthspanTrendScope = .sixMonths
     @Environment(\.nativeStyle) private var style
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         NativeChrome.screen {
-            Picker("Scope", selection: $scope) {
+            Picker("Scope", selection: Binding(
+                get: { scope },
+                set: { new in NativeContinuity.animate(reduced: reduceMotion) { scope = new } }
+            )) {
                 ForEach(NativeHealthspanTrendScope.allCases) { item in
                     Text(item.label).tag(item)
                 }
