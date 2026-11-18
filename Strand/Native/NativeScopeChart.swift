@@ -16,6 +16,8 @@ struct NativeScopeChart: View {
     var tint: Color
     var format: (Double) -> String
     var unit: String? = nil
+    var clockHero: Bool = false
+    var isDuration: Bool = false
     var highlightKey: String? = nil
     var higherIsBetter: Bool? = nil
     var previewSelected: String? = nil
@@ -54,6 +56,7 @@ struct NativeScopeChart: View {
                 scrub: scrub,
                 format: format,
                 unit: unit,
+                clockHero: clockHero,
                 higherIsBetter: higherIsBetter,
                 calendar: calendar,
                 color: color,
@@ -80,6 +83,7 @@ struct NativeScopeChart: View {
                     bars: bars,
                     tint: tint,
                     format: format,
+                    isDuration: isDuration,
                     calendar: calendar,
                     color: color,
                     plotHeight: plotHeight,
@@ -152,6 +156,7 @@ private struct NativeScopeHeroView: View {
     @ObservedObject var scrub: NativeScopeScrub
     var format: (Double) -> String
     var unit: String?
+    var clockHero: Bool
     var higherIsBetter: Bool?
     var calendar: Calendar
     var color: ((Double) -> Color)?
@@ -207,13 +212,21 @@ private struct NativeScopeHeroView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            NativeHeroValue(
-                caption: isScrubbing ? nil : series.caption,
-                value: valueText,
-                unit: unit,
-                date: dateText,
-                valueTint: valueTint
-            )
+            if clockHero, let minutes = heroMinutes {
+                NativeClockHero(
+                    caption: isScrubbing ? nil : series.caption,
+                    minutes: minutes,
+                    date: dateText
+                )
+            } else {
+                NativeHeroValue(
+                    caption: isScrubbing ? nil : series.caption,
+                    value: valueText,
+                    unit: unit,
+                    date: dateText,
+                    valueTint: valueTint
+                )
+            }
             if deltaCaption != nil {
                 periodDeltaRow
                     .frame(height: footnoteHeight, alignment: .leading)
@@ -223,23 +236,24 @@ private struct NativeScopeHeroView: View {
         .modifier(NativeSelectionFeedback(trigger: scrub.key ?? scrub.time.map { "\($0.timeIntervalSince1970)" } ?? ""))
     }
 
-    private var valueText: String {
+    private var heroMinutes: Double? {
         if usesHours, let hour = selectedHour {
-            return format(hour.value)
+            return hour.value
         }
         if let bucket = selectedBucket, let value = bucket.value {
-            return format(value)
+            return value
         }
         if series.kind == .total, let total = series.aggregate(of: visible) {
-            return format(total)
+            return total
         }
         if usesHours, let average = NativeScoreMath.mean(hourPoints.map(\.value)) {
-            return format(average)
+            return average
         }
-        if let average = series.aggregate(of: visible) {
-            return format(average)
-        }
-        return "—"
+        return series.aggregate(of: visible)
+    }
+
+    private var valueText: String {
+        heroMinutes.map(format) ?? "—"
     }
 
     private var dateText: String? {
@@ -284,6 +298,7 @@ private struct NativeScopePlotHost: View {
     var bars: Bool
     var tint: Color
     var format: (Double) -> String
+    var isDuration: Bool
     var calendar: Calendar
     var color: ((Double) -> Color)?
     var plotHeight: CGFloat
@@ -318,7 +333,7 @@ private struct NativeScopePlotHost: View {
                     timeBinding: timeBinding
                 )
             } else if series.known.isEmpty {
-                NativeScopeEmptyChart(bars: bars, tint: tint, format: format)
+                NativeScopeEmptyChart(bars: bars, tint: tint, format: format, isDuration: isDuration)
             } else {
                 scopedChart
             }
@@ -396,6 +411,7 @@ private struct NativeScopePlotHost: View {
                 visible: visible,
                 tint: tint,
                 format: format,
+                isDuration: isDuration,
                 calendar: calendar,
                 color: color,
                 scrolls: scrolls,
@@ -440,6 +456,7 @@ private struct NativeScopePlotHost: View {
             bars: false,
             tint: tint,
             format: format,
+            isDuration: isDuration,
             calendar: calendar,
             color: color
         )
@@ -453,6 +470,7 @@ private struct NativeScopeBarSelectingChart: View {
     var visible: [NativeScopeBucket]
     var tint: Color
     var format: (Double) -> String
+    var isDuration: Bool
     var calendar: Calendar
     var color: ((Double) -> Color)?
     var scrolls: Bool
@@ -470,6 +488,7 @@ private struct NativeScopeBarSelectingChart: View {
             bars: true,
             tint: tint,
             format: format,
+            isDuration: isDuration,
             calendar: calendar,
             color: color,
             selectedKey: scrub.key
@@ -540,6 +559,7 @@ private struct NativeScopeStaticChart: View {
     var bars: Bool
     var tint: Color
     var format: (Double) -> String
+    var isDuration: Bool
     var calendar: Calendar
     var color: ((Double) -> Color)?
     var selectedKey: String? = nil
@@ -549,14 +569,25 @@ private struct NativeScopeStaticChart: View {
         let visibleKnown = visible.filter { $0.value != nil }
         let values = visibleKnown.compactMap(\.value)
         let barCeiling = max(values.max() ?? known.compactMap(\.value).max() ?? 1, 1)
-        let barTop = NativeCountTicks.niceCeiling(barCeiling)
+        let durationTop = NativeMetricFormat.durationCeiling(maxMinutes: barCeiling)
+        let barTop = isDuration ? durationTop : NativeCountTicks.niceCeiling(barCeiling)
         let domainValues = values.isEmpty ? known.compactMap(\.value) : values
-        let yDomain: ClosedRange<Double> = bars
-            ? 0...barTop
-            : NativeScopeYTicks.niceDomain(domainValues, fallback: 0...1)
-        let yTicks = bars
-            ? NativeCountTicks.values(ceiling: barCeiling)
-            : NativeScopeYTicks.values(in: yDomain)
+        let yDomain: ClosedRange<Double>
+        if isDuration {
+            yDomain = 0...barTop
+        } else if bars {
+            yDomain = 0...barTop
+        } else {
+            yDomain = NativeScopeYTicks.niceDomain(domainValues, fallback: 0...1)
+        }
+        let yTicks: [Double]
+        if isDuration {
+            yTicks = NativeMetricFormat.durationAxisTicks(maxMinutes: barCeiling)
+        } else if bars {
+            yTicks = NativeCountTicks.values(ceiling: barCeiling)
+        } else {
+            yTicks = NativeScopeYTicks.values(in: yDomain)
+        }
         let xDomain = NativeScopePlotMath.paddedXDomain(buckets: plotBuckets, bars: bars)
         let segments = NativeScopePlotMath.lineSegments(plotBuckets).filter {
             $0.date >= xDomain.lowerBound && $0.date <= xDomain.upperBound
@@ -595,7 +626,7 @@ private struct NativeScopeStaticChart: View {
                     .foregroundStyle(NativeTokens.separator)
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
-                        Text(bars ? NativeCountFormat.compact(raw) : format(raw))
+                        Text((bars && !isDuration) ? NativeCountFormat.compact(raw) : format(raw))
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                             .monospacedDigit()
@@ -941,9 +972,15 @@ private struct NativeScopeEmptyChart: View {
     var bars: Bool
     var tint: Color
     var format: (Double) -> String
+    var isDuration: Bool
 
     var body: some View {
-        let top = bars ? NativeCountTicks.niceCeiling(1) : 1.0
+        let top = isDuration
+            ? NativeMetricFormat.durationCeiling(maxMinutes: 1)
+            : (bars ? NativeCountTicks.niceCeiling(1) : 1.0)
+        let ticks = isDuration
+            ? NativeMetricFormat.durationAxisTicks(maxMinutes: 1)
+            : (bars ? NativeCountTicks.values(ceiling: 1) : [0, 1])
         Chart {
             if bars {
                 BarMark(x: .value("Day", Date()), y: .value("Value", 0))
@@ -954,12 +991,12 @@ private struct NativeScopeEmptyChart: View {
         .chartYScale(domain: 0...top)
         .chartXScale(domain: NativeScopePlotMath.paddedXDomain(start: Date(), end: Date().addingTimeInterval(86_400)))
         .chartYAxis {
-            AxisMarks(preset: .aligned, position: .trailing, values: bars ? NativeCountTicks.values(ceiling: 1) : [0, 1]) { value in
+            AxisMarks(preset: .aligned, position: .trailing, values: ticks) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeTokens.separator)
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
-                        Text(bars ? NativeCountFormat.compact(raw) : format(raw))
+                        Text((bars && !isDuration) ? NativeCountFormat.compact(raw) : format(raw))
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                             .monospacedDigit()
@@ -1044,6 +1081,8 @@ struct NativeMetricChartPage: View {
     var tint: Color
     var format: (Double) -> String
     var unit: String?
+    var clockHero: Bool = false
+    var isDuration: Bool = false
     var highlightKey: String?
     var higherIsBetter: Bool?
     var latest: NativeDayPoint?
@@ -1077,6 +1116,8 @@ struct NativeMetricChartPage: View {
                 tint: tint,
                 format: format,
                 unit: unit,
+                clockHero: clockHero,
+                isDuration: isDuration,
                 highlightKey: highlightKey,
                 higherIsBetter: higherIsBetter,
                 previewSelected: previewSelected,
