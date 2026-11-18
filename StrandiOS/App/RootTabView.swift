@@ -14,13 +14,6 @@ struct RootTabView: View {
     /// `NavigationStack(path:)` — which is every primary tab in this file, bound deliberately so a tab
     /// root can pop and re-scroll. So this may well be inert on our structure, and defaulting ON would
     /// advertise a behaviour that never happens. Off until someone confirms it on an iOS 26 device.
-    /// The Coach master switch, under the same `noop.` key Android writes. Default ON, so every install
-    /// that shipped with the tab is unchanged.
-    ///
-    /// Not tab chrome: with this off the AI is off. The tab goes, the Today launcher card goes, and the
-    /// daily brief is cancelled, because the brief calls a provider from the BACKGROUND with no UI
-    /// attached and would otherwise keep posting AI notifications for a feature the wearer switched off.
-    @AppStorage("noop.coachEnabled") private var coachEnabled = true
     @AppStorage("noop.bottomBarAutoHide") private var bottomBarAutoHide = false
 
     /// External entry points must wait until the mandatory first-run gates have completed. The root owns
@@ -66,7 +59,6 @@ struct RootTabView: View {
     /// Zoom namespace for chrome sheets (lift mini-bar → session). Tab stacks override this.
     @Namespace private var chromeNamespace
     @State private var chromeContinuityID: NativeContinuityID?
-    @AppStorage(NativeStyle.storageKey) private var nativeStyleRaw = NativeStyle.apple.rawValue
     /// Which More-tab groups are expanded (S2). Insights + Body stay open at rest; Data + App collapse to
     /// just their header until tapped. Persisted (#860 item 2): the user's open/closed choice must SURVIVE
     /// leaving and re-entering the More tab (and relaunch), not reset to the seed every visit. Backed by an
@@ -75,33 +67,13 @@ struct RootTabView: View {
     @AppStorage(MoreSectionPrefs.storageKey) private var expandedMoreSectionsCSV = MoreSectionPrefs.defaultCSV
     private var expandedMoreSections: Set<String> { MoreSectionPrefs.decode(expandedMoreSectionsCSV) }
 
-    /// V8 liquid redesign is the default Today; the Settings toggle lets a user fall back to the classic
-    /// Today if they prefer it (keyed identically to the SettingsView toggle). Default ON.
-    @AppStorage("noop.liquidTodayEnabled") private var liquidTodayEnabled = true
-    /// Fork presentation. Default ON so this install opens the Health-style Summary.
-    /// Turn it off to get the upstream Liquid or classic Today back, unchanged.
-    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
-
-    /// Home is the native shell. The upstream liquid/classic Today screens are gone.
+    /// Home is the native shell.
     @ViewBuilder private var todayTabRoot: some View {
         NativeHomeView()
     }
 
-    /// Health and Sleep follow the same flag. Off restores the upstream screens.
-    private func nativeOr<Upstream: View, Native: View>(_ upstream: Upstream, native: Native) -> some View {
-        Group {
-            if nativeTodayEnabled { native } else { upstream }
-        }
-    }
-
-    /// Apple style uses the chrome accent. WHOOP is dark-only and wants the light tab glyph, which
-    /// is `Color.primary` under that scheme. Never use `.primary` for the Apple style.
-    private var tabTint: Color {
-        // Neutral tint (white in dark mode), like WHOOP and Apple Fitness. NOOP's green accent
-        // tinted every control and read as a stray green cast.
-        if nativeTodayEnabled { return Color.primary }
-        return StrandPalette.accent
-    }
+    /// Neutral tint (white in dark mode), like Apple Fitness.
+    private var tabTint: Color { Color.primary }
 
     /// Native tab selection binding. SwiftUI sends taps on the already-selected item through the
     /// setter, which lets the system tab bar retain the app's refresh / pop-to-root / scroll-to-top
@@ -175,20 +147,6 @@ struct RootTabView: View {
                 .tag(NativeRootTab.more.rawValue)
         }
         .tint(tabTint)
-        // Switching Coach off while STANDING on it leaves `selectedTab` pointing at a tag no tab claims
-        // any more, which renders as an empty tab rather than as an error. Send that wearer to Today, and
-        // only in that case, so a flip made from anywhere else does not move them.
-        .onChangeCompat(of: coachEnabled) { enabled in
-            if nativeTodayEnabled
-                && selectedTab != NativeRootTab.home.rawValue
-                && selectedTab != NativeRootTab.health.rawValue
-                && selectedTab != NativeRootTab.more.rawValue {
-                selectedTab = NativeRootTab.home.rawValue
-            }
-            if (!enabled || nativeTodayEnabled) && selectedTab == NativeRootTab.coachTag {
-                selectedTab = NativeRootTab.home.rawValue
-            }
-        }
         // #1841: the same "Hide bar when scrolling" preference Android drives its own bar with. Here the
         // system owns the behaviour — iOS 26's tab bar MINIMISES to a pill on scroll down rather than
         // sliding away entirely, so this is the platform's read of the same intent, not a copy of ours.
@@ -215,8 +173,7 @@ struct RootTabView: View {
             // hierarchy's gestures, disable the added one" — exactly this requirement. `.none` disables
             // the subview hierarchy TOO, which on a pushed screen would take out scrolling, taps and the
             // interactive-pop itself: far worse than the bug being fixed.
-            .simultaneousGesture(tabSwipeGesture,
-                                 including: (nativeTodayEnabled || !tabPaths[selectedTab].isEmpty) ? .subviews : .all)
+            .simultaneousGesture(tabSwipeGesture, including: .subviews)
         .background {
             RootTabRepoSink(repoHandle: $repoHandle)
         }
@@ -243,18 +200,10 @@ struct RootTabView: View {
             case .devices:
                 showDevices = true
                 router.requestedDestination = nil
-            case .insightsHub, .labBook, .fusedRecord, .rhythm, .alarms:
+            case .alarms, .trends:
                 routedPillar = dest
                 router.requestedDestination = nil
-            case .coach:
-                guard coachEnabled else {
-                    router.requestedDestination = nil
-                    break
-                }
-                routedPillar = dest
-                router.requestedDestination = nil
-            case .trends:
-                routedPillar = dest
+            case .insightsHub, .labBook, .fusedRecord, .rhythm, .coach:
                 router.requestedDestination = nil
             case .activeWorkout:
                 // The Today active-workout indicator opens Live through the quick-action Live sheet; once
@@ -268,8 +217,6 @@ struct RootTabView: View {
                 withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = NativeRootTab.home.rawValue }
                 router.requestedDestination = nil
             case .journal:
-                // The #627 Today journal widget opens the journal through the quick-action Journal sheet
-                // (InsightsView), matching the FAB's "Log journal" action. Calm sheet easing.
                 withAnimation(Self.sheetEase) { quickAction = .journal }
                 router.requestedDestination = nil
             case nil:
@@ -336,16 +283,13 @@ struct RootTabView: View {
         NavigationStack {
             Group {
                 switch dest {
-                case .insightsHub: InsightsHubView()
-                case .labBook: LabBookView()
-                case .fusedRecord: FusedRecordHost()
-                case .rhythm: RhythmHost(onClose: { routedPillar = nil })
+                case .insightsHub, .labBook, .fusedRecord, .rhythm, .coach:
+                    NativeHomeView()
                 case .devices: DevicesView()
                 case .trends: NativeTrendsPage()
                 case .activeWorkout: LiveView()
                 case .liveSession: NativeHomeView()
-                case .journal: InsightsView()
-                case .coach: CoachView()
+                case .journal: NativeJournalView()
                 case .alarms: SmartAlarmView()
                 }
             }
@@ -390,7 +334,7 @@ struct RootTabView: View {
         case .workout:
             quickScreen(WorkoutsView())
         case .journal:
-            quickScreen(InsightsView())
+            quickScreen(NativeJournalView(startsLogging: true))
         case .breathe:
             quickScreen(BreathingView())
         }
@@ -495,15 +439,8 @@ struct RootTabView: View {
             // bar background keeps the sky edge-to-edge. On the flat (no-sky) screens this is visually
             // identical at rest — the destination's own surfaceBase background shows through the bar.
             .navigationDestination(for: NativeMoreItem.self) { item in
-                if nativeTodayEnabled && item.usesAppleSettingsChrome {
-                    item.destination
-                        .navigationBarTitleDisplayMode(.inline)
-                } else {
-                    item.destination
-                        .background(StrandPalette.surfaceBase.ignoresSafeArea())
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbarBackground(.hidden, for: .navigationBar)
-                }
+                item.destination
+                    .navigationBarTitleDisplayMode(.inline)
             }
             .tabRouteDestinations()
         }

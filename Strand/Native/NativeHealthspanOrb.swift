@@ -1,18 +1,6 @@
 import SwiftUI
 import StrandDesign
 
-/// Visual language for the Band Age hero. Persisted as `band.orbStyle`.
-enum NativeHealthspanOrbStyle: String, CaseIterable, Identifiable {
-    case ring
-    case bloom
-    case glass
-
-    var id: String { rawValue }
-
-    /// `@AppStorage` / `defaults write` key. Unset resolves to `ring`.
-    static let storageKey = "band.orbStyle"
-}
-
 /// Delta → ring fill and hue. Pure so StrandTests can cover it without rendering.
 enum NativeHealthspanOrbMap {
     static let deltaSpan: Double = 5
@@ -43,7 +31,7 @@ enum NativeHealthspanOrbTone: Equatable {
     }
 }
 
-/// Band Age hero. Apple Watch Activity / Mindfulness / glass — not a WHOOP particle ball.
+/// Band Age hero. Apple Watch Activity ring — colour carries younger/older.
 struct NativeHealthspanOrb: View {
     var value: Double?
     var delta: Double?
@@ -51,17 +39,12 @@ struct NativeHealthspanOrb: View {
     var compact: Bool = false
     var reduceMotion: Bool = false
 
-    @AppStorage(NativeHealthspanOrbStyle.storageKey) private var styleRaw = NativeHealthspanOrbStyle.ring.rawValue
     @Environment(\.nativeStyle) private var nativeStyle
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var motion = NoopMotionState.shared
     @State private var onScreen = false
     @State private var drawn: Double = 0
 
-    private var orbStyle: NativeHealthspanOrbStyle {
-        NativeHealthspanOrbStyle(rawValue: styleRaw) ?? .ring
-    }
     private var poseStill: Bool { motion.poseStill(reduceMotion) }
     private var live: Bool { onScreen && scenePhase == .active && !poseStill }
     private var size: CGFloat { compact ? NativeHealthspanOrbLayout.compactSize : NativeHealthspanOrbLayout.heroSize }
@@ -70,11 +53,11 @@ struct NativeHealthspanOrb: View {
         if isLoading { return 0 }
         // The ring closes once loaded: a partial arc implied a scale the number doesn't have.
         // Colour carries younger/older; the draw-in on load is the only motion.
-        return orbStyle == .ring ? 1 : NativeHealthspanOrbMap.fillFraction(delta: delta)
+        return 1
     }
-    /// Ring only ticks while loading so the pulse can run; bloom/glass tick whenever live.
+    /// Ring only ticks while loading so the pulse can run.
     private var clockPaused: Bool {
-        compact || !live || (orbStyle == .ring && !isLoading)
+        compact || !live || !isLoading
     }
 
     var body: some View {
@@ -90,7 +73,6 @@ struct NativeHealthspanOrb: View {
             }
         }
         .frame(width: size, height: size)
-        .modifier(NativeHealthspanGlassRim(enabled: orbStyle == .glass && !isLoading && !compact, size: size))
         .animation(poseStill ? nil : NativeHealthspanOrbLayout.crossFade, value: isLoading)
         .onAppear {
             onScreen = true
@@ -125,33 +107,12 @@ struct NativeHealthspanOrb: View {
             return 0.58 + 0.42 * CGFloat(0.5 + 0.5 * sin(t * 2 * .pi / NativeHealthspanOrbLayout.pulsePeriod))
         }()
         ZStack {
-            switch orbStyle {
-            case .ring:
-                NativeHealthspanRingOrb(
-                    fill: drawn,
-                    tone: tone,
-                    size: size,
-                    nativeStyle: nativeStyle
-                )
-            case .bloom:
-                NativeHealthspanBloomOrb(
-                    t: t,
-                    live: live && !isLoading,
-                    tone: tone,
-                    size: size,
-                    nativeStyle: nativeStyle,
-                    colorScheme: colorScheme
-                )
-            case .glass:
-                NativeHealthspanGlassOrb(
-                    t: t,
-                    live: live && !isLoading,
-                    tone: tone,
-                    size: size,
-                    nativeStyle: nativeStyle,
-                    colorScheme: colorScheme
-                )
-            }
+            NativeHealthspanRingOrb(
+                fill: drawn,
+                tone: tone,
+                size: size,
+                nativeStyle: nativeStyle
+            )
         }
         .frame(width: size, height: size)
         .compositingGroup()
@@ -224,20 +185,12 @@ enum NativeHealthspanOrbLayout {
     static let numberSize: CGFloat = 44
     static let labelSpacing: CGFloat = 4
     static let labelInset: CGFloat = 28
-    static let petalCount = 7
-    static let bloomRevolution: TimeInterval = 36
-    static let breathPeriod: TimeInterval = 6
     static let pulsePeriod: TimeInterval = 1.2
-    static let glassDriftPeriod: TimeInterval = 22
     static let clockInterval: TimeInterval = 1.0 / 12.0
     static let fillSpring = Animation.spring(response: 0.6, dampingFraction: 1.0)
     static let crossFade = Animation.easeInOut(duration: 0.45)
 
     static func lineWidth(size: CGFloat) -> CGFloat { max(4, size * 0.09) }
-
-    static func petalAngle(_ index: Int) -> Double {
-        Double(index) * 2 * Double.pi / Double(petalCount)
-    }
 }
 
 enum NativeHealthspanOrbSwatch {
@@ -302,132 +255,6 @@ private struct NativeHealthspanRingOrb: View {
         Circle()
             .trim(from: 0, to: fill >= 0.999 ? 1 : CGFloat(min(max(fill, 0.001), 1)))
             .rotation(.degrees(-90))
-    }
-}
-
-/// Apple Mindfulness / Breathe: overlapping translucent petals, slow spin, gentle breath.
-private struct NativeHealthspanBloomOrb: View {
-    var t: TimeInterval
-    var live: Bool
-    var tone: NativeHealthspanOrbTone
-    var size: CGFloat
-    var nativeStyle: NativeStyle
-    var colorScheme: ColorScheme
-
-    var body: some View {
-        let lead = NativeHealthspanOrbSwatch.lead(tone, style: nativeStyle)
-        let trail = NativeHealthspanOrbSwatch.trail(tone, style: nativeStyle)
-        let turn = live ? t / NativeHealthspanOrbLayout.bloomRevolution * 360 : 0
-        let breath = live ? 1 + 0.03 * sin(t * 2 * .pi / NativeHealthspanOrbLayout.breathPeriod) : 1
-        let petalSize = size * 0.54
-        let offset = size * 0.20
-        ZStack {
-            ForEach(0..<NativeHealthspanOrbLayout.petalCount, id: \.self) { i in
-                let angle = NativeHealthspanOrbLayout.petalAngle(i)
-                Circle()
-                    .fill(i.isMultiple(of: 2) ? lead.opacity(0.42) : trail.opacity(0.36))
-                    .frame(width: petalSize, height: petalSize)
-                    .offset(x: CGFloat(cos(angle)) * offset, y: CGFloat(sin(angle)) * offset)
-            }
-        }
-        .blendMode(colorScheme == .dark ? .plusLighter : .normal)
-        .rotationEffect(.degrees(turn))
-        .scaleEffect(breath)
-        .frame(width: size, height: size)
-        .overlay {
-            Circle()
-                .fill(NativePaint.page(nativeStyle).opacity(colorScheme == .dark ? 0.72 : 0.88))
-                .frame(width: size * 0.46, height: size * 0.46)
-        }
-    }
-}
-
-/// Dimensional sphere: dark falloff, top-left specular, tinted rim, slow colour drift. No particles.
-private struct NativeHealthspanGlassOrb: View {
-    var t: TimeInterval
-    var live: Bool
-    var tone: NativeHealthspanOrbTone
-    var size: CGFloat
-    var nativeStyle: NativeStyle
-    var colorScheme: ColorScheme
-
-    var body: some View {
-        let lead = NativeHealthspanOrbSwatch.lead(tone, style: nativeStyle)
-        let trail = NativeHealthspanOrbSwatch.trail(tone, style: nativeStyle)
-        let drift = live ? sin(t * 2 * .pi / NativeHealthspanOrbLayout.glassDriftPeriod) * 0.05 : 0
-        let specular = colorScheme == .dark ? Color.primary.opacity(0.55) : NativeTokens.card.opacity(0.92)
-        ZStack {
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [
-                            NativePaint.card(nativeStyle),
-                            NativePaint.page(nativeStyle),
-                            NativePaint.page(nativeStyle).opacity(0.92)
-                        ],
-                        center: UnitPoint(x: 0.38 + drift, y: 0.32),
-                        startRadius: 0,
-                        endRadius: size * 0.62
-                    )
-                )
-            ZStack {
-                Circle()
-                    .fill(lead.opacity(0.22))
-                    .blur(radius: size > 80 ? 18 : 4)
-                    .offset(x: CGFloat(drift) * size * 0.4, y: CGFloat(-drift) * size * 0.15)
-                Circle()
-                    .fill(trail.opacity(0.16))
-                    .blur(radius: size > 80 ? 14 : 3)
-                    .offset(x: CGFloat(-drift) * size * 0.35, y: size * 0.12)
-            }
-            .mask(Circle())
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [specular, specular.opacity(0)],
-                        center: UnitPoint(x: 0.30, y: 0.26),
-                        startRadius: 0,
-                        endRadius: size * 0.28
-                    )
-                )
-            Circle()
-                .stroke(
-                    AngularGradient(
-                        colors: [lead.opacity(0.95), trail.opacity(0.45), lead.opacity(0.2), lead.opacity(0.95)],
-                        center: .center
-                    ),
-                    lineWidth: max(1.25, size * 0.018)
-                )
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-/// iOS 26 Liquid Glass on a thin outer rim only. Body stays a normal gradient (HIG: glass is for controls).
-private struct NativeHealthspanGlassRim: ViewModifier {
-    var enabled: Bool
-    var size: CGFloat
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        content.background {
-            if enabled {
-                glassPlate
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var glassPlate: some View {
-        #if os(iOS)
-        if #available(iOS 26.0, *) {
-            Circle()
-                .fill(Color.clear)
-                .frame(width: size + 10, height: size + 10)
-                .glassEffect(.regular, in: Circle())
-                .allowsHitTesting(false)
-        }
-        #endif
     }
 }
 
