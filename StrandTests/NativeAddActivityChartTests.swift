@@ -120,6 +120,70 @@ final class NativeAddActivityChartTests: XCTestCase {
         XCTAssertEqual(bounds.end, dayStart().addingTimeInterval(86_400))
     }
 
+    func testClampedStartMovesOnlyTheStartEdge() {
+        let now = at(20)
+        let result = NativeAddActivityChartLogic.clampedStart(
+            at(8, 10), keepingEnd: at(8, 45), dayStart: dayStart(), now: now, calendar: gmt()
+        )
+        XCTAssertEqual(result.start, at(8, 10))
+        XCTAssertEqual(result.end, at(8, 45))
+    }
+
+    func testClampedStartStopsSixtySecondsBeforeEnd() {
+        let now = at(20)
+        let result = NativeAddActivityChartLogic.clampedStart(
+            at(8, 50), keepingEnd: at(8, 45), dayStart: dayStart(), now: now, calendar: gmt()
+        )
+        XCTAssertEqual(result.start, at(8, 44))
+        XCTAssertEqual(result.end, at(8, 45))
+    }
+
+    func testClampedEndMovesOnlyTheEndEdge() {
+        let now = at(20)
+        let result = NativeAddActivityChartLogic.clampedEnd(
+            at(9, 10), keepingStart: at(8, 45), dayStart: dayStart(), now: now, calendar: gmt()
+        )
+        XCTAssertEqual(result.start, at(8, 45))
+        XCTAssertEqual(result.end, at(9, 10))
+    }
+
+    func testClampedEndDoesNotPassNow() {
+        let now = at(9)
+        let result = NativeAddActivityChartLogic.clampedEnd(
+            at(10), keepingStart: at(8, 45), dayStart: dayStart(), now: now, calendar: gmt()
+        )
+        XCTAssertEqual(result.start, at(8, 45))
+        XCTAssertEqual(result.end, now)
+    }
+
+    func testApplyDragStartAndEndAreIndependent() {
+        let now = at(20)
+        let startDrag = NativeAddActivityChartLogic.applyDrag(
+            edge: .start,
+            finger: at(8, 5),
+            origin: at(8, 20),
+            anchorStart: at(8, 20),
+            anchorEnd: at(8, 45),
+            dayStart: dayStart(),
+            now: now,
+            calendar: gmt()
+        )
+        XCTAssertEqual(startDrag.start, at(8, 5))
+        XCTAssertEqual(startDrag.end, at(8, 45))
+        let endDrag = NativeAddActivityChartLogic.applyDrag(
+            edge: .end,
+            finger: at(9),
+            origin: at(8, 45),
+            anchorStart: at(8, 20),
+            anchorEnd: at(8, 45),
+            dayStart: dayStart(),
+            now: now,
+            calendar: gmt()
+        )
+        XCTAssertEqual(endDrag.start, at(8, 20))
+        XCTAssertEqual(endDrag.end, at(9))
+    }
+
     // MARK: - In-window avg / max
 
     func testWindowHeartRateAveragesMeansAndTakesBucketPeaks() {

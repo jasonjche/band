@@ -106,11 +106,13 @@ struct NativeScorePage: View {
         .sheet(item: $sleepEdit) { target in
             let session = target.session
             let coverageLo = min(session.startTs, session.effectiveStartTs)
-            SleepTimeEditor(
-                bedTs: session.effectiveStartTs,
-                wakeTs: session.endTs,
+            NativeTimeWindowEditorSheet(
+                kind: .sleep,
+                seedStart: Date(timeIntervalSince1970: TimeInterval(session.effectiveStartTs)),
+                seedEnd: Date(timeIntervalSince1970: TimeInterval(session.endTs)),
                 coverage: coverageLo...max(session.endTs, coverageLo + 1),
                 suppressesReDetection: !session.userEdited,
+                repo: repoHandle,
                 onSave: { newBedTs, newWakeTs in
                     await repoHandle?.editSleepTimes(
                         detectedStartTs: session.startTs, oldEndTs: session.endTs,
