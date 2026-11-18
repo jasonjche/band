@@ -318,16 +318,10 @@ private struct NativeHeartRateLineChart: View {
         .chartOverlay { proxy in
             NativeHeartRateScrubOverlay(proxy: proxy, model: model, tint: tint, scrub: scrub)
         }
+        .modifier(NativeSelectionFeedback(trigger: scrub.time ?? .distantPast))
         .modifier(NativeTimeSelect(
             selected: timeBinding,
-            snap: { time in
-                guard let time else { return nil }
-                return NativeChartScrubMath.nearestHour(
-                    to: time,
-                    in: model.plot,
-                    maxGap: model.maxGap
-                )?.time
-            },
+            snap: { NativeChartScrubMath.snapTime($0, in: model.plot, maxGap: model.maxGap) },
             onChange: { _ in }
         ))
     }
@@ -341,55 +335,31 @@ private struct NativeHeartRateScrubOverlay: View {
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
-        GeometryReader { geo in
-            let origin = plotOrigin(geo: geo)
-            let frame = plotFrame(geo: geo)
-            ZStack(alignment: .topLeading) {
-                if let time = scrub.time,
-                   let point = NativeChartScrubMath.nearestHour(
-                    to: time,
-                    in: model.plot,
-                    maxGap: model.maxGap
-                   ),
-                   point.time >= model.xDomain.lowerBound, point.time <= model.xDomain.upperBound,
-                   let xRel = proxy.position(forX: point.time),
-                   let yRel = proxy.position(forY: point.value) {
-                    let placed = NativeChartScrubMath.overlayPoint(plotOrigin: origin, x: xRel, y: yRel)
-                    if frame.insetBy(dx: -1, dy: -1).contains(placed) {
-                        NativeSelectedVertex(tint: tint)
-                            .position(x: placed.x, y: placed.y)
-                    }
-                } else if model.showsNow, let last = model.plot.last,
-                          last.time >= model.xDomain.lowerBound, last.time <= model.xDomain.upperBound,
-                          let xRel = proxy.position(forX: last.time) {
-                    let x = origin.x + xRel
-                    ZStack {
-                        Path { path in
-                            path.move(to: CGPoint(x: x, y: frame.minY))
-                            path.addLine(to: CGPoint(x: x, y: frame.maxY))
-                        }
-                        .stroke(NativePaint.separator(style), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                        if let yRel = proxy.position(forY: last.value) {
-                            NativeSelectedVertex(tint: tint, size: 8)
-                                .position(x: x, y: origin.y + yRel)
-                        }
-                    }
-                }
-            }
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+        if let time = scrub.time,
+           let point = NativeChartScrubMath.nearestHour(
+            to: time,
+            in: model.plot,
+            maxGap: model.maxGap
+           ),
+           point.time >= model.xDomain.lowerBound, point.time <= model.xDomain.upperBound {
+            NativeChartTimeScrubGuide(
+                proxy: proxy,
+                time: point.time,
+                y: point.value,
+                tint: tint,
+                hairlineColor: NativePaint.separator(style)
+            )
+        } else if model.showsNow, let last = model.plot.last,
+                  last.time >= model.xDomain.lowerBound, last.time <= model.xDomain.upperBound {
+            NativeChartTimeScrubGuide(
+                proxy: proxy,
+                time: last.time,
+                y: last.value,
+                tint: tint,
+                vertexSize: 8,
+                hairlineColor: NativePaint.separator(style)
+            )
         }
-        .allowsHitTesting(false)
-    }
-
-    private func plotOrigin(geo: GeometryProxy) -> CGPoint {
-        plotFrame(geo: geo).origin
-    }
-
-    private func plotFrame(geo: GeometryProxy) -> CGRect {
-        if #available(iOS 17.0, macOS 14.0, *), let frame = proxy.plotFrame {
-            return geo[frame]
-        }
-        return geo.frame(in: .local)
     }
 }
 

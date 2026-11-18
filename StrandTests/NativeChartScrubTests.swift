@@ -237,6 +237,61 @@ final class NativeChartScrubTests: XCTestCase {
         )
     }
 
+    func testSnapTimeNilsOnReleaseAndSnapsToNearest() {
+        let points = [hour(0, 60), hour(300, 70), hour(600, 80)]
+        XCTAssertNil(NativeChartScrubMath.snapTime(nil, in: points))
+        XCTAssertEqual(
+            NativeChartScrubMath.snapTime(Date(timeIntervalSince1970: 310), in: points)?.timeIntervalSince1970 ?? -1,
+            300,
+            accuracy: 1e-9
+        )
+        XCTAssertNil(NativeChartScrubMath.snapTime(Date(), in: []))
+    }
+
+    func testSnapKeyIgnoresAxisLabelsAndNilsOnRelease() {
+        let keys = ["2026-11-10", "2026-11-11", "2026-11-12"]
+        XCTAssertNil(NativeChartScrubMath.snapKey(nil, in: keys))
+        XCTAssertNil(NativeChartScrubMath.snapKey("7", in: keys))
+        XCTAssertEqual(NativeChartScrubMath.snapKey("2026-11-11", in: keys), "2026-11-11")
+    }
+
+    func testSnapDateNilsOnRelease() {
+        let days = [
+            Date(timeIntervalSince1970: 0),
+            Date(timeIntervalSince1970: 86_400),
+            Date(timeIntervalSince1970: 172_800),
+        ]
+        XCTAssertNil(NativeChartScrubMath.snapDate(nil, in: days))
+        XCTAssertNil(NativeChartScrubMath.nearestDate(Date(), in: []))
+        XCTAssertEqual(
+            NativeChartScrubMath.snapDate(Date(timeIntervalSince1970: 90_000), in: days)?.timeIntervalSince1970 ?? -1,
+            86_400,
+            accuracy: 1
+        )
+    }
+
+    func testHairlineStyleIsDashed() {
+        XCTAssertEqual(NativeChartScrubMath.hairlineStyle.lineWidth, 1, accuracy: 1e-9)
+        XCTAssertEqual(NativeChartScrubMath.hairlineStyle.dash.map(Double.init), [4, 3])
+    }
+
+    func testHealthspanNearestSnapsThenResets() {
+        let points = [
+            NativeHealthspanTrendModel.PlotPoint(
+                id: "a", day: Date(timeIntervalSince1970: 0), bandAge: 32, chronoAge: 34, pace: 0.9
+            ),
+            NativeHealthspanTrendModel.PlotPoint(
+                id: "b", day: Date(timeIntervalSince1970: 86_400), bandAge: 31.5, chronoAge: 34, pace: 0.85
+            ),
+        ]
+        XCTAssertNil(NativeHealthspanTrendMath.nearest(to: nil, in: points))
+        XCTAssertEqual(
+            NativeHealthspanTrendMath.nearest(to: Date(timeIntervalSince1970: 80_000), in: points)?.id,
+            "b"
+        )
+        XCTAssertNil(NativeHealthspanTrendMath.nearest(to: Date(), in: []))
+    }
+
     func testHypnogramSpanOpacityHighlightsSelection() {
         let awake = NativeSleepStageSpan(startTs: 0, endTs: 100, name: "Awake")
         let light = NativeSleepStageSpan(startTs: 100, endTs: 400, name: "Light")
