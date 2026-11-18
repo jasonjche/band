@@ -2071,7 +2071,7 @@ struct NativeOvernightLine: View {
                     ForEach(model.domainPoints) { point in
                         LineMark(x: .value("Time", point.time), y: .value("HR", point.value))
                             .foregroundStyle(tint)
-                            .interpolationMethod(.linear)
+                            .interpolationMethod(.monotone)
                             .lineStyle(StrokeStyle(lineWidth: 2))
                             .accessibilityLabel(model.pointTimeText[point.time.timeIntervalSince1970] ?? NativeScopeFormat.time(point.time))
                             .accessibilityValue("\(Int(point.value.rounded()))")

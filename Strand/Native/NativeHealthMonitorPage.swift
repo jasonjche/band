@@ -288,7 +288,7 @@ private struct NativeHealthMonitorSpark: View {
             ForEach(plot) { point in
                 LineMark(x: .value("Time", point.time), y: .value("BPM", point.value))
                     .foregroundStyle(tint)
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .lineStyle(StrokeStyle(lineWidth: 2))
                     .accessibilityHidden(true)
             }

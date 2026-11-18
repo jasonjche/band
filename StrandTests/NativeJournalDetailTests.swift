@@ -183,7 +183,7 @@ final class NativeJournalDetailTests: XCTestCase {
         XCTAssertTrue(NativeJournalSections.make([nap, read, alcohol], query: "  ").map(\.group) == sections.map(\.group))
     }
 
-    func testDraftCarriesPreviousDayWhenTodayIsEmpty() {
+    func testDraftCarriesPreviousDayWhenTodayIsEmpty() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let today = calendar.date(from: DateComponents(year: 2026, month: 11, day: 17))!
@@ -206,10 +206,14 @@ final class NativeJournalDetailTests: XCTestCase {
         let key = JournalCatalogStore.canonicalId(for: "Did you drink any alcohol?")
         XCTAssertEqual(seed.yes[key], true)
         XCTAssertEqual(seed.numeric[key] ?? -1, 2, accuracy: 0.01)
+        let carriedTime = try XCTUnwrap(seed.times[key])
         XCTAssertEqual(
-            NativeJournalNotes.minutes(from: seed.times[key] ?? today, calendar: calendar),
+            NativeJournalNotes.minutes(from: carriedTime, calendar: calendar),
             21 * 60 + 30
         )
+        XCTAssertEqual(calendar.component(.year, from: carriedTime), 2026)
+        XCTAssertEqual(calendar.component(.month, from: carriedTime), 11)
+        XCTAssertEqual(calendar.component(.day, from: carriedTime), 16)
         XCTAssertTrue(seed.persistedYes.isEmpty)
         XCTAssertTrue(NativeJournalDraft.shouldWrite(
             key: key, draftYes: seed.yes, draftNumeric: seed.numeric, draftTimes: seed.times,
@@ -220,6 +224,56 @@ final class NativeJournalDetailTests: XCTestCase {
             key: key, draftYes: seed.yes, draftNumeric: seed.numeric, draftTimes: seed.times,
             persistedYes: seed.yes, persistedNumeric: seed.numeric, persistedTimes: seed.times
         ))
+    }
+
+    func testBehaviorDayIsTheCalendarDayBeforeTheWakeDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let wake = calendar.date(from: DateComponents(year: 2026, month: 11, day: 18, hour: 8))!
+        let behavior = NativeJournalBehaviorDay.date(from: wake, calendar: calendar)
+        XCTAssertEqual(
+            calendar.dateComponents([.year, .month, .day], from: behavior),
+            DateComponents(year: 2026, month: 11, day: 17)
+        )
+        let defaultTime = NativeJournalNotes.defaultTime(on: behavior, calendar: calendar)
+        XCTAssertEqual(calendar.component(.day, from: defaultTime), 17)
+        XCTAssertEqual(calendar.component(.hour, from: defaultTime), NativeJournalNotes.defaultHour)
+        let stamped = NativeJournalNotes.date(minutes: 14 * 60 + 30, on: behavior, calendar: calendar)
+        XCTAssertEqual(calendar.component(.day, from: stamped), 17)
+        XCTAssertEqual(calendar.component(.hour, from: stamped), 14)
+        XCTAssertEqual(calendar.component(.minute, from: stamped), 30)
+    }
+
+    func testFramingShowsYesterdayOnTheLogicalWakeDay() {
+        let calendar = Calendar.current
+        let now = Date()
+        let todayKey = NativeDayLogic.logicalToday(now: now)
+        let parts = todayKey.split(separator: "-").compactMap { Int($0) }
+        XCTAssertEqual(parts.count, 3)
+        let selectedDay = calendar.date(
+            from: DateComponents(year: parts[0], month: parts[1], day: parts[2])
+        ) ?? calendar.startOfDay(for: now)
+        XCTAssertEqual(
+            NativeJournalBehaviorDay.title(for: selectedDay, now: now, calendar: calendar),
+            "Yesterday"
+        )
+        let caption = NativeJournalBehaviorDay.caption(for: selectedDay, now: now, calendar: calendar)
+        XCTAssertTrue(caption.contains("yesterday"))
+        XCTAssertTrue(caption.contains("before last night's sleep"))
+        let previousWake = calendar.date(byAdding: .day, value: -1, to: selectedDay)!
+        let previousTitle = NativeJournalBehaviorDay.title(for: previousWake, now: now, calendar: calendar)
+        XCTAssertNotEqual(previousTitle, "Yesterday")
+        XCTAssertEqual(
+            previousTitle,
+            NativeScopeFormat.weekdayDate(
+                NativeJournalBehaviorDay.date(from: previousWake, calendar: calendar),
+                calendar: calendar
+            )
+        )
+        XCTAssertTrue(
+            NativeJournalBehaviorDay.caption(for: previousWake, now: now, calendar: calendar)
+                .contains("before that night's sleep")
+        )
     }
 
     func testMorningJournalPromptGatesHourSleepAndTests() {

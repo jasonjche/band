@@ -518,7 +518,7 @@ struct NativeActivityView: View {
             series.samples.map { (ts: $0.ts, bpm: Double($0.bpm)) },
             seconds: NativeActivityPageLogic.hrBucketSeconds
         )
-        hr = NativeHRSmoothing.smooth(rawPoints)
+        hr = rawPoints
         let isRecovery = WorkoutCatalog.isRecovery(found.sport)
         let zones = zoneSet ?? HRZones.zones(
             maxHR: profileHandle?.effortHRmax ?? 197,
@@ -962,7 +962,7 @@ private struct NativeActivityHRPlot: View {
     }
 
     private var plotPoints: [NativeHourPoint] {
-        NativeStressMonitorMath.drawPoints(points, budget: NativeHRDisplay.plotBudget)
+        NativeHRDisplay.line(points)
     }
 
     private var zoneRuns: [[NativeHourPoint]] {
@@ -1040,10 +1040,10 @@ private struct NativeActivityHRPlot: View {
                 yEnd: .value("HR", point.value)
             )
             .foregroundStyle(lineTint.opacity(selectedZone == nil ? 0.18 : 0.05))
-            .interpolationMethod(.linear)
+            .interpolationMethod(.monotone)
             LineMark(x: .value("Time", point.time), y: .value("HR", point.value))
                 .foregroundStyle(lineTint.opacity(selectedZone == nil ? 1 : 0.18))
-                .interpolationMethod(.linear)
+                .interpolationMethod(.monotone)
                 .lineStyle(StrokeStyle(lineWidth: 2.5))
         }
     }
@@ -1058,14 +1058,14 @@ private struct NativeActivityHRPlot: View {
                     series: .value("Zone", "z\(offset)")
                 )
                 .foregroundStyle(highlightTint.opacity(0.28))
-                .interpolationMethod(.linear)
+                .interpolationMethod(.monotone)
                 LineMark(
                     x: .value("Time", point.time),
                     y: .value("HR", point.value),
                     series: .value("Zone", "z\(offset)")
                 )
                 .foregroundStyle(highlightTint)
-                .interpolationMethod(.linear)
+                .interpolationMethod(.monotone)
                 .lineStyle(StrokeStyle(lineWidth: 2.5))
             }
             if run.count == 1, let point = run.first {

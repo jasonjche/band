@@ -41,6 +41,8 @@ final class NativeHRSmoothingTests: XCTestCase {
         let raw = points([80, 82, 84, 86], every: 20)
         XCTAssertEqual(NativeHRSmoothing.gapLimit(in: raw, window: 45), 45)
         XCTAssertEqual(NativeHRSmoothing.gapLimit(in: raw, window: 10), 40)
+        XCTAssertEqual(NativeHRSmoothing.defaultWindow, 120, accuracy: 1e-9)
+        XCTAssertEqual(NativeHRSmoothing.dayWindow, 600, accuracy: 1e-9)
     }
 
     func testDaySmoothingAveragesAPerMinuteSpike() {

@@ -283,7 +283,7 @@ private struct NativeHeartRateLineChart: View {
                         series: .value("Segment", index)
                     )
                     .foregroundStyle(tint)
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .lineStyle(StrokeStyle(lineWidth: 2))
                     .accessibilityLabel(model.pointTimeText[point.time.timeIntervalSince1970] ?? "")
                     .accessibilityValue(model.pointValueText[point.time.timeIntervalSince1970] ?? "")

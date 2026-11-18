@@ -35,6 +35,8 @@ struct NativeJournalView: View {
 
     private var dayKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
 
+    private var behaviorDay: Date { NativeJournalBehaviorDay.date(from: selectedDay) }
+
     private var answers: [HomeJournalAnswer] {
         HomeJournalAnswer.make(entries: entries, day: dayKey)
     }
@@ -53,7 +55,8 @@ struct NativeJournalView: View {
             if logging {
                 NativeJournalEditor(
                     items: formItems,
-                    day: selectedDay,
+                    day: behaviorDay,
+                    prompt: NativeJournalBehaviorDay.caption(for: selectedDay),
                     initialAnswers: seededYes,
                     initialNumeric: seededNumeric,
                     initialTimes: seededTime,
@@ -76,7 +79,7 @@ struct NativeJournalView: View {
         }
         .navigationTitle("Journal")
         .modifier(NativeInlineTitle())
-        .nativeDateSubtitle(selectedDay)
+        .nativeDateSubtitle(behaviorDay)
         .toolbar {
             if !logging {
                 ToolbarItem(placement: .primaryAction) {
@@ -106,13 +109,19 @@ struct NativeJournalView: View {
     @ViewBuilder private var journalBody: some View {
         NativeChrome.screen {
             HomeDateStepper(
-                title: HomeDayTitle.text(for: selectedDay),
+                title: NativeJournalBehaviorDay.title(for: selectedDay),
                 canGoBack: HomeDayNav.canGoBack(selectedKey: dayKey, firstDay: firstDay),
                 canGoForward: HomeDayNav.canGoForward(selectedKey: dayKey),
                 onBack: { shiftDay(-1) },
                 onForward: { shiftDay(1) }
             )
             .frame(maxWidth: .infinity)
+            NativeChrome.panel {
+                Text(NativeJournalBehaviorDay.caption(for: selectedDay))
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             HomeJournalList(answers: answers, notes: notes)
             Button {
                 path.wrappedValue.append(NativeJournalImpactRoute())
@@ -243,6 +252,7 @@ struct NativeJournalLogForm: View {
     var numeric: [String: Double]
     var times: [String: Date] = [:]
     var day: Date = Date()
+    var prompt: String? = nil
     var showsQuestionEditor: Bool = false
     var catalog: JournalCatalogStore? = nil
     var imported: [String] = []
@@ -265,6 +275,14 @@ struct NativeJournalLogForm: View {
     var body: some View {
         let sections = NativeJournalSections.make(items)
         NativeChrome.screen {
+            if let prompt, !prompt.isEmpty {
+                NativeChrome.panel {
+                    Text(prompt)
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
             if items.isEmpty {
                 NativeChrome.panel {
                     NativeEmptyState(text: "No behaviours to log", symbol: "book.closed")

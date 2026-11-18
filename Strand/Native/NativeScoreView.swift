@@ -1431,7 +1431,7 @@ enum NativeOvernightHeart {
 
     static func make(samples: [HRSample], target: Int = displayTarget) -> Model {
         Model(
-            points: displayPoints(from: samples, target: target),
+            points: NativeHRSmoothing.smooth(displayPoints(from: samples, target: target)),
             average: NativeScoreMath.mean(samples.map { Double($0.bpm) }),
             rawCount: samples.count
         )

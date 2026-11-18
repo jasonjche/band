@@ -1,4 +1,5 @@
 import XCTest
+import WhoopProtocol
 @testable import Strand
 
 final class NativeHeartRateTests: XCTestCase {
@@ -132,6 +133,27 @@ final class NativeHeartRateTests: XCTestCase {
             now: start.addingTimeInterval(2 * 86_400), viewingToday: false
         )
         XCTAssertFalse(past.showsNow)
+    }
+
+    func testDisplaySmoothingWindowsAreWider() {
+        XCTAssertEqual(NativeHRSmoothing.defaultWindow, 120, accuracy: 1e-9)
+        XCTAssertEqual(NativeHRSmoothing.dayWindow, 600, accuracy: 1e-9)
+    }
+
+    func testOvernightMakeSmoothsThePlotAndKeepsRawAverage() {
+        let start = 1_700_000_000
+        var samples: [HRSample] = []
+        samples.reserveCapacity(21)
+        for i in 0..<21 {
+            samples.append(HRSample(ts: start + i * 60, bpm: i == 10 ? 170 : 70))
+        }
+        let rawMean = NativeScoreMath.mean(samples.map { Double($0.bpm) }) ?? -1
+        let model = NativeOvernightHeart.make(samples: samples)
+        XCTAssertEqual(model.rawCount, 21)
+        XCTAssertEqual(model.average ?? -1, rawMean, accuracy: 1e-9)
+        XCTAssertEqual(rawMean, (20 * 70.0 + 170.0) / 21.0, accuracy: 1e-9)
+        XCTAssertLessThan(model.points.map(\.value).max() ?? 0, 100)
+        XCTAssertGreaterThan(model.points.map(\.value).min() ?? 0, 60)
     }
 
     func testMakeStatsStayOnRawWhileThePlotIsSmoothed() {

@@ -229,6 +229,33 @@ enum NativeJournalIdentity {
     }
 }
 
+/// User-facing journal day. Stored `JournalEntry.day` stays the wake-day key;
+/// the behaviours being logged happened on the previous calendar day.
+enum NativeJournalBehaviorDay {
+    static func date(from selectedDay: Date, calendar: Calendar = .current) -> Date {
+        let start = calendar.startOfDay(for: selectedDay)
+        return calendar.date(byAdding: .day, value: -1, to: start)
+            ?? start.addingTimeInterval(-86_400)
+    }
+
+    static func title(for selectedDay: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        let behavior = date(from: selectedDay, calendar: calendar)
+        if Repository.localDayKey(selectedDay) == NativeDayLogic.logicalToday(now: now) {
+            return "Yesterday"
+        }
+        return NativeScopeFormat.weekdayDate(behavior, calendar: calendar)
+    }
+
+    static func caption(for selectedDay: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        let behavior = date(from: selectedDay, calendar: calendar)
+        let dateText = NativeScopeFormat.weekdayDate(behavior, calendar: calendar)
+        if Repository.localDayKey(selectedDay) == NativeDayLogic.logicalToday(now: now) {
+            return "Behaviours from yesterday (\(dateText)) before last night's sleep"
+        }
+        return "Behaviours from \(dateText) before that night's sleep"
+    }
+}
+
 /// Prefill for the Journal editor. `persisted*` is what is already saved for `dayKey`;
 /// `seeded*` is what the form shows (yesterday's answers when today is empty).
 enum NativeJournalDraft {
@@ -307,7 +334,8 @@ enum NativeJournalDraft {
             yes[key] = entry.answeredYes
             if let value = entry.numericValue { qty[key] = value }
             if let minutes = NativeJournalNotes.decode(entry.notes).timeMinutes {
-                time[key] = NativeJournalNotes.date(minutes: minutes, on: selectedDay, calendar: calendar)
+                let behaviorDay = NativeJournalBehaviorDay.date(from: selectedDay, calendar: calendar)
+                time[key] = NativeJournalNotes.date(minutes: minutes, on: behaviorDay, calendar: calendar)
             }
         }
         for (question, value) in nativeAnswers {

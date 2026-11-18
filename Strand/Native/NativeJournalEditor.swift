@@ -5,6 +5,7 @@ import SwiftUI
 struct NativeJournalEditor: View {
     var items: [JournalCatalogItem]
     var day: Date
+    var prompt: String? = nil
     var initialAnswers: [String: Bool]
     var initialNumeric: [String: Double]
     var initialTimes: [String: Date]
@@ -21,6 +22,7 @@ struct NativeJournalEditor: View {
     init(
         items: [JournalCatalogItem],
         day: Date,
+        prompt: String? = nil,
         initialAnswers: [String: Bool],
         initialNumeric: [String: Double],
         initialTimes: [String: Date],
@@ -31,6 +33,7 @@ struct NativeJournalEditor: View {
     ) {
         self.items = items
         self.day = day
+        self.prompt = prompt
         self.initialAnswers = initialAnswers
         self.initialNumeric = initialNumeric
         self.initialTimes = initialTimes
@@ -54,6 +57,7 @@ struct NativeJournalEditor: View {
             numeric: numeric,
             times: times,
             day: day,
+            prompt: prompt,
             showsQuestionEditor: true,
             catalog: catalog,
             imported: imported,
