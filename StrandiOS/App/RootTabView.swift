@@ -63,6 +63,9 @@ struct RootTabView: View {
     /// scroll to their top anchor when their tab's token changes.
     @State private var scrollTop: [Int] = Array(repeating: 0, count: NativeRootTab.pathSlotCount)
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Zoom namespace for chrome sheets (lift mini-bar → session). Tab stacks override this.
+    @Namespace private var chromeNamespace
+    @State private var chromeContinuityID: NativeContinuityID?
     @AppStorage(NativeStyle.storageKey) private var nativeStyleRaw = NativeStyle.apple.rawValue
     /// Which More-tab groups are expanded (S2). Insights + Body stay open at rest; Data + App collapse to
     /// just their header until tapped. Persisted (#860 item 2): the user's open/closed choice must SURVIVE
@@ -292,13 +295,17 @@ struct RootTabView: View {
             presentPendingHomeScreenQuickActionIfPossible()
         }
         // Lift session chrome observes LiftSessionController in its own leaves so rest-timer
-        // publishes do not re-diff every tab root (Home included).
+        // publishes do not re-diff every tab root (Home included). Tab stacks inject their own
+        // namespace; this one is only for the mini-bar → session sheet.
+        .environment(\.nativeContinuityNamespace, chromeNamespace)
+        .environment(\.nativeContinuityActiveID, $chromeContinuityID)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             RootTabLiftBar()
         }
         .background { RootTabLiftPresentSink(isPresented: $liftPresented) }
         .sheet(isPresented: $liftPresented) {
             LiftSessionView { }
+                .nativeZoomDestination(fallback: .liftSession)
         }
     }
 
@@ -451,6 +458,7 @@ struct RootTabView: View {
         // Drive this tab's root scroll-to-top on an at-root re-tap (#198 follow-up); read by ScreenScaffold
         // / LiquidTodayView inside. Only THIS tab's token changes on its reselect, so the others don't scroll.
         .environment(\.scrollToTopSignal, scrollSignal)
+        .nativeContinuityStack()
         .tabItem { Label(title, systemImage: icon) }
     }
 
@@ -463,11 +471,13 @@ struct RootTabView: View {
                         .background(StrandPalette.surfaceBase.ignoresSafeArea())
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbarBackground(.hidden, for: .navigationBar)
+                        .nativeZoomDestination(fallback: .healthItem(item))
                 }
                 .tabRouteDestinations()
         }
         .environment(\.nativeNavigationPath, path)
         .environment(\.scrollToTopSignal, scrollSignal)
+        .nativeContinuityStack()
         .tabItem { Label("Health", systemImage: "heart.text.square") }
     }
 
@@ -502,6 +512,7 @@ struct RootTabView: View {
         .environment(\.nativeNavigationPath, path)
         // Scroll the More index to the top on an at-root re-tap (#198 follow-up).
         .environment(\.scrollToTopSignal, scrollSignal)
+        .nativeContinuityStack()
         .tabItem { Label("More", systemImage: "ellipsis") }
     }
 
@@ -695,6 +706,7 @@ private struct QuickActionSheet: View {
 /// Holds `LiftSessionController` so the tab roots do not re-diff on rest-timer ticks.
 private struct RootTabLiftBar: View {
     @EnvironmentObject private var liftSession: LiftSessionController
+    @Environment(\.nativeContinuityActiveID) private var continuityID
 
     var body: some View {
         Group {
@@ -702,10 +714,14 @@ private struct RootTabLiftBar: View {
                 LiftSessionBar()
                     .padding(.horizontal, 14)
                     .padding(.bottom, NoopMetrics.tabBarClearance)
+                    .nativeZoomSource(.liftSession)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .animation(.easeInOut(duration: 0.25), value: liftSession.isActive)
+        .onChange(of: liftSession.isPresented) { _, presented in
+            if presented { continuityID.select(.liftSession) }
+        }
     }
 }
 

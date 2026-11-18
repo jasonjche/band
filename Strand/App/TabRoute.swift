@@ -105,10 +105,12 @@ extension View {
         navigationDestination(for: TabRoute.self) { route in
             TabRouteDestination(route: route)
                 .nativeStyleBridge()
+                .nativeZoomDestination(fallback: .tab(route))
         }
         .navigationDestination(for: NativeActivityRoute.self) { route in
             NativeActivityView(startTs: route.startTs)
                 .nativeStyleBridge()
+                .nativeZoomDestination(fallback: .activity(route.startTs))
         }
     }
 }

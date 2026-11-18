@@ -27,6 +27,7 @@ struct NativeHealthspanPage: View {
             .modifier(NativeInlineTitle())
             .navigationDestination(for: NativeHealthspanTrendKind.self) { kind in
                 NativeHealthspanTrendPage(kind: kind, points: result?.trend ?? [])
+                    .nativeZoomDestination(fallback: .healthspanTrend(kind))
             }
             .background {
                 NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
