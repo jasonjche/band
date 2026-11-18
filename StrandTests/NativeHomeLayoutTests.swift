@@ -615,6 +615,56 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertEqual(NativeHomeLoadMetrics.publishedSnapshotsPerLoad, 1)
     }
 
+    func testPullToRefreshHoldsTheSpinnerWhenAlreadyCaughtUp() {
+        XCTAssertEqual(NativeHomeSync.minimumVisible, 0.6, accuracy: 1e-9)
+        let now = Date(timeIntervalSince1970: 1_700_000_600)
+        XCTAssertEqual(
+            NativeHomeSync.remainingHold(
+                since: Date(timeIntervalSince1970: 1_700_000_000),
+                now: now
+            ),
+            0,
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(
+            NativeHomeSync.remainingHold(
+                since: Date(timeIntervalSince1970: 1_700_000_599.7),
+                now: now
+            ),
+            0.3,
+            accuracy: 1e-4
+        )
+    }
+
+    func testStrapStatusShowsSyncingWhilePullingOrBackfilling() {
+        XCTAssertEqual(
+            HomeStrapStatusLogic.mode(isPullRefreshing: true, backfilling: false, showSynced: false),
+            .syncing
+        )
+        XCTAssertEqual(
+            HomeStrapStatusLogic.mode(isPullRefreshing: false, backfilling: true, showSynced: true),
+            .syncing
+        )
+        XCTAssertEqual(
+            HomeStrapStatusLogic.mode(isPullRefreshing: false, backfilling: false, showSynced: true),
+            .synced
+        )
+        XCTAssertEqual(
+            HomeStrapStatusLogic.mode(isPullRefreshing: false, backfilling: false, showSynced: false),
+            .idle
+        )
+        XCTAssertEqual(HomeStrapStatusLogic.syncedHold, 1.2, accuracy: 1e-9)
+    }
+
+    func testStressLaneIconsSitAboveThePlot() {
+        XCTAssertEqual(NativeStressLaneIcon.iconLane, 24, accuracy: 0.5)
+        XCTAssertEqual(NativeStressLaneIcon.iconOffsetY, 12, accuracy: 0.5)
+        XCTAssertEqual(NativeStressLaneIcon.iconCenterY(plotMinY: 0), -12, accuracy: 0.5)
+        XCTAssertEqual(NativeStressLaneIcon.iconCenterY(plotMinY: 24), 12, accuracy: 0.5)
+        XCTAssertLessThan(NativeStressLaneIcon.iconCenterY(plotMinY: 0), 0)
+        XCTAssertLessThan(NativeStressLaneIcon.iconCenterY(plotMinY: 24), 24)
+    }
+
     func testCalendarCellsPadToSixWeeksAndHonorFirstWeekday() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

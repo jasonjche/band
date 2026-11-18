@@ -1689,10 +1689,17 @@ struct NativeStressDayPlot: View {
 }
 
 enum NativeStressLaneIcon {
+    /// Reserved whitespace above the Chart plot so sleep/activity glyphs sit off the 3.0 line.
     static let iconLane: CGFloat = 24
+    /// Center of the glyph, relative to `plot.minY`. Always negative so the icon never lands on the plot.
+    static let iconOffsetY: CGFloat = 12
     static let accentLow: Double = 2.94
     static let accentHigh: Double = 3.0
     static let minSeparation: CGFloat = 22
+
+    static func iconCenterY(plotMinY: CGFloat) -> CGFloat {
+        plotMinY - iconOffsetY
+    }
 
     enum Kind: Equatable {
         case sleep
@@ -1804,7 +1811,7 @@ private struct NativeStressLaneOverlay: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(onTap == nil)
-                        .position(x: row.x, y: max(22, plot.minY - 11))
+                        .position(x: row.x, y: NativeStressLaneIcon.iconCenterY(plotMinY: plot.minY))
                         .accessibilityLabel(row.item.kind == .sleep ? "Sleep" : "Activity")
                         .accessibilityHint("Edit beginning and end times")
                     }

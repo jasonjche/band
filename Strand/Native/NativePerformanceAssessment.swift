@@ -49,6 +49,7 @@ struct NativePerformanceAssessmentView: View {
                 Text("Monthly").tag(PerformanceAssessment.Kind.monthly)
             }
             .pickerStyle(.segmented)
+            .padding(.bottom, NativeReportsLayout.pickerBottom)
 
             if let report = model.report(starting: selectedStart) {
                 reportBody(report, history: model.history)
@@ -92,7 +93,7 @@ struct NativePerformanceAssessmentView: View {
             NativeChrome.section("Averages")
             NativeChrome.panel {
                 ForEach(Array(report.averages.enumerated()), id: \.element.metric) { index, row in
-                    if index > 0 { Divider() }
+                    if index > 0 { Divider().padding(.leading, NativeReportsLayout.dividerLeading) }
                     NativeReportsAverageRow(row: row)
                 }
             }
@@ -103,7 +104,7 @@ struct NativePerformanceAssessmentView: View {
             NativeChrome.section("Workouts")
             NativeChrome.panel {
                 ForEach(Array(report.sports.enumerated()), id: \.element.sport) { index, sport in
-                    if index > 0 { Divider() }
+                    if index > 0 { Divider().padding(.leading, NativeReportsLayout.dividerLeading) }
                     NativeContributorRow(
                         symbol: "figure.run",
                         title: sport.sport,
@@ -124,7 +125,7 @@ struct NativePerformanceAssessmentView: View {
                     if index > 0 { Divider() }
                     Text(line)
                         .font(.body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, minHeight: NativeReportsLayout.rowMinHeight, alignment: .leading)
                 }
             }
         }
@@ -135,6 +136,7 @@ struct NativePerformanceAssessmentView: View {
                 ForEach(Array(report.drivers.enumerated()), id: \.element.behaviorId) { index, driver in
                     if index > 0 { Divider() }
                     NativePerformanceDriverRow(driver: driver, kind: report.window.kind)
+                        .frame(minHeight: NativeReportsLayout.rowMinHeight, alignment: .leading)
                 }
             }
         }
@@ -146,7 +148,7 @@ struct NativePerformanceAssessmentView: View {
                     if index > 0 { Divider() }
                     Text(line)
                         .font(.body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, minHeight: NativeReportsLayout.rowMinHeight, alignment: .leading)
                 }
             }
         }
@@ -174,6 +176,8 @@ struct NativePerformanceAssessmentView: View {
                                     .foregroundStyle(NativeTokens.strain)
                             }
                         }
+                        .frame(minHeight: NativeReportsLayout.rowMinHeight)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -209,6 +213,12 @@ struct NativePerformanceAssessmentView: View {
         }
         WeeklyReportNotifier.evaluate(asOfDay: asOf, enabled: notifyReady)
     }
+}
+
+enum NativeReportsLayout {
+    static let pickerBottom: CGFloat = NoopMetrics.space3
+    static let rowMinHeight: CGFloat = 48
+    static let dividerLeading: CGFloat = 42
 }
 
 struct NativePerformanceAssessmentModel: Equatable {

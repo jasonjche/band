@@ -87,6 +87,7 @@ final class NativeHealthRangeTests: XCTestCase {
             NativeHealthMonitorMath.slots(from: NativeHealthRange.Report(vitals: [])).map(\.columnSpan),
             [1, 1, 1, 1, 2]
         )
+        XCTAssertEqual(NativeHealthMonitorTileLayout.headerMinHeight, 34, accuracy: 0.5)
         XCTAssertEqual(NativeHealthMonitorMath.zoneLabel(0), "Zone 0")
         XCTAssertEqual(NativeHealthMonitorMath.nightsRemaining(worn: 1), 6)
         XCTAssertNil(NativeHealthMonitorMath.nightsRemaining(worn: 7))

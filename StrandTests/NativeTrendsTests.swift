@@ -138,6 +138,8 @@ final class NativeTrendsTests: XCTestCase {
         XCTAssertEqual(NativeHealthItem.trends.subtitle, "All metrics over weeks and months")
         XCTAssertEqual(NativeHealthItem.trends.icon, "chart.xyaxis.line")
         XCTAssertEqual(NativeHealthItem.allCases.filter { $0 == .trends }.count, 1)
+        XCTAssertGreaterThanOrEqual(NativeTrendsPageLayout.pickerBottom, NativeTrendsPageLayout.pickerTop)
+        XCTAssertGreaterThanOrEqual(NativeTrendsPageLayout.pickerBottom, 16)
     }
 
     func testHRVNightsWindowCapsAtTheSixtyDayBaseline() {

@@ -101,6 +101,12 @@ struct NativeHealthTab: View {
     }
 }
 
+enum NativeHealthLinksLayout {
+    static let rowMinHeight: CGFloat = 48
+    static let dividerLeading: CGFloat = 42
+    static let rowVerticalPadding: CGFloat = 6
+}
+
 /// Grouped rows that push a Health destination onto the tab's stack.
 struct NativeHealthLinks: View {
     var items: [NativeHealthItem]
@@ -112,7 +118,7 @@ struct NativeHealthLinks: View {
         NativeChrome.panel {
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element) { index, item in
-                    if index > 0 { Divider().padding(.leading, 41) }
+                    if index > 0 { Divider().padding(.leading, NativeHealthLinksLayout.dividerLeading) }
                     Button {
                         onTap()
                         continuityID.select(.healthItem(item))
@@ -124,6 +130,8 @@ struct NativeHealthLinks: View {
                                 .font(.footnote.weight(.semibold))
                                 .foregroundStyle(.tertiary)
                         }
+                        .padding(.vertical, NativeHealthLinksLayout.rowVerticalPadding)
+                        .frame(minHeight: NativeHealthLinksLayout.rowMinHeight)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
