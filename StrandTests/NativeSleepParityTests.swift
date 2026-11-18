@@ -309,7 +309,8 @@ final class NativeSleepParityTests: XCTestCase {
         guard #available(macOS 13.1, *) else {
             throw XCTSkip("ImageRenderer.nsImage needs macOS 13.1+")
         }
-        let dir = URL(fileURLWithPath: "/tmp/native-snaps", isDirectory: true)
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("native-snaps", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let previous = NSApp.appearance
         defer { NSApp.appearance = previous }

@@ -138,7 +138,7 @@ final class NativeRouteScaleTests: XCTestCase {
             effortScale: .whoop,
             now: Date(timeIntervalSince1970: 1_763_280_000)
         )
-        XCTAssertEqual(model.sleepStages.map(\.name), ["Light", "Deep", "REM"])
+        XCTAssertEqual(model.sleepStages.map(\.name), ["Awake", "Light", "Deep", "REM"])
         XCTAssertEqual(model.sleepStages.first { $0.name == "Deep" }?.typical ?? -1, 80, accuracy: 0.1)
         XCTAssertEqual(model.sleep.rows.first?.title, "Hours vs. Needed")
     }
@@ -286,7 +286,7 @@ final class NativeRouteScaleTests: XCTestCase {
         XCTAssertEqual(model.sleepHours, NativeScoreMath.duration(410))
         XCTAssertEqual(model.asleepMinutes ?? -1, 410, accuracy: 0.1)
         XCTAssertEqual(model.sleepBlock, model.sleepHours)
-        XCTAssertEqual(model.sleepStages.map(\.name), ["Light", "Deep", "REM"])
+        XCTAssertEqual(model.sleepStages.map(\.name), ["Awake", "Light", "Deep", "REM"])
         XCTAssertEqual(model.sleepStages.first { $0.name == "Light" }?.minutes ?? -1, 250, accuracy: 0.1)
         XCTAssertEqual(model.sleepStages.first { $0.name == "Deep" }?.minutes ?? -1, 70, accuracy: 0.1)
         XCTAssertEqual(model.sleepStages.first { $0.name == "REM" }?.minutes ?? -1, 90, accuracy: 0.1)
@@ -300,7 +300,7 @@ final class NativeRouteScaleTests: XCTestCase {
         XCTAssertEqual(
             hoursRow.value,
             NativeScoreMath.percent(
-                scored.totalSleepMin.flatMap { asleep in
+                model.asleepMinutes.flatMap { asleep in
                     let need = scores.byDay[todayKey]?.sleepNeed
                     return (need ?? 0) > 0 ? asleep / need! * 100 : nil
                 }
@@ -355,10 +355,10 @@ final class NativeRouteScaleTests: XCTestCase {
             now: Date(timeIntervalSince1970: 1_763_280_000),
             importedSleep: imported
         )
-        let hours = SleepModel.hoursVsNeededSeries(days: [prior, today], importedSleep: imported)
+        let scores = NativeBandScores.resolve(days: [prior, today], sleeps: [], importedSleep: imported)
         XCTAssertEqual(
             model.sleep.rows.first { $0.title == "Hours vs. Needed" }?.value,
-            NativeScoreMath.percent(hours.series.last)
+            NativeScoreMath.percent(scores.byDay[todayKey]?.hoursVsNeeded)
         )
         let cons = SleepModel.consistencySeries(
             days: [prior, today], sleeps: [], importedSleep: imported

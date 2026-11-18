@@ -181,6 +181,7 @@ struct SleepModel {
     private static let shortDayFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = AppLanguage.activeLocale
+        f.timeZone = TimeZone(identifier: "UTC")
         f.setLocalizedDateFormatFromTemplate("dMMM")
         return f
     }()
