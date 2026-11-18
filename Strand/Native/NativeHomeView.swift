@@ -124,6 +124,10 @@ struct NativeHomeView: View {
     @State private var activityItems: [HomeActivityItem] = []
     @State private var journalDots: [HomeJournalDot] = []
     @State private var journalHasEntry = false
+    @State private var journalFetched = false
+    @State private var showingMorningJournal = false
+    @AppStorage(NativeMorningJournal.storageKey) private var promptedJournalDay = ""
+    @Environment(\.scenePhase) private var scenePhase
     @State private var calendarRecovery: [String: Double] = [:]
     @State private var weekRecovery: [NativeDayPoint] = []
     @State private var weekStrain: [NativeDayPoint] = []
@@ -201,6 +205,14 @@ struct NativeHomeView: View {
                     HomeDashboardStore.save(ids)
                     dashboardJSON = encoded
                 }
+            }
+            .sheet(isPresented: $showingMorningJournal) {
+                NavigationStack {
+                    NativeJournalView(startsLogging: true)
+                }
+            }
+            .onChangeCompat(of: scenePhase) { phase in
+                if phase == .active { presentMorningJournalIfNeeded() }
             }
             .toolbar {
                 #if os(macOS)
@@ -337,6 +349,7 @@ struct NativeHomeView: View {
 
         workouts = nextWorkouts
         journalEntries = nextJournal
+        journalFetched = true
         vo2max = nextVO2
         sampleHours = series
         stressExtraExclusions = extraExclusions
@@ -403,6 +416,26 @@ struct NativeHomeView: View {
         sleepStreak = snapshot.sleepStreak
         dashboardItems = snapshot.dashboardItems
         NativeHomeLoadMetrics.modelRebuilds += 1
+        presentMorningJournalIfNeeded()
+    }
+
+    private func presentMorningJournalIfNeeded() {
+        let sleepPresent = repoHandle?.sleeps.contains {
+            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
+                == selectedKey
+        } ?? false
+        guard NativeMorningJournal.shouldPresent(
+            now: Date(),
+            selectedKey: selectedKey,
+            loaded: loaded,
+            storeEmpty: storeEmpty,
+            journalFetched: journalFetched,
+            hasTodayEntry: journalHasEntry,
+            promptedDay: promptedJournalDay,
+            sleepPresent: sleepPresent
+        ) else { return }
+        promptedJournalDay = selectedKey
+        showingMorningJournal = true
     }
 
     /// Live day strain via `BandStrain` on today's HR, then `NativeStrain.day` with the stored row.

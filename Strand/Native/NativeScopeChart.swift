@@ -291,7 +291,7 @@ private struct NativeScopePlotHost: View {
     var usesHours: Bool
     var hourBars: Bool
     var previewTime: Date?
-    var scrub: NativeScopeScrub
+    @ObservedObject var scrub: NativeScopeScrub
     @Binding var scrollDate: Date?
     var chartTitle: String
     var chartUnit: String
@@ -853,7 +853,7 @@ private struct NativeScopeHourLineChart: View {
     var format: (Double) -> String
     var calendar: Calendar
     var previewTime: Date?
-    var scrub: NativeScopeScrub
+    @ObservedObject var scrub: NativeScopeScrub
     var timeBinding: Binding<Date?>
 
     var body: some View {

@@ -216,6 +216,30 @@ final class NativeSleepParityTests: XCTestCase {
         XCTAssertEqual(NativeSleepEfficiency.wakeEvents(in: []), 0)
     }
 
+    func testSleepStressUsesCalmAsleepHRInsteadOfTroughAndSkipsAwake() throws {
+        let start = 1_700_000_000
+        let end = start + 4 * 3600
+        var samples: [HRSample] = []
+        for ts in stride(from: start, to: end, by: 5) {
+            let bpm = ts < start + 1800 ? 90 : 58
+            samples.append(HRSample(ts: ts, bpm: bpm))
+        }
+        let trough = BandStress.Baselines(wakeRestingHR: 40, sleepRestingHR: 40, rmssd: nil)
+        let awake = NativeSleepStress.awakeSpans(from: #"[{"start":\#(start),"end":\#(start+1800),"stage":"wake"},{"start":\#(start+1800),"end":\#(end),"stage":"light"}]"#)
+        XCTAssertEqual(awake.count, 1)
+        let model = try XCTUnwrap(NativeSleepStress.make(
+            hr: samples, startTs: start, endTs: end, baselines: trough,
+            awakeSpans: awake
+        ))
+        let peak = model.points.map(\.value).max() ?? 9
+        XCTAssertLessThan(peak, 1.2, "calm asleep HR must not be scored against the 5-minute trough")
+        XCTAssertTrue(model.points.allSatisfy { $0.value < 2 })
+        let withAwake = try XCTUnwrap(NativeSleepStress.make(
+            hr: samples, startTs: start, endTs: end, baselines: trough
+        ))
+        XCTAssertGreaterThan(withAwake.points.map(\.value).max() ?? 0, peak)
+    }
+
     func testSleepStressHidesWithoutOvernightHRAndBandsUseShare() {
         XCTAssertNil(NativeSleepStress.make(hr: [], startTs: 1, endTs: 2))
         let model = NativeSleepSnapshot.stress

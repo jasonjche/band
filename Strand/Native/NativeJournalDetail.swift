@@ -228,3 +228,120 @@ enum NativeJournalIdentity {
         return nil
     }
 }
+
+/// Prefill for the Journal editor. `persisted*` is what is already saved for `dayKey`;
+/// `seeded*` is what the form shows (yesterday's answers when today is empty).
+enum NativeJournalDraft {
+    struct Seed: Equatable {
+        var yes: [String: Bool]
+        var numeric: [String: Double]
+        var times: [String: Date]
+        var persistedYes: [String: Bool]
+        var persistedNumeric: [String: Double]
+        var persistedTimes: [String: Date]
+    }
+
+    static func seed(
+        entries: [JournalEntry],
+        nativeAnswers: [String: Bool],
+        nativeNumeric: [String: Double],
+        dayKey: String,
+        selectedDay: Date,
+        calendar: Calendar = .current
+    ) -> Seed {
+        let winning = NativeJournalIdentity.winningEntries(entries)
+        let today = answers(
+            from: winning, nativeAnswers: nativeAnswers, nativeNumeric: nativeNumeric,
+            dayKey: dayKey, selectedDay: selectedDay, calendar: calendar
+        )
+        let hasSaved = !today.yes.isEmpty || !today.numeric.isEmpty || !today.times.isEmpty
+        if hasSaved {
+            return Seed(
+                yes: today.yes, numeric: today.numeric, times: today.times,
+                persistedYes: today.yes, persistedNumeric: today.numeric, persistedTimes: today.times
+            )
+        }
+        guard let previous = winning.map(\.day).filter({ $0 < dayKey }).max() else {
+            return Seed(
+                yes: [:], numeric: [:], times: [:],
+                persistedYes: [:], persistedNumeric: [:], persistedTimes: [:]
+            )
+        }
+        let carried = answers(
+            from: winning, nativeAnswers: [:], nativeNumeric: [:],
+            dayKey: previous, selectedDay: selectedDay, calendar: calendar
+        )
+        return Seed(
+            yes: carried.yes, numeric: carried.numeric, times: carried.times,
+            persistedYes: [:], persistedNumeric: [:], persistedTimes: [:]
+        )
+    }
+
+    static func shouldWrite(
+        key: String,
+        draftYes: [String: Bool],
+        draftNumeric: [String: Double],
+        draftTimes: [String: Date],
+        persistedYes: [String: Bool],
+        persistedNumeric: [String: Double],
+        persistedTimes: [String: Date]
+    ) -> Bool {
+        draftYes[key] != persistedYes[key]
+            || draftNumeric[key] != persistedNumeric[key]
+            || draftTimes[key] != persistedTimes[key]
+    }
+
+    private static func answers(
+        from entries: [JournalEntry],
+        nativeAnswers: [String: Bool],
+        nativeNumeric: [String: Double],
+        dayKey: String,
+        selectedDay: Date,
+        calendar: Calendar
+    ) -> (yes: [String: Bool], numeric: [String: Double], times: [String: Date]) {
+        var yes: [String: Bool] = [:]
+        var qty: [String: Double] = [:]
+        var time: [String: Date] = [:]
+        for entry in entries where entry.day == dayKey {
+            let key = JournalCatalogStore.canonicalId(for: entry.question)
+            yes[key] = entry.answeredYes
+            if let value = entry.numericValue { qty[key] = value }
+            if let minutes = NativeJournalNotes.decode(entry.notes).timeMinutes {
+                time[key] = NativeJournalNotes.date(minutes: minutes, on: selectedDay, calendar: calendar)
+            }
+        }
+        for (question, value) in nativeAnswers {
+            yes[JournalCatalogStore.canonicalId(for: question)] = value
+        }
+        for (question, value) in nativeNumeric {
+            qty[JournalCatalogStore.canonicalId(for: question)] = value
+        }
+        return (yes, qty, time)
+    }
+}
+
+enum NativeMorningJournal {
+    static let storageKey = "native.morningJournal.promptedDay"
+    static let earliestHour = 6
+
+    static func shouldPresent(
+        now: Date,
+        selectedKey: String,
+        loaded: Bool,
+        storeEmpty: Bool,
+        journalFetched: Bool,
+        hasTodayEntry: Bool,
+        promptedDay: String?,
+        sleepPresent: Bool,
+        calendar: Calendar = .current,
+        isTestProcess: Bool = NSClassFromString("XCTestCase") != nil
+    ) -> Bool {
+        guard !isTestProcess else { return false }
+        guard loaded, !storeEmpty, journalFetched else { return false }
+        guard selectedKey == NativeDayLogic.logicalToday(now: now) else { return false }
+        guard !hasTodayEntry else { return false }
+        guard promptedDay != selectedKey else { return false }
+        if sleepPresent { return true }
+        return calendar.component(.hour, from: now) >= earliestHour
+    }
+}

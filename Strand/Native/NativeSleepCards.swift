@@ -429,16 +429,15 @@ private struct NativeSleepStressHost: View, Equatable {
             NativeCardHeader(
                 title: "Sleep Stress",
                 symbol: "waveform.path",
-                tint: NativePaint.sleep(style),
+                tint: NativePaint.stressBand(average, style: style),
                 chevron: onOpen != nil
             )
             NativeSleepStressHero(scrub: scrub, points: model.points, average: average)
                 .frame(height: 76, alignment: .topLeading)
             NativeSleepStressPlot(
                 points: model.points,
-                tint: NativePaint.sleep(style),
-                scrub: scrub,
-                plot: plot
+                plot: plot,
+                scrub: scrub
             )
             .frame(height: 160)
             VStack(spacing: 0) {
@@ -491,17 +490,14 @@ private struct NativeSleepStressHero: View {
 
 struct NativeSleepStressPlot: View {
     var points: [NativeHourPoint]
-    var tint: Color
-    var scrub: NativeScopeScrub? = nil
     var plot: NativeSleepStressPlotModel? = nil
-    @State private var localScrub = NativeScopeScrub()
-
-    private var box: NativeScopeScrub { scrub ?? localScrub }
+    @ObservedObject var scrub: NativeScopeScrub
+    @Environment(\.nativeStyle) private var style
 
     private var timeBinding: Binding<Date?> {
         Binding(
-            get: { box.time },
-            set: { box.time = $0 }
+            get: { scrub.time },
+            set: { scrub.time = $0 }
         )
     }
 
@@ -511,14 +507,21 @@ struct NativeSleepStressPlot: View {
 
     var body: some View {
         let model = resolved
+        let segments = NativeStressMonitorMath.segments(model.domainPoints)
         let marks = Chart {
-            ForEach(model.domainPoints) { point in
-                LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
-                    .foregroundStyle(tint)
+            ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
+                ForEach(segment) { point in
+                    LineMark(
+                        x: .value("Time", point.time),
+                        y: .value("Stress", point.value),
+                        series: .value("Segment", index)
+                    )
+                    .foregroundStyle(NativeStressMonitorMath.lineGradient(style: style, values: segment.map(\.value)))
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2.5))
                     .accessibilityLabel(model.pointTimeText[point.time.timeIntervalSince1970] ?? NativeScopeFormat.time(point.time))
                     .accessibilityValue(String(format: "%.1f", point.value))
+                }
             }
         }
         .chartYScale(domain: 0...3)
@@ -553,7 +556,7 @@ struct NativeSleepStressPlot: View {
                 marks
                     .chartXSelection(value: timeBinding)
                     .chartOverlay { proxy in
-                        NativeSleepStressMarker(proxy: proxy, points: model.domainPoints, tint: tint, scrub: box)
+                        NativeSleepStressMarker(proxy: proxy, points: model.domainPoints, scrub: scrub)
                             .clipped()
                     }
             } else {
@@ -566,24 +569,33 @@ struct NativeSleepStressPlot: View {
 private struct NativeSleepStressMarker: View {
     var proxy: ChartProxy
     var points: [NativeHourPoint]
-    var tint: Color
     @ObservedObject var scrub: NativeScopeScrub
+    @Environment(\.nativeStyle) private var style
 
     var body: some View {
-        GeometryReader { _ in
+        GeometryReader { geo in
             if let time = scrub.time,
                let point = NativeChartScrubMath.nearestHour(
                 to: time,
                 in: points,
                 maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
                ),
-               let x = proxy.position(forX: point.time),
-               let y = proxy.position(forY: point.value) {
-                NativeSelectedVertex(tint: tint)
-                    .position(x: x, y: y)
+               let xRel = proxy.position(forX: point.time),
+               let yRel = proxy.position(forY: point.value) {
+                let origin = plotOrigin(geo: geo)
+                let placed = NativeChartScrubMath.overlayPoint(plotOrigin: origin, x: xRel, y: yRel)
+                NativeSelectedVertex(tint: NativePaint.stressBand(point.value, style: style))
+                    .position(x: placed.x, y: placed.y)
             }
         }
         .allowsHitTesting(false)
+    }
+
+    private func plotOrigin(geo: GeometryProxy) -> CGPoint {
+        if #available(iOS 17.0, macOS 14.0, *), let frame = proxy.plotFrame {
+            return geo[frame].origin
+        }
+        return .zero
     }
 }
 

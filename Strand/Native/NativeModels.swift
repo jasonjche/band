@@ -246,8 +246,7 @@ enum NativeDay {
         let recoveryKey: String? = todayKey
         let hrvDay = today
         let sleepDay = today
-        let sleepKey = sleepDay?.day
-        let sleepScoreRow = sleepKey.flatMap { scores.byDay[$0] }
+        let sleepScoreRow = scores.byDay[todayKey]
         let prior = Array(days.filter { $0.day < todayKey }.suffix(30))
         let source = days.last { $0.day == recoveryKey } ?? hrvDay ?? sleepDay
         let recovery = recoveryKey.flatMap { scores.byDay[$0]?.recovery }
@@ -260,12 +259,10 @@ enum NativeDay {
         let sleepScore = sleepScoreRow?.sleepPerformance
         let sleepStart = sleepSession.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
         let sleepEnd = sleepSession.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
-        let asleepMinutes = NativeDayLogic.asleepMinutes(
-            light: sleepDay?.lightMin, deep: sleepDay?.deepMin, rem: sleepDay?.remMin,
-            totalSleepMin: sleepDay?.totalSleepMin
-        )
-        let inBedMinutes = NativeDayLogic.inBedMinutes(start: sleepStart, end: sleepEnd)
-        let sleepStages = stages(sleepDay, prior: prior, asleep: asleepMinutes, inBed: inBedMinutes)
+        let night = NativeBandScores.nightSleep(metric: sleepDay, session: sleepSession)
+        let asleepMinutes = night.asleep
+        let inBedMinutes = NativeDayLogic.inBedMinutes(start: sleepStart, end: sleepEnd) ?? night.inbed
+        let sleepStages = stages(sleepDay, prior: prior, asleep: asleepMinutes, inBed: inBedMinutes, night: night)
         let restorative = restorative(from: sleepStages)
         let sleepDuration = asleepMinutes.map { NativeDayLogic.durationText($0) }
 
@@ -446,12 +443,17 @@ enum NativeDay {
     private static func metric(_ title: String, _ value: Double?, _ prior: [Double], _ unit: String,
                                _ symbol: String, _ route: TabRoute, decimals: Int = 0,
                                grouped: Bool = false) -> NativeScore.Row {
-        NativeScore.Row(
+        let key: String? = {
+            if case .metric(let metricKey) = route { return metricKey }
+            return nil
+        }()
+        let higherIsBetter = key.flatMap(NativeMetricDirection.higherIsBetter) ?? true
+        return NativeScore.Row(
             title: title,
             value: NativeScoreMath.labeled(value, unit: unit, decimals: decimals, grouped: grouped),
             prior: NativeScoreMath.priorText(prior, unit: unit, decimals: decimals, grouped: grouped),
             symbol: symbol,
-            delta: NativeScoreMath.delta(value, prior),
+            delta: NativeScoreMath.delta(value, prior, higherIsBetter: higherIsBetter),
             route: route
         )
     }
@@ -515,11 +517,12 @@ enum NativeDay {
     }
 
     private static func stages(_ day: DailyMetric?, prior: [DailyMetric],
-                               asleep: Double?, inBed: Double?) -> [NativeStage] {
+                               asleep: Double?, inBed: Double?,
+                               night: NativeBandScores.NightSleep) -> [NativeStage] {
         var rows = [
-            NativeStage(name: "Light", minutes: day?.lightMin, typical: NativeScoreMath.mean(prior.compactMap(\.lightMin)), tint: .blue),
-            NativeStage(name: "Deep", minutes: day?.deepMin, typical: NativeScoreMath.mean(prior.compactMap(\.deepMin)), tint: .indigo),
-            NativeStage(name: "REM", minutes: day?.remMin, typical: NativeScoreMath.mean(prior.compactMap(\.remMin)), tint: .purple),
+            NativeStage(name: "Light", minutes: night.light ?? day?.lightMin, typical: NativeScoreMath.mean(prior.compactMap(\.lightMin)), tint: .blue),
+            NativeStage(name: "Deep", minutes: night.deep ?? day?.deepMin, typical: NativeScoreMath.mean(prior.compactMap(\.deepMin)), tint: .indigo),
+            NativeStage(name: "REM", minutes: night.rem ?? day?.remMin, typical: NativeScoreMath.mean(prior.compactMap(\.remMin)), tint: .purple),
         ]
         if let inBed, let asleep, inBed > asleep {
             let awake = inBed - asleep

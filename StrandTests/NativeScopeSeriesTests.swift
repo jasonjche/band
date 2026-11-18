@@ -250,6 +250,13 @@ final class NativeScopeSeriesTests: XCTestCase {
         XCTAssertEqual(rhrDown.symbol, "arrow.down")
         XCTAssertEqual(rhrDown.tint, NativeTokens.positiveDelta)
 
+        let scoreDown = NativeScoreMath.delta(48, [52, 53, 51], higherIsBetter: false)
+        XCTAssertEqual(scoreDown.symbol, "arrow.down")
+        XCTAssertEqual(scoreDown.tint, NativeTokens.positiveDelta)
+        let scoreUp = NativeScoreMath.delta(58, [52, 53, 51], higherIsBetter: false)
+        XCTAssertEqual(scoreUp.symbol, "arrow.up")
+        XCTAssertEqual(scoreUp.tint, NativeTokens.negativeDelta)
+
         let flat = NativeMetricDirection.delta(current: 50, previous: 50.5, higherIsBetter: true)
         XCTAssertEqual(flat, .flat)
     }

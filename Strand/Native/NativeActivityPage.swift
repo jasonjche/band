@@ -945,7 +945,7 @@ private struct NativeActivityHRPlot: View {
     var lineTint: Color
     var zoneSet: HRZoneSet?
     var selectedZone: Int?
-    var scrub: NativeScopeScrub
+    @ObservedObject var scrub: NativeScopeScrub
     var onClearZone: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 

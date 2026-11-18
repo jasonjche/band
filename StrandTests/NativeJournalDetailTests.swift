@@ -182,4 +182,71 @@ final class NativeJournalDetailTests: XCTestCase {
 
         XCTAssertTrue(NativeJournalSections.make([nap, read, alcohol], query: "  ").map(\.group) == sections.map(\.group))
     }
+
+    func testDraftCarriesPreviousDayWhenTodayIsEmpty() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let today = calendar.date(from: DateComponents(year: 2026, month: 11, day: 17))!
+        let notes = NativeJournalNotes.encode(timeMinutes: 21 * 60 + 30, note: nil)
+        let yesterday = JournalEntry(
+            day: "2026-11-16",
+            question: "Did you drink any alcohol?",
+            answeredYes: true,
+            notes: notes,
+            numericValue: 2
+        )
+        let seed = NativeJournalDraft.seed(
+            entries: [yesterday],
+            nativeAnswers: [:],
+            nativeNumeric: [:],
+            dayKey: "2026-11-17",
+            selectedDay: today,
+            calendar: calendar
+        )
+        let key = JournalCatalogStore.canonicalId(for: "Did you drink any alcohol?")
+        XCTAssertEqual(seed.yes[key], true)
+        XCTAssertEqual(seed.numeric[key] ?? -1, 2, accuracy: 0.01)
+        XCTAssertEqual(
+            NativeJournalNotes.minutes(from: seed.times[key] ?? today, calendar: calendar),
+            21 * 60 + 30
+        )
+        XCTAssertTrue(seed.persistedYes.isEmpty)
+        XCTAssertTrue(NativeJournalDraft.shouldWrite(
+            key: key, draftYes: seed.yes, draftNumeric: seed.numeric, draftTimes: seed.times,
+            persistedYes: seed.persistedYes, persistedNumeric: seed.persistedNumeric,
+            persistedTimes: seed.persistedTimes
+        ))
+        XCTAssertFalse(NativeJournalDraft.shouldWrite(
+            key: key, draftYes: seed.yes, draftNumeric: seed.numeric, draftTimes: seed.times,
+            persistedYes: seed.yes, persistedNumeric: seed.numeric, persistedTimes: seed.times
+        ))
+    }
+
+    func testMorningJournalPromptGatesHourSleepAndTests() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let morning = calendar.date(from: DateComponents(year: 2026, month: 11, day: 17, hour: 7))!
+        let predawn = calendar.date(from: DateComponents(year: 2026, month: 11, day: 17, hour: 4, minute: 15))!
+        let today = NativeDayLogic.logicalToday(now: morning)
+        XCTAssertTrue(NativeMorningJournal.shouldPresent(
+            now: morning, selectedKey: today, loaded: true, storeEmpty: false,
+            journalFetched: true, hasTodayEntry: false, promptedDay: nil,
+            sleepPresent: false, calendar: calendar, isTestProcess: false
+        ))
+        XCTAssertFalse(NativeMorningJournal.shouldPresent(
+            now: predawn, selectedKey: NativeDayLogic.logicalToday(now: predawn),
+            loaded: true, storeEmpty: false, journalFetched: true, hasTodayEntry: false,
+            promptedDay: nil, sleepPresent: false, calendar: calendar, isTestProcess: false
+        ))
+        XCTAssertTrue(NativeMorningJournal.shouldPresent(
+            now: predawn, selectedKey: NativeDayLogic.logicalToday(now: predawn),
+            loaded: true, storeEmpty: false, journalFetched: true, hasTodayEntry: false,
+            promptedDay: nil, sleepPresent: true, calendar: calendar, isTestProcess: false
+        ))
+        XCTAssertFalse(NativeMorningJournal.shouldPresent(
+            now: morning, selectedKey: today, loaded: true, storeEmpty: false,
+            journalFetched: true, hasTodayEntry: false, promptedDay: nil,
+            sleepPresent: true, calendar: calendar, isTestProcess: true
+        ))
+    }
 }

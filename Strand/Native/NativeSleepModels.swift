@@ -39,10 +39,13 @@ enum NativeSleepNeed {
             return nil
         }
         let metric = days.last { $0.day == dayKey }
-        let hours = NativeDayLogic.asleepMinutes(
-            light: metric?.lightMin, deep: metric?.deepMin, rem: metric?.remMin,
-            totalSleepMin: metric?.totalSleepMin
-        )
+        let session = sleeps
+            .filter {
+                NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
+            }
+            .sorted { ($0.endTs - $0.effectiveStartTs) > ($1.endTs - $1.effectiveStartTs) }
+            .first
+        let hours = NativeBandScores.nightSleep(metric: metric, session: session).asleep
         let percent = scored.hoursVsNeeded ?? hours.flatMap { asleep in
             asleep > 0 ? asleep / need * 100 : nil
         }
@@ -950,47 +953,75 @@ enum NativeSleepStress {
 
     /// With `baselines`, levels are `BandStress` (the same scale as the Stress Monitor and the
     /// High Sleep Stress row). Without, the legacy night-relative squash.
+    /// `DailyMetric.restingHr` is the night's 5-minute minimum trough, so sleep scoring uses
+    /// the calm-asleep quartile of overnight HR instead of that trough. Awake in-bed
+    /// segments and workout/recovery/activity exclusions are omitted; remaining minutes
+    /// are centred-smoothed with the Stress Monitor's 15-minute window.
     static func make(hr: [HRSample], startTs: Int, endTs: Int,
-                     baselines: BandStress.Baselines? = nil) -> Model? {
-        let window = SleepStressShare.windowSeconds
-        guard endTs > startTs, window > 0, !hr.isEmpty else { return nil }
+                     baselines: BandStress.Baselines? = nil,
+                     rmssdByBucket: [Int: Double] = [:],
+                     awakeSpans: [(start: Int, end: Int)] = [],
+                     exclusions: [BandStress.ExclusionSpan] = []) -> Model? {
+        let bucket = BandStress.bucketSeconds
+        guard endTs > startTs, bucket > 0, !hr.isEmpty else { return nil }
         var buckets: [Int: [Double]] = [:]
         for sample in hr where sample.ts >= startTs && sample.ts < endTs {
-            let idx = (sample.ts - startTs) / window
-            buckets[idx, default: []].append(Double(sample.bpm))
+            let ts = (sample.ts / bucket) * bucket
+            if isOmitted(ts, end: ts + bucket, awake: awakeSpans, exclusions: exclusions) { continue }
+            buckets[ts, default: []].append(Double(sample.bpm))
         }
         guard !buckets.isEmpty else { return nil }
-        let minN = SleepStressShare.minWindowHRSamples(windowSeconds: window)
+        let minN = max(2, SleepStressShare.minWindowHRSamples(windowSeconds: bucket))
         let keys = buckets.keys.sorted()
-        let meanHRs: [Double?] = keys.map { key in
+        let meanHRs: [(ts: Int, bpm: Double)] = keys.compactMap { key in
             let xs = buckets[key]!
-            return xs.count >= minN ? xs.reduce(0, +) / Double(xs.count) : nil
+            guard xs.count >= minN else { return nil }
+            return (key, xs.reduce(0, +) / Double(xs.count))
         }
-        let scored = meanHRs.compactMap { $0 }
-        guard !scored.isEmpty else { return nil }
-        let ref = calmReference(scored)
-        let sd = populationStd(scored, mean: scored.reduce(0, +) / Double(scored.count))
-        var points: [NativeHourPoint] = []
-        var levels: [Double?] = []
-        for (offset, mean) in zip(keys, meanHRs) {
-            guard let mean else {
-                levels.append(nil)
-                continue
-            }
+        guard !meanHRs.isEmpty else { return nil }
+        let sleepHR = calmReference(meanHRs.map(\.bpm))
+        let sleepBaselines: BandStress.Baselines? = {
+            guard let baselines else { return nil }
+            return BandStress.Baselines(
+                wakeRestingHR: baselines.wakeRestingHR,
+                sleepRestingHR: max(sleepHR, baselines.sleepRestingHR),
+                rmssd: baselines.rmssd
+            )
+        }()
+        let sd = populationStd(meanHRs.map(\.bpm), mean: meanHRs.map(\.bpm).reduce(0, +) / Double(meanHRs.count))
+        var scored: [(ts: Int, value: Double)] = []
+        scored.reserveCapacity(meanHRs.count)
+        for sample in meanHRs {
             let level: Double
-            if let baselines {
-                level = BandStress.score(bpm: mean, isAsleep: true, baselines: baselines)
+            if let sleepBaselines {
+                level = BandStress.score(
+                    bpm: sample.bpm,
+                    rmssd: rmssdByBucket[sample.ts],
+                    isAsleep: true,
+                    baselines: sleepBaselines
+                )
             } else {
-                let raw = sd > 0.0001 ? (mean - ref) / sd : 0
+                let raw = sd > 0.0001 ? (sample.bpm - sleepHR) / sd : 0
                 level = min(max(3.0 / (1.0 + exp(-raw)), 0), 3)
             }
-            levels.append(level)
-            let time = Date(timeIntervalSince1970: TimeInterval(startTs + offset * window + window / 2))
-            points.append(NativeHourPoint(time: time, value: level))
+            scored.append((sample.ts, level))
         }
+        let smoothed = BandStress.smoothCentered(
+            points: scored,
+            bucketSeconds: bucket,
+            radius: NativeHomeCharts.stressDisplayRadius
+        )
+        guard !smoothed.isEmpty else { return nil }
+        let points = smoothed.map {
+            NativeHourPoint(
+                time: Date(timeIntervalSince1970: TimeInterval($0.ts + bucket / 2)),
+                value: $0.value
+            )
+        }
+        let levels: [Double?] = points.map { Optional($0.value) }
         guard let share = SleepStressShare.percent(levels: levels) else { return nil }
-        let scoredLevels = levels.compactMap { $0 }
-        let windowMin = Double(window) / 60
+        let scoredLevels = points.map(\.value)
+        let windowMin = Double(bucket) / 60
         func band(_ title: String, predicate: (Double) -> Bool) -> Band {
             let count = scoredLevels.filter(predicate).count
             let minutes = Double(count) * windowMin
@@ -1004,6 +1035,29 @@ enum NativeSleepStress {
             low: band("Low") { $0 < 1 },
             highShare: share
         )
+    }
+
+    static func awakeSpans(from stagesJSON: String?) -> [(start: Int, end: Int)] {
+        AnalyticsEngine.decodeStages(stagesJSON).compactMap { segment in
+            guard NativeSleepEfficiency.isAwake(segment.stage), segment.end > segment.start else {
+                return nil
+            }
+            return (segment.start, segment.end)
+        }
+    }
+
+    private static func isOmitted(
+        _ start: Int, end: Int,
+        awake: [(start: Int, end: Int)],
+        exclusions: [BandStress.ExclusionSpan]
+    ) -> Bool {
+        for span in awake where span.end > span.start && start < span.end && end > span.start {
+            return true
+        }
+        for span in exclusions where span.endTs > span.startTs && start < span.endTs && end > span.startTs {
+            return true
+        }
+        return false
     }
 
     private static func calmReference(_ xs: [Double]) -> Double {
@@ -1483,14 +1537,18 @@ struct NativeSleepPageDetail {
     ) -> [NativeSleepStageDetail] {
         let metric = days.last { $0.day == dayKey }
         let prior = Array(days.filter { $0.day < dayKey }.suffix(30))
-        let inBed = inBedMinutes(dayKey: dayKey, sleeps: sleeps)
-        let asleep = NativeDayLogic.asleepMinutes(
-            light: metric?.lightMin, deep: metric?.deepMin, rem: metric?.remMin,
-            totalSleepMin: metric?.totalSleepMin
-        )
+        let session = sleeps
+            .filter {
+                NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) == dayKey
+            }
+            .sorted { ($0.endTs - $0.effectiveStartTs) > ($1.endTs - $1.effectiveStartTs) }
+            .first
+        let night = NativeBandScores.nightSleep(metric: metric, session: session)
+        let inBed = inBedMinutes(dayKey: dayKey, sleeps: sleeps) ?? night.inbed
+        let asleep = night.asleep
         let scale = inBed ?? ((asleep ?? 0) + (awakeMinutes(day: metric) ?? 0))
         return NativeSleepStageKind.durationOrder.compactMap { kind in
-            let minutes = stageMinutes(kind, day: metric, inBed: inBed, asleep: asleep)
+            let minutes = stageMinutes(kind, day: metric, inBed: inBed, asleep: asleep, night: night)
             let typical = NativeScoreMath.mean(prior.compactMap { stageMinutes(kind, day: $0, inBed: nil, asleep: nil) })
             guard (minutes ?? 0) > 0 || (typical ?? 0) > 0 else { return nil }
             let percent: Double? = {
@@ -1535,14 +1593,16 @@ struct NativeSleepPageDetail {
         _ kind: NativeSleepStageKind,
         day: DailyMetric?,
         inBed: Double?,
-        asleep: Double?
+        asleep: Double?,
+        night: NativeBandScores.NightSleep? = nil
     ) -> Double? {
         switch kind {
-        case .light: return day?.lightMin.flatMap { $0 > 0 ? $0 : nil }
-        case .deep: return day?.deepMin.flatMap { $0 > 0 ? $0 : nil }
-        case .rem: return day?.remMin.flatMap { $0 > 0 ? $0 : nil }
+        case .light: return (night?.light ?? day?.lightMin).flatMap { $0 > 0 ? $0 : nil }
+        case .deep: return (night?.deep ?? day?.deepMin).flatMap { $0 > 0 ? $0 : nil }
+        case .rem: return (night?.rem ?? day?.remMin).flatMap { $0 > 0 ? $0 : nil }
         case .awake:
             if let inBed, let asleep, inBed > asleep { return inBed - asleep }
+            if let awake = night?.awake, awake > 0 { return awake }
             return awakeMinutes(day: day)
         }
     }

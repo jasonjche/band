@@ -2100,15 +2100,26 @@ final class Repository: ObservableObject {
     /// raw over each edited night's LOCKED bounds and rewrite the stage breakdown ONLY, never the user's
     /// bed/wake correction. Idempotent: a night already staged from raw re-derives to the same JSON
     /// (equality-skip, no write); a night edited-too-early heals the moment its raw arrives; a true
-    /// imported night (raw never dense) is left untouched (`restageFromRaw` returns nil). Reads/writes the
-    /// COMPUTED source , the same one `analyzeRecent` reads edited rows from. Returns the (possibly
-    /// refreshed) edited rows so the caller recomputes daily aggregates from the corrected stages.
+    /// imported night (raw never dense) is left untouched (`restageFromRaw` returns nil). Reads/writes
+    /// every computed namespace the Sleep tab can show (`rawComputedReadIds`), because IntelligenceEngine
+    /// banks computed nights under `"my-whoop-noop"` while a paired strap's `computedDeviceId` is
+    /// `"whoop-<uuid>-noop"`. Returns the (possibly refreshed) edited rows so the caller recomputes
+    /// daily aggregates from the corrected stages.
     func selfHealEditedStages(from windowStart: Int, to windowEnd: Int) async -> [CachedSleepSession] {
         guard let store = await ensureStore() else { return [] }
+        let ownerIds = rawComputedReadIds(store: store)
         func editedRows() async -> [CachedSleepSession] {
-            ((try? await store.sleepSessions(deviceId: computedDeviceId, from: windowStart,
-                                             to: windowEnd, limit: 100_000)) ?? [])
-                .filter { $0.userEdited }
+            var rows: [CachedSleepSession] = []
+            var seen = Set<Int>()
+            for id in ownerIds {
+                let found = ((try? await store.sleepSessions(deviceId: id, from: windowStart,
+                                                             to: windowEnd, limit: 100_000)) ?? [])
+                    .filter { $0.userEdited }
+                for row in found where seen.insert(row.startTs).inserted {
+                    rows.append(row)
+                }
+            }
+            return rows
         }
         let edited = await editedRows()
         guard !edited.isEmpty else { return [] }
@@ -2118,10 +2129,19 @@ final class Repository: ObservableObject {
             // isn't dense yet, or when the result already matches what's stored (steady state , no write).
             guard let newJSON = await restageFromRaw(start: row.effectiveStartTs, end: row.endTs),
                   newJSON != row.stagesJSON else { continue }
-            let n = (try? await store.updateSleepStages(deviceId: computedDeviceId,
-                                                        detectedStartTs: row.startTs,
-                                                        stagesJSON: newJSON)) ?? 0
-            if n > 0 { healed = true }
+            var owners = ownerIds
+            if let deviceId = row.deviceId, !owners.contains(deviceId) {
+                owners.insert(deviceId, at: 0)
+            }
+            for id in owners {
+                let n = (try? await store.updateSleepStages(deviceId: id,
+                                                            detectedStartTs: row.startTs,
+                                                            stagesJSON: newJSON)) ?? 0
+                if n > 0 {
+                    healed = true
+                    break
+                }
+            }
         }
         return healed ? await editedRows() : edited
     }

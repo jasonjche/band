@@ -89,21 +89,33 @@ enum NativeBandScores {
                                 importedSleep: [String: ImportedSleepFigures]) -> Snapshot {
         let inputs = dayInputs(days: days, sleeps: sleeps, workouts: workouts,
                                importedSleep: importedSleep)
+        // Unworn nights (no asleep time) stay out of evaluate so a gap inside the
+        // 5-night consistency window cannot wipe sleepPerformance for worn nights.
+        let scoredInputs = inputs.filter { ($0.asleep ?? 0) > 0 }
         let band: [BandScores.DayOutput]
-        if let params = params(), !inputs.isEmpty {
-            band = BandScores.evaluate(days: inputs, params: params)
+        if let params = params(), !scoredInputs.isEmpty {
+            band = BandScores.evaluate(days: scoredInputs, params: params)
         } else {
             band = []
         }
         let bandByDay = Dictionary(uniqueKeysWithValues: band.map { ($0.day, $0) })
+        let inputByDay = Dictionary(uniqueKeysWithValues: inputs.map { ($0.day, $0) })
+        let daysByKey = Dictionary(uniqueKeysWithValues: days.map { ($0.day, $0) })
+        var keys = days.map(\.day)
+        for input in inputs where !keys.contains(input.day) {
+            keys.append(input.day)
+        }
+        keys.sort()
         var ordered: [Day] = []
         var byDay: [String: Day] = [:]
-        for d in days {
-            let imported = isImported(importedSleep[d.day])
-            let fig = importedSleep[d.day]
-            let b = bandByDay[d.day]
+        for key in keys {
+            let d = daysByKey[key]
+            let imported = isImported(importedSleep[key])
+            let fig = importedSleep[key]
+            let b = bandByDay[key]
             let need = imported ? (fig?.needMin ?? b?.need) : b?.need
-            let asleep = d.totalSleepMin
+            let asleep = (d?.totalSleepMin).flatMap { $0 > 0 ? $0 : nil }
+                ?? inputByDay[key]?.asleep
             let hours: Double?
             if let asleep, let need, need > 0, asleep > 0 {
                 hours = asleep / need * 100
@@ -126,7 +138,7 @@ enum NativeBandScores {
                 // Imported days keep WHOOP's DailyMetric.recovery. Strap days prefer round-5
                 // recoveryV3 once it has passed the current-source warm-up; else round-2
                 // strapRecovery (tolerates missing temp/SpO2); else DailyMetric.recovery.
-                recovery: imported ? d.recovery : (b?.recoveryV3 ?? strapRecovery(b) ?? d.recovery),
+                recovery: imported ? d?.recovery : (b?.recoveryV3 ?? strapRecovery(b) ?? d?.recovery),
                 sleepPerformance: imported ? (fig?.performancePct ?? b?.perf) : b?.perf,
                 sleepNeed: need,
                 sleepDebt: imported ? (fig?.debtMin ?? b?.debt) : b?.debt,
@@ -138,7 +150,7 @@ enum NativeBandScores {
                 needDebtMin: needDebtPart
             )
             ordered.append(day)
-            byDay[d.day] = day
+            byDay[key] = day
         }
         return Snapshot(byDay: byDay, ordered: ordered)
     }
@@ -161,6 +173,90 @@ enum NativeBandScores {
 
     // MARK: - Inputs
 
+    /// Asleep / in-bed / stage minutes from a DailyMetric when it has them, else from the
+    /// night's `CachedSleepSession` so a just-synced or user-edited night scores before
+    /// `DailyMetric` finishes rescoring (or when that row is steps-only).
+    struct NightSleep: Equatable {
+        var asleep: Double? = nil
+        var inbed: Double? = nil
+        var light: Double? = nil
+        var deep: Double? = nil
+        var rem: Double? = nil
+        var awake: Double? = nil
+        var efficiency: Double? = nil
+    }
+
+    static func nightSleep(metric: DailyMetric?, session: CachedSleepSession?) -> NightSleep {
+        let fromSession = session.map(sessionSleep) ?? NightSleep()
+        let metricAsleep = metric.flatMap {
+            NativeDayLogic.asleepMinutes(
+                light: $0.lightMin, deep: $0.deepMin, rem: $0.remMin, totalSleepMin: $0.totalSleepMin
+            )
+        }
+        let asleep = metricAsleep ?? fromSession.asleep
+        let light = positive(metric?.lightMin) ?? fromSession.light
+        let deep = positive(metric?.deepMin) ?? fromSession.deep
+        let rem = positive(metric?.remMin) ?? fromSession.rem
+        let inbed = fromSession.inbed ?? inbedFromEfficiency(asleep: asleep, efficiency: metric?.efficiency)
+        let awake: Double?
+        if let inbed, let asleep, inbed > asleep {
+            awake = inbed - asleep
+        } else {
+            awake = fromSession.awake
+        }
+        let efficiency = metric?.efficiency ?? fromSession.efficiency
+        return NightSleep(
+            asleep: asleep, inbed: inbed, light: light, deep: deep, rem: rem,
+            awake: awake, efficiency: efficiency
+        )
+    }
+
+    static func sessionSleep(_ session: CachedSleepSession) -> NightSleep {
+        let inbedClock: Double? = session.endTs > session.effectiveStartTs
+            ? Double(session.endTs - session.effectiveStartTs) / 60.0 : nil
+        if let minutes = SleepStageTotals.minutes(fromStagesJSON: session.stagesJSON), minutes.inBed > 0 {
+            return NightSleep(
+                asleep: minutes.asleep > 0 ? minutes.asleep : nil,
+                inbed: minutes.inBed,
+                light: minutes.light > 0 ? minutes.light : nil,
+                deep: minutes.deep > 0 ? minutes.deep : nil,
+                rem: minutes.rem > 0 ? minutes.rem : nil,
+                awake: minutes.awake > 0 ? minutes.awake : nil,
+                efficiency: minutes.inBed > 0 ? minutes.asleep / minutes.inBed : session.efficiency
+            )
+        }
+        let efficiency = session.efficiency
+        let asleep: Double?
+        if let inbedClock, inbedClock > 0, let raw = efficiency, raw > 0 {
+            let eff = raw <= 1 ? raw : raw / 100
+            let value = inbedClock * eff
+            asleep = value > 0 ? value : nil
+        } else {
+            asleep = inbedClock
+        }
+        return NightSleep(
+            asleep: asleep, inbed: inbedClock, light: nil, deep: nil, rem: nil,
+            awake: inbedFromAwake(inbed: inbedClock, asleep: asleep),
+            efficiency: efficiency
+        )
+    }
+
+    private static func inbedFromEfficiency(asleep: Double?, efficiency: Double?) -> Double? {
+        guard let asleep, let raw = efficiency, asleep > 0, raw > 0 else { return nil }
+        let eff = raw <= 1 ? raw : raw / 100
+        guard eff > 0 else { return nil }
+        return asleep / eff
+    }
+
+    private static func inbedFromAwake(inbed: Double?, asleep: Double?) -> Double? {
+        guard let inbed, let asleep, inbed > asleep else { return nil }
+        return inbed - asleep
+    }
+
+    private static func positive(_ value: Double?) -> Double? {
+        value.flatMap { $0 > 0 ? $0 : nil }
+    }
+
     static func dayInputs(days: [DailyMetric], sleeps: [CachedSleepSession],
                           workouts: [WorkoutRow],
                           importedSleep: [String: ImportedSleepFigures] = [:]) -> [BandScores.DayInput] {
@@ -170,8 +266,15 @@ enum NativeBandScores {
         let workoutsByDay = Dictionary(grouping: workouts) {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs)))
         }
-        return days.map { day in
-            let blocks = (sleepsByDay[day.day] ?? []).sorted {
+        let daysByKey = Dictionary(uniqueKeysWithValues: days.map { ($0.day, $0) })
+        var keys = days.map(\.day)
+        for key in sleepsByDay.keys where !keys.contains(key) {
+            keys.append(key)
+        }
+        keys.sort()
+        return keys.map { key in
+            let day = daysByKey[key]
+            let blocks = (sleepsByDay[key] ?? []).sorted {
                 ($0.endTs - $0.effectiveStartTs) > ($1.endTs - $1.effectiveStartTs)
             }
             let main = blocks.first
@@ -179,7 +282,7 @@ enum NativeBandScores {
             let napMin = naps.reduce(0.0) { acc, s in
                 acc + Double(max(0, s.endTs - s.effectiveStartTs)) / 60.0
             }
-            let wo = workoutsByDay[day.day] ?? []
+            let wo = workoutsByDay[key] ?? []
             var edwards = 0.0
             var z45 = 0.0
             for row in wo {
@@ -193,36 +296,29 @@ enum NativeBandScores {
                 }
             }
             // Whole-day energy only. Workout calories are a different scale and skew sleep need.
-            let energy = day.activeKcalEst
+            let energy = day?.activeKcalEst
+            let night = nightSleep(metric: day, session: main)
             // Zero or absent sleep is a night the strap was not worn, not a night of no sleep.
             // Counting it as a shortfall would inflate sleep debt and tonight's need.
-            let asleep = day.totalSleepMin.flatMap { $0 > 0 ? $0 : nil }
-            let inbed: Double?
-            if let asleep, let raw = day.efficiency, raw > 0 {
-                let eff = raw <= 1 ? raw : raw / 100
-                inbed = eff > 0 ? asleep / eff : nil
-            } else {
-                inbed = nil
-            }
             return BandScores.DayInput(
-                day: day.day,
+                day: key,
                 energyKcal: energy,
                 edwards: wo.isEmpty ? nil : edwards,
                 z45Min: wo.isEmpty ? nil : z45,
-                asleep: asleep,
-                inbed: inbed,
+                asleep: night.asleep,
+                inbed: night.inbed,
                 napMin: napMin,
                 onsetMin: main.map { clockMin($0.effectiveStartTs) },
                 wakeMin: main.map { clockMin($0.endTs) },
                 naps: naps.map {
                     BandScores.NapSpan(onsetMin: clockMin($0.effectiveStartTs), wakeMin: clockMin($0.endTs))
                 },
-                hrvMs: day.avgHrv,
-                rhr: day.restingHr.map(Double.init),
-                resp: day.respRateBpm,
-                temp: day.skinTempC,
-                spo2: day.spo2Pct,
-                source: isImported(importedSleep[day.day]) ? .imported : .strap
+                hrvMs: day?.avgHrv ?? main?.avgHrv,
+                rhr: (day?.restingHr ?? main?.restingHr).map(Double.init),
+                resp: day?.respRateBpm,
+                temp: day?.skinTempC,
+                spo2: day?.spo2Pct,
+                source: isImported(importedSleep[key]) ? .imported : .strap
             )
         }
     }

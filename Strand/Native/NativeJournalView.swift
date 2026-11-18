@@ -126,6 +126,9 @@ struct NativeJournalView: View {
     @State private var seededYes: [String: Bool] = [:]
     @State private var seededNumeric: [String: Double] = [:]
     @State private var seededTime: [String: Date] = [:]
+    @State private var persistedYes: [String: Bool] = [:]
+    @State private var persistedNumeric: [String: Double] = [:]
+    @State private var persistedTime: [String: Date] = [:]
 
     private func shiftDay(_ delta: Int) {
         guard let next = HomeDayNav.shift(from: selectedDay, delta: delta, firstDay: firstDay) else { return }
@@ -143,33 +146,34 @@ struct NativeJournalView: View {
     }
 
     private func seedDraft() {
-        var yes: [String: Bool] = [:]
-        var qty: [String: Double] = [:]
-        var time: [String: Date] = [:]
-        for entry in NativeJournalIdentity.winningEntries(entries) where entry.day == dayKey {
-            yes[entry.question] = entry.answeredYes
-            if let value = entry.numericValue { qty[entry.question] = value }
-            if let minutes = NativeJournalNotes.decode(entry.notes).timeMinutes {
-                time[entry.question] = NativeJournalNotes.date(minutes: minutes, on: selectedDay)
-            }
-        }
-        for (question, value) in nativeAnswers {
-            yes[JournalCatalogStore.canonicalId(for: question)] = value
-        }
-        for (question, value) in nativeNumeric {
-            qty[JournalCatalogStore.canonicalId(for: question)] = value
-        }
-        seededYes = yes
-        seededNumeric = qty
-        seededTime = time
+        let seed = NativeJournalDraft.seed(
+            entries: entries,
+            nativeAnswers: nativeAnswers,
+            nativeNumeric: nativeNumeric,
+            dayKey: dayKey,
+            selectedDay: selectedDay
+        )
+        seededYes = seed.yes
+        seededNumeric = seed.numeric
+        seededTime = seed.times
+        persistedYes = seed.persistedYes
+        persistedNumeric = seed.persistedNumeric
+        persistedTime = seed.persistedTimes
     }
 
     private func saveDraft(yes draftYes: [String: Bool], numeric draftNumeric: [String: Double], times draftTime: [String: Date]) async {
         for item in formItems {
             // Write only what the user changed, so an untouched row cannot overwrite an imported answer.
             let key = item.canonical
-            if draftYes[key] == seededYes[key], draftNumeric[key] == seededNumeric[key],
-               draftTime[key] == seededTime[key] { continue }
+            if !NativeJournalDraft.shouldWrite(
+                key: key,
+                draftYes: draftYes,
+                draftNumeric: draftNumeric,
+                draftTimes: draftTime,
+                persistedYes: persistedYes,
+                persistedNumeric: persistedNumeric,
+                persistedTimes: persistedTime
+            ) { continue }
             let yes = draftYes[item.canonical] ?? false
             let follow = NativeJournalFollowUp.forItem(item)
             let notes = NativeJournalNotes.encode(

@@ -111,10 +111,11 @@ struct NativeStressPage: View {
         if Task.isCancelled { return }
         let nextHours = timeline.hours
         guard key == dayKey else { return }
+        let summaryHours = NativeStressHistory.excluding(nextHours, timeline.exclusions)
         let nextLevel = NativeStressResolver.level(hours: nextHours, days: days, todayKey: key)
-        let nextHigh = NativeStressHistory.timeInHighMinutes(nextHours)
+        let nextHigh = NativeStressHistory.timeInHighMinutes(summaryHours)
         var minuteMeans: [String: Double] = [:]
-        if let mean = NativeScopeSeries.mean(nextHours.map(\.value)) {
+        if let mean = NativeScopeSeries.mean(summaryHours.map(\.value)) {
             minuteMeans[key] = mean
         }
         if scope != .day {
@@ -163,7 +164,7 @@ struct NativeStressPage: View {
         scrubTime = nil
         timeInHighMinutes = nextHigh
         series = nextSeries
-        let nextToday = NativeStressBandTime.durations(nextHours)
+        let nextToday = NativeStressBandTime.durations(summaryHours)
         todayDurations = nextToday
         let history = await NativeStressBandTime.loadHistory(
             repo: repo,
@@ -407,7 +408,9 @@ enum NativeStressHistory {
                 days: days, sleeps: repo.sleeps, workouts: workouts, calendar: calendar
             )
             if Task.isCancelled { return out }
-            if let mean = NativeScopeSeries.mean(built.hours.map(\.value)) {
+            if let mean = NativeScopeSeries.mean(
+                NativeStressHistory.excluding(built.hours, built.exclusions).map(\.value)
+            ) {
                 out[day.day] = mean
             }
         }
@@ -462,6 +465,19 @@ enum NativeStressHistory {
     /// Duration in the High band (≥ 2.0). Each high point contributes only the gap to the next
     /// point when that gap is one chart bucket (1 min ± slack). A hole in stored HR is not High.
     static let highBucketMaxGap: TimeInterval = TimeInterval(BandStress.chartGapSeconds)
+
+    static func excluding(
+        _ hours: [NativeHourPoint],
+        _ exclusions: [BandStress.ExclusionSpan]
+    ) -> [NativeHourPoint] {
+        guard !exclusions.isEmpty else { return hours }
+        return hours.filter { point in
+            let ts = Int(point.time.timeIntervalSince1970)
+            return !exclusions.contains { span in
+                span.endTs > span.startTs && ts >= span.startTs && ts < span.endTs
+            }
+        }
+    }
 
     static func timeInHighMinutes(_ hours: [NativeHourPoint]) -> Double? {
         guard hours.count >= 2 else { return nil }
@@ -1285,11 +1301,8 @@ struct NativeStressDayPlot: View {
     @Binding var scrubTime: Date?
     @State private var selectedTime: Date?
 
-    private var lineGradient: LinearGradient {
-        let stops = NativeStressMonitorMath.lineStops(style: style).map {
-            Gradient.Stop(color: $0.color, location: $0.value / 3)
-        }
-        return LinearGradient(stops: stops, startPoint: .bottom, endPoint: .top)
+    private func lineGradient(for segment: [NativeHourPoint]) -> LinearGradient {
+        NativeStressMonitorMath.lineGradient(style: style, values: segment.map(\.value))
     }
 
     private var sleepFill: Color { NativePaint.separator(style).opacity(0.22) }
@@ -1426,7 +1439,7 @@ struct NativeStressDayPlot: View {
                     y: .value("Stress", point.value),
                     series: .value("Segment", index)
                 )
-                .foregroundStyle(lineGradient)
+                .foregroundStyle(lineGradient(for: segment))
                 .interpolationMethod(.monotone)
                 .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
                 .accessibilityLabel(model.pointTimeText[point.time.timeIntervalSince1970] ?? NativeScopeFormat.time(point.time))

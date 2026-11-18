@@ -122,7 +122,7 @@ struct NativeHeartRatePage: View {
 private struct NativeHeartRateBody: View {
     var model: NativeHeartRateMath.Model
     var liveBpm: Int?
-    var scrub: NativeScopeScrub
+    @ObservedObject var scrub: NativeScopeScrub
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
@@ -223,7 +223,7 @@ private struct NativeHeartRateHero: View {
 private struct NativeHeartRatePlot: View {
     var model: NativeHeartRateMath.Model
     var tint: Color
-    var scrub: NativeScopeScrub
+    @ObservedObject var scrub: NativeScopeScrub
 
     var body: some View {
         Group {
@@ -231,7 +231,6 @@ private struct NativeHeartRatePlot: View {
                 NativeEmptyState(text: "No data", symbol: "heart")
             } else {
                 NativeHeartRateLineChart(model: model, tint: tint, scrub: scrub)
-                    .equatable()
             }
         }
         .frame(maxWidth: .infinity)
@@ -251,15 +250,11 @@ private struct NativeHeartRatePlot: View {
 }
 
 /// Line marks keyed on the plot model. Scrub lives in the overlay so a drag does not rebuild the line.
-private struct NativeHeartRateLineChart: View, Equatable {
+private struct NativeHeartRateLineChart: View {
     var model: NativeHeartRateMath.Model
     var tint: Color
-    var scrub: NativeScopeScrub
+    @ObservedObject var scrub: NativeScopeScrub
     @Environment(\.nativeStyle) private var style
-
-    static func == (lhs: NativeHeartRateLineChart, rhs: NativeHeartRateLineChart) -> Bool {
-        lhs.model == rhs.model && lhs.tint == rhs.tint
-    }
 
     private var timeBinding: Binding<Date?> {
         Binding(

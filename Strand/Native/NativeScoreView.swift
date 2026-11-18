@@ -173,9 +173,25 @@ struct NativeScorePage: View {
             let baselines = NativeHomeCharts.stressBaselines(days: repo.days, todayKey: dayKey)
             let overnightHR = await repo.hrSamples(from: from, to: to, limit: 200_000)
             if Task.isCancelled { return }
+            let rr = await repo.rrIntervals(from: from, to: to, limit: 50_000)
+            if Task.isCancelled { return }
+            let session = repo.sleeps.last {
+                NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
+                    == dayKey
+            }
+            let awake = NativeSleepStress.awakeSpans(from: session?.stagesJSON)
+            let timeline = await NativeDerivedSeries.stressDay(
+                repo: repo, dayKey: dayKey,
+                dayStart: Calendar.current.startOfDay(for: selectedDay),
+                days: repo.days, sleeps: repo.sleeps, workouts: workouts
+            )
+            if Task.isCancelled { return }
+            let rmssd = BandStress.rmssdByBucket(rr: rr.map { (ts: $0.ts, ms: Double($0.rrMs)) })
+            let exclusions = timeline.exclusions
             let stressModel = await Task.detached(priority: .utility) {
                 NativeSleepStress.make(
-                    hr: overnightHR, startTs: from, endTs: to, baselines: baselines
+                    hr: overnightHR, startTs: from, endTs: to, baselines: baselines,
+                    rmssdByBucket: rmssd, awakeSpans: awake, exclusions: exclusions
                 )
             }.value
             if Task.isCancelled { return }

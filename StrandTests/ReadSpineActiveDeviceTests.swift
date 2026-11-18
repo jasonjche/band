@@ -151,6 +151,29 @@ final class ReadSpineActiveDeviceTests: XCTestCase {
         XCTAssertTrue(rows[0].userEdited)
     }
 
+    @MainActor
+    func testSelfHealEditedStagesReadsCanonicalComputedIdWhenActiveStrapDiffers() async throws {
+        let store = try await WhoopStore.inMemory()
+        try await store.upsertDevice(id: canonicalId, mac: nil, name: "WHOOP")
+        try await store.upsertDevice(id: newId, mac: nil, name: "WHOOP")
+        let start = 1_700_000_000
+        let end = start + 6 * 3_600
+        _ = try await store.upsertSleepSessions(
+            [CachedSleepSession(
+                startTs: start, endTs: end, efficiency: 0.9,
+                restingHr: 52, avgHrv: 60, stagesJSON: nil, userEdited: true
+            )],
+            deviceId: canonicalId + "-noop"
+        )
+        let repo = Repository(deviceId: canonicalId)
+        repo.setStoreForTesting(store)
+        _ = repo.adoptActiveDeviceId(newId)
+        let healed = await repo.selfHealEditedStages(from: start, to: end)
+        XCTAssertEqual(healed.count, 1, "edited nights banked under my-whoop-noop must still self-heal")
+        XCTAssertEqual(healed.first?.startTs, start)
+        XCTAssertTrue(healed.first?.userEdited ?? false)
+    }
+
     /// THE union-model regression (#814 follow-up): import history under the CANONICAL "my-whoop", THEN
     /// re-add a strap so the active id becomes "whoop-uuid" and write LIVE HR under it. Assert (i) the
     /// imported canonical days STILL surface in refresh(), (ii) the new live HR under the re-added id also

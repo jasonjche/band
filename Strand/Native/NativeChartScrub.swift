@@ -96,14 +96,17 @@ enum NativeChartScrubMath {
         return selectionDate(forHour: point.time, calendar: calendar)
     }
 
-    /// 1.5× the smallest adjacent gap. A hole larger than that is not a point.
+    /// 1.5× the lower-median adjacent gap. A hole larger than that is not a point.
+    /// `min()` collapses when a live-appended tail sits ~90s after 5-minute buckets;
+    /// the lower median keeps bucket spacing so the scrub dot still lands between them.
     static func inferredMaxGap(in points: [NativeHourPoint]) -> TimeInterval? {
         guard points.count >= 2 else { return nil }
         let gaps = zip(points, points.dropFirst()).map {
             $1.time.timeIntervalSince($0.time)
         }.filter { $0 > 0 }
-        guard let minGap = gaps.min() else { return nil }
-        return minGap * 1.5
+        guard !gaps.isEmpty else { return nil }
+        let sorted = gaps.sorted()
+        return sorted[(sorted.count - 1) / 2] * 1.5
     }
 
     /// Nearest bucket with a value, by unit centre. Nil when the closest bucket is a gap.

@@ -687,11 +687,19 @@ struct NativeDelta: View {
             return style == .whoop ? NativeTokens.whoopLabel : Color.secondary
         }
         if style == .whoop {
-            if delta.symbol.contains("up") || delta == .up { return NativeTokens.whoopPositiveDelta }
-            if delta.symbol.contains("down") || delta == .down { return NativeTokens.whoopNegativeDelta }
+            if isPositiveTint { return NativeTokens.whoopPositiveDelta }
+            if isNegativeTint { return NativeTokens.whoopNegativeDelta }
             return NativeTokens.whoopLabel
         }
         return delta.tint
+    }
+
+    private var isPositiveTint: Bool {
+        delta.tint == NativeTokens.positiveDelta || delta.tint == NativeTokens.whoopPositiveDelta
+    }
+
+    private var isNegativeTint: Bool {
+        delta.tint == NativeTokens.negativeDelta || delta.tint == NativeTokens.whoopNegativeDelta
     }
 }
 
@@ -2161,10 +2169,6 @@ struct NativeStressMonitor: View {
         NativeStressMonitorMath.segments(hours).map { NativeStressMonitorMath.drawPoints($0) }
     }
 
-    private var lineGradient: LinearGradient {
-        NativeStressMonitorMath.lineGradient(style: style)
-    }
-
     @Binding var scrubValue: Double
     @Binding var scrubTime: Date?
     @State private var selectedTime: Date?
@@ -2320,7 +2324,7 @@ struct NativeStressMonitor: View {
         ForEach(Array(hourSegments.enumerated()), id: \.offset) { _, segment in
             ForEach(segment.filter { $0.time >= dayStart && $0.time <= plotEnd && $0.value >= 0 && $0.value <= 3 }) { point in
                 LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
-                    .foregroundStyle(lineGradient)
+                    .foregroundStyle(NativeStressMonitorMath.lineGradient(style: style, values: segment.map(\.value)))
                     .interpolationMethod(.monotone)
                     .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
                     .accessibilityLabel(NativeScopeFormat.time(point.time))
@@ -2547,10 +2551,57 @@ enum NativeStressMonitorMath {
     }
 
     static func lineGradient(style: NativeStyle) -> LinearGradient {
-        let stops = lineStops(style: style).map {
-            Gradient.Stop(color: $0.color, location: $0.value / yTop)
+        lineGradient(style: style, yMin: 0, yMax: yTop)
+    }
+
+    /// Swift Charts paints a LineMark gradient onto that segment's [minY, maxY]
+    /// box, so a 0...3 palette on a Low 0.2...0.8 run would show the gold 3.0 stop.
+    /// Map the 0...3 stops onto the values this segment actually plots.
+    static func lineGradient(style: NativeStyle, values: [Double]) -> LinearGradient {
+        guard let lo = values.min(), let hi = values.max() else {
+            return lineGradient(style: style)
+        }
+        return lineGradient(style: style, yMin: lo, yMax: hi)
+    }
+
+    static func lineGradient(style: NativeStyle, yMin: Double, yMax: Double) -> LinearGradient {
+        let stops = mappedLineStops(style: style, yMin: yMin, yMax: yMax).map {
+            Gradient.Stop(color: $0.color, location: $0.location)
+        }
+        if stops.isEmpty {
+            let fallback = lineStops(style: style).map {
+                Gradient.Stop(color: $0.color, location: $0.value / yTop)
+            }
+            return LinearGradient(stops: fallback, startPoint: .bottom, endPoint: .top)
         }
         return LinearGradient(stops: stops, startPoint: .bottom, endPoint: .top)
+    }
+
+    static func mappedLineStops(
+        style: NativeStyle, yMin: Double, yMax: Double
+    ) -> [(value: Double, location: CGFloat, color: Color)] {
+        let lo = min(yMin, yMax)
+        let hi = max(yMin, yMax)
+        let span = max(hi - lo, 1e-6)
+        let palette = lineStops(style: style)
+        let mapped: [(value: Double, location: Double, color: Color)] = palette.map {
+            ($0.value, ($0.value - lo) / span, $0.color)
+        }
+        var out: [(value: Double, location: CGFloat, color: Color)] = []
+        for stop in mapped where stop.location >= 0 && stop.location <= 1 {
+            out.append((stop.value, CGFloat(stop.location), stop.color))
+        }
+        if out.first?.location ?? 1 > 0, let below = mapped.last(where: { $0.location < 0 }) {
+            out.insert((lo, 0, below.color), at: 0)
+        } else if out.isEmpty, let first = mapped.first {
+            out.append((lo, 0, first.color))
+        }
+        if out.last?.location ?? 0 < 1, let above = mapped.first(where: { $0.location > 1 }) {
+            out.append((hi, 1, above.color))
+        } else if out.last?.location ?? 0 < 1, let last = mapped.last {
+            out.append((hi, 1, last.color))
+        }
+        return out
     }
 }
 
@@ -2744,14 +2795,19 @@ enum NativeScoreMath {
         labeled(mean(values), unit: unit, decimals: decimals, grouped: grouped)
     }
 
-    static func delta(_ value: Double?, _ prior: [Double]) -> NativeScore.Delta {
+    static func delta(_ value: Double?, _ prior: [Double], higherIsBetter: Bool = true) -> NativeScore.Delta {
         guard let value, let mean = mean(prior), mean != 0 else { return .none }
         // Half a percent: enough that a value shown as 89 against 88 gets its arrow like its
         // neighbours, while a true tie stays flat.
         let change = (value - mean) / abs(mean)
-        if change > 0.005 { return .up }
-        if change < -0.005 { return .down }
-        return .flat
+        if abs(change) <= 0.005 { return .flat }
+        let wentUp = change > 0
+        let good = wentUp == higherIsBetter
+        let tint = good ? NativeTokens.positiveDelta : NativeTokens.negativeDelta
+        if wentUp {
+            return NativeScore.Delta(symbol: "arrow.up", tint: tint, name: "above the last 30 days")
+        }
+        return NativeScore.Delta(symbol: "arrow.down", tint: tint, name: "below the last 30 days")
     }
 
     static func mean(_ values: [Double]) -> Double? {

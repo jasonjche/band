@@ -35,6 +35,22 @@ final class NativeChartScrubTests: XCTestCase {
         XCTAssertNil(NativeChartScrubMath.inferredMaxGap(in: [hour(0, 1)]))
     }
 
+    func testInferredMaxGapKeepsFiveMinuteBucketsWhenLiveTailIsCloser() {
+        var points: [NativeHourPoint] = []
+        for index in 0..<6 {
+            points.append(hour(TimeInterval(index * 300), 60))
+        }
+        points.append(hour(5 * 300 + 90, 72))
+        let maxGap = NativeChartScrubMath.inferredMaxGap(in: points) ?? -1
+        XCTAssertEqual(maxGap, 450, accuracy: 1e-9)
+        let betweenBuckets = Date(timeIntervalSince1970: 300 + 140)
+        XCTAssertEqual(
+            NativeChartScrubMath.nearestHour(to: betweenBuckets, in: points, maxGap: maxGap)?.time.timeIntervalSince1970 ?? -1,
+            300,
+            accuracy: 1e-9
+        )
+    }
+
     func testUnitCenterIsTheBarXSwiftChartsUses() {
         let start = Date(timeIntervalSince1970: 0)
         let end = Date(timeIntervalSince1970: 86_400)

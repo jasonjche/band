@@ -234,7 +234,9 @@ struct NativeMetricPage: View {
                 repo: repo, dayKey: dayKey, dayStart: calendar.startOfDay(for: start),
                 days: days, sleeps: repo.sleeps, workouts: workouts, calendar: calendar
             )
-            if let mean = NativeScopeSeries.mean(today.hours.map(\.value)) { means[dayKey] = mean }
+            if let mean = NativeScopeSeries.mean(
+                NativeStressHistory.excluding(today.hours, today.exclusions).map(\.value)
+            ) { means[dayKey] = mean }
         }
         guard !Task.isCancelled else { return }
         let minuteMeans = means

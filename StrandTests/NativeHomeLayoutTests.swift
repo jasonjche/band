@@ -464,6 +464,29 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertEqual(NativeStressMonitorMath.yLabel(3), "3.0")
         XCTAssertEqual(NativeHomeCharts.stressBand(1.2), "MEDIUM")
         XCTAssertEqual(NativeHomeCharts.stressBandWord(1.2), "Medium")
+        let low = NativeStressMonitorMath.mappedLineStops(style: .apple, yMin: 0.2, yMax: 0.8)
+        XCTAssertFalse(low.contains { abs($0.value - 3.0) < 0.01 })
+        XCTAssertTrue(low.allSatisfy { $0.location >= 0 && $0.location <= 1 })
+        XCTAssertGreaterThanOrEqual(low.count, 2)
+    }
+
+    func testStressSummariesDropWorkoutExclusions() {
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        let hours = (0..<10).map {
+            NativeHourPoint(time: t0.addingTimeInterval(TimeInterval($0 * 60)), value: $0 < 5 ? 0.4 : 2.4)
+        }
+        let exclusions = [
+            BandStress.ExclusionSpan(
+                startTs: Int(t0.timeIntervalSince1970) + 5 * 60,
+                endTs: Int(t0.timeIntervalSince1970) + 10 * 60,
+                kind: .workout
+            )
+        ]
+        let summary = NativeStressHistory.excluding(hours, exclusions)
+        XCTAssertEqual(summary.count, 5)
+        XCTAssertNil(NativeStressHistory.timeInHighMinutes(summary))
+        XCTAssertEqual(NativeStressBandTime.durations(summary).high, 0, accuracy: 0.01)
+        XCTAssertGreaterThan(NativeStressBandTime.durations(hours).high, 0)
     }
 
     func testStressHeaderLastUpdatedPrefix() {
