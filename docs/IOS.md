@@ -1,47 +1,72 @@
 # iOS — Install & Build
 
-> **iOS is now a direct download (v1.96).** Grab **`NOOP-v<version>-ios.ipa`** from the
-> [Releases](https://github.com/ryanbr/noop/releases) page and install it with **AltStore** or **SideStore** — see
-> **[Install (sideload)](#install-sideload)** below. No Mac, no Xcode, no App Store, and no Apple
-> Developer account needed — **and NOOP stays anonymous**, because the `.ipa` has no Apple developer
-> signature and **you** sign it on your own iPhone with your own free Apple ID. It carries only a
-> replaceable ad-hoc capability template so the sideloader can provision HealthKit and the App Group
-> shared with the widget. The app target (`NOOPiOS` +
-> `NOOPiOSWidgets`) also still builds from source in Xcode if you'd rather (**[Build from source](#build-from-source)**).
-> A CI job ([`app-build.yml`](../.github/workflows/app-build.yml)) compiles both the macOS and iOS
-> targets on every change so iOS can't silently break.
+Grab **`Band-ios-latest.ipa`** from the
+[Releases](https://github.com/jasonjche/band/releases/latest) page, or add Band as a
+**SideStore / AltStore source** for one-tap install and auto-refresh — see
+**[Install (sideload)](#install-sideload)** below. No Mac, no Xcode, no App Store, and no paid
+Apple Developer account: **you** sign the `.ipa` on your iPhone with your own free Apple ID. It
+carries only a replaceable ad-hoc capability template so the sideloader can provision HealthKit and
+the App Group shared with the widget (`group.com.bandapp.noop.staging`). The app target (`NOOPiOS` +
+`NOOPiOSWidgets`, scheme **Band**) also still builds from source in Xcode if you'd rather
+(**[Build from source](#build-from-source)**). A CI job
+([`app-build.yml`](../.github/workflows/app-build.yml)) compiles both the macOS and iOS targets on
+every change so iOS can't silently break. Sideload IPAs are cut by
+[`release-ipa.yml`](../.github/workflows/release-ipa.yml).
 
 ## Install (sideload)
 
-The `.ipa` is **not signed by an Apple developer identity** — that's what keeps the project
-anonymous. Its replaceable ad-hoc signature only describes the capabilities AltStore/SideStore must
-provision; iOS won't run it until the sideloader signs it **on your device, with your own free Apple
-ID**. Nothing about this touches NOOP's identity or Apple's servers on our side.
+The `.ipa` is **not signed by an Apple developer identity**. Its replaceable ad-hoc signature only
+describes the capabilities AltStore/SideStore must provision; iOS won't run it until the sideloader
+signs it **on your device, with your own free Apple ID**. Sideload builds use bundle id
+`com.bandapp.noop`, so Band installs **beside** an existing NOOP app.
 
-1. **Install a sideloader on your computer** — [AltStore](https://altstore.io) or
-   [SideStore](https://sidestore.io) (both free). Follow their one-time setup (it installs a helper +
-   AltStore/SideStore onto your iPhone using your own Apple ID).
-2. **Download `NOOP-v<version>-ios.ipa`** from [Releases](https://github.com/ryanbr/noop/releases) to your iPhone (or your
-   computer, then AirDrop/transfer it).
-3. **Open the `.ipa` with AltStore/SideStore** (Share → AltStore, or the app's "+" button). It signs
-   and installs NOOP. First launch may need **Settings → General → VPN & Device Management → trust
-   your Apple ID**.
+**Source URL:** `https://raw.githubusercontent.com/jasonjche/band/main/altstore-source.json`
 
-### If AltStore's Error Log says "Install NOOP Failed"
+> Make sure you copy the **raw** URL above exactly. If a sideloader says **"given data not valid
+> JSON"** when you add the source, you've pasted a normal web page URL (which returns HTML) instead of
+> the raw file — use the `raw.githubusercontent.com` URL above.
 
-The same failure also shows up **on the phone**, in AltStore's own Error Log, where it names NOOP and so
-looks like NOOP's fault:
+### SideStore (recommended)
 
-> **Install NOOP Failed** — `NSCocoaErrorDomain 3840`
+AltStore on macOS / iOS 26.2 currently fails Apple ID login with `NSCocoaErrorDomain 3840`
+([altstoreio/AltStore#1695](https://github.com/altstoreio/AltStore/issues/1695),
+[#1699](https://github.com/altstoreio/AltStore/issues/1699)). SideStore does not go through
+AltServer's Apple ID sign-in, so it avoids that bug.
+
+1. Install [SideStore](https://sidestore.io) on your iPhone (follow their pairing-file setup once).
+2. Open SideStore → **Browse** / **Sources** → **＋ Add Source** → paste the Source URL → add.
+3. Open **Band** under the source and tap **Get** / **Install**. First launch may need
+   **Settings → General → VPN & Device Management → Trust** your Apple ID.
+
+### AltStore
+
+1. Install [AltStore](https://altstore.io) with AltServer (one-time Mac or PC helper) and sign in
+   with your Apple ID.
+2. Open AltStore → **Browse** → tap **＋** (top-left) → paste the Source URL → **Add Source**.
+3. Open **Band** under the source and tap **Free** / **Get**. On first launch, trust your Apple ID
+   as above.
+
+### Direct `.ipa`
+
+Download [`Band-ios-latest.ipa`](https://github.com/jasonjche/band/releases/latest) from
+[Releases](https://github.com/jasonjche/band/releases/latest) and open it with SideStore or AltStore
+(Share → SideStore / AltStore, or the app's **＋** button).
+
+### If AltStore's Error Log says "Install Band Failed"
+
+The same failure also shows up **on the phone**, in AltStore's own Error Log, where it names Band and so
+looks like Band's fault:
+
+> **Install Band Failed** — `NSCocoaErrorDomain 3840`
 > *The data couldn't be read because it isn't in the correct format.*
 
 **Read the whole log before concluding anything.** If it also contains:
 
 > **Refresh AltStore Failed** — `NSCocoaErrorDomain 3840`
 
-then AltStore could not refresh **its own app**, which nothing about NOOP's `.ipa` or NOOP's source can
+then AltStore could not refresh **its own app**, which nothing about Band's `.ipa` or Band's source can
 cause. Every "… Failed" line is the same decode failure hitting whatever AltStore happened to be doing at
-that minute — installing NOOP, refreshing NOOP, refreshing itself. The NOOP-named lines are the symptom,
+that minute — installing Band, refreshing Band, refreshing itself. The Band-named lines are the symptom,
 not the cause.
 
 `NSCocoaErrorDomain 3840` is a parse error: AltStore expected structured data and got something else back
@@ -50,7 +75,7 @@ failure, just reported from the phone instead of AltServer.
 
 ### If AltServer can't sign in with your Apple ID
 
-A failure at **step 1** — before NOOP is involved at all — looks like this:
+A failure at **step 1** — before Band is involved at all — looks like this:
 
 > **AltServer could not sign in with your Apple ID. The data is not in the correct format.**
 >
@@ -69,7 +94,7 @@ hex" line beneath it is the same failure reported by the older-style parser, not
 **What actually works today:**
 
 - **Use [SideStore](https://sidestore.io) instead.** It is a separate implementation that does not go
-  through AltServer's Apple ID sign-in, and NOOP's source works there identically — the same URL, the same
+  through AltServer's Apple ID sign-in, and Band's source works there identically — the same URL, the same
   auto-updates. This is the practical answer while the upstream bug is open.
 - **Install the `.ipa` directly** with any sideloader that signs on-device, if you prefer not to add a
   source at all.
@@ -79,50 +104,38 @@ Local network filtering — a DNS blocker, a VPN, a captive portal — can produ
 by returning a block page, so it is worth ruling out if you have any. But it is **not** the usual cause,
 and the two reports that prompted this note were both the upstream bug.
 
-This is AltStore's own setup rather than anything NOOP controls, but it is the first step of the install,
+This is AltStore's own setup rather than anything Band controls, but it is the first step of the install,
 so it is written down here rather than left as a dead end.
-
-### Add NOOP as a source (recommended — auto-updates)
-
-So you never have to manually re-download, add NOOP's **source** to AltStore/SideStore once — new
-releases then show up (and re-sign) automatically:
-
-**Source URL:** `https://raw.githubusercontent.com/ryanbr/noop/main/altstore-source.json`
-
-> Make sure you copy the **raw** URL above exactly. If a sideloader says **"given data not valid
-> JSON"** when you add the source, you've pasted a normal web page URL (which returns HTML) instead of
-> the raw file — use the `raw.githubusercontent.com` URL above.
-
-- **AltStore:** open AltStore → **Browse** tab → tap **＋** (top-left) → paste the URL → **Add Source**.
-  NOOP appears under the source; tap **Free** / **Get** to install. From then on it updates itself on
-  AltStore's background refresh (you can also pull-to-refresh **My Apps**).
-- **SideStore:** open SideStore → **Browse** / **Sources** → **＋ Add Source** → paste the same URL → add.
-
-The source always tracks the latest release, so you're one tap from the newest build instead of
-hunting for the `.ipa` each time.
 
 > ### Two honest limitations of free-Apple-ID sideloading
 > - **7-day expiry.** Apps signed with a *free* Apple ID stop launching after 7 days and need
 >   re-signing. **AltStore/SideStore refresh this automatically** in the background — keep the
->   sideloader installed and NOOP keeps working.
+>   sideloader installed and Band keeps working.
 > - **Apple-only features require their extensions and capabilities.** Keep the
 >   `NOOPWidgets.appex` extension enabled when AltStore/SideStore asks: it renders the Home/Lock-Screen
->   widgets and Live Activities and shares data through the provisioned App Group. Removing app
->   extensions while signing disables those surfaces. Other signing tools must likewise preserve and
->   provision the requested HealthKit and App Group entitlements. Building from source with your own
->   Apple ID in Xcode and selecting your Team for both targets configures them automatically.
+>   widgets and Live Activities and shares data through the provisioned App Group
+>   (`group.com.bandapp.noop.staging`). Removing app extensions while signing disables those surfaces.
+>   Other signing tools must likewise preserve and provision the requested HealthKit and App Group
+>   entitlements. Building from source with your own Apple ID in Xcode and selecting your Team for both
+>   targets configures them automatically.
+
+### Cutting a sideload release (maintainers)
+
+- **One click:** GitHub → **Actions → Release IPA → Run workflow**. Choose a version bump (`patch` by
+  default). The job builds `Band-ios-v<VER>.ipa` and `Band-ios-latest.ipa`, attaches them to the GitHub
+  Release, and prepends the version to `altstore-source.json` on `main`.
+- **Local:** `./Tools/build-sideload-ipa.sh` (needs Xcode + XcodeGen). Writes `Band-ios-v<VER>.ipa`.
 
 iOS shares the cross-platform Swift packages with macOS, so the number-crunching (recovery, strain,
-HRV, sleep) is the **same code** and produces the same results. iOS is newer and less battle-tested
-than macOS/Android — live BLE on a real iPhone is still being validated by the community, so reports
-are very welcome.
+HRV, sleep) is the **same code** and produces the same results. Live BLE on a real iPhone is still
+being validated, so reports are very welcome.
 
 ## Build from source
 
 Prefer to build it yourself (which also grants HealthKit/widgets under your own Apple ID)? Run
-`xcodegen generate`, then build the **`NOOPiOS`** scheme in Xcode. The reconciliation that brought the
-[PR #42](../../../pull/42) port onto current `main` is summarised in **"Lessons from the fold-in"**
-below.
+`xcodegen generate`, then build the **`Band`** scheme in Xcode (target `NOOPiOS`). The reconciliation
+that brought the [PR #42](../../../pull/42) port onto current `main` is summarised in **"Lessons from
+the fold-in"** below.
 
 > 🛠️ **Signing it under your own Apple ID** (thanks @gingerbeardman for the original recipe). Apple
 > requires a bundle id and app group unique to *your* developer account — otherwise the build collides

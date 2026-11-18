@@ -53,7 +53,65 @@ Screenshots below are from a DEBUG Simulator build seeded with **synthetic**
 
 ## Installation
 
-### Requirements
+### Option A — Install with SideStore or AltStore (No Mac / No Xcode Needed, Auto-Refreshing)
+
+Sideload Band with a free Apple ID. SideStore and AltStore sign the app on your iPhone, refresh it
+before the 7-day free-signing window expires, and pick up new releases from this source.
+
+**Source URL** (copy exactly):
+
+```
+https://raw.githubusercontent.com/jasonjche/band/main/altstore-source.json
+```
+
+Use the **raw** URL. A github.com blob URL returns HTML and the sideloader reports "given data not
+valid JSON".
+
+The sideload build uses bundle id `com.bandapp.noop` and App Group `group.com.bandapp.noop.staging`,
+so Band installs **beside** an existing NOOP app. Keep the **NOOPWidgets** app extension enabled
+when the sideloader asks: it provides Home Screen / Lock Screen widgets and Live Activities.
+
+#### SideStore (recommended)
+
+AltStore on macOS / iOS 26.2 currently fails Apple ID login with `NSCocoaErrorDomain 3840`
+([altstoreio/AltStore#1695](https://github.com/altstoreio/AltStore/issues/1695),
+[#1699](https://github.com/altstoreio/AltStore/issues/1699)). SideStore does not go through
+AltServer's Apple ID sign-in, so it avoids that bug.
+
+1. Install [SideStore](https://sidestore.io) on your iPhone (follow their pairing-file setup once).
+2. Open SideStore → **Browse** / **Sources** → **＋ Add Source** → paste the Source URL above → add.
+3. Open **Band** under the source and tap **Get** / **Install**. On first launch:
+   **Settings → General → VPN & Device Management → Trust** your Apple ID.
+
+#### AltStore
+
+1. Install [AltStore](https://altstore.io) with AltServer (one-time Mac or PC helper) and sign in
+   with your Apple ID.
+2. Open AltStore → **Browse** → tap **＋** (top-left) → paste the Source URL → **Add Source**.
+3. Open **Band** under the source and tap **Free** / **Get**. On first launch, trust your Apple ID
+   as above.
+
+If AltStore reports `NSCocoaErrorDomain 3840` ("The data couldn't be read because it isn't in the
+correct format" / `Encountered unknown tag html on line 1`), that is the upstream 26.2 Apple ID
+login bug, not a problem with Band's `.ipa`. Use SideStore, or install the `.ipa` directly.
+
+#### Direct `.ipa`
+
+Download [`Band-ios-latest.ipa`](https://github.com/jasonjche/band/releases/latest) from
+[Releases](https://github.com/jasonjche/band/releases/latest) and open it with SideStore or AltStore
+(Share → SideStore / AltStore, or the app's **＋** button). Enable **NOOPWidgets** when prompted.
+
+#### Cutting a sideload release (maintainers)
+
+- **One click:** GitHub → **Actions → Release IPA → Run workflow**. Choose a version bump (`patch`
+  by default). The job builds `Band-ios-v<VER>.ipa` and `Band-ios-latest.ipa`, attaches them to the
+  GitHub Release, and prepends the version to `altstore-source.json` on `main`.
+- **Local:** `./Tools/build-sideload-ipa.sh` (needs Xcode +
+  [XcodeGen](https://github.com/yonaskolb/XcodeGen)). Writes `Band-ios-v<VER>.ipa` in the repo root.
+
+### Option B — Build from Source (Xcode / CLI)
+
+#### Requirements
 
 - A Mac with **Xcode** (the **iOS 26 SDK**).
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`.
@@ -63,26 +121,7 @@ Screenshots below are from a DEBUG Simulator build seeded with **synthetic**
 
 `project.yml` is the source of truth. The Xcode project is generated and never committed.
 
-### Important: Bluetooth / strap sync
-
-The WHOOP 5.0 strap keeps history in a **single shared circular flash buffer**. When a client
-acknowledges records, the strap advances the read pointer and **trims** those records off the
-device.
-
-If the official WHOOP app is running in the background on the same phone, iOS will wake it over
-BLE. WHOOP then pulls new samples and trims them before Band syncs. The usual symptom is **missing
-morning or daytime heart-rate gaps**.
-
-On the phone you pair with Band:
-
-1. Force-quit the official WHOOP app, **or**
-2. Revoke its Bluetooth permission, **or**
-3. Unpair the strap from the official app after the initial strap setup.
-
-Band needs exclusive (or at least first) access to the buffer. A spare phone with Band only is the
-cleanest setup.
-
-### Step 1 — Clone and configure signing
+#### Step 1 — Clone and configure signing
 
 ```bash
 git clone https://github.com/jasonjche/band.git
@@ -108,7 +147,7 @@ A **free Apple ID** signs for 7 days (then re-run from Xcode). A **paid Apple De
 signs for a year. Find the Team ID under Membership details; leave `DEVELOPMENT_TEAM` blank only if
 you will pick the team in Xcode by hand.
 
-### Step 2 — Generate and install
+#### Step 2 — Generate and install
 
 ```bash
 xcodegen generate
@@ -142,7 +181,7 @@ once and Developer Mode is on.
 **First launch.** On the iPhone: **Settings → General → VPN & Device Management → Trust** your
 Apple ID. Until you trust the profile, iOS refuses to run the app.
 
-### Step 3 — Seed history (optional)
+#### Step 3 — Seed history (optional)
 
 On day one the 30-day / 90-day personal baselines (HRV, RHR, Sleep Need, Healthspan, Journal Impact)
 are still warming up. Importing a WHOOP data export calibrates them immediately.
@@ -156,6 +195,25 @@ are still warming up. Importing a WHOOP data export calibrates them immediately.
 
 The importer is streaming and memory-bounded. A full-account export is the right input; it is how
 Band learns your history without waiting months on the strap.
+
+### Important: Bluetooth / strap sync
+
+The WHOOP 5.0 strap keeps history in a **single shared circular flash buffer**. When a client
+acknowledges records, the strap advances the read pointer and **trims** those records off the
+device.
+
+If the official WHOOP app is running in the background on the same phone, iOS will wake it over
+BLE. WHOOP then pulls new samples and trims them before Band syncs. The usual symptom is **missing
+morning or daytime heart-rate gaps**.
+
+On the phone you pair with Band:
+
+1. Force-quit the official WHOOP app, **or**
+2. Revoke its Bluetooth permission, **or**
+3. Unpair the strap from the official app after the initial strap setup.
+
+Band needs exclusive (or at least first) access to the buffer. A spare phone with Band only is the
+cleanest setup.
 
 ## Layout
 

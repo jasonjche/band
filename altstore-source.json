@@ -1,0 +1,99 @@
+{
+  "name": "Band",
+  "identifier": "com.bandapp.source",
+  "sourceURL": "https://raw.githubusercontent.com/jasonjche/band/main/altstore-source.json",
+  "subtitle": "A personal, offline iPhone companion for the WHOOP 5.0 strap.",
+  "description": "An AltStore / SideStore source for Band. Add this source for one-tap install and auto-refreshing updates of the sideloaded iOS build.\n\nBand pairs over Bluetooth, keeps every reading on-device, and computes sleep, recovery, strain, stress and the rest locally. There is no account, no server and no telemetry.\n\nBand is a fork of NOOP and is not affiliated with WHOOP.",
+  "iconURL": "https://raw.githubusercontent.com/jasonjche/band/main/StrandiOS/Resources/Assets.xcassets/AppIcon.appiconset/icon_1024.png",
+  "website": "https://github.com/jasonjche/band",
+  "tintColor": "149A78",
+  "apps": [
+    {
+      "name": "Band",
+      "bundleIdentifier": "com.bandapp.noop",
+      "developerName": "Band",
+      "subtitle": "Read your own WHOOP 5.0 strap, fully offline.",
+      "localizedDescription": "Band talks to a WHOOP 5.0 strap you own directly over Bluetooth — no WHOOP app, no subscription, no cloud. Sleep, recovery, strain, stress and Healthspan are computed on-device and stored only on your iPhone.\n\nSideload builds use bundle id com.bandapp.noop and App Group group.com.bandapp.noop.staging, so Band installs beside an existing NOOP app.\n\nKeep the NOOPWidgets extension enabled when prompted so Home / Lock Screen widgets and Live Activities work.\n\nIndependent and experimental; not affiliated with WHOOP. Source: https://github.com/jasonjche/band",
+      "iconURL": "https://raw.githubusercontent.com/jasonjche/band/main/StrandiOS/Resources/Assets.xcassets/AppIcon.appiconset/icon_1024.png",
+      "tintColor": "149A78",
+      "category": "healthcare-fitness",
+      "screenshotURLs": [
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/home.png",
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/sleep.png",
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/recovery.png",
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/strain.png",
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/healthspan.png",
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/stress.png"
+      ],
+      "screenshots": [
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/home.png",
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/sleep.png",
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/recovery.png",
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/strain.png",
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/healthspan.png",
+        "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/stress.png"
+      ],
+      "version": "12.1.0",
+      "buildVersion": "439",
+      "versionDate": "2026-11-18",
+      "versionDescription": "Band 12.1.0. Sideload IPA for SideStore / AltStore.",
+      "downloadURL": "https://github.com/jasonjche/band/releases/latest/download/Band-ios-latest.ipa",
+      "size": 19955860,
+      "minOSVersion": "17.0",
+      "appPermissions": {
+        "entitlements": [
+          "com.apple.developer.healthkit",
+          "com.apple.developer.healthkit.access",
+          "com.apple.security.application-groups"
+        ],
+        "privacy": {
+          "NSBluetoothAlwaysUsageDescription": "Band connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device.",
+          "NSHealthShareUsageDescription": "Band reads your own Apple Health data on-device to compute recovery, strain, and sleep. Nothing leaves your device.",
+          "NSHealthUpdateUsageDescription": "Band writes the metrics it computes from your strap back into Apple Health, on-device and only when you allow it.",
+          "NSLocationWhenInUseUsageDescription": "Band records your route during an outdoor workout to show distance, pace, and a map, and keeps recording while the screen is off. The route stays on your device. Nothing leaves it.",
+          "NSMotionUsageDescription": "Band reads your iPhone's step count for a walking or running workout to show steps in the activity summary. It stays on your device. Nothing leaves it.",
+          "NSMicrophoneUsageDescription": "Band uses the microphone to let you ask the coach a question by voice. The audio is transcribed on-device and never leaves your iPhone.",
+          "NSSpeechRecognitionUsageDescription": "Band transcribes your question on-device so you can ask the coach out loud instead of typing. Audio never leaves your iPhone."
+        }
+      },
+      "permissions": [
+        {
+          "type": "bluetooth",
+          "usageDescription": "Band connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device."
+        },
+        {
+          "type": "background-fetch",
+          "usageDescription": "Band syncs strap data, writes already-banked metrics to Apple Health, and refreshes widgets while it is in the background."
+        },
+        {
+          "type": "location",
+          "usageDescription": "Band records your route during an outdoor workout to show distance, pace, and a map, and keeps recording while the screen is off. The route stays on your device. Nothing leaves it."
+        },
+        {
+          "type": "motion",
+          "usageDescription": "Band reads your iPhone's step count for a walking or running workout to show steps in the activity summary. It stays on your device. Nothing leaves it."
+        },
+        {
+          "type": "microphone",
+          "usageDescription": "Band uses the microphone to let you ask the coach a question by voice. The audio is transcribed on-device and never leaves your iPhone."
+        },
+        {
+          "type": "speech-recognition",
+          "usageDescription": "Band transcribes your question on-device so you can ask the coach out loud instead of typing. Audio never leaves your iPhone."
+        }
+      ],
+      "versions": [
+        {
+          "version": "12.1.0",
+          "buildVersion": "439",
+          "date": "2026-11-18",
+          "localizedDescription": "Band 12.1.0. Sideload IPA for SideStore / AltStore.",
+          "downloadURL": "https://github.com/jasonjche/band/releases/latest/download/Band-ios-latest.ipa",
+          "size": 19955860,
+          "minOSVersion": "17.0"
+        }
+      ]
+    }
+  ],
+  "news": []
+}
