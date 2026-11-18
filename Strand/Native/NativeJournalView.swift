@@ -101,9 +101,11 @@ struct NativeJournalView: View {
             if logging { seedDraft() }
         }
         .onChange(of: catalog.items) { _ in refreshFormItems() }
+        #if os(iOS)
         .navigationDestination(for: NativeJournalImpactRoute.self) { _ in
             NativeJournalImpactView()
         }
+        #endif
     }
 
     @ViewBuilder private var journalBody: some View {

@@ -167,6 +167,8 @@ struct NativeDataBackupView: View {
         }
         #if os(iOS)
         .listStyle(.insetGrouped)
+        #else
+        .listStyle(.inset)
         #endif
         .appleSettingsChrome("Data & Backup")
     }

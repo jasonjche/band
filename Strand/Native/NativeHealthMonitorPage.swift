@@ -64,9 +64,11 @@ struct NativeHealthMonitorPage: View {
         }
         .navigationTitle("Health Monitor")
         .modifier(NativeInlineTitle())
+        #if os(iOS)
         .navigationDestination(for: NativeHeartRateRoute.self) { _ in
             NativeHeartRatePage()
         }
+        #endif
         .background {
             NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
             NativeProfileSink { profileHandle = $0 }
