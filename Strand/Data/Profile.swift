@@ -129,7 +129,12 @@ final class ProfileStore: ObservableObject {
         weightKg = d.object(forKey: K.weight) as? Double ?? 75
         heightCm = d.object(forKey: K.height) as? Double ?? 178
         waistCm = d.object(forKey: K.waist) as? Double ?? 0
-        hrMaxOverride = d.object(forKey: K.hrMax) as? Int ?? 0
+        // A stepper that counted up from Auto (0) could save 1…119 bpm; no adult max is that low,
+        // and a bogus override silently breaks zones and strain everywhere. Treat it as Auto.
+        let storedHRMax = d.object(forKey: K.hrMax) as? Int ?? 0
+        let sanitizedHRMax = Self.sanitizedHRMaxOverride(storedHRMax)
+        if sanitizedHRMax != storedHRMax { d.set(sanitizedHRMax, forKey: K.hrMax) }
+        hrMaxOverride = sanitizedHRMax
         hrMaxObserved = d.object(forKey: K.hrMaxObserved) as? Int ?? 0
         let storedThresholds = d.string(forKey: K.hrZoneThresholds)?
             .split(separator: ",").compactMap { Int($0) } ?? []
@@ -279,6 +284,26 @@ final class ProfileStore: ObservableObject {
         guard floor <= ceiling else { return }   // no room between neighbours -> no-op (parity w/ Kotlin)
         next[index] = min(max(next[index] + (up ? 1 : -1), floor), ceiling)
         hrZoneThresholds = next
+    }
+
+    /// Plausible manual max heart rate. Outside it the override resolves to Auto (0).
+    nonisolated static let hrMaxOverrideRange: ClosedRange<Int> = 120...230
+
+    nonisolated static func sanitizedHRMaxOverride(_ value: Int) -> Int {
+        hrMaxOverrideRange.contains(value) ? value : 0
+    }
+
+    /// One stepper tick. From Auto the first tick starts at the automatic value ±1, never at 1 bpm.
+    nonisolated static func steppedHRMaxOverride(_ override: Int, automatic: Int, up: Bool) -> Int {
+        let base = override > 0 ? override : automatic
+        let next = base + (up ? 1 : -1)
+        return min(max(next, hrMaxOverrideRange.lowerBound), hrMaxOverrideRange.upperBound)
+    }
+
+    /// The Max Heart Rate stepper's action. Auto's value is today's resolved max.
+    func stepHRMaxOverride(up: Bool) {
+        let automatic = hrMaxOverride > 0 ? hrMaxOverride : hrMax
+        hrMaxOverride = Self.steppedHRMaxOverride(hrMaxOverride, automatic: automatic, up: up)
     }
 
     nonisolated static func validZoneThresholds(_ values: [Int]) -> Bool {

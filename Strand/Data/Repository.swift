@@ -3056,37 +3056,23 @@ final class Repository: ObservableObject {
         guard let store = await ensureStore() else { return [] }
         let now = Int(Date().timeIntervalSince1970)
         let lo = now - days * 86_400, hi = now + 86_400
-        // UNION every registered WHOOP + canonical (and computed siblings) so workouts banked before a
-        // re-add remain visible alongside every retained strap's live workouts.
-        // De-dup identical same-source rows that appear under both union ids by natural key (the cross-SOURCE
-        // dedup below only collapses strap-vs-Apple twins, not a row present in two strap namespaces).
-        var rows: [WorkoutRow] = []
-        // Every namespace in one list, shared with `deleteWorkout` so the two cannot disagree about where a
-        // row lives. Covers each raw id, its computed `-noop` sibling, Apple Health, imported lifting
-        // sessions (Hevy / Liftosaur) and imported activity FILES (#29: FIT / GPX / TCX, or a successful
-        // file import never appears here at all). HR is reconciled from the strap trace at the end.
-        for id in Self.workoutNamespaces(rawIds: rawPhysiologyReadIds(store: store)) {
-            rows += (try? await store.workouts(deviceId: id, from: lo, to: hi, limit: 5000)) ?? []
-        }
-        rows = Self.dedupWorkoutsByNaturalKey(rows)
-        let spans = WorkoutSource.parseDismissedSpans(dismissedDetectedSpans)
-        // #687: collapse the SAME activity tracked live under the strap AND imported from Health Connect /
-        // Apple Health into one richer entry , they sit under different sources so without this they show
-        // as two sessions. Dedup runs on the dismissed-filtered set, before the final newest-first sort.
-        let filtered = rows.filter { !WorkoutSource.isDismissed($0, spans: spans) }
-        // Workouts & GPS test mode: when on, run the dedup twin which returns the BYTE-IDENTICAL kept list
-        // plus a trace line per collapsed cross-source pair, tagged `.workouts`. Zero-cost when off (the gate
-        // is one UserDefaults bool read inside emitWorkouts), and the kept list equals dedupCrossSource(...)
-        // exactly, so the workout list the screen shows is unchanged.
-        let deduped: [WorkoutRow]
-        if TestCentre.active(.workouts), workoutsLog != nil {
-            let (kept, trace) = WorkoutSource.dedupCrossSourceTrace(filtered)
+        // Capture MainActor-only inputs as values so the store reads, natural-key dedup, dismissed
+        // filter, cross-source collapse and sort can run off the main actor. Zone-cache mutation
+        // and the display HR projection hop back.
+        let namespaces = Self.workoutNamespaces(rawIds: rawPhysiologyReadIds(store: store))
+        let dismissed = dismissedDetectedSpans
+        let includeDedupTrace = TestCentre.active(.workouts) && workoutsLog != nil
+        let (visible, trace) = await Task.detached(priority: .utility) {
+            await Self.loadVisibleWorkoutRows(
+                store: store,
+                namespaces: namespaces,
+                from: lo, to: hi,
+                dismissedTokens: dismissed,
+                includeDedupTrace: includeDedupTrace)
+        }.value
+        if includeDedupTrace {
             for line in trace { emitWorkouts(line) }
-            deduped = kept
-        } else {
-            deduped = WorkoutSource.dedupCrossSource(filtered)
         }
-        let visible = deduped.sorted { $0.startTs > $1.startTs }
         let zoneMap = await Task.detached(priority: .utility) {
             var map: [String: [Double]] = [:]
             for row in visible {
@@ -3098,6 +3084,46 @@ final class Repository: ObservableObject {
         }.value
         for (k, v) in zoneMap { zonesByRowId[k] = v }
         return await reconcileWorkoutHrWithTrace(visible, store: store)
+    }
+
+    /// Store reads + the same dismissed / natural-key / cross-source collapse `workoutRows` used
+    /// to run on the main actor. `nonisolated static` so a `Task.detached` can call it with value
+    /// inputs (WhoopStore is an actor; the id lists are strings). Trace lines are returned rather
+    /// than emitted so the MainActor sink still logs them.
+    nonisolated private static func loadVisibleWorkoutRows(
+        store: WhoopStore,
+        namespaces: [String],
+        from lo: Int,
+        to hi: Int,
+        dismissedTokens: [String],
+        includeDedupTrace: Bool
+    ) async -> (rows: [WorkoutRow], trace: [String]) {
+        // UNION every registered WHOOP + canonical (and computed siblings) so workouts banked before a
+        // re-add remain visible alongside every retained strap's live workouts.
+        // De-dup identical same-source rows that appear under both union ids by natural key (the cross-SOURCE
+        // dedup below only collapses strap-vs-Apple twins, not a row present in two strap namespaces).
+        var rows: [WorkoutRow] = []
+        // Every namespace in one list, shared with `deleteWorkout` so the two cannot disagree about where a
+        // row lives. Covers each raw id, its computed `-noop` sibling, Apple Health, imported lifting
+        // sessions (Hevy / Liftosaur) and imported activity FILES (#29: FIT / GPX / TCX, or a successful
+        // file import never appears here at all). HR is reconciled from the strap trace at the end.
+        for id in namespaces {
+            rows += (try? await store.workouts(deviceId: id, from: lo, to: hi, limit: 5000)) ?? []
+        }
+        rows = dedupWorkoutsByNaturalKey(rows)
+        let spans = WorkoutSource.parseDismissedSpans(dismissedTokens)
+        // #687: collapse the SAME activity tracked live under the strap AND imported from Health Connect /
+        // Apple Health into one richer entry , they sit under different sources so without this they show
+        // as two sessions. Dedup runs on the dismissed-filtered set, before the final newest-first sort.
+        let filtered = rows.filter { !WorkoutSource.isDismissed($0, spans: spans) }
+        // Workouts & GPS test mode: when on, run the dedup twin which returns the BYTE-IDENTICAL kept list
+        // plus a trace line per collapsed cross-source pair, tagged `.workouts`. Zero-cost when off, and the
+        // kept list equals dedupCrossSource(...) exactly, so the workout list the screen shows is unchanged.
+        if includeDedupTrace {
+            let (kept, trace) = WorkoutSource.dedupCrossSourceTrace(filtered)
+            return (kept.sorted { $0.startTs > $1.startTs }, trace)
+        }
+        return (WorkoutSource.dedupCrossSource(filtered).sorted { $0.startTs > $1.startTs }, [])
     }
 
     /// DISPLAY-ONLY: reconcile each workout's shown Avg/Max HR with the strap trace that actually drives

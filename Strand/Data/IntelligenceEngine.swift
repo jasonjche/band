@@ -3145,7 +3145,7 @@ final class IntelligenceEngine: ObservableObject {
         let hrIds = Repository.workoutHrDeviceIds(source: apple, activeStrapId: deviceId,
                                                   importedIds: repo.importedReadIds)
         var filled: [WorkoutRow] = []
-        for w in keep where w.strain == nil || w.avgHr == nil {
+        for w in keep where w.strain == nil || w.avgHr == nil || (w.strain == 0 && (w.avgHr ?? 0) > 0) {
             var samples = AppleWorkoutHRStore.load(startTs: w.startTs, sport: w.sport) ?? []
             if samples.isEmpty {
                 samples = (try? await store.hrSamples(deviceId: apple, from: w.startTs, to: w.endTs,

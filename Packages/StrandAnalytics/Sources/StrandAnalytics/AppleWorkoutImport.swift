@@ -15,7 +15,7 @@ public enum AppleWorkoutImport {
 
     public static let genericSport = "Workout"
     public static let windowToleranceSec = 60
-    public static let backfillVersion = 1
+    public static let backfillVersion = 2
 
     public static func isGenericSport(_ sport: String) -> Bool {
         sport.compare(genericSport, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
@@ -66,13 +66,15 @@ public enum AppleWorkoutImport {
     /// is no HR to score.
     public static func filled(_ row: WorkoutRow, samples: [HRSample], maxHR: Double,
                               restingHR: Double = BandStrain.defaultRestingHR) -> WorkoutRow? {
-        guard row.strain == nil || row.avgHr == nil || row.maxHr == nil else { return nil }
+        // A stored 0 strain on a row with HR is a scoring failure (e.g. a bogus max HR), not a rest.
+        let strainMissing = row.strain == nil || (row.strain == 0 && (row.avgHr ?? 0) > 0)
+        guard strainMissing || row.avgHr == nil || row.maxHr == nil else { return nil }
         guard let s = scored(samples: samples, maxHR: maxHR, restingHR: restingHR) else { return nil }
         return WorkoutRow(
             startTs: row.startTs, endTs: row.endTs, sport: row.sport, source: row.source,
             durationS: row.durationS, energyKcal: row.energyKcal,
             avgHr: row.avgHr ?? s.avgHr, maxHr: row.maxHr ?? s.maxHr,
-            strain: row.strain ?? s.strain100,
+            strain: strainMissing ? s.strain100 : row.strain,
             distanceM: row.distanceM, zonesJSON: row.zonesJSON, notes: row.notes, steps: row.steps)
     }
 }

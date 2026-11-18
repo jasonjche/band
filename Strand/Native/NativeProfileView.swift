@@ -40,8 +40,14 @@ struct NativeProfileView: View {
             }
 
             Section {
-                Stepper(value: $profile.hrMaxOverride, in: 0...230, step: 1) {
+                Stepper(
+                    onIncrement: { profile.stepHRMaxOverride(up: true) },
+                    onDecrement: { profile.stepHRMaxOverride(up: false) }
+                ) {
                     LabeledContent("Max Heart Rate", value: hrMaxLabel)
+                }
+                if profile.hrMaxOverride > 0 {
+                    Button("Use Automatic Max Heart Rate") { profile.hrMaxOverride = 0 }
                 }
                 Toggle("Custom HR Zones", isOn: Binding(
                     get: { profile.hasCustomHRZones },

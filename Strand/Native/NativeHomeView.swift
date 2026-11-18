@@ -441,6 +441,7 @@ struct NativeHomeView: View {
             strainTargetFraction: strainTargetFraction
         )
         .equatable()
+        .padding(.bottom, HomeMonitorTileLayout.ringsGap)
         HStack(alignment: .top, spacing: HomeMonitorTileLayout.spacing) {
             Button {
                 path.wrappedValue.append(TabRoute.healthMonitor)
@@ -957,6 +958,8 @@ struct HomeRingsRow: View {
 
 enum HomeMonitorTileLayout {
     static let spacing: CGFloat = 10
+    /// Breathing room between the ring labels and the monitor tiles.
+    static let ringsGap: CGFloat = 12
     static let valueMinHeight: CGFloat = 28
     static let captionMinHeight: CGFloat = 18
 }

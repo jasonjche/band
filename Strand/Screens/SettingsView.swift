@@ -1246,7 +1246,8 @@ struct SettingsView: View {
             }
             .fixedSize()
             Stepper("Max heart rate override",
-                    value: $profile.hrMaxOverride, in: 0...230, step: 1)
+                    onIncrement: { profile.stepHRMaxOverride(up: true) },
+                    onDecrement: { profile.stepHRMaxOverride(up: false) })
                 .labelsHidden()
                 .accessibilityLabel("Max heart rate override, \(profile.hrMaxOverride == 0 ? "automatic" : "\(profile.hrMaxOverride) bpm")")
         }
