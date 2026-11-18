@@ -272,13 +272,23 @@ struct NativeHomeView: View {
                         canGoBack: canGoBack,
                         canGoForward: canGoForward,
                         onBack: { shiftDay(-1) },
-                        onForward: { shiftDay(1) }
+                        onForward: { shiftDay(1) },
+                        onTitleTap: { showingCalendar = true }
                     )
                 }
                 ToolbarItem(placement: .automatic) {
                     HomeStrapStatus(isPullRefreshing: isPullRefreshing)
                 }
                 #endif
+            }
+            .sheet(isPresented: $showingCalendar) {
+                HomeCalendarSheet(
+                    selected: selectedDay,
+                    range: calendarRange,
+                    recoveryByDay: calendarRecovery
+                ) { picked in
+                    selectedDay = Calendar.current.startOfDay(for: picked)
+                }
             }
             .accessibilityElement(children: .contain)
     }
@@ -304,15 +314,6 @@ struct NativeHomeView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .sheet(isPresented: $showingCalendar) {
-                    HomeCalendarSheet(
-                        selected: selectedDay,
-                        range: calendarRange,
-                        recoveryByDay: calendarRecovery
-                    ) { picked in
-                        selectedDay = Calendar.current.startOfDay(for: picked)
-                    }
-                }
                 #endif
                 if let model = dayModel, !storeEmpty {
                     homeContent(model)
@@ -875,8 +876,12 @@ struct HomeCalendarSheet: View {
             .animation(nil, value: month)
             Spacer(minLength: 0)
         }
+        #if os(iOS)
         .presentationDetents([.height(HomeCalendarSheetLayout.compactHeight), .large])
         .presentationDragIndicator(.visible)
+        #else
+        .frame(width: 420, height: HomeCalendarSheetLayout.compactHeight)
+        #endif
     }
 
     private func dayCell(_ date: Date?) -> HomeCalendarDayCell {
