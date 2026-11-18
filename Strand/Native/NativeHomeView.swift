@@ -29,17 +29,36 @@ enum HomeSectionOrder {
 
 /// Pull-to-refresh on Home: kick the #334 user-initiated strap sync (`BLEManager.syncNow`),
 /// hold the system spinner until that offload ends or 20 s, then re-read. Disconnected → reload only.
+/// Always holds at least `minimumVisible` so the native spinner is on screen even when already caught up.
 enum NativeHomeSync {
     static let timeout: TimeInterval = 20
+    static let minimumVisible: TimeInterval = 0.6
 
     @MainActor
     static func pull(ble: BLEManager, repo: Repository, reload: () async -> Void) async {
+        let started = Date()
         if ble.state.historyReady {
             ble.syncNow()
             await waitForBackfill(ble)
             await repo.refresh()
         }
         await reload()
+        await holdVisible(since: started)
+    }
+
+    static func remainingHold(
+        since started: Date,
+        now: Date = Date(),
+        minimum: TimeInterval = minimumVisible
+    ) -> TimeInterval {
+        max(0, minimum - now.timeIntervalSince(started))
+    }
+
+    @MainActor
+    static func holdVisible(since started: Date, minimum: TimeInterval = minimumVisible) async {
+        let remaining = remainingHold(since: started, minimum: minimum)
+        guard remaining > 0 else { return }
+        try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
     }
 
     @MainActor
@@ -56,6 +75,26 @@ enum NativeHomeSync {
         while ble.state.backfilling, Date() < deadline {
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
+    }
+}
+
+enum HomeStrapStatusMode: Equatable {
+    case idle
+    case syncing
+    case synced
+}
+
+enum HomeStrapStatusLogic {
+    static let syncedHold: TimeInterval = 1.2
+
+    static func mode(
+        isPullRefreshing: Bool,
+        backfilling: Bool,
+        showSynced: Bool
+    ) -> HomeStrapStatusMode {
+        if isPullRefreshing || backfilling { return .syncing }
+        if showSynced { return .synced }
+        return .idle
     }
 }
 
@@ -97,6 +136,7 @@ struct NativeHomeView: View {
     @Environment(\.nativeNavigationPath) private var path
     @Environment(\.nativeContinuityActiveID) private var continuityID
     @State private var showingCalendar = false
+    @State private var isPullRefreshing = false
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
     @AppStorage(UnitPrefs.temperatureKey) private var temperatureRaw = ""
@@ -177,10 +217,6 @@ struct NativeHomeView: View {
                     }
                 )
             }
-            .refreshable {
-                guard let ble = bleHandle, let repo = repoHandle else { return }
-                await NativeHomeSync.pull(ble: ble, repo: repo, reload: reload)
-            }
             .navigationTitle("Home")
             .environment(\.nativeSelectedDay, selectedDay)
             .nativeStyleBridge()
@@ -240,7 +276,7 @@ struct NativeHomeView: View {
                     )
                 }
                 ToolbarItem(placement: .automatic) {
-                    HomeStrapStatus()
+                    HomeStrapStatus(isPullRefreshing: isPullRefreshing)
                 }
                 #endif
             }
@@ -264,7 +300,7 @@ struct NativeHomeView: View {
                     HStack {
                         HomeStreakBadge(count: sleepStreak)
                         Spacer(minLength: 0)
-                        HomeStrapStatus()
+                        HomeStrapStatus(isPullRefreshing: isPullRefreshing)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -290,6 +326,16 @@ struct NativeHomeView: View {
                 }
             }
             .padding(.bottom, 136)
+        }
+        .refreshable {
+            guard let ble = bleHandle, let repo = repoHandle else { return }
+            isPullRefreshing = true
+            StrandHaptic.light.play()
+            defer {
+                isPullRefreshing = false
+                StrandHaptic.light.play()
+            }
+            await NativeHomeSync.pull(ble: ble, repo: repo, reload: reload)
         }
     }
 
@@ -1903,9 +1949,11 @@ enum NativeHomeCharts {
                                 hours: [NativeHourPoint],
                                 exclusions: [BandStress.ExclusionSpan]
                                ) {
+        // Score with an orthostatic waking floor, skip BandStress's internal smooth so
+        // unlogged walking can be held to the pre-walk calm *before* the 15-minute mean.
         let timeline = BandStress.timeline(
             buckets: buckets.map { (ts: $0.ts, bpm: $0.bpm) },
-            baselines: baselines,
+            baselines: calibratedStressBaselines(baselines),
             sleepStart: sleepStart.map { Int($0.timeIntervalSince1970) },
             sleepEnd: sleepEnd.map { Int($0.timeIntervalSince1970) },
             workouts: workouts.map {
@@ -1914,9 +1962,18 @@ enum NativeHomeCharts {
             rmssdByBucket: rmssdByBucket,
             activityBuckets: activityBuckets,
             recovery: recovery,
-            smoothRadius: NativeHomeCharts.stressDisplayRadius
+            smoothRadius: 0
         )
-        let hours = timeline.hours.map { point in
+        let held = holdWalkingStress(
+            hours: timeline.hours,
+            activityBuckets: activityBuckets,
+            workouts: workouts
+        )
+        let smoothed = BandStress.smoothCentered(
+            points: held,
+            radius: NativeHomeCharts.stressDisplayRadius
+        )
+        let hours = smoothed.map { point in
             NativeHourPoint(
                 time: Date(timeIntervalSince1970: TimeInterval(point.ts)),
                 value: point.value
@@ -1929,11 +1986,60 @@ enum NativeHomeCharts {
     /// WHOOP's smooth trace. The 5-minute default in `BandStress` stayed too jittery on the phone.
     static let stressDisplayRadius = 7
 
+    /// Sitting upright is about this many bpm above the 4 AM supine overnight trough.
+    static let wakeOrthostaticBPM: Double = 10
+    /// Sleep scoring stays closer to the overnight trough than waking does.
+    static let sleepOrthostaticBPM: Double = 5
+    /// Unlogged walking may not lift the plotted line above Low.
+    static let walkingStressCap: Double = 0.9
+
+    /// Overnight RHR is a supine deep-sleep trough. Waking scores need a sitting/standing floor
+    /// so calm desk HR does not read Medium/High.
+    static func calibratedStressBaselines(_ baselines: BandStress.Baselines) -> BandStress.Baselines {
+        BandStress.Baselines(
+            wakeRestingHR: baselines.wakeRestingHR + wakeOrthostaticBPM,
+            sleepRestingHR: baselines.sleepRestingHR + sleepOrthostaticBPM,
+            rmssd: baselines.rmssd
+        )
+    }
+
+    /// Hold unlogged walking minutes to the pre-walk calm (or Low) so a 100 bpm stroll
+    /// cannot score 3.0 and bleed into the surrounding sitting minutes.
+    static func holdWalkingStress(
+        hours: [(ts: Int, value: Double)],
+        activityBuckets: Set<Int>,
+        workouts: [(start: Date, end: Date)]
+    ) -> [(ts: Int, value: Double)] {
+        guard !activityBuckets.isEmpty else { return hours }
+        var lastCalm: Double?
+        return hours.map { point in
+            let walking = activityBuckets.contains(point.ts) && !bucketIsWorkout(point.ts, workouts: workouts)
+            if walking {
+                return (point.ts, lastCalm ?? min(point.value, walkingStressCap))
+            }
+            lastCalm = point.value
+            return point
+        }
+    }
+
+    private static func bucketIsWorkout(_ ts: Int, workouts: [(start: Date, end: Date)]) -> Bool {
+        let end = ts + BandStress.bucketSeconds
+        for bout in workouts {
+            let start = Int(bout.start.timeIntervalSince1970)
+            let stop = Int(bout.end.timeIntervalSince1970)
+            if ts < stop && start < end { return true }
+        }
+        return false
+    }
+
     static func stressValue(bpm: Double,
                             baselines: BandStress.Baselines = .fallback,
                             asleep: Bool = false,
                             rmssd: Double? = nil) -> Double {
-        BandStress.score(bpm: bpm, rmssd: rmssd, isAsleep: asleep, baselines: baselines)
+        BandStress.score(
+            bpm: bpm, rmssd: rmssd, isAsleep: asleep,
+            baselines: calibratedStressBaselines(baselines)
+        )
     }
 
     /// Last sample if the series exists, else the daily HRV/RHR score, else nil. Never 1.0 or 0 as a stand-in.
@@ -2013,18 +2119,30 @@ private struct NativeHomeEnvSink: View {
 /// Strap battery and a sync spinner beside the date stepper.
 /// Observes only battery %, charging, connected and backfilling via `.onReceive` of those
 /// publishers (removeDuplicates into `@State`), not the whole `LiveState` object.
-/// The spinner appears only when an offload has run for three seconds; routine catch-ups stay silent.
+/// Pull-to-refresh and an in-flight offload show "Syncing…"; a connected strap then flashes "Synced".
 struct HomeStrapStatus: View {
+    var isPullRefreshing: Bool = false
     @State private var connected = false
     @State private var batteryPct: Double?
     @State private var charging: Bool?
     @State private var backfilling = false
-    @State private var showSync = false
+    @State private var showSynced = false
+    @State private var syncedGeneration = 0
 
     private var percent: Int? {
         guard connected else { return nil }
         return LiveConsoleReadout.batteryPercent(
             activeIsWhoop: true, whoopPct: batteryPct, ringPct: nil
+        )
+    }
+
+    private var isSyncing: Bool { isPullRefreshing || backfilling }
+
+    private var mode: HomeStrapStatusMode {
+        HomeStrapStatusLogic.mode(
+            isPullRefreshing: isPullRefreshing,
+            backfilling: backfilling,
+            showSynced: showSynced
         )
     }
 
@@ -2049,10 +2167,17 @@ struct HomeStrapStatus: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if showSync {
+            switch mode {
+            case .syncing:
                 ProgressView()
                     .controlSize(.small)
-                    .accessibilityLabel("Syncing")
+                Text("Syncing…")
+                    .font(.footnote.weight(.medium))
+            case .synced:
+                Text("Synced")
+                    .font(.footnote.weight(.medium))
+            case .idle:
+                EmptyView()
             }
             if let percent {
                 HStack(spacing: 3) {
@@ -2063,20 +2188,39 @@ struct HomeStrapStatus: View {
                         .font(.footnote)
                 }
                 .foregroundStyle(batteryColor(percent: percent))
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Strap battery \(percent) percent")
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(statusAccessibility)
         .background { Sink(connected: $connected, batteryPct: $batteryPct,
                            charging: $charging, backfilling: $backfilling) }
-        .task(id: backfilling) {
-            guard backfilling else {
-                showSync = false
-                return
+        .onChangeCompat(of: isSyncing) { syncing in
+            if syncing {
+                showSynced = false
+                syncedGeneration += 1
+            } else if connected {
+                showSynced = true
+                syncedGeneration += 1
             }
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if !Task.isCancelled { showSync = true }
         }
+        .task(id: syncedGeneration) {
+            guard showSynced else { return }
+            try? await Task.sleep(nanoseconds: UInt64(HomeStrapStatusLogic.syncedHold * 1_000_000_000))
+            if !Task.isCancelled { showSynced = false }
+        }
+    }
+
+    private var statusAccessibility: String {
+        var parts: [String] = []
+        switch mode {
+        case .syncing: parts.append("Syncing")
+        case .synced: parts.append("Synced")
+        case .idle: break
+        }
+        if let percent {
+            parts.append("Strap battery \(percent) percent")
+        }
+        return parts.joined(separator: ", ")
     }
 
     /// Holds `@EnvironmentObject LiveState` so HomeStrapStatus itself does not. Forwards only

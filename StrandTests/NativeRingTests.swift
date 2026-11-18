@@ -17,6 +17,15 @@ final class NativeRingTests: XCTestCase {
         XCTAssertEqual(NativeRingMotion.targetTickSpan, 0.018, accuracy: 1e-12)
         XCTAssertEqual(NativeRingMotion.targetTick(from: 0.8...0.8), 0.8, accuracy: 1e-12)
     }
+
+    func testTargetBoundsKeepStartAndEndMarkersOnTheTrack() {
+        XCTAssertEqual(NativeRingMotion.targetBounds(from: 0.4...0.6).lowerBound, 0.4, accuracy: 1e-12)
+        XCTAssertEqual(NativeRingMotion.targetBounds(from: 0.4...0.6).upperBound, 0.6, accuracy: 1e-12)
+        XCTAssertEqual(NativeRingMotion.targetBounds(from: -0.2...1.4).lowerBound, 0, accuracy: 1e-12)
+        XCTAssertEqual(NativeRingMotion.targetBounds(from: -0.2...1.4).upperBound, 1, accuracy: 1e-12)
+        XCTAssertGreaterThan(NativeRingMotion.targetMarkerWidth, 2)
+        XCTAssertGreaterThan(NativeRingMotion.targetMarkerOverhang, 3)
+    }
 }
 
 final class NativeChartTicksTests: XCTestCase {

@@ -371,6 +371,7 @@ struct NativeAddPastActivityForm: View {
     var editing: WorkoutRow? = nil
     var workouts: [WorkoutRow] = []
     var onSave: (_ row: WorkoutRow, _ replacing: WorkoutRow?) -> Void
+    var onDelete: (() -> Void)? = nil
     var embedded: Bool = false
 
     @Environment(\.dismiss) private var dismiss
@@ -381,17 +382,20 @@ struct NativeAddPastActivityForm: View {
     @State private var hrSamples: [NativeAddActivityChartLogic.Sample] = []
     @State private var storedWorkouts: [WorkoutRow]
     @State private var hrLoadedDay: Int?
+    @State private var confirmingDelete = false
 
     init(
         editing: WorkoutRow? = nil,
         workouts: [WorkoutRow] = [],
         embedded: Bool = false,
-        onSave: @escaping (_ row: WorkoutRow, _ replacing: WorkoutRow?) -> Void
+        onSave: @escaping (_ row: WorkoutRow, _ replacing: WorkoutRow?) -> Void,
+        onDelete: (() -> Void)? = nil
     ) {
         self.editing = editing
         self.workouts = workouts
         self.embedded = embedded
         self.onSave = onSave
+        self.onDelete = onDelete
         let defaultEnd = Date()
         _start = State(initialValue: editing.map { Date(timeIntervalSince1970: TimeInterval($0.startTs)) }
                        ?? defaultEnd.addingTimeInterval(-45 * 60))
@@ -447,13 +451,24 @@ struct NativeAddPastActivityForm: View {
             }
             Section {
                 DatePicker("Start", selection: $start, in: ...Date(), displayedComponents: [.date, .hourAndMinute])
+                NativeTimeWindowNudgeRow { minutes in
+                    applyIndependent(start: start.addingTimeInterval(TimeInterval(minutes * 60)), end: end)
+                }
                 DatePicker("End", selection: $end, in: ...Date(), displayedComponents: [.date, .hourAndMinute])
+                NativeTimeWindowNudgeRow { minutes in
+                    applyIndependent(start: start, end: end.addingTimeInterval(TimeInterval(minutes * 60)))
+                }
                 HStack {
                     Text("Duration")
                     Spacer()
                     Text(NativeAddActivityLogic.durationLabel(from: start, to: end))
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
+                }
+            }
+            if onDelete != nil {
+                Section {
+                    Button("Delete this activity", role: .destructive) { confirmingDelete = true }
                 }
             }
         }
@@ -470,6 +485,15 @@ struct NativeAddPastActivityForm: View {
         }
         .task(id: dayKey) {
             await loadHeartRate(for: dayKey)
+        }
+        .alert("Delete this activity?", isPresented: $confirmingDelete) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                onDelete?()
+                dismiss()
+            }
+        } message: {
+            Text("Removes this workout from your history.")
         }
         #if os(iOS)
         .scrollContentBackground(.hidden)
@@ -495,7 +519,10 @@ struct NativeAddPastActivityForm: View {
                 dayStart: dayStart,
                 dayEnd: dayEnd,
                 otherWorkouts: otherWorkouts,
-                onMoveStart: moveWindow(to:)
+                onMoveWindow: { proposedStart, proposedEnd in
+                    start = proposedStart
+                    end = proposedEnd
+                }
             )
         }
     }
@@ -538,11 +565,10 @@ struct NativeAddPastActivityForm: View {
         hrLoadedDay = key
     }
 
-    private func moveWindow(to proposed: Date) {
-        let duration = max(end.timeIntervalSince(start), 60)
-        let clamped = NativeAddActivityChartLogic.clampedWindow(
-            start: proposed,
-            duration: duration,
+    private func applyIndependent(start proposedStart: Date, end proposedEnd: Date) {
+        let clamped = NativeAddActivityChartLogic.clampedIndependent(
+            start: proposedStart,
+            end: proposedEnd,
             dayStart: dayStart,
             now: Date()
         )

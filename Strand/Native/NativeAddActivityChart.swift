@@ -7,7 +7,7 @@ import WhoopStore
 /// avg/max, and gap splitting. The view lives below; load HR in the form's `.task(id:)`.
 enum NativeAddActivityChartLogic {
     static let bucketSeconds = 60
-    static let chartHeight: CGFloat = 180
+    static let chartHeight: CGFloat = 200
     static let emptyDayMessage = "No heart rate stored for this day"
     static let emptyWindowMessage = "No heart rate for this time"
 
@@ -88,6 +88,77 @@ enum NativeAddActivityChartLogic {
             end = min(snapped.addingTimeInterval(held), cap)
         }
         return (snapped, end)
+    }
+
+    /// Snap both edges independently, keep them on the calendar day, end at or
+    /// before `now`, and at least 60 s apart. Duration is not preserved.
+    static func clampedIndependent(
+        start: Date,
+        end: Date,
+        dayStart: Date,
+        now: Date,
+        calendar: Calendar = .current,
+        minDuration: TimeInterval = NativeTimeWindowEditorLogic.minDuration
+    ) -> (start: Date, end: Date) {
+        let bounds = dayBounds(for: dayStart, calendar: calendar)
+        let cap = min(bounds.end, now)
+        let range = bounds.start...cap
+        let startFirst = NativeTimeWindowEditorLogic.clampStart(
+            start, keepingEnd: end, now: now, bounds: range, minDuration: minDuration
+        )
+        return NativeTimeWindowEditorLogic.clampEnd(
+            end, keepingStart: startFirst.start, now: now, bounds: range, minDuration: minDuration
+        )
+    }
+
+    static func clampedStart(
+        _ start: Date,
+        keepingEnd end: Date,
+        dayStart: Date,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> (start: Date, end: Date) {
+        let bounds = dayBounds(for: dayStart, calendar: calendar)
+        return NativeTimeWindowEditorLogic.clampStart(
+            start, keepingEnd: end, now: now, bounds: bounds.start...min(bounds.end, now)
+        )
+    }
+
+    static func clampedEnd(
+        _ end: Date,
+        keepingStart start: Date,
+        dayStart: Date,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> (start: Date, end: Date) {
+        let bounds = dayBounds(for: dayStart, calendar: calendar)
+        return NativeTimeWindowEditorLogic.clampEnd(
+            end, keepingStart: start, now: now, bounds: bounds.start...min(bounds.end, now)
+        )
+    }
+
+    static func applyDrag(
+        edge: NativeTimeWindowEditorLogic.Edge,
+        finger: Date,
+        origin: Date,
+        anchorStart: Date,
+        anchorEnd: Date,
+        dayStart: Date,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> (start: Date, end: Date) {
+        switch edge {
+        case .window:
+            let duration = max(anchorEnd.timeIntervalSince(anchorStart), NativeTimeWindowEditorLogic.minDuration)
+            let proposedStart = anchorStart.addingTimeInterval(finger.timeIntervalSince(origin))
+            return clampedWindow(
+                start: proposedStart, duration: duration, dayStart: dayStart, now: now, calendar: calendar
+            )
+        case .start:
+            return clampedStart(finger, keepingEnd: anchorEnd, dayStart: dayStart, now: now, calendar: calendar)
+        case .end:
+            return clampedEnd(finger, keepingStart: anchorStart, dayStart: dayStart, now: now, calendar: calendar)
+        }
     }
 
     /// Average of bucket means and max of per-bucket peaks in `[windowStart, windowEnd)`.
@@ -172,7 +243,8 @@ enum NativeAddActivityChartLogic {
 }
 
 /// Day heart-rate plot for the past-activity form. The selected window is a tinted
-/// band (no vertical rule). Dragging moves the window's start and keeps duration.
+/// band with Start / End handles. Dragging a handle moves that edge; dragging the
+/// middle of the band keeps duration.
 struct NativeAddActivityDayChart: View {
     var samples: [NativeAddActivityChartLogic.Sample]
     var windowStart: Date
@@ -180,9 +252,14 @@ struct NativeAddActivityDayChart: View {
     var dayStart: Date
     var dayEnd: Date
     var otherWorkouts: [NativeAddActivityChartLogic.WorkoutBand]
-    var onMoveStart: (Date) -> Void
+    var onMoveWindow: (Date, Date) -> Void
 
     @Environment(\.nativeStyle) private var style
+    @State private var dragEdge: NativeTimeWindowEditorLogic.Edge?
+    @State private var dragOrigin: Date?
+    @State private var dragAnchorStart: Date?
+    @State private var dragAnchorEnd: Date?
+    @State private var hapticBucket: Int?
 
     private var xDomain: ClosedRange<Date> { dayStart...dayEnd }
 
@@ -220,7 +297,8 @@ struct NativeAddActivityDayChart: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Heart rate")
         .accessibilityValue(readout)
-        .accessibilityHint("Drag to set the activity start time")
+        .accessibilityHint("Drag the Start or End handle to set the activity window")
+        .modifier(NativeSelectionFeedback(trigger: hapticBucket ?? 0))
     }
 
     private var plot: some View {
@@ -289,17 +367,76 @@ struct NativeAddActivityDayChart: View {
         .chartLegend(.hidden)
         .chartOverlay { proxy in
             GeometryReader { geo in
-                Rectangle()
-                    .fill(Color.clear)
-                    .contentShape(Rectangle())
-                    .highPriorityGesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                guard let date = dateAt(value.location, proxy: proxy, geo: geo) else { return }
-                                onMoveStart(date)
-                            }
-                    )
+                let plot = proxy.plotRectCompat(in: geo)
+                ZStack {
+                    if plot.width > 1,
+                       let startPos = proxy.position(forX: bandStart),
+                       let endPos = proxy.position(forX: bandEnd) {
+                        NativeTimeWindowHandlePills(
+                            startX: plot.origin.x + startPos,
+                            endX: plot.origin.x + endPos,
+                            plot: plot,
+                            startTitle: NativeTimeWindowEditorLogic.handleStartTitle(for: .activity),
+                            endTitle: NativeTimeWindowEditorLogic.handleEndTitle(for: .activity),
+                            tint: NativePaint.heart(style)
+                        )
+                    }
+                    Rectangle()
+                        .fill(Color.clear)
+                        .contentShape(Rectangle())
+                        .highPriorityGesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    applyDrag(value.location, proxy: proxy, geo: geo)
+                                }
+                                .onEnded { _ in
+                                    dragEdge = nil
+                                    dragOrigin = nil
+                                    dragAnchorStart = nil
+                                    dragAnchorEnd = nil
+                                    hapticBucket = nil
+                                }
+                        )
+                }
             }
+        }
+    }
+
+    private func applyDrag(_ location: CGPoint, proxy: ChartProxy, geo: GeometryProxy) {
+        guard let date = dateAt(location, proxy: proxy, geo: geo) else { return }
+        let plot = proxy.plotRectCompat(in: geo)
+        if dragEdge == nil {
+            guard let startPos = proxy.position(forX: windowStart),
+                  let endPos = proxy.position(forX: windowEnd) else { return }
+            dragEdge = NativeTimeWindowEditorLogic.hitEdge(
+                x: location.x,
+                startX: plot.origin.x + startPos,
+                endX: plot.origin.x + endPos
+            )
+            dragOrigin = date
+            dragAnchorStart = windowStart
+            dragAnchorEnd = windowEnd
+        }
+        guard let edge = dragEdge,
+              let origin = dragOrigin,
+              let anchorStart = dragAnchorStart,
+              let anchorEnd = dragAnchorEnd else { return }
+        let next = NativeAddActivityChartLogic.applyDrag(
+            edge: edge,
+            finger: date,
+            origin: origin,
+            anchorStart: anchorStart,
+            anchorEnd: anchorEnd,
+            dayStart: dayStart,
+            now: Date()
+        )
+        onMoveWindow(next.start, next.end)
+        let moving = edge == .end ? next.end : next.start
+        let bucket = NativeTimeWindowEditorLogic.hapticBucket(moving)
+        if hapticBucket == nil {
+            hapticBucket = bucket
+        } else if hapticBucket != bucket {
+            hapticBucket = bucket
         }
     }
 

@@ -136,8 +136,9 @@ final class NativeHeartRateTests: XCTestCase {
     }
 
     func testDisplaySmoothingWindowsAreWider() {
-        XCTAssertEqual(NativeHRSmoothing.defaultWindow, 120, accuracy: 1e-9)
-        XCTAssertEqual(NativeHRSmoothing.dayWindow, 600, accuracy: 1e-9)
+        XCTAssertEqual(NativeHRSmoothing.defaultWindow, 180, accuracy: 1e-9)
+        XCTAssertEqual(NativeHRSmoothing.dayWindow, 900, accuracy: 1e-9)
+        XCTAssertEqual(NativeHRSmoothing.sparkWindow, 360, accuracy: 1e-9)
     }
 
     func testOvernightMakeSmoothsThePlotAndKeepsRawAverage() {

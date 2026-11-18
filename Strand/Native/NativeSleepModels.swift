@@ -691,6 +691,14 @@ enum NativeSleepHypnogramMath {
         return nightStart + Int((Double(nightEnd - nightStart) * t).rounded())
     }
 
+    /// Inverse of `timestamp` — plot-local x for a hypnogram scrub cursor.
+    static func x(timestamp: Int, width: Double, nightStart: Int, nightEnd: Int) -> Double {
+        let span = nightEnd - nightStart
+        guard span > 0, width > 0 else { return 0 }
+        let t = min(max(Double(timestamp - nightStart) / Double(span), 0), 1)
+        return t * width
+    }
+
     static func span(at ts: Int, spans: [NativeSleepStageSpan]) -> NativeSleepStageSpan? {
         spans.first { ts >= $0.startTs && ts < $0.endTs }
             ?? spans.last { ts >= $0.startTs && ts <= $0.endTs }

@@ -3709,7 +3709,10 @@ final class Repository: ObservableObject {
         let keep = Self.autoSavableWorkouts(
             candidates, frontierTs: frontier, settleSeconds: settleSeconds,
             autoDismissedTokens: autoDetectDismissedSpans,
-            detectedDismissedTokens: dismissedDetectedSpans)
+            detectedDismissedTokens: dismissedDetectedSpans,
+            restingBpm: restingBpm,
+            maxHR: strainProfile?.hrMax ?? Double(AutoWorkoutDetector.defaultMaxHR),
+            steps: steps)
         let stale = Self.staleAutoSavedWorkouts(autoSaved, qualifying: keep)
         var changed = 0
         if !stale.isEmpty, let store = await ensureStore() {
@@ -3768,13 +3771,17 @@ final class Repository: ObservableObject {
         return out.sorted { $0.ts < $1.ts }
     }
 
-    /// Finished, never-dismissed candidates, oldest first. Pure so the rule is testable.
+    /// Finished, never-dismissed candidates with workout-level effort, oldest first.
+    /// Casual 12–20 min walks stay suggestions, not auto-saved `"Activity"` rows.
     nonisolated static func autoSavableWorkouts(
         _ candidates: [DetectedWorkout],
         frontierTs: Int,
         settleSeconds: Int,
         autoDismissedTokens: [String],
-        detectedDismissedTokens: [String]
+        detectedDismissedTokens: [String],
+        restingBpm: Int? = nil,
+        maxHR: Double? = nil,
+        steps: [AutoWorkoutDetector.StepTick] = []
     ) -> [DetectedWorkout] {
         let exact = Set(autoDismissedTokens)
         let tombstones = WorkoutSource.parseDismissedSpans(detectedDismissedTokens)
@@ -3783,8 +3790,34 @@ final class Repository: ObservableObject {
                 c.endSec <= frontierTs - settleSeconds
                     && !exact.contains(autoDetectToken(c))
                     && !tombstones.contains { c.startSec < $0.end && $0.start < c.endSec }
+                    && isWorkoutLevelEffort(c, restingBpm: restingBpm, maxHR: maxHR, steps: steps)
             }
             .sorted { $0.startSec < $1.startSec }
+    }
+
+    /// Running gait, Karvonen %HRR ≥ 45%, a hard bpm lift, or a sustained brisk 30+ min effort.
+    nonisolated static func isWorkoutLevelEffort(
+        _ candidate: DetectedWorkout,
+        restingBpm: Int?,
+        maxHR: Double?,
+        steps: [AutoWorkoutDetector.StepTick]
+    ) -> Bool {
+        let rest = Double(restingBpm ?? AutoWorkoutDetector.defaultRestingHR)
+        let hrMax = max(maxHR ?? Double(AutoWorkoutDetector.defaultMaxHR), rest + 1)
+        let classed = steps.filter {
+            $0.ts >= candidate.startSec && $0.ts <= candidate.endSec && $0.activityClass >= 0
+        }
+        if !classed.isEmpty {
+            let runShare = Double(classed.filter { $0.activityClass == 2 }.count) / Double(classed.count)
+            if runShare >= 0.15 { return true }
+        }
+        let avg = Double(candidate.avgBpm)
+        let peak = Double(candidate.peakBpm)
+        let meanHRR = (avg - rest) / (hrMax - rest)
+        if meanHRR >= 0.45 { return true }
+        if avg >= rest + 48 && peak >= rest + 60 { return true }
+        if candidate.durationMin >= 30 && meanHRR >= 0.38 { return true }
+        return false
     }
 
     nonisolated static func autoSavedToken(startTs: Int, endTs: Int) -> String {

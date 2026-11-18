@@ -11,31 +11,29 @@ struct NativeHealthspanTrendCard: View {
     @Environment(\.nativeContinuityActiveID) private var continuityID
 
     var body: some View {
-        Button {
+        NativeChrome.panel {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(kind.title.uppercased())
+                        .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                if kind == .bandAge {
+                    NativeHealthspanBandAgeLegend()
+                }
+                NativeHealthspanTrendPlot(points: points, kind: kind, scope: .sixMonths)
+                    .equatable()
+            }
+        }
+        .contentShape(Rectangle())
+        .nativeChartButton(action: {
             continuityID.select(.healthspanTrend(kind))
             navigationPath.wrappedValue.append(kind)
-        } label: {
-            NativeChrome.panel {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text(kind.title.uppercased())
-                            .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    if kind == .bandAge {
-                        NativeHealthspanBandAgeLegend()
-                    }
-                    NativeHealthspanTrendPlot(points: points, kind: kind, scope: .sixMonths)
-                        .equatable()
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+        })
         .nativeZoomSource(.healthspanTrend(kind))
         .accessibilityHint("Opens \(kind.title)")
     }
@@ -242,20 +240,78 @@ struct NativeHealthspanTrendModel: Equatable {
     }
 }
 
+enum NativeHealthspanTrendMath {
+    static func nearest(
+        to date: Date?,
+        in points: [NativeHealthspanTrendModel.PlotPoint]
+    ) -> NativeHealthspanTrendModel.PlotPoint? {
+        guard let date, let snapped = NativeChartScrubMath.snapDate(date, in: points.map(\.day)) else {
+            return nil
+        }
+        return points.first { $0.day == snapped }
+    }
+}
+
 private struct NativeHealthspanTrendChart: View {
     var model: NativeHealthspanTrendModel
     @Environment(\.nativeStyle) private var style
+    @State private var selected: Date?
+
+    private var selectedPoint: NativeHealthspanTrendModel.PlotPoint? {
+        NativeHealthspanTrendMath.nearest(to: selected, in: model.inWindow)
+    }
+
+    private var timeBinding: Binding<Date?> {
+        Binding(
+            get: { selected },
+            set: { selected = $0 }
+        )
+    }
 
     var body: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 8) {
+            readout
             if model.kind == .bandAge {
-                ageChart
+                ageChart.modifier(scrubChrome(height: 180))
             } else {
-                paceChart
+                paceChart.modifier(scrubChrome(height: 160))
             }
         }
-        .nativeClippedChartPlot()
-        .frame(height: model.kind == .bandAge ? 180 : 160)
+        .modifier(NativeSelectionFeedback(trigger: selectedPoint?.id ?? ""))
+        .onChangeCompat(of: model.xDomain.lowerBound) { _ in selected = nil }
+        .onChangeCompat(of: model.kind) { _ in selected = nil }
+    }
+
+    private func scrubChrome(height: CGFloat) -> NativeHealthspanScrubChrome {
+        NativeHealthspanScrubChrome(
+            model: model,
+            selected: timeBinding,
+            point: selectedPoint,
+            style: style,
+            height: height
+        )
+    }
+
+    @ViewBuilder private var readout: some View {
+        if let point = selectedPoint {
+            Text(readoutText(point))
+                .font(.footnote.weight(.semibold))
+                .monospacedDigit()
+                .frame(height: 18, alignment: .leading)
+        } else {
+            Color.clear.frame(height: 18)
+        }
+    }
+
+    private func readoutText(_ point: NativeHealthspanTrendModel.PlotPoint) -> String {
+        let date = NativeScopeFormat.weekdayDate(point.day, calendar: .current)
+        if model.kind == .bandAge {
+            return "\(date)  \(NativeHealthspanFormat.ageText(point.bandAge))"
+        }
+        if let pace = point.pace {
+            return "\(date)  \(NativeHealthspanFormat.paceText(pace))"
+        }
+        return date
     }
 
     private var ageChart: some View {
@@ -284,7 +340,7 @@ private struct NativeHealthspanTrendChart: View {
                     .lineStyle(StrokeStyle(lineWidth: 2))
                 }
             }
-            if let last = model.lastChrono, let label = model.lastChronoLabel {
+            if selectedPoint == nil, let last = model.lastChrono, let label = model.lastChronoLabel {
                 PointMark(
                     x: .value("Day", last.day),
                     y: .value("Age", last.chronoAge)
@@ -298,7 +354,7 @@ private struct NativeHealthspanTrendChart: View {
                         .foregroundStyle(Color.primary)
                 }
             }
-            if let last = model.lastBand, let label = model.lastBandAgeLabel {
+            if selectedPoint == nil, let last = model.lastBand, let label = model.lastBandAgeLabel {
                 PointMark(
                     x: .value("Day", last.day),
                     y: .value("Age", last.bandAge)
@@ -364,7 +420,7 @@ private struct NativeHealthspanTrendChart: View {
                     .foregroundStyle(Color.primary.opacity(0.45))
                     .lineStyle(StrokeStyle(lineWidth: 1.5))
             }
-            if let last = model.lastPace, let pace = last.pace, let label = model.lastPaceLabel {
+            if selectedPoint == nil, let last = model.lastPace, let pace = last.pace, let label = model.lastPaceLabel {
                 PointMark(
                     x: .value("Day", last.day),
                     y: .value("Pace", pace)
@@ -408,6 +464,63 @@ private struct NativeHealthspanTrendChart: View {
                             .foregroundStyle(Color.secondary)
                     }
                 }
+            }
+        }
+    }
+}
+
+private struct NativeHealthspanScrubChrome: ViewModifier {
+    var model: NativeHealthspanTrendModel
+    var selected: Binding<Date?>
+    var point: NativeHealthspanTrendModel.PlotPoint?
+    var style: NativeStyle
+    var height: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .nativeClippedChartPlot()
+            .frame(height: height)
+            .chartOverlay { proxy in
+                NativeHealthspanScrubGuide(
+                    proxy: proxy,
+                    model: model,
+                    point: point,
+                    style: style
+                )
+            }
+            .modifier(NativeTimeSelect(
+                selected: selected,
+                snap: { NativeChartScrubMath.snapDate($0, in: model.inWindow.map(\.day)) },
+                onChange: { _ in }
+            ))
+    }
+}
+
+private struct NativeHealthspanScrubGuide: View {
+    var proxy: ChartProxy
+    var model: NativeHealthspanTrendModel
+    var point: NativeHealthspanTrendModel.PlotPoint?
+    var style: NativeStyle
+
+    var body: some View {
+        if let point {
+            if model.kind == .bandAge {
+                NativeChartTimeScrubGuide(
+                    proxy: proxy,
+                    time: point.day,
+                    y: NativePlotAxis.inValueDomain(point.bandAge, model.ageDomain) ? point.bandAge : nil,
+                    tint: NativePaint.recovery(style),
+                    extra: NativePlotAxis.inValueDomain(point.chronoAge, model.ageDomain)
+                        ? [(y: point.chronoAge, tint: Color.primary)]
+                        : []
+                )
+            } else if let pace = point.pace, NativePlotAxis.inValueDomain(pace, model.paceDomain) {
+                NativeChartTimeScrubGuide(
+                    proxy: proxy,
+                    time: point.day,
+                    y: pace,
+                    tint: NativePaint.strain(style)
+                )
             }
         }
     }

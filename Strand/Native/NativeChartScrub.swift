@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 import StrandDesign
 
 /// Selection box. `@Published` updates observers (hero, marker) without
@@ -20,6 +21,8 @@ enum NativeHRDisplay {
 /// Nearest-point snapping and selection chrome. Pure; views never fold this in `body`.
 enum NativeChartScrubMath {
     static let hourDuration: TimeInterval = 3_600
+    /// Dashed vertical hairline used by every line / hypnogram scrub cursor.
+    static let hairlineStyle = StrokeStyle(lineWidth: 1, dash: [4, 3])
 
     /// Midpoint of `[start, end)`. Swift Charts places unit BarMarks at this x,
     /// so selection must use it too — `start` sits on the leading edge of the bar.
@@ -162,6 +165,47 @@ enum NativeChartScrubMath {
     static func isTap(translation: CGSize, maximum: CGFloat = 8) -> Bool {
         hypot(translation.width, translation.height) < maximum
     }
+
+    /// Nil on lift so the hero returns to its resting summary.
+    static func snapTime(
+        _ date: Date?,
+        in points: [NativeHourPoint],
+        maxGap: TimeInterval? = nil
+    ) -> Date? {
+        guard let date else { return nil }
+        return nearestHour(
+            to: date,
+            in: points,
+            maxGap: maxGap ?? inferredMaxGap(in: points)
+        )?.time
+    }
+
+    /// Category-axis selection. Nil on lift or when Charts emits an axis label.
+    static func snapKey(_ key: String?, in keys: [String]) -> String? {
+        guard let key, keys.contains(key) else { return nil }
+        return key
+    }
+
+    static func nearestDate(_ date: Date, in dates: [Date]) -> Date? {
+        guard !dates.isEmpty else { return nil }
+        return dates.min {
+            abs($0.timeIntervalSince(date)) < abs($1.timeIntervalSince(date))
+        }
+    }
+
+    /// Nil on lift so the hero snaps back to latest / average.
+    static func snapDate(_ date: Date?, in dates: [Date]) -> Date? {
+        guard let date else { return nil }
+        return nearestDate(date, in: dates)
+    }
+
+    /// Overlay coordinates from `ChartProxy.position` are plot-relative.
+    static func plotFrame(proxy: ChartProxy, geo: GeometryProxy) -> CGRect {
+        if #available(iOS 17.0, macOS 14.0, *), let frame = proxy.plotFrame {
+            return geo[frame]
+        }
+        return geo[proxy.plotAreaFrame]
+    }
 }
 
 /// Filled series-coloured dot with a thin card-coloured ring so it reads on the line.
@@ -180,5 +224,105 @@ struct NativeSelectedVertex: View {
         .frame(width: size, height: size)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+}
+
+/// Dashed vertical hairline plus series-coloured vertices. Overlay-only so LineMarks stay static.
+struct NativeChartScrubGuide: View {
+    struct Dot: Equatable {
+        var y: CGFloat
+        var tint: Color
+        var size: CGFloat = 10
+    }
+
+    var x: CGFloat
+    var dots: [Dot]
+    var plotFrame: CGRect
+    var hairlineColor: Color = NativeTokens.separator
+
+    init(
+        x: CGFloat,
+        y: CGFloat?,
+        tint: Color,
+        plotFrame: CGRect,
+        vertexSize: CGFloat = 10,
+        hairlineColor: Color = NativeTokens.separator
+    ) {
+        self.x = x
+        self.dots = y.map { [Dot(y: $0, tint: tint, size: vertexSize)] } ?? []
+        self.plotFrame = plotFrame
+        self.hairlineColor = hairlineColor
+    }
+
+    init(
+        x: CGFloat,
+        dots: [Dot],
+        plotFrame: CGRect,
+        hairlineColor: Color = NativeTokens.separator
+    ) {
+        self.x = x
+        self.dots = dots
+        self.plotFrame = plotFrame
+        self.hairlineColor = hairlineColor
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Path { path in
+                path.move(to: CGPoint(x: x, y: plotFrame.minY))
+                path.addLine(to: CGPoint(x: x, y: plotFrame.maxY))
+            }
+            .stroke(hairlineColor, style: NativeChartScrubMath.hairlineStyle)
+            ForEach(Array(dots.enumerated()), id: \.offset) { _, dot in
+                NativeSelectedVertex(tint: dot.tint, size: dot.size)
+                    .position(x: x, y: dot.y)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Date-axis overlay: hairline at `time`, vertex at each y.
+struct NativeChartTimeScrubGuide: View {
+    var proxy: ChartProxy
+    var time: Date?
+    var y: Double?
+    var tint: Color
+    var vertexSize: CGFloat = 10
+    var extra: [(y: Double, tint: Color)] = []
+    var hairlineColor: Color = NativeTokens.separator
+
+    var body: some View {
+        GeometryReader { geo in
+            if let time, let xRel = proxy.position(forX: time) {
+                let frame = NativeChartScrubMath.plotFrame(proxy: proxy, geo: geo)
+                let x = frame.origin.x + xRel
+                let placed = NativeChartScrubMath.overlayPoint(plotOrigin: frame.origin, x: xRel, y: 0)
+                if frame.insetBy(dx: -1, dy: -1).contains(CGPoint(x: placed.x, y: frame.midY)) {
+                    NativeChartScrubGuide(
+                        x: x,
+                        dots: dots(origin: frame.origin),
+                        plotFrame: frame,
+                        hairlineColor: hairlineColor
+                    )
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func dots(origin: CGPoint) -> [NativeChartScrubGuide.Dot] {
+        var out: [NativeChartScrubGuide.Dot] = []
+        if let y, let yRel = proxy.position(forY: y) {
+            out.append(NativeChartScrubGuide.Dot(y: origin.y + yRel, tint: tint, size: vertexSize))
+        }
+        for item in extra {
+            if let yRel = proxy.position(forY: item.y) {
+                out.append(NativeChartScrubGuide.Dot(y: origin.y + yRel, tint: item.tint))
+            }
+        }
+        return out
     }
 }

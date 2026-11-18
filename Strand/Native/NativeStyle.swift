@@ -19,8 +19,11 @@ enum NativeStyle: String, CaseIterable, Identifiable {
     /// Apple Health chrome that keeps WHOOP's rings, contributor bands, and chart marks.
     var isHybrid: Bool { self == .apple }
 
+    /// Appearance is Apple Health chrome. The WHOOP case stays on the enum so parallel
+    /// callers compile, but resolve never returns it.
     static func resolve(_ raw: String) -> NativeStyle {
-        NativeStyle(rawValue: raw) ?? .apple
+        _ = raw
+        return .apple
     }
 }
 
@@ -37,17 +40,16 @@ extension EnvironmentValues {
     }
 }
 
-/// Reads `noop.nativeStyle` and pushes it into the environment. Apply at the
-/// Native root and at every navigation destination.
+/// Pushes Apple Health chrome into the environment. Apply at the Native root
+/// and at every navigation destination. `override` is unused: WHOOP color mode
+/// is gone; the app follows the system light/dark appearance.
 struct NativeStyleBridge: ViewModifier {
     var override: NativeStyle? = nil
-    @AppStorage(NativeStyle.storageKey) private var raw = NativeStyle.apple.rawValue
 
     func body(content: Content) -> some View {
-        let style = override ?? NativeStyle.resolve(raw)
         content
-            .environment(\.nativeStyle, style)
-            .preferredColorScheme(style == .whoop ? .dark : nil)
+            .environment(\.nativeStyle, .apple)
+            .preferredColorScheme(nil)
     }
 }
 

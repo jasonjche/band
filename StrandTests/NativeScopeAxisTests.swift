@@ -37,4 +37,30 @@ final class NativeScopeAxisTests: XCTestCase {
         let starts = (0..<12).map { calendar.date(byAdding: .month, value: $0, to: first)! }
         XCTAssertEqual(NativeScopeAxis.monthLabelDates(starts, scope: .year, calendar: calendar).count, 12)
     }
+
+    func testVisibleSelectionIgnoresLookbackBuckets() {
+        func bucket(_ key: String, value: Double?) -> NativeScopeBucket {
+            let start = NativeScopeSeries.date(from: key, calendar: calendar)!
+            return NativeScopeBucket(
+                start: start,
+                end: calendar.date(byAdding: .day, value: 1, to: start)!,
+                value: value,
+                low: nil, high: nil, isPartial: false,
+                sampleCount: value == nil ? 0 : 1,
+                key: key
+            )
+        }
+        let lookback = bucket("2026-11-11", value: 14.8)
+        let visible = (12...18).map { bucket(String(format: "2026-11-%02d", $0), value: 15) }
+        XCTAssertNil(NativeScopeVisible.selected(key: lookback.key, in: visible))
+        XCTAssertEqual(NativeScopeVisible.selected(key: "2026-11-12", in: visible)?.key, "2026-11-12")
+        let last = NativeScopePlotMath.LinePoint(
+            date: visible.last!.start, value: 15, segment: 0, key: visible.last!.key
+        )
+        XCTAssertTrue(NativeScopeVisible.isTrailing(last, visible: visible))
+        XCTAssertFalse(NativeScopeVisible.isTrailing(
+            NativeScopePlotMath.LinePoint(date: lookback.start, value: 14.8, segment: 0, key: lookback.key),
+            visible: visible
+        ))
+    }
 }

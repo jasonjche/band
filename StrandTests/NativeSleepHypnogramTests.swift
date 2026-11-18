@@ -83,6 +83,20 @@ final class NativeSleepHypnogramTests: XCTestCase {
         XCTAssertEqual(NativeSleepHypnogramMath.span(at: nightStart + 60, spans: spans)?.kind, .awake)
         XCTAssertEqual(NativeSleepHypnogramMath.span(at: nightStart + 3600, spans: spans)?.kind, .light)
         XCTAssertEqual(NativeSleepStageKind.hypnogramLanes, [.awake, .rem, .light, .deep])
+        XCTAssertEqual(
+            NativeSleepHypnogramMath.x(
+                timestamp: mid, width: 480, nightStart: nightStart, nightEnd: nightEnd
+            ),
+            240,
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(
+            NativeSleepHypnogramMath.x(
+                timestamp: nightStart, width: 480, nightStart: nightStart, nightEnd: nightEnd
+            ),
+            0,
+            accuracy: 1e-9
+        )
     }
 
     func testSnapshotNightHypnogramCoversTheSession() throws {

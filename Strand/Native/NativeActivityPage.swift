@@ -518,7 +518,8 @@ struct NativeActivityView: View {
             series.samples.map { (ts: $0.ts, bpm: Double($0.bpm)) },
             seconds: NativeActivityPageLogic.hrBucketSeconds
         )
-        hr = rawPoints
+        // Display-only. Zones, avg, max, and strain stay on the raw samples / row.
+        hr = NativeHRSmoothing.smooth(rawPoints)
         let isRecovery = WorkoutCatalog.isRecovery(found.sport)
         let zones = zoneSet ?? HRZones.zones(
             maxHR: profileHandle?.effortHRmax ?? 197,
@@ -904,6 +905,7 @@ struct NativeActivityHRChart: View {
             )
             .frame(height: 180)
         }
+        .modifier(NativeSelectionFeedback(trigger: scrub.time ?? .distantPast))
     }
 
     private var lineTint: Color {
@@ -1007,7 +1009,11 @@ private struct NativeActivityHRPlot: View {
             }
         }
         .chartPlotStyle { $0.clipped() }
-        .modifier(NativeTimeSelect(selected: timeBinding, onChange: { _ in }))
+        .modifier(NativeTimeSelect(
+            selected: timeBinding,
+            snap: { NativeChartScrubMath.snapTime($0, in: points) },
+            onChange: { _ in }
+        ))
         .chartOverlay { proxy in
             NativeActivityHRMarker(proxy: proxy, points: points, zoneSet: zoneSet, scrub: scrub)
         }
@@ -1084,38 +1090,19 @@ private struct NativeActivityHRMarker: View {
     @ObservedObject var scrub: NativeScopeScrub
 
     var body: some View {
-        GeometryReader { geo in
-            if let time = scrub.time,
-               let point = NativeChartScrubMath.nearestHour(
-                to: time,
-                in: points,
-                maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
-               ),
-               let xRel = proxy.position(forX: point.time),
-               let yRel = proxy.position(forY: point.value) {
-                let origin = plotOrigin(geo: geo)
-                let placed = NativeChartScrubMath.overlayPoint(plotOrigin: origin, x: xRel, y: yRel)
-                if insidePlot(placed, geo: geo) {
-                    NativeSelectedVertex(tint: scrubTint(for: point.value))
-                        .position(x: placed.x, y: placed.y)
-                }
-            }
+        if let time = scrub.time,
+           let point = NativeChartScrubMath.nearestHour(
+            to: time,
+            in: points,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+           ) {
+            NativeChartTimeScrubGuide(
+                proxy: proxy,
+                time: point.time,
+                y: point.value,
+                tint: scrubTint(for: point.value)
+            )
         }
-        .allowsHitTesting(false)
-    }
-
-    private func plotOrigin(geo: GeometryProxy) -> CGPoint {
-        if #available(iOS 17.0, macOS 14.0, *), let frame = proxy.plotFrame {
-            return geo[frame].origin
-        }
-        return .zero
-    }
-
-    private func insidePlot(_ point: CGPoint, geo: GeometryProxy) -> Bool {
-        if #available(iOS 17.0, macOS 14.0, *), let frame = proxy.plotFrame {
-            return geo[frame].insetBy(dx: -1, dy: -1).contains(point)
-        }
-        return true
     }
 
     private func scrubTint(for bpm: Double) -> Color {

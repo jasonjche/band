@@ -146,6 +146,11 @@ enum NativeTrendsCatalog {
     ]
 }
 
+enum NativeTrendsPageLayout {
+    static let pickerTop: CGFloat = NoopMetrics.space3
+    static let pickerBottom: CGFloat = NoopMetrics.space4
+}
+
 /// WHOOP Trend View: glass metric picker over the existing metric page (W / M / 6M).
 struct NativeTrendsPage: View {
     @AppStorage(NativeTrendsCatalog.storageKey) private var storedKey = NativeTrendsCatalog.defaultKey
@@ -188,8 +193,8 @@ struct NativeTrendsPage: View {
         }
         .menuIndicator(.hidden)
         .padding(.horizontal, NoopMetrics.space4)
-        .padding(.top, NoopMetrics.space2)
-        .padding(.bottom, NoopMetrics.space2)
+        .padding(.top, NativeTrendsPageLayout.pickerTop)
+        .padding(.bottom, NativeTrendsPageLayout.pickerBottom)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .background {

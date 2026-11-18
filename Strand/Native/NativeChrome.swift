@@ -27,6 +27,14 @@ enum NativeChrome {
     static let stress = stressHigh
     static let cardRadius: CGFloat = 26
     static let gridStroke = StrokeStyle(lineWidth: 0.5, dash: [2, 2])
+    /// Extra scroll room so the last card clears the iOS 26 floating tab bar.
+    static var screenScrollBottomExtra: CGFloat {
+        #if os(iOS)
+        48
+        #else
+        0
+        #endif
+    }
 
     /// 0 red / 1 yellow / 2 green. 37% is the middle WHOOP band (34–66).
     static func recoveryBandIndex(_ value: Double) -> Int {
@@ -127,7 +135,7 @@ private struct NativeScreen<Content: View>: View {
     var body: some View {
         ScrollView {
             NativeStack(lazy: lazy, content: { content })
-                .padding(.bottom, 136)
+                .padding(.bottom, 136 + NativeChrome.screenScrollBottomExtra)
         }
         .background(NativePageFill().ignoresSafeArea())
     }
@@ -495,6 +503,9 @@ enum NativeRingMotion {
     static let spring = Animation.spring(response: 0.42, dampingFraction: 0.86)
     /// Arc length of the strain-target tick on the 0...1 track.
     static let targetTickSpan: Double = 0.018
+    static let targetMarkerWidth: CGFloat = 2.5
+    /// Extra length the start/end ticks extend past the ring stroke, each side combined.
+    static let targetMarkerOverhang: CGFloat = 5
 
     static func clamped(_ fraction: Double?) -> Double {
         fraction.map { min(1, max(0, $0)) } ?? 0
@@ -502,6 +513,12 @@ enum NativeRingMotion {
 
     static func targetTick(from range: ClosedRange<Double>) -> Double {
         clamped((range.lowerBound + range.upperBound) / 2)
+    }
+
+    static func targetBounds(from range: ClosedRange<Double>) -> ClosedRange<Double> {
+        let lo = clamped(range.lowerBound)
+        let hi = clamped(range.upperBound)
+        return min(lo, hi)...max(lo, hi)
     }
 }
 
@@ -541,15 +558,16 @@ struct NativeRing: View {
                     .trim(from: 0, to: drawn)
                     .stroke(tint, style: StrokeStyle(lineWidth: line, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                if let tick = targetTick {
-                    let span = NativeRingMotion.targetTickSpan
+                if let target = trimmedTarget {
                     Circle()
-                        .trim(from: max(0, tick - span / 2), to: min(1, tick + span / 2))
+                        .trim(from: target.lowerBound, to: target.upperBound)
                         .stroke(
-                            NativeTokens.sleepAwake,
-                            style: StrokeStyle(lineWidth: line * 0.55, lineCap: .butt)
+                            NativeTokens.sleepAwake.opacity(0.55),
+                            style: StrokeStyle(lineWidth: line * 0.45, lineCap: .butt)
                         )
                         .rotationEffect(.degrees(-90))
+                    targetBoundMark(at: target.lowerBound, line: line, diameter: diameter)
+                    targetBoundMark(at: target.upperBound, line: line, diameter: diameter)
                 }
                 VStack(spacing: whoop ? 6 : 0) {
                     HStack(alignment: .firstTextBaseline, spacing: whoop ? 1 : 0) {
@@ -590,14 +608,16 @@ struct NativeRing: View {
     }
 
     private var trimmedTarget: ClosedRange<Double>? {
-        guard let target = targetFraction else { return nil }
-        let lo = min(max(target.lowerBound, 0), 1)
-        let hi = min(max(target.upperBound, 0), 1)
-        return min(lo, hi)...max(lo, hi)
+        targetFraction.map { NativeRingMotion.targetBounds(from: $0) }
     }
 
-    private var targetTick: Double? {
-        trimmedTarget.map { NativeRingMotion.targetTick(from: $0) }
+    private func targetBoundMark(at fraction: Double, line: CGFloat, diameter: CGFloat) -> some View {
+        Capsule()
+            .fill(Color.primary)
+            .frame(width: NativeRingMotion.targetMarkerWidth, height: line + NativeRingMotion.targetMarkerOverhang)
+            .offset(y: -(diameter - line) / 2)
+            .rotationEffect(.degrees(fraction * 360))
+            .accessibilityHidden(true)
     }
 
     private var ringAccessibilityLabel: String {
@@ -980,13 +1000,13 @@ enum NativeChartDay {
     static func fittedDomain(_ values: [Double], fallback: ClosedRange<Double>) -> ClosedRange<Double> {
         let finite = values.filter(\.isFinite)
         guard let lo0 = finite.min(), let hi0 = finite.max() else { return fallback }
-        if lo0 == hi0 {
-            let pad = max(abs(lo0) * 0.15, 1)
+        let span = hi0 - lo0
+        if span == 0 {
+            // Tight vitals (skin temp 33.4, resp 15.0) must not expand to a 30...38 axis.
+            let pad = max(abs(lo0) * 0.02, 0.5)
             return (lo0 - pad)...(hi0 + pad)
         }
-        let mean = finite.reduce(0, +) / Double(finite.count)
-        let range = hi0 - lo0
-        let pad = max(range * 0.25, abs(mean) * 0.05, 1e-6)
+        let pad = max(span * 0.25, 0.05)
         return (lo0 - pad)...(hi0 + pad)
     }
 }
@@ -1153,7 +1173,7 @@ struct NativeLabeledLine: View {
     private var known: [NativeDayPoint] { points.filter { $0.value.isFinite } }
     private var whoop: Bool { style == .whoop }
     private var segments: [NativeChartDay.LinePoint] { NativeChartDay.linePoints(points) }
-    /// Rest emphasises the viewing day; scrub replaces that with the touched day. No hairline.
+    /// Rest emphasises the viewing day; scrub replaces that with the touched day plus a hairline.
     private var emphasizedKey: String? { selectedDay?.wrappedValue ?? highlightKey }
 
     private var axisTicks: [Double] {
@@ -1189,6 +1209,13 @@ struct NativeLabeledLine: View {
                     .foregroundStyle(Color.clear)
                     .accessibilityHidden(true)
                 }
+                if let selected = selectedDay?.wrappedValue,
+                   points.contains(where: { $0.key == selected && $0.value.isFinite }) {
+                    RuleMark(x: .value("Day", selected))
+                        .foregroundStyle(NativeTokens.separator)
+                        .lineStyle(NativeChartScrubMath.hairlineStyle)
+                        .accessibilityHidden(true)
+                }
                 ForEach(plotSegments) { point in
                     LineMark(
                         x: .value("Day", point.key),
@@ -1208,7 +1235,7 @@ struct NativeLabeledLine: View {
                             NativeHollowVertex(tint: tint, size: 8)
                         }
                     }
-                    .nativeValueLabel {
+                    .nativeValueLabel(trailing: point.key == plotSegments.last?.key) {
                         if showsValueLabels && (whoop || point.key == emphasizedKey) {
                             Text(format(point.value))
                                 .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
@@ -1305,9 +1332,7 @@ struct NativeStrainRecoveryChart: View {
         .onAppear {
             if selectedDay == nil { selectedDay = previewSelected }
         }
-        #if os(iOS)
-        .sensoryFeedback(.selection, trigger: selectedDay ?? "")
-        #endif
+        .modifier(NativeSelectionFeedback(trigger: selectedDay ?? ""))
     }
 
     private var plot: some View {
@@ -1315,6 +1340,12 @@ struct NativeStrainRecoveryChart: View {
             ForEach(axisKeys, id: \.self) { key in
                 BarMark(x: .value("Day", key), y: .value("Slot", 0))
                     .foregroundStyle(Color.clear)
+                    .accessibilityHidden(true)
+            }
+            if let selectedDay, inspectCaption(selectedDay) != nil {
+                RuleMark(x: .value("Day", selectedDay))
+                    .foregroundStyle(NativeTokens.separator)
+                    .lineStyle(NativeChartScrubMath.hairlineStyle)
                     .accessibilityHidden(true)
             }
             ForEach(lines) { point in
@@ -1335,7 +1366,7 @@ struct NativeStrainRecoveryChart: View {
                             NativeStrainRecoveryVertex(tint: point.dotTint)
                         }
                     }
-                    .nativeValueLabel {
+                    .nativeValueLabel(trailing: point.day == strain.last?.key || point.day == recovery.last?.key) {
                         if point.day == selectedDay {
                             Text(label(point))
                                 .font(.caption2.weight(.semibold))
@@ -1519,7 +1550,7 @@ struct NativeScoreWeekBars: View {
                                 $0.key == selectedDay?.wrappedValue || $0.day == selectedDay?.wrappedValue
                             })
                         ))
-                        .nativeValueLabel {
+                        .nativeValueLabel(trailing: point.key == known.last?.key) {
                             if showsValueLabels && (whoop || point.key == selectedDay?.wrappedValue) {
                                 Text(format(point.value))
                                     .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
@@ -2079,6 +2110,10 @@ struct NativeOvernightLine: View {
                     if let point = scrubPoint(in: model),
                        point.value >= model.yDomain.lowerBound, point.value <= model.yDomain.upperBound,
                        model.xDomain.map({ point.time >= $0.lowerBound && point.time <= $0.upperBound }) ?? true {
+                        RuleMark(x: .value("Scrub", point.time))
+                            .foregroundStyle(NativeTokens.separator)
+                            .lineStyle(NativeChartScrubMath.hairlineStyle)
+                            .accessibilityHidden(true)
                         PointMark(x: .value("Scrub", point.time), y: .value("HR", point.value))
                             .foregroundStyle(tint)
                             .symbol { NativeSelectedVertex(tint: tint) }
@@ -2117,14 +2152,7 @@ struct NativeOvernightLine: View {
                 }
                 .modifier(NativeTimeSelect(
                     selected: selection,
-                    snap: { time in
-                        guard let time else { return nil }
-                        return NativeChartScrubMath.nearestHour(
-                            to: time,
-                            in: points,
-                            maxGap: model.maxGap
-                        )?.time
-                    },
+                    snap: { NativeChartScrubMath.snapTime($0, in: points, maxGap: model.maxGap) },
                     onChange: { _ in }
                 ))
                 .onAppear { if selection.wrappedValue == nil { selection.wrappedValue = previewSelected } }
@@ -2355,6 +2383,10 @@ struct NativeStressMonitor: View {
            ),
            point.time >= dayStart, point.time <= plotEnd,
            point.value >= 0, point.value <= 3 {
+            RuleMark(x: .value("Scrub", point.time))
+                .foregroundStyle(NativePaint.separator(style))
+                .lineStyle(NativeChartScrubMath.hairlineStyle)
+                .accessibilityHidden(true)
             PointMark(x: .value("Scrub", point.time), y: .value("Stress", point.value))
                 .foregroundStyle(NativeChrome.stressBandColor(point.value))
                 .symbol { NativeSelectedVertex(tint: NativeChrome.stressBandColor(point.value)) }

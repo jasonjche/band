@@ -219,11 +219,12 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertNil(NativeHomeCharts.stressLevel(hours: [], days: [], todayKey: "2023-11-14"))
         XCTAssertTrue(NativeHomeCharts.stressSeries(buckets: []).isEmpty)
         XCTAssertTrue(NativeHomeCharts.stressSeries(samples: []).isEmpty)
-        // Relative to fallback RHR 60, 12 bpm/band. Old pins were absolute (bpm-48)/38.
+        // Orthostatic wake floor: fallback RHR 60 + 10, 12 bpm/band.
         XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 60), 0, accuracy: 0.01)
-        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 72), 1, accuracy: 0.01)
-        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 84), 2, accuracy: 0.01)
-        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 96), 3, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 70), 0, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 82), 1, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 94), 2, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 106), 3, accuracy: 0.01)
         XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 200), 3, accuracy: 0.01)
         XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 48), 0, accuracy: 0.01)
     }
@@ -400,9 +401,54 @@ final class NativeHomeLayoutTests: XCTestCase {
         }
         let hours = NativeHomeCharts.stressSeries(buckets: buckets)
         XCTAssertEqual(hours.count, 11)
-        // 15-minute centred mean; the 11-minute run averages the 3.0 spike over 11 minutes.
-        XCTAssertEqual(hours[5].value, 3.0 / 11, accuracy: 0.05)
+        // 15-minute centred mean; the 11-minute run averages the spike over 11 minutes.
+        let spike = NativeHomeCharts.stressValue(bpm: 96)
+        XCTAssertEqual(hours[5].value, spike / 11, accuracy: 0.05)
         XCTAssertLessThan(hours[5].value, 1)
+    }
+
+    func testWakingSitReadsLowAndLightActivityReadsMedium() {
+        let overnight = BandStress.Baselines(wakeRestingHR: 57, sleepRestingHR: 57, rmssd: nil)
+        // Calm sitting +11…+18 above the 4 AM trough stays Low.
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 68, baselines: overnight), 1 / 12, accuracy: 0.02)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 73, baselines: overnight), 6 / 12, accuracy: 0.02)
+        XCTAssertLessThan(NativeHomeCharts.stressValue(bpm: 75, baselines: overnight), 1)
+        // Standing / light everyday activity is Medium, not High.
+        let stand = NativeHomeCharts.stressValue(bpm: 84, baselines: overnight)
+        XCTAssertGreaterThan(stand, 1)
+        XCTAssertLessThan(stand, 2)
+        // High still needs a genuine non-locomotion lift (~+34 bpm over overnight RHR).
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 91, baselines: overnight), 2, accuracy: 0.05)
+        XCTAssertEqual(NativeHomeCharts.wakeOrthostaticBPM, 10, accuracy: 1e-9)
+        XCTAssertEqual(NativeHomeCharts.sleepOrthostaticBPM, 5, accuracy: 1e-9)
+    }
+
+    func testWalkingBucketsHoldToPreWalkCalmAndDoNotBleed() {
+        let t0 = 1_700_000_000
+        let overnight = BandStress.Baselines(wakeRestingHR: 57, sleepRestingHR: 57, rmssd: nil)
+        var buckets: [HRBucket] = []
+        var activity: Set<Int> = []
+        for i in 0..<40 {
+            let ts = t0 + i * 60
+            let walking = (15..<27).contains(i)
+            let bpm = walking ? 105.0 : 70.0
+            buckets.append(HRBucket(ts: ts, bpm: bpm, minBpm: bpm, maxBpm: bpm))
+            if walking { activity.insert(ts) }
+        }
+        let hours = NativeHomeCharts.stressTimeline(
+            buckets: buckets,
+            baselines: overnight,
+            activityBuckets: activity
+        ).hours
+        let sit = NativeHomeCharts.stressValue(bpm: 70, baselines: overnight)
+        XCTAssertEqual(sit, 3 / 12, accuracy: 0.02)
+        XCTAssertLessThan(sit, 1)
+        // Unlogged walking at 105 bpm would have scored 3.0 and smeared into sitting.
+        XCTAssertEqual(hours.count, 40)
+        XCTAssertEqual(hours.map(\.value).max() ?? 9, sit, accuracy: 0.08)
+        XCTAssertLessThan(hours[20].value, NativeHomeCharts.walkingStressCap)
+        XCTAssertEqual(hours[8].value, sit, accuracy: 0.05)
+        XCTAssertEqual(hours[32].value, sit, accuracy: 0.05)
     }
 
     func testStressTimelineMergesWalkingExclusionsAndKeepsTheLineThroughThem() {
@@ -569,6 +615,56 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertEqual(NativeHomeLoadMetrics.publishedSnapshotsPerLoad, 1)
     }
 
+    func testPullToRefreshHoldsTheSpinnerWhenAlreadyCaughtUp() {
+        XCTAssertEqual(NativeHomeSync.minimumVisible, 0.6, accuracy: 1e-9)
+        let now = Date(timeIntervalSince1970: 1_700_000_600)
+        XCTAssertEqual(
+            NativeHomeSync.remainingHold(
+                since: Date(timeIntervalSince1970: 1_700_000_000),
+                now: now
+            ),
+            0,
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(
+            NativeHomeSync.remainingHold(
+                since: Date(timeIntervalSince1970: 1_700_000_599.7),
+                now: now
+            ),
+            0.3,
+            accuracy: 1e-4
+        )
+    }
+
+    func testStrapStatusShowsSyncingWhilePullingOrBackfilling() {
+        XCTAssertEqual(
+            HomeStrapStatusLogic.mode(isPullRefreshing: true, backfilling: false, showSynced: false),
+            .syncing
+        )
+        XCTAssertEqual(
+            HomeStrapStatusLogic.mode(isPullRefreshing: false, backfilling: true, showSynced: true),
+            .syncing
+        )
+        XCTAssertEqual(
+            HomeStrapStatusLogic.mode(isPullRefreshing: false, backfilling: false, showSynced: true),
+            .synced
+        )
+        XCTAssertEqual(
+            HomeStrapStatusLogic.mode(isPullRefreshing: false, backfilling: false, showSynced: false),
+            .idle
+        )
+        XCTAssertEqual(HomeStrapStatusLogic.syncedHold, 1.2, accuracy: 1e-9)
+    }
+
+    func testStressLaneIconsSitAboveThePlot() {
+        XCTAssertEqual(NativeStressLaneIcon.iconLane, 24, accuracy: 0.5)
+        XCTAssertEqual(NativeStressLaneIcon.iconOffsetY, 12, accuracy: 0.5)
+        XCTAssertEqual(NativeStressLaneIcon.iconCenterY(plotMinY: 0), -12, accuracy: 0.5)
+        XCTAssertEqual(NativeStressLaneIcon.iconCenterY(plotMinY: 24), 12, accuracy: 0.5)
+        XCTAssertLessThan(NativeStressLaneIcon.iconCenterY(plotMinY: 0), 0)
+        XCTAssertLessThan(NativeStressLaneIcon.iconCenterY(plotMinY: 24), 24)
+    }
+
     func testCalendarCellsPadToSixWeeksAndHonorFirstWeekday() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -634,5 +730,124 @@ final class NativeHomeLayoutTests: XCTestCase {
         if let recovery = scores.byDay[day.day]?.recovery {
             XCTAssertEqual(model.recovery.value, NativeScoreMath.percent(recovery))
         }
+    }
+
+    func testLiveTodayStrainFillsWeekChartInsteadOfZeroCliff() {
+        let today = "2026-11-18"
+        let now = localDate(year: 2026, month: 11, day: 18, hour: 9, minute: 51)
+        let prior = DailyMetric(
+            day: "2026-11-17",
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 51, avgHrv: 66, recovery: 49, strain: 40,
+            exerciseCount: nil, steps: 8_000, activeKcalEst: 2_000
+        )
+        let todayDay = DailyMetric(
+            day: today,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 52, avgHrv: 60, recovery: nil, strain: 0,
+            exerciseCount: nil, steps: 2_000, activeKcalEst: 400
+        )
+        let snapshot = NativeHomeRebuild.run(NativeHomeRebuild.Input(
+            days: [prior, todayDay], sleeps: [], importedSleep: [:],
+            workouts: [], journalEntries: [], vo2max: nil,
+            sampleHours: [], liveTodayStrain: 22,
+            selectedKey: today, selectedDay: now,
+            effortScale: .whoop, smartAlarmEnabled: false, smartAlarmMinutes: 7 * 60,
+            dashboardJSON: "", temperature: .celsius, stressExtraExclusions: [],
+            now: now
+        ))
+        let todayPoint = snapshot.weekStrain.first { $0.key == today }
+        XCTAssertEqual(
+            todayPoint?.value ?? -1,
+            NativeDayLogic.strainDisplayValue(22, scale: .whoop),
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(snapshot.dayModel.strain.value, NativeDayLogic.strainText(22, scale: .whoop))
+    }
+
+    func testMissingTodayStrainIsOmittedNotZero() {
+        let today = "2026-11-18"
+        let now = localDate(year: 2026, month: 11, day: 18, hour: 9, minute: 51)
+        let todayDay = DailyMetric(
+            day: today,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 52, avgHrv: 60, recovery: nil, strain: nil,
+            exerciseCount: nil, steps: 2_000, activeKcalEst: 400
+        )
+        let snapshot = NativeHomeRebuild.run(NativeHomeRebuild.Input(
+            days: [todayDay], sleeps: [], importedSleep: [:],
+            workouts: [], journalEntries: [], vo2max: nil,
+            sampleHours: [], liveTodayStrain: nil,
+            selectedKey: today, selectedDay: now,
+            effortScale: .whoop, smartAlarmEnabled: false, smartAlarmMinutes: 7 * 60,
+            dashboardJSON: "", temperature: .celsius, stressExtraExclusions: [],
+            now: now
+        ))
+        let todayPoint = snapshot.weekStrain.first { $0.key == today }
+        XCTAssertFalse(todayPoint?.value.isFinite ?? true)
+    }
+
+    func testUnfinishedTodayCaloriesDoNotShowDownArrow() {
+        let today = "2026-11-18"
+        let now = localDate(year: 2026, month: 11, day: 18, hour: 9, minute: 51)
+        let prior = (8...17).map { day in
+            DailyMetric(
+                day: String(format: "2026-11-%02d", day),
+                totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+                disturbances: nil, restingHr: 51, avgHrv: 66, recovery: nil, strain: 40,
+                exerciseCount: nil, steps: 8_000, activeKcalEst: 2_000
+            )
+        }
+        let todayDay = DailyMetric(
+            day: today,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 52, avgHrv: 60, recovery: nil, strain: nil,
+            exerciseCount: nil, steps: 2_000, activeKcalEst: 400
+        )
+        let viewing = NativeDay.make(
+            days: prior + [todayDay], sleeps: [], workouts: [],
+            todayKey: today, connected: false, effortScale: .whoop, now: now
+        )
+        XCTAssertEqual(viewing.dashboard.first { $0.title == "Calories" }?.delta, NativeScore.Delta.none)
+        XCTAssertEqual(viewing.dashboard.first { $0.title == "Steps" }?.delta, NativeScore.Delta.none)
+
+        let above = DailyMetric(
+            day: today,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 52, avgHrv: 60, recovery: nil, strain: nil,
+            exerciseCount: nil, steps: 12_000, activeKcalEst: 3_000
+        )
+        let ahead = NativeDay.make(
+            days: prior + [above], sleeps: [], workouts: [],
+            todayKey: today, connected: false, effortScale: .whoop, now: now
+        )
+        XCTAssertEqual(ahead.dashboard.first { $0.title == "Calories" }?.delta, NativeScore.Delta.up)
+
+        let completed = DailyMetric(
+            day: "2026-11-17",
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 51, avgHrv: 66, recovery: nil, strain: 40,
+            exerciseCount: nil, steps: 2_000, activeKcalEst: 400
+        )
+        let past = NativeDay.make(
+            days: prior.filter { $0.day != completed.day } + [completed], sleeps: [], workouts: [],
+            todayKey: completed.day, connected: false, effortScale: .whoop, now: now
+        )
+        XCTAssertEqual(past.dashboard.first { $0.title == "Calories" }?.delta, NativeScore.Delta.down)
+        XCTAssertEqual(past.strain.rows.first { $0.title == "Steps" }?.delta, NativeScore.Delta.down)
+    }
+
+    func testScreenAddsiOSTabBarScrollClearance() {
+        #if os(iOS)
+        XCTAssertEqual(NativeChrome.screenScrollBottomExtra, 48)
+        #else
+        XCTAssertEqual(NativeChrome.screenScrollBottomExtra, 0)
+        #endif
+    }
+
+    private func localDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = .current
+        return cal.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute))!
     }
 }

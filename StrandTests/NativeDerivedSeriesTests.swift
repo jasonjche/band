@@ -52,7 +52,7 @@ final class NativeDerivedSeriesTests: XCTestCase {
             wakeRestingHR: BandStress.defaultRestingHR,
             sleepRestingHR: BandStress.defaultRestingHR,
             rmssd: nil
-        )
+        ) + "|\(NativeDerivedSeries.stressCalibrationTag)"
         let payload = DerivedSeriesCodec.encodeStress(DerivedSeriesCodec.StressPayload(
             fingerprint: fingerprint,
             points: built.hours.map {
@@ -68,6 +68,42 @@ final class NativeDerivedSeriesTests: XCTestCase {
 
         let other = DerivedSeriesCodec.decodeStress(payload)
         XCTAssertNotEqual(other?.fingerprint, "s=0|e=0")
+        XCTAssertEqual(
+            NativeDerivedSeries.stressLiveHRFingerprint(bucketCount: 12, lastTs: 9_999),
+            "hr:12:9999"
+        )
+        XCTAssertTrue(fingerprint.contains(NativeDerivedSeries.stressCalibrationTag))
+    }
+
+    func testComputeStressHoldsUnloggedWalking() {
+        let t0 = 1_699_999_980 // minute-aligned so step ticks share BandStress bucket keys
+        var buckets: [HRBucket] = []
+        var steps: [AutoWorkoutDetector.StepTick] = []
+        for i in 0..<30 {
+            let ts = t0 + i * 60
+            let walking = (10..<20).contains(i)
+            let bpm = walking ? 108.0 : 72.0
+            buckets.append(HRBucket(ts: ts, bpm: bpm, minBpm: bpm, maxBpm: bpm))
+            if walking {
+                for s in 0..<20 {
+                    steps.append(AutoWorkoutDetector.StepTick(ts: ts + s, activityClass: 1))
+                }
+            }
+        }
+        let overnight = BandStress.Baselines(wakeRestingHR: 57, sleepRestingHR: 57, rmssd: nil)
+        let built = NativeDerivedSeries.computeStress(
+            buckets: buckets,
+            baselines: overnight,
+            sleepStart: nil,
+            sleepEnd: nil,
+            workouts: [],
+            rr: [],
+            steps: steps,
+            gravity: []
+        )
+        let sit = NativeHomeCharts.stressValue(bpm: 72, baselines: overnight)
+        XCTAssertEqual(built.hours.map(\.value).max() ?? 9, sit, accuracy: 0.12)
+        XCTAssertFalse(built.exclusions.filter { $0.kind == .activity }.isEmpty)
     }
 
     func testOvernightCacheRoundTripMatchesLiveMake() {

@@ -254,6 +254,20 @@ private struct NativeSleepHypnogramPlot: View {
                     }
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
+                if let time = scrub.time {
+                    let x = 48 + CGFloat(NativeSleepHypnogramMath.x(
+                        timestamp: Int(time.timeIntervalSince1970),
+                        width: Double(plotWidth),
+                        nightStart: layout.startTs,
+                        nightEnd: layout.endTs
+                    ))
+                    NativeChartScrubGuide(
+                        x: x,
+                        y: nil,
+                        tint: NativeTokens.sleep,
+                        plotFrame: CGRect(x: 48, y: 0, width: plotWidth, height: geo.size.height)
+                    )
+                }
             }
             .contentShape(Rectangle())
             .gesture(
@@ -269,7 +283,16 @@ private struct NativeSleepHypnogramPlot: View {
                     .onEnded { _ in scrub.time = nil }
             )
             .nativeChartButton(action: onOpen)
+            .modifier(NativeSelectionFeedback(trigger: hapticSpan))
         }
+    }
+
+    private var hapticSpan: Int {
+        guard let time = scrub.time else { return 0 }
+        return NativeSleepHypnogramMath.span(
+            at: Int(time.timeIntervalSince1970),
+            spans: layout.sourceSpans
+        )?.startTs ?? 0
     }
 
     private struct DrawKey: Hashable {

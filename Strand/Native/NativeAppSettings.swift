@@ -8,21 +8,17 @@ struct NativeAppSettingsView: View {
     @AppStorage(UnitPrefs.temperatureKey) private var temperatureRaw = ""
     @AppStorage(UnitPrefs.skinTempDisplayKey) private var skinTempDisplayRaw = ""
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
-    @AppStorage(NativeStyle.storageKey) private var nativeStyleRaw = NativeStyle.apple.rawValue
-    /// Temporary: lets the user compare the three Band Age orb styles on the phone.
-    @AppStorage("band.orbStyle") private var orbStyleRaw = NativeHealthspanOrbStyle.ring.rawValue
     #if os(iOS)
     @AppStorage(ScreenIdle.strapSyncKeepAwakeKey) private var syncKeepScreenOn = false
     #endif
 
-    /// UserDefaults keys this page binds. Same spellings and defaults as the legacy SettingsView rows.
+    /// UserDefaults keys this page binds.
     static let boundKeys = [
         UnitPrefs.systemKey,
         UnitPrefs.distanceSystemKey,
         UnitPrefs.temperatureKey,
         UnitPrefs.skinTempDisplayKey,
         UnitPrefs.effortScaleKey,
-        NativeStyle.storageKey,
         ScreenIdle.strapSyncKeepAwakeKey,
     ]
 
@@ -71,23 +67,6 @@ struct NativeAppSettingsView: View {
                 Text("WHOOP Day Strain uses 0–21. Stored strain is unchanged.")
             }
 
-            Section {
-                Picker("Style", selection: $nativeStyleRaw) {
-                    ForEach(NativeStyle.allCases) { option in
-                        Text(option.label).tag(option.rawValue)
-                    }
-                }
-                Picker("Band Age Orb", selection: $orbStyleRaw) {
-                    Text("Ring").tag(NativeHealthspanOrbStyle.ring.rawValue)
-                    Text("Bloom").tag(NativeHealthspanOrbStyle.bloom.rawValue)
-                    Text("Glass").tag(NativeHealthspanOrbStyle.glass.rawValue)
-                }
-            } header: {
-                Text("Appearance")
-            } footer: {
-                Text("Apple is Health chrome with WHOOP's rings, contributor bands, and charts. WHOOP is the dark faithful drawing — without branding.")
-            }
-
             #if os(iOS)
             Section {
                 Toggle("Keep Screen On While Syncing", isOn: $syncKeepScreenOn)
@@ -97,14 +76,6 @@ struct NativeAppSettingsView: View {
                 Text("Holds the screen awake while a strap history sync runs.")
             }
             #endif
-
-            Section {
-                NavigationLink("Advanced") {
-                    SettingsView()
-                }
-            } footer: {
-                Text("Diagnostics and experimental controls.")
-            }
         }
         #if os(iOS)
         .listStyle(.insetGrouped)

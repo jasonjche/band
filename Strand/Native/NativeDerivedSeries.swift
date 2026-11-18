@@ -74,15 +74,25 @@ enum NativeDerivedSeries {
         let sleepEnd = inputs.sleepEnd
         let bouts = inputs.bouts
         let baselines = inputs.baselines
-        let fingerprint = inputs.fingerprint
+        let from = Int(calendar.startOfDay(for: dayStart).timeIntervalSince1970)
+        let to = from + 86_400
+        // Today's HR frontier belongs in the fingerprint: a 7:15 AM cache must miss at 9:50 AM
+        // when new samples arrive. Historical days stay O(1) once fetched.
+        let liveDay = dayKey == NativeDayLogic.logicalToday()
+        var buckets: [HRBucket] = []
+        var fingerprint = inputs.fingerprint
+        if liveDay {
+            buckets = await repo.hrSamples(from: from, to: to, bucketSeconds: BandStress.bucketSeconds)
+            fingerprint += "|\(stressLiveHRFingerprint(bucketCount: buckets.count, lastTs: buckets.last?.ts ?? 0))"
+        }
         if !force, let cached = await readStress(repo: repo, dayKey: dayKey, fingerprint: fingerprint) {
             NativeDerivedSeriesMetrics.lastStressFromCache = true
             NativeDerivedSeriesMetrics.lastStressSamples = 0
             return cached
         }
-        let from = Int(calendar.startOfDay(for: dayStart).timeIntervalSince1970)
-        let to = from + 86_400
-        let buckets = await repo.hrSamples(from: from, to: to, bucketSeconds: BandStress.bucketSeconds)
+        if !liveDay {
+            buckets = await repo.hrSamples(from: from, to: to, bucketSeconds: BandStress.bucketSeconds)
+        }
         if Task.isCancelled { return StressDay(hours: [], exclusions: []) }
         let rr = await repo.rrIntervals(from: from, to: to, limit: 200_000)
         if Task.isCancelled { return StressDay(hours: [], exclusions: []) }
@@ -234,11 +244,19 @@ enum NativeDerivedSeries {
             wakeRestingHR: baselines.wakeRestingHR,
             sleepRestingHR: baselines.sleepRestingHR,
             rmssd: baselines.rmssd
-        )
+        ) + "|\(stressCalibrationTag)"
         return StressInputs(
             sleepStart: sleepStart, sleepEnd: sleepEnd, bouts: bouts,
             baselines: baselines, fingerprint: fingerprint
         )
+    }
+
+    /// Busts cached minute-stress after the orthostatic waking floor / walking hold landed.
+    static let stressCalibrationTag =
+        "ortho:\(Int(NativeHomeCharts.wakeOrthostaticBPM)):\(Int(NativeHomeCharts.sleepOrthostaticBPM))"
+
+    static func stressLiveHRFingerprint(bucketCount: Int, lastTs: Int) -> String {
+        "hr:\(bucketCount):\(lastTs)"
     }
 
     // MARK: - Cache I/O
