@@ -56,6 +56,56 @@ final class AutoSaveDetectedWorkoutsTests: XCTestCase {
             tokens: [], grandfather: false, scanFrom: 50))
     }
 
+    func testRejectsACasualWalk() {
+        let walk = DetectedWorkout(
+            startSec: 1_000, endSec: 1_000 + 12 * 60, avgBpm: 98, peakBpm: 110, durationMin: 12
+        )
+        let steps = (1_000...(1_000 + 12 * 60)).map {
+            AutoWorkoutDetector.StepTick(ts: $0, activityClass: 1)
+        }
+        let keep = Repository.autoSavableWorkouts(
+            [walk],
+            frontierTs: 10_000, settleSeconds: 600,
+            autoDismissedTokens: [], detectedDismissedTokens: [],
+            restingBpm: 57, maxHR: 190, steps: steps)
+        XCTAssertTrue(keep.isEmpty)
+        XCTAssertFalse(Repository.isWorkoutLevelEffort(
+            walk, restingBpm: 57, maxHR: 190, steps: steps))
+    }
+
+    func testKeepsARunByGaitClass() {
+        let run = DetectedWorkout(
+            startSec: 1_000, endSec: 1_000 + 12 * 60, avgBpm: 98, peakBpm: 110, durationMin: 12
+        )
+        let steps = (1_000...(1_000 + 12 * 60)).map {
+            AutoWorkoutDetector.StepTick(ts: $0, activityClass: $0 % 5 == 0 ? 2 : 1)
+        }
+        let keep = Repository.autoSavableWorkouts(
+            [run],
+            frontierTs: 10_000, settleSeconds: 600,
+            autoDismissedTokens: [], detectedDismissedTokens: [],
+            restingBpm: 57, maxHR: 190, steps: steps)
+        XCTAssertEqual(keep.map(\.startSec), [1_000])
+    }
+
+    func testKeepsKarvonenAndSustainedBriskEffort() {
+        let hard = DetectedWorkout(
+            startSec: 1_000, endSec: 1_000 + 12 * 60, avgBpm: 140, peakBpm: 165, durationMin: 12
+        )
+        XCTAssertTrue(Repository.isWorkoutLevelEffort(
+            hard, restingBpm: 60, maxHR: 197, steps: []))
+        let brisk = DetectedWorkout(
+            startSec: 2_000, endSec: 2_000 + 30 * 60, avgBpm: 113, peakBpm: 122, durationMin: 30
+        )
+        XCTAssertTrue(Repository.isWorkoutLevelEffort(
+            brisk, restingBpm: 60, maxHR: 197, steps: []))
+        let keep = Repository.autoSavableWorkouts(
+            [hard, brisk],
+            frontierTs: 20_000, settleSeconds: 600,
+            autoDismissedTokens: [], detectedDismissedTokens: [])
+        XCTAssertEqual(keep.map(\.startSec), [1_000, 2_000])
+    }
+
     func testStaleAutoSavedRowsAreThoseThatNoLongerQualify() {
         let bogus = WorkoutRow(
             startTs: 1_000, endTs: 2_000, sport: "Activity", source: "manual",

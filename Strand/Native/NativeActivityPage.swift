@@ -518,7 +518,8 @@ struct NativeActivityView: View {
             series.samples.map { (ts: $0.ts, bpm: Double($0.bpm)) },
             seconds: NativeActivityPageLogic.hrBucketSeconds
         )
-        hr = rawPoints
+        // Display-only. Zones, avg, max, and strain stay on the raw samples / row.
+        hr = NativeHRSmoothing.smooth(rawPoints)
         let isRecovery = WorkoutCatalog.isRecovery(found.sport)
         let zones = zoneSet ?? HRZones.zones(
             maxHR: profileHandle?.effortHRmax ?? 197,

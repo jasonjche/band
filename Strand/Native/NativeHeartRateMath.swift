@@ -83,7 +83,7 @@ enum NativeHeartRateMath {
     ) -> [NativeHourPoint] {
         let cutoff = now.addingTimeInterval(-span)
         let window = points.filter { $0.time >= cutoff }
-        return downsample(NativeHRSmoothing.smoothDay(window), maxPoints: maxPoints)
+        return downsample(NativeHRSmoothing.smoothSpark(window), maxPoints: maxPoints)
     }
 
     /// Live BPM rides the end of an already-smoothed spark. Does not resmooth.

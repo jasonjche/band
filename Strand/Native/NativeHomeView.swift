@@ -1903,9 +1903,11 @@ enum NativeHomeCharts {
                                 hours: [NativeHourPoint],
                                 exclusions: [BandStress.ExclusionSpan]
                                ) {
+        // Score with an orthostatic waking floor, skip BandStress's internal smooth so
+        // unlogged walking can be held to the pre-walk calm *before* the 15-minute mean.
         let timeline = BandStress.timeline(
             buckets: buckets.map { (ts: $0.ts, bpm: $0.bpm) },
-            baselines: baselines,
+            baselines: calibratedStressBaselines(baselines),
             sleepStart: sleepStart.map { Int($0.timeIntervalSince1970) },
             sleepEnd: sleepEnd.map { Int($0.timeIntervalSince1970) },
             workouts: workouts.map {
@@ -1914,9 +1916,18 @@ enum NativeHomeCharts {
             rmssdByBucket: rmssdByBucket,
             activityBuckets: activityBuckets,
             recovery: recovery,
-            smoothRadius: NativeHomeCharts.stressDisplayRadius
+            smoothRadius: 0
         )
-        let hours = timeline.hours.map { point in
+        let held = holdWalkingStress(
+            hours: timeline.hours,
+            activityBuckets: activityBuckets,
+            workouts: workouts
+        )
+        let smoothed = BandStress.smoothCentered(
+            points: held,
+            radius: NativeHomeCharts.stressDisplayRadius
+        )
+        let hours = smoothed.map { point in
             NativeHourPoint(
                 time: Date(timeIntervalSince1970: TimeInterval(point.ts)),
                 value: point.value
@@ -1929,11 +1940,60 @@ enum NativeHomeCharts {
     /// WHOOP's smooth trace. The 5-minute default in `BandStress` stayed too jittery on the phone.
     static let stressDisplayRadius = 7
 
+    /// Sitting upright is about this many bpm above the 4 AM supine overnight trough.
+    static let wakeOrthostaticBPM: Double = 10
+    /// Sleep scoring stays closer to the overnight trough than waking does.
+    static let sleepOrthostaticBPM: Double = 5
+    /// Unlogged walking may not lift the plotted line above Low.
+    static let walkingStressCap: Double = 0.9
+
+    /// Overnight RHR is a supine deep-sleep trough. Waking scores need a sitting/standing floor
+    /// so calm desk HR does not read Medium/High.
+    static func calibratedStressBaselines(_ baselines: BandStress.Baselines) -> BandStress.Baselines {
+        BandStress.Baselines(
+            wakeRestingHR: baselines.wakeRestingHR + wakeOrthostaticBPM,
+            sleepRestingHR: baselines.sleepRestingHR + sleepOrthostaticBPM,
+            rmssd: baselines.rmssd
+        )
+    }
+
+    /// Hold unlogged walking minutes to the pre-walk calm (or Low) so a 100 bpm stroll
+    /// cannot score 3.0 and bleed into the surrounding sitting minutes.
+    static func holdWalkingStress(
+        hours: [(ts: Int, value: Double)],
+        activityBuckets: Set<Int>,
+        workouts: [(start: Date, end: Date)]
+    ) -> [(ts: Int, value: Double)] {
+        guard !activityBuckets.isEmpty else { return hours }
+        var lastCalm: Double?
+        return hours.map { point in
+            let walking = activityBuckets.contains(point.ts) && !bucketIsWorkout(point.ts, workouts: workouts)
+            if walking {
+                return (point.ts, lastCalm ?? min(point.value, walkingStressCap))
+            }
+            lastCalm = point.value
+            return point
+        }
+    }
+
+    private static func bucketIsWorkout(_ ts: Int, workouts: [(start: Date, end: Date)]) -> Bool {
+        let end = ts + BandStress.bucketSeconds
+        for bout in workouts {
+            let start = Int(bout.start.timeIntervalSince1970)
+            let stop = Int(bout.end.timeIntervalSince1970)
+            if ts < stop && start < end { return true }
+        }
+        return false
+    }
+
     static func stressValue(bpm: Double,
                             baselines: BandStress.Baselines = .fallback,
                             asleep: Bool = false,
                             rmssd: Double? = nil) -> Double {
-        BandStress.score(bpm: bpm, rmssd: rmssd, isAsleep: asleep, baselines: baselines)
+        BandStress.score(
+            bpm: bpm, rmssd: rmssd, isAsleep: asleep,
+            baselines: calibratedStressBaselines(baselines)
+        )
     }
 
     /// Last sample if the series exists, else the daily HRV/RHR score, else nil. Never 1.0 or 0 as a stand-in.

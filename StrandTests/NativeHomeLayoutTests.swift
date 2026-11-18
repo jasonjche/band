@@ -219,11 +219,12 @@ final class NativeHomeLayoutTests: XCTestCase {
         XCTAssertNil(NativeHomeCharts.stressLevel(hours: [], days: [], todayKey: "2023-11-14"))
         XCTAssertTrue(NativeHomeCharts.stressSeries(buckets: []).isEmpty)
         XCTAssertTrue(NativeHomeCharts.stressSeries(samples: []).isEmpty)
-        // Relative to fallback RHR 60, 12 bpm/band. Old pins were absolute (bpm-48)/38.
+        // Orthostatic wake floor: fallback RHR 60 + 10, 12 bpm/band.
         XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 60), 0, accuracy: 0.01)
-        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 72), 1, accuracy: 0.01)
-        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 84), 2, accuracy: 0.01)
-        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 96), 3, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 70), 0, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 82), 1, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 94), 2, accuracy: 0.01)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 106), 3, accuracy: 0.01)
         XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 200), 3, accuracy: 0.01)
         XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 48), 0, accuracy: 0.01)
     }
@@ -400,9 +401,54 @@ final class NativeHomeLayoutTests: XCTestCase {
         }
         let hours = NativeHomeCharts.stressSeries(buckets: buckets)
         XCTAssertEqual(hours.count, 11)
-        // 15-minute centred mean; the 11-minute run averages the 3.0 spike over 11 minutes.
-        XCTAssertEqual(hours[5].value, 3.0 / 11, accuracy: 0.05)
+        // 15-minute centred mean; the 11-minute run averages the spike over 11 minutes.
+        let spike = NativeHomeCharts.stressValue(bpm: 96)
+        XCTAssertEqual(hours[5].value, spike / 11, accuracy: 0.05)
         XCTAssertLessThan(hours[5].value, 1)
+    }
+
+    func testWakingSitReadsLowAndLightActivityReadsMedium() {
+        let overnight = BandStress.Baselines(wakeRestingHR: 57, sleepRestingHR: 57, rmssd: nil)
+        // Calm sitting +11…+18 above the 4 AM trough stays Low.
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 68, baselines: overnight), 1 / 12, accuracy: 0.02)
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 73, baselines: overnight), 6 / 12, accuracy: 0.02)
+        XCTAssertLessThan(NativeHomeCharts.stressValue(bpm: 75, baselines: overnight), 1)
+        // Standing / light everyday activity is Medium, not High.
+        let stand = NativeHomeCharts.stressValue(bpm: 84, baselines: overnight)
+        XCTAssertGreaterThan(stand, 1)
+        XCTAssertLessThan(stand, 2)
+        // High still needs a genuine non-locomotion lift (~+34 bpm over overnight RHR).
+        XCTAssertEqual(NativeHomeCharts.stressValue(bpm: 91, baselines: overnight), 2, accuracy: 0.05)
+        XCTAssertEqual(NativeHomeCharts.wakeOrthostaticBPM, 10, accuracy: 1e-9)
+        XCTAssertEqual(NativeHomeCharts.sleepOrthostaticBPM, 5, accuracy: 1e-9)
+    }
+
+    func testWalkingBucketsHoldToPreWalkCalmAndDoNotBleed() {
+        let t0 = 1_700_000_000
+        let overnight = BandStress.Baselines(wakeRestingHR: 57, sleepRestingHR: 57, rmssd: nil)
+        var buckets: [HRBucket] = []
+        var activity: Set<Int> = []
+        for i in 0..<40 {
+            let ts = t0 + i * 60
+            let walking = (15..<27).contains(i)
+            let bpm = walking ? 105.0 : 70.0
+            buckets.append(HRBucket(ts: ts, bpm: bpm, minBpm: bpm, maxBpm: bpm))
+            if walking { activity.insert(ts) }
+        }
+        let hours = NativeHomeCharts.stressTimeline(
+            buckets: buckets,
+            baselines: overnight,
+            activityBuckets: activity
+        ).hours
+        let sit = NativeHomeCharts.stressValue(bpm: 70, baselines: overnight)
+        XCTAssertEqual(sit, 3 / 12, accuracy: 0.02)
+        XCTAssertLessThan(sit, 1)
+        // Unlogged walking at 105 bpm would have scored 3.0 and smeared into sitting.
+        XCTAssertEqual(hours.count, 40)
+        XCTAssertEqual(hours.map(\.value).max() ?? 9, sit, accuracy: 0.08)
+        XCTAssertLessThan(hours[20].value, NativeHomeCharts.walkingStressCap)
+        XCTAssertEqual(hours[8].value, sit, accuracy: 0.05)
+        XCTAssertEqual(hours[32].value, sit, accuracy: 0.05)
     }
 
     func testStressTimelineMergesWalkingExclusionsAndKeepsTheLineThroughThem() {

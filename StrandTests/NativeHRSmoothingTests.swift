@@ -41,8 +41,20 @@ final class NativeHRSmoothingTests: XCTestCase {
         let raw = points([80, 82, 84, 86], every: 20)
         XCTAssertEqual(NativeHRSmoothing.gapLimit(in: raw, window: 45), 45)
         XCTAssertEqual(NativeHRSmoothing.gapLimit(in: raw, window: 10), 40)
-        XCTAssertEqual(NativeHRSmoothing.defaultWindow, 120, accuracy: 1e-9)
-        XCTAssertEqual(NativeHRSmoothing.dayWindow, 600, accuracy: 1e-9)
+        XCTAssertEqual(NativeHRSmoothing.defaultWindow, 180, accuracy: 1e-9)
+        XCTAssertEqual(NativeHRSmoothing.dayWindow, 900, accuracy: 1e-9)
+        XCTAssertEqual(NativeHRSmoothing.sparkWindow, 360, accuracy: 1e-9)
+    }
+
+    func testTwoPassSoftensAStepWithoutMovingTheEnds() {
+        let raw = points(Array(repeating: 80.0, count: 20) + Array(repeating: 120.0, count: 20), every: 20)
+        let smoothed = NativeHRSmoothing.smooth(raw, window: 120)
+        XCTAssertEqual(smoothed.count, raw.count)
+        XCTAssertEqual(smoothed.first?.value ?? 0, 80, accuracy: 2)
+        XCTAssertEqual(smoothed.last?.value ?? 0, 120, accuracy: 2)
+        let mid = smoothed[smoothed.count / 2].value
+        XCTAssertGreaterThan(mid, 85)
+        XCTAssertLessThan(mid, 115)
     }
 
     func testDaySmoothingAveragesAPerMinuteSpike() {
