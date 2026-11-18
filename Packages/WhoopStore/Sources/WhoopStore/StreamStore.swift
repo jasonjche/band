@@ -13,8 +13,245 @@ extension WhoopStore {
     static func encodePayload(_ payload: [String: ParsedValue]) throws -> String {
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]
-        let data = try enc.encode(payload)
+        return try encodePayload(payload, encoder: enc)
+    }
+
+    static func encodePayload(_ payload: [String: ParsedValue], encoder: JSONEncoder) throws -> String {
+        let data = try encoder.encode(payload)
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Rows per multi-VALUES INSERT. 64 × 6 binds = 384, well under SQLite's variable cap, while
+    /// cutting statement executions ~64× on a day-long offload. Remainder chunks reuse a second
+    /// cached statement keyed on their SQL.
+    static let bulkInsertChunk = 64
+
+    /// Multi-row INSERT with ON CONFLICT. Returns SQLite `changesCount` (rows actually inserted).
+    static func insertChunked<T>(
+        db: Database,
+        tableAndColumns: String,
+        conflictSQL: String,
+        valuesPerRow: Int,
+        rows: [T],
+        bind: (T, inout [(any DatabaseValueConvertible)?]) throws -> Void
+    ) throws -> Int {
+        guard !rows.isEmpty else { return 0 }
+        var inserted = 0
+        var i = 0
+        let n = rows.count
+        while i < n {
+            let k = min(bulkInsertChunk, n - i)
+            let sql = bulkInsertSQL(tableAndColumns: tableAndColumns, conflictSQL: conflictSQL,
+                                    valuesPerRow: valuesPerRow, rowCount: k, returning: nil)
+            var args: [(any DatabaseValueConvertible)?] = []
+            args.reserveCapacity(k * valuesPerRow)
+            for r in i..<(i + k) { try bind(rows[r], &args) }
+            let stmt = try db.cachedStatement(sql: sql)
+            try stmt.execute(arguments: StatementArguments(args))
+            inserted += db.changesCount
+            i += k
+        }
+        return inserted
+    }
+
+    /// Same as `insertChunked`, but `RETURNING col` so the caller learns which rows survived
+    /// ON CONFLICT DO NOTHING (needed for `stepDataRevision`, which records inserted timestamps).
+    static func insertChunkedReturning<T>(
+        db: Database,
+        tableAndColumns: String,
+        conflictSQL: String,
+        returning: String,
+        valuesPerRow: Int,
+        rows: [T],
+        bind: (T, inout [(any DatabaseValueConvertible)?]) throws -> Void
+    ) throws -> [Int] {
+        guard !rows.isEmpty else { return [] }
+        var out: [Int] = []
+        out.reserveCapacity(rows.count)
+        var i = 0
+        let n = rows.count
+        while i < n {
+            let k = min(bulkInsertChunk, n - i)
+            let sql = bulkInsertSQL(tableAndColumns: tableAndColumns, conflictSQL: conflictSQL,
+                                    valuesPerRow: valuesPerRow, rowCount: k, returning: returning)
+            var args: [(any DatabaseValueConvertible)?] = []
+            args.reserveCapacity(k * valuesPerRow)
+            for r in i..<(i + k) { try bind(rows[r], &args) }
+            let got = try Int.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+            out.append(contentsOf: got)
+            i += k
+        }
+        return out
+    }
+
+    /// HR insert twin of `insertChunkedReturning`: only rows that actually landed
+    /// (`ON CONFLICT DO NOTHING`) are returned, so the minute rollup cannot
+    /// double-count a re-ingest.
+    static func insertChunkedReturningTsBpm<T>(
+        db: Database,
+        tableAndColumns: String,
+        conflictSQL: String,
+        valuesPerRow: Int,
+        rows: [T],
+        bind: (T, inout [(any DatabaseValueConvertible)?]) throws -> Void
+    ) throws -> [(ts: Int, bpm: Int)] {
+        guard !rows.isEmpty else { return [] }
+        var out: [(ts: Int, bpm: Int)] = []
+        out.reserveCapacity(rows.count)
+        var i = 0
+        let n = rows.count
+        while i < n {
+            let k = min(bulkInsertChunk, n - i)
+            let sql = bulkInsertSQL(tableAndColumns: tableAndColumns, conflictSQL: conflictSQL,
+                                    valuesPerRow: valuesPerRow, rowCount: k, returning: "ts, bpm")
+            var args: [(any DatabaseValueConvertible)?] = []
+            args.reserveCapacity(k * valuesPerRow)
+            for r in i..<(i + k) { try bind(rows[r], &args) }
+            let stmt = try db.cachedStatement(sql: sql)
+            try stmt.setArguments(StatementArguments(args))
+            let cursor = try Row.fetchCursor(stmt)
+            while let row = try cursor.next() {
+                out.append((ts: row[0], bpm: row[1]))
+            }
+            i += k
+        }
+        return out
+    }
+
+    /// Fold newly inserted 1 Hz HR into `hrMinute`. `ON CONFLICT DO UPDATE`
+    /// accumulates so a minute split across flushes stays exact.
+    static func accumulateHrMinutes(db: Database, deviceId: String,
+                                    samples: [(ts: Int, bpm: Int)]) throws {
+        guard !samples.isEmpty else { return }
+        var acc: [Int: (sum: Int, n: Int, min: Int, max: Int)] = [:]
+        acc.reserveCapacity(max(1, samples.count / 30))
+        for s in samples {
+            let minute = (s.ts / 60) * 60
+            if let cur = acc[minute] {
+                acc[minute] = (cur.sum + s.bpm, cur.n + 1,
+                               min(cur.min, s.bpm), max(cur.max, s.bpm))
+            } else {
+                acc[minute] = (s.bpm, 1, s.bpm, s.bpm)
+            }
+        }
+        let rows = Array(acc)
+        _ = try insertChunked(
+            db: db,
+            tableAndColumns: "hrMinute (deviceId, minuteTs, sumBpm, n, minBpm, maxBpm)",
+            conflictSQL: """
+                ON CONFLICT(deviceId, minuteTs) DO UPDATE SET
+                  sumBpm = hrMinute.sumBpm + excluded.sumBpm,
+                  n = hrMinute.n + excluded.n,
+                  minBpm = MIN(hrMinute.minBpm, excluded.minBpm),
+                  maxBpm = MAX(hrMinute.maxBpm, excluded.maxBpm)
+                """,
+            valuesPerRow: 6,
+            rows: rows
+        ) { r, args in
+            args.append(deviceId)
+            args.append(r.key)
+            args.append(r.value.sum)
+            args.append(r.value.n)
+            args.append(r.value.min)
+            args.append(r.value.max)
+        }
+    }
+
+    private static func bulkInsertSQL(tableAndColumns: String, conflictSQL: String,
+                                      valuesPerRow: Int, rowCount: Int, returning: String?) -> String {
+        let one = "(" + Array(repeating: "?", count: valuesPerRow).joined(separator: ",") + ")"
+        var sql = "INSERT INTO \(tableAndColumns) VALUES "
+        sql += Array(repeating: one, count: rowCount).joined(separator: ",")
+        sql += " \(conflictSQL)"
+        if let returning { sql += " RETURNING \(returning)" }
+        return sql
+    }
+
+    /// Multi-row RR insert with the same seq/ord assignment and canonical-source promote as the
+    /// previous per-row loop. `RETURNING` identifies which VALUES actually inserted so promote
+    /// still runs only on conflicts, in original order.
+    static func insertRrBulk(db: Database, deviceId: String, rows: [RRInterval]) throws -> Int {
+        struct Prepared {
+            let ts: Int
+            let rrMs: Int
+            let seq: Int
+            let ord: Int
+            let src: Int?
+            let srcChannel: RRSourceChannel?
+        }
+        var seqByTsRr: [RRBatchSecond: [Int: Int]] = [:]
+        var ordByTs: [RRBatchSecond: Int] = [:]
+        var prepared: [Prepared] = []
+        prepared.reserveCapacity(rows.count)
+        for r in rows {
+            let key = RRBatchSecond(ts: r.ts,
+                transport: r.srcChannel?.isWhoop5Transport == true ? r.srcChannel!.rawValue : 0)
+            let seq = seqByTsRr[key]?[r.rrMs] ?? 0
+            seqByTsRr[key, default: [:]][r.rrMs] = seq + 1
+            let ord = ordByTs[key] ?? 0
+            ordByTs[key] = ord + 1
+            prepared.append(Prepared(ts: r.ts, rrMs: r.rrMs, seq: seq, ord: ord,
+                                     src: r.srcChannel?.rawValue, srcChannel: r.srcChannel))
+        }
+
+        let promote = try db.cachedStatement(sql: """
+            UPDATE rrInterval SET srcChannel = :source, ord = :ord
+            WHERE deviceId = :device AND ts = :ts AND rrMs = :rr AND seq = :seq
+            AND ((:source = 5 AND (srcChannel IS NULL OR srcChannel IN (6, 7)))
+              OR (:source = 7 AND (srcChannel IS NULL OR srcChannel = 6)))
+            """)
+        let promoteWhoop4History = try db.cachedStatement(sql: """
+            UPDATE rrInterval SET srcChannel = :source, ord = :ord
+            WHERE deviceId = :device AND ts = :ts AND rrMs = :rr AND seq = :seq
+            AND :source = 8 AND srcChannel IS NULL
+            """)
+
+        var inserted = 0
+        var i = 0
+        let n = prepared.count
+        while i < n {
+            let k = min(bulkInsertChunk, n - i)
+            let sql = bulkInsertSQL(
+                tableAndColumns: "rrInterval (deviceId, ts, rrMs, seq, ord, srcChannel)",
+                conflictSQL: "ON CONFLICT(deviceId, ts, rrMs, seq) DO NOTHING",
+                valuesPerRow: 6, rowCount: k, returning: "ts, rrMs, seq")
+            var args: [(any DatabaseValueConvertible)?] = []
+            args.reserveCapacity(k * 6)
+            for r in i..<(i + k) {
+                let p = prepared[r]
+                args.append(deviceId); args.append(p.ts); args.append(p.rrMs)
+                args.append(p.seq); args.append(p.ord); args.append(p.src)
+            }
+            let got = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+            inserted += got.count
+            if got.count < k {
+                var g = 0
+                for r in i..<(i + k) {
+                    let p = prepared[r]
+                    if g < got.count {
+                        let ts: Int = got[g]["ts"]
+                        let rrMs: Int = got[g]["rrMs"]
+                        let seq: Int = got[g]["seq"]
+                        if ts == p.ts && rrMs == p.rrMs && seq == p.seq {
+                            g += 1
+                            continue
+                        }
+                    }
+                    if let source = p.srcChannel,
+                       source == .whoop5Historical || source == .whoop5Standard {
+                        try promote.execute(arguments: ["source": source.rawValue, "ord": p.ord,
+                            "device": deviceId, "ts": p.ts, "rr": p.rrMs, "seq": p.seq])
+                    }
+                    if p.srcChannel == .whoop4Historical {
+                        try promoteWhoop4History.execute(arguments: [
+                            "source": RRSourceChannel.whoop4Historical.rawValue, "ord": p.ord,
+                            "device": deviceId, "ts": p.ts, "rr": p.rrMs, "seq": p.seq])
+                    }
+                }
+            }
+            i += k
+        }
+        return inserted
     }
 
     /// Pack a decoded v26 PPG waveform's samples as little-endian i16 (2 bytes/sample) — a single
@@ -23,11 +260,16 @@ extension WhoopStore {
     /// Int16's range, matching the wire format it came from (`readI16` in the decoder never produces
     /// anything wider).
     static func packPpgSamples(_ samples: [Int]) -> Data {
-        var buf = Data(capacity: samples.count * 2)
-        for s in samples {
-            let v = Int16(truncatingIfNeeded: s)
-            buf.append(UInt8(truncatingIfNeeded: v))
-            buf.append(UInt8(truncatingIfNeeded: v >> 8))
+        var buf = Data(count: samples.count * 2)
+        buf.withUnsafeMutableBytes { raw in
+            let p = raw.bindMemory(to: UInt8.self)
+            var i = 0
+            for s in samples {
+                let v = Int16(truncatingIfNeeded: s)
+                p[i] = UInt8(truncatingIfNeeded: v)
+                p[i + 1] = UInt8(truncatingIfNeeded: v >> 8)
+                i += 2
+            }
         }
         return buf
     }
@@ -241,82 +483,23 @@ extension WhoopStore {
             // statement on the connection across insert() calls too. Each loop is guarded so empty
             // streams (the common live case) compile nothing.
             if !streams.hr.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO hrSample (deviceId, ts, bpm) VALUES (?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.hr {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.bpm])
-                    hr += db.changesCount
+                let inserted = try WhoopStore.insertChunkedReturningTsBpm(
+                    db: db,
+                    tableAndColumns: "hrSample (deviceId, ts, bpm)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 3,
+                    rows: streams.hr
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.bpm)
                 }
+                hr = inserted.count
+                try WhoopStore.accumulateHrMinutes(db: db, deviceId: deviceId, samples: inserted)
             }
             if !streams.rr.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO rrInterval (deviceId, ts, rrMs, seq, ord, srcChannel)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts, rrMs, seq) DO NOTHING
-                    """)
-                // v24 (#163): number EQUAL (ts, rrMs) beats 0, 1, … within this batch so both survive;
-                // distinct beats keep seq 0 and their own (ts, rrMs, 0) key, so a distinct beat is never
-                // dropped even across batches (rrMs stays in the key). Re-syncing identical rows reproduces
-                // the same (ts, rrMs, seq) → still idempotent. Nested dict = (ts, rrMs) occurrence counter.
-                //
-                // v30 (#823): `ord` is the beat's position among ALL beats sharing this ts in this batch —
-                // its emission order. `seq` cannot express it (it keys on (ts, rrMs), so distinct beats in
-                // a second are all 0). Not in the key, never changes which rows survive; it exists so reads
-                // return beats in heart order rather than sorted by value, which biases RMSSD down. Same
-                // batch-local caveat as seq: a second split across two live flushes restarts ord at 0 and
-                // DO NOTHING keeps the first row. The historical path delivers a second atomically.
-                // Twin of Kotlin assignRrSeq.
-                //
-                // `srcChannel` carries Oura optical channels or WHOOP 5 transport provenance. WHOOP 4
-                // and legacy rows stay NULL. Like `ord` it is OUTSIDE the key: two observations of a beat can
-                // yield the same (ts, rrMs), and keying on the label would store both — which is precisely
-                // the double-count this fixes. A collision never inserts another beat. A newly observed
-                // canonical WHOOP 5 transport can promote the existing source and order below; the read
-                // filter separates sources across the full requested interval.
-                let promote = try db.cachedStatement(sql: """
-                    UPDATE rrInterval SET srcChannel = :source, ord = :ord
-                    WHERE deviceId = :device AND ts = :ts AND rrMs = :rr AND seq = :seq
-                    AND ((:source = 5 AND (srcChannel IS NULL OR srcChannel IN (6, 7)))
-                      OR (:source = 7 AND (srcChannel IS NULL OR srcChannel = 6)))
-                    """)
-                let promoteWhoop4History = try db.cachedStatement(sql: """
-                    UPDATE rrInterval SET srcChannel = :source, ord = :ord
-                    WHERE deviceId = :device AND ts = :ts AND rrMs = :rr AND seq = :seq
-                    AND :source = 8 AND srcChannel IS NULL
-                    """)
-                var seqByTsRr: [RRBatchSecond: [Int: Int]] = [:]
-                var ordByTs: [RRBatchSecond: Int] = [:]
-                for r in streams.rr {
-                    // A second's native historical array is atomic. A standard packet in the same
-                    // batch must not change its order or the occurrence number of an equal interval.
-                    let key = RRBatchSecond(ts: r.ts,
-                        transport: r.srcChannel?.isWhoop5Transport == true ? r.srcChannel!.rawValue : 0)
-                    let seq = seqByTsRr[key]?[r.rrMs] ?? 0
-                    seqByTsRr[key, default: [:]][r.rrMs] = seq + 1
-                    let ord = ordByTs[key] ?? 0
-                    ordByTs[key] = ord + 1
-                    try stmt.execute(arguments: [deviceId, r.ts, r.rrMs, seq, ord,
-                                                 r.srcChannel?.rawValue])
-                    let inserted = db.changesCount
-                    rr += inserted
-                    if inserted == 0, let source = r.srcChannel,
-                       source == .whoop5Historical || source == .whoop5Standard {
-                        // Canonical precedence is history > standard > native/legacy. The winning
-                        // observation supplies its order; values/keys and Oura labels remain intact.
-                        // Cache fingerprints witness both canonical-source counts independently of inserts.
-                        try promote.execute(arguments: ["source": source.rawValue, "ord": ord,
-                            "device": deviceId, "ts": r.ts, "rr": r.rrMs, "seq": seq])
-                    }
-                    // The label is the CASE just matched, so name it rather than force-unwrapping the
-                    // optional the match already proved non-nil.
-                    if inserted == 0, r.srcChannel == .whoop4Historical {
-                        try promoteWhoop4History.execute(arguments: [
-                            "source": RRSourceChannel.whoop4Historical.rawValue, "ord": ord,
-                            "device": deviceId, "ts": r.ts, "rr": r.rrMs, "seq": seq])
-                    }
-                }
+                // v24 (#163) seq, v30 (#823) ord, and canonical-source promote: see `insertRrBulk`.
+                // Multi-VALUES INSERT (chunk 64) with ON CONFLICT DO NOTHING; promote still runs
+                // only on conflicts, in original order, so persisted rows stay identical.
+                rr = try WhoopStore.insertRrBulk(db: db, deviceId: deviceId, rows: streams.rr)
                 // #2371: mark the strap's 500 ms fill beats in this batch's window. The batch's heart rate
                 // was written above, so the same-second rate the rule reads is already on disk. Only a batch
                 // that carries a 500 ms WHOOP 5 beat pays for the statement. Android runs the same statement
@@ -330,70 +513,85 @@ extension WhoopStore {
                 }
             }
             if !streams.events.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO event (deviceId, ts, kind, payloadJSON) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts, kind) DO NOTHING
-                    """)
+                let enc = JSONEncoder()
+                enc.outputFormatting = [.sortedKeys]
+                var encoded: [(ts: Int, kind: String, json: String)] = []
+                encoded.reserveCapacity(streams.events.count)
                 for e in streams.events {
-                    let json = try WhoopStore.encodePayload(e.payload)
-                    try stmt.execute(arguments: [deviceId, e.ts, e.kind, json])
-                    ev += db.changesCount
+                    encoded.append((e.ts, e.kind, try WhoopStore.encodePayload(e.payload, encoder: enc)))
+                }
+                ev = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "event (deviceId, ts, kind, payloadJSON)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts, kind) DO NOTHING",
+                    valuesPerRow: 4,
+                    rows: encoded
+                ) { e, args in
+                    args.append(deviceId); args.append(e.ts); args.append(e.kind); args.append(e.json)
                 }
             }
             if !streams.battery.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO battery (deviceId, ts, soc, mv, charging) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for b in streams.battery {
-                    try stmt.execute(arguments: [deviceId, b.ts, b.soc, b.mv, b.charging])
-                    bat += db.changesCount
+                bat = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "battery (deviceId, ts, soc, mv, charging)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 5,
+                    rows: streams.battery
+                ) { b, args in
+                    args.append(deviceId); args.append(b.ts); args.append(b.soc)
+                    args.append(b.mv); args.append(b.charging)
                 }
             }
             if !streams.spo2.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO spo2Sample (deviceId, ts, red, ir) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.spo2 {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.red, s.ir])
-                    spo2 += db.changesCount
+                spo2 = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "spo2Sample (deviceId, ts, red, ir)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 4,
+                    rows: streams.spo2
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.red); args.append(s.ir)
                 }
             }
             // `aux1Raw`/`aux2Raw` (v31) are the two auxiliary thermal channels riding the same v18 record
             // as the primary reading. nil (a WHOOP 4.0, or a byte that failed the decoder's thermal gate)
             // stores SQL NULL, so an absent channel stays absent.
             if !streams.skinTemp.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO skinTempSample (deviceId, ts, raw, aux1Raw, aux2Raw) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.skinTemp {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.raw, s.aux1Raw, s.aux2Raw])
-                    skin += db.changesCount
+                skin = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "skinTempSample (deviceId, ts, raw, aux1Raw, aux2Raw)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 5,
+                    rows: streams.skinTemp
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.raw)
+                    args.append(s.aux1Raw); args.append(s.aux2Raw)
                 }
             }
             if !streams.resp.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO respSample (deviceId, ts, raw) VALUES (?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.resp {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.raw])
-                    resp += db.changesCount
+                resp = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "respSample (deviceId, ts, raw)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 3,
+                    rows: streams.resp
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.raw)
                 }
             }
             // `dynAccel` (v31) is the strap's OWN gravity-removed motion magnitude for the same second —
             // stored BESIDE the vector, never in place of it, and read by nothing. nil (a WHOOP 4.0, or an
             // f32 outside the decoder's [0, 8] g gate) stores SQL NULL.
             if !streams.gravity.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO gravitySample (deviceId, ts, x, y, z, dynAccel) VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.gravity {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.x, s.y, s.z, s.dynAccel])
-                    grav += db.changesCount
+                grav = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "gravitySample (deviceId, ts, x, y, z, dynAccel)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 6,
+                    rows: streams.gravity
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts)
+                    args.append(s.x); args.append(s.y); args.append(s.z); args.append(s.dynAccel)
                 }
             }
             // WHOOP5 step counter (#78). Persist-only, the count is not surfaced in the return tuple
@@ -402,17 +600,16 @@ extension WhoopStore {
             // decoder already carries on each StepSample; it was dropped here before v19. Bound as `s.activityClass`
             //, nil (the byte was 0xFF/invalid/absent) stores SQL NULL, so an absent class stays absent.
             if !streams.steps.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO stepSample (deviceId, ts, counter, activityClass) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                var insertedSteps = 0
-                var insertedStepTimestamps: [Int] = []
-                for s in streams.steps {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.counter, s.activityClass])
-                    let inserted = db.changesCount
-                    insertedSteps += inserted
-                    if inserted > 0 { insertedStepTimestamps.append(s.ts) }
+                let insertedStepTimestamps = try WhoopStore.insertChunkedReturning(
+                    db: db,
+                    tableAndColumns: "stepSample (deviceId, ts, counter, activityClass)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    returning: "ts",
+                    valuesPerRow: 4,
+                    rows: streams.steps
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts)
+                    args.append(s.counter); args.append(s.activityClass)
                 }
                 stepDataRevision.record(deviceId: deviceId, insertedTimestamps: insertedStepTimestamps)
             }
@@ -423,12 +620,14 @@ extension WhoopStore {
             // `rawByte` (v31) is the WHOLE @81 byte; `state` remains exactly its high nibble, so every
             // existing #175 consumer is bit-identical. nil stores SQL NULL.
             if !streams.sleepState.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO sleepStateSample (deviceId, ts, state, rawByte) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.sleepState {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.state, s.rawByte])
+                _ = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "sleepStateSample (deviceId, ts, state, rawByte)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 4,
+                    rows: streams.sleepState
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.state); args.append(s.rawByte)
                 }
             }
             // PPG-derived HR from the v26 optical buffer (#156). Persist-only, same as steps, the count
@@ -436,12 +635,14 @@ extension WhoopStore {
             // extending it would ripple), so it is inserted without being counted. ON CONFLICT DO NOTHING
             // keeps the FIRST estimate for a second; the measured hrSample is never touched here.
             if !streams.ppgHr.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO ppgHrSample (deviceId, ts, bpm, conf) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
-                for s in streams.ppgHr {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.bpm, s.conf])
+                _ = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "ppgHrSample (deviceId, ts, bpm, conf)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 4,
+                    rows: streams.ppgHr
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.bpm); args.append(s.conf)
                 }
             }
             // RAW v26 optical PPG waveform (#156 follow-up) — the samples `ppgHr` above is derived FROM.
@@ -450,16 +651,23 @@ extension WhoopStore {
             // per-second stream's dedupe rule. Packed into one compact BLOB per row (see
             // `packPpgSamples`) rather than 24 scalar rows, so this insert is O(records), not O(samples).
             if !streams.ppgWaveform.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO ppgWaveformSample (deviceId, ts, samples, burstIndex, baseCode)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
+                var packed: [(ts: Int, blob: Data, burstIndex: Int?, baseCode: Int?)] = []
+                packed.reserveCapacity(streams.ppgWaveform.count)
                 for s in streams.ppgWaveform {
-                    try stmt.execute(arguments: [deviceId, s.ts, WhoopStore.packPpgSamples(s.samples),
-                                                 s.burstIndex, s.baseCode])
-                    ppgWaveformWritten += 1
+                    packed.append((s.ts, WhoopStore.packPpgSamples(s.samples), s.burstIndex, s.baseCode))
                 }
+                _ = try WhoopStore.insertChunked(
+                    db: db,
+                    tableAndColumns: "ppgWaveformSample (deviceId, ts, samples, burstIndex, baseCode)",
+                    conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                    valuesPerRow: 5,
+                    rows: packed
+                ) { s, args in
+                    args.append(deviceId); args.append(s.ts); args.append(s.blob)
+                    args.append(s.burstIndex); args.append(s.baseCode)
+                }
+                // Same as the old per-row `+= 1`: prune budget counts attempts, including conflicts.
+                ppgWaveformWritten += packed.count
             }
             // Flash-banked MG ECG records (#2847), one row per strap-second of a reading, holding the
             // record's inner bytes verbatim. Persist-only like the three streams above: not added to the
@@ -487,15 +695,24 @@ extension WhoopStore {
             // slots are all absent packs to empty and is SKIPPED rather than banking a meaningless row —
             // which is also what keeps a WHOOP 4.0 offload from writing here at all.
             if !streams.v18Aux.isEmpty {
-                let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO v18AuxSample (deviceId, ts, fields) VALUES (?, ?, ?)
-                    ON CONFLICT(deviceId, ts) DO NOTHING
-                    """)
+                var packed: [(ts: Int, blob: Data)] = []
+                packed.reserveCapacity(streams.v18Aux.count)
                 for s in streams.v18Aux {
                     let blob = V18AuxCodec.pack(s)
                     if blob.isEmpty { continue }
-                    try stmt.execute(arguments: [deviceId, s.ts, blob])
-                    v18Written += 1
+                    packed.append((s.ts, blob))
+                }
+                if !packed.isEmpty {
+                    _ = try WhoopStore.insertChunked(
+                        db: db,
+                        tableAndColumns: "v18AuxSample (deviceId, ts, fields)",
+                        conflictSQL: "ON CONFLICT(deviceId, ts) DO NOTHING",
+                        valuesPerRow: 3,
+                        rows: packed
+                    ) { s, args in
+                        args.append(deviceId); args.append(s.ts); args.append(s.blob)
+                    }
+                    v18Written += packed.count
                 }
             }
             return (hr, rr, ev, bat, spo2, skin, resp, grav)
@@ -886,6 +1103,20 @@ extension WhoopStore {
                 SELECT rrMs, srcChannel FROM rrInterval WHERE deviceId = ?
                 ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC
                 """, arguments: [deviceId]).map { (rrMs: $0["rrMs"], srcChannel: $0["srcChannel"]) }
+        }
+    }
+
+    /// Full persisted R-R identity for old-vs-new insert proofs. Test-only.
+    public func rrTableDumpForTest(deviceId: String) async throws
+        -> [(ts: Int, rrMs: Int, seq: Int, ord: Int?, srcChannel: Int?)] {
+        try syncRead { db in
+            try Row.fetchAll(db, sql: """
+                SELECT ts, rrMs, seq, ord, srcChannel FROM rrInterval WHERE deviceId = ?
+                ORDER BY ts ASC, rrMs ASC, seq ASC
+                """, arguments: [deviceId]).map {
+                (ts: $0["ts"], rrMs: $0["rrMs"], seq: $0["seq"],
+                 ord: $0["ord"], srcChannel: $0["srcChannel"])
+            }
         }
     }
 

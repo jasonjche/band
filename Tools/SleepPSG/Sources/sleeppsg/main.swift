@@ -294,6 +294,55 @@ if want("baseline") {
     }
 }
 
+func stageLearned(_ s: PSGSubject) -> (segments: [StageSegment], usedLearned: Bool) {
+    if let segs = SleepStageLearned.stageSession(start: s.start, end: s.end, grav: s.grav, hr: s.hr, rr: [],
+                                                 useBundled: true) {
+        return (segs, true)
+    }
+    return (stageShipped(s), false)
+}
+
+if want("baseline") || want("learned") {
+    var used = 0
+    let learnedScored: [Scored] = subjects.map { s in
+        let (segs, ok) = stageLearned(s)
+        if ok { used += 1 }
+        return score(s) { _ in segs }
+    }
+    let ln = summarise(learnedScored)
+    let pooledLearned = pooledPct(learnedScored) { $0.pred }
+    let epochMin = 0.5
+    func minuteBias(_ pred: [String: Double], _ truth: [String: Double], _ stage: String, epochs: Int) -> Double {
+        (pred[stage]! - truth[stage]!) / 100.0 * Double(epochs) * epochMin
+    }
+    let v2WakeMin = minuteBias(pooledPred, pooledTruth, "wake", epochs: sh.conf.total)
+    let v2RemMin = minuteBias(pooledPred, pooledTruth, "rem", epochs: sh.conf.total)
+    let lnWakeMin = minuteBias(pooledLearned, pooledTruth, "wake", epochs: ln.conf.total)
+    let lnRemMin = minuteBias(pooledLearned, pooledTruth, "rem", epochs: ln.conf.total)
+    print("""
+
+    ================================================================================
+    3b. LEARNED SleepStageLearned vs SleepStagerV2 vs PSG TRUTH
+    ================================================================================
+    Same nights, same scored epochs. The learned pair runs when HR and motion cover ≥ 80 % of the
+    window; otherwise the recipe is the fallback. Bundled trees, no Core ML.
+
+    nights using learned   \(used)/\(subjects.count)
+
+                    V2 (old)     learned (new)
+    accuracy        \(f(sh.accuracy * 100, 8, 2)) %    \(f(ln.accuracy * 100, 8, 2)) %
+    Cohen's kappa   \(f(sh.kappa, 8, 3))      \(f(ln.kappa, 8, 3))
+
+    wake minute bias (pred − truth, pooled)   V2 \(f(v2WakeMin, 8, 1)) min    learned \(f(lnWakeMin, 8, 1)) min
+    REM  minute bias (pred − truth, pooled)   V2 \(f(v2RemMin, 8, 1)) min    learned \(f(lnRemMin, 8, 1)) min
+
+    stage        V2 %     learned %   truth %     V2 bias    learned bias   (pooled)
+    """)
+    for st in stageOrder {
+        print("      \(st.padding(toLength: 10, withPad: " ", startingAt: 0))\(f(pooledPred[st]!, 8, 2))\(f(pooledLearned[st]!, 11, 2))\(f(pooledTruth[st]!, 10, 2))\(f(pooledPred[st]! - pooledTruth[st]!, 11, 2))\(f(pooledLearned[st]! - pooledTruth[st]!, 14, 2))")
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Night-length stratification
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────

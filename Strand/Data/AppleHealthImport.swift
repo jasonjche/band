@@ -1,6 +1,7 @@
 import Foundation
 import WhoopStore
 import StrandImport
+import StrandAnalytics
 
 /// Maps a parsed + aggregated Apple Health export into the on-device store under its own
 /// source id ("apple-health"), so it sits BESIDE Whoop for the per-source pages and cross-source
@@ -73,8 +74,8 @@ enum AppleHealthImport {
             .map { MetricPoint(day: $0.day, key: $0.key, value: $0.value) }
         try await store.upsertMetricSeries(points, deviceId: deviceId)
 
-        // Workouts.
-        let workouts = result.workouts.map { w in
+        // Workouts. Collapse a generic "Workout" that shares a window with a specific sport.
+        let rawWorkouts = result.workouts.map { w in
             WorkoutRow(startTs: Int(w.start.timeIntervalSince1970),
                        endTs: Int(w.end.timeIntervalSince1970),
                        sport: w.activityType, source: WorkoutSource.appleHealthSource,
@@ -83,7 +84,12 @@ enum AppleHealthImport {
                        maxHr: w.maxHr.map { Int($0.rounded()) }, strain: nil,
                        distanceM: w.distanceM, zonesJSON: nil, notes: nil, steps: nil)
         }
+        let (workouts, dropWorkouts) = AppleWorkoutImport.partition(rawWorkouts)
         let workoutsWritten = try await store.upsertWorkouts(workouts, deviceId: deviceId)
+        for dropped in dropWorkouts {
+            _ = try await store.deleteWorkouts(deviceId: deviceId, sport: dropped.sport,
+                                               from: dropped.startTs, to: dropped.startTs)
+        }
 
         // Import & Data Ingest test mode: emit the per-stage / reject / day-delta trace iff the mode is on
         // (the caller passes a non-nil `trace` only when TestCentre.active(.dataImport)). The numbers are

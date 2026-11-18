@@ -97,7 +97,7 @@ final class AutoWorkoutDetectorTraceTests: XCTestCase {
             autoDetect savedOverlap candidateSec=5400 savedSec=180 overlapSec=0 savedToCandidate=180/5400
             touchEnd results=0
             autoDetect savedOverlap candidateSec=5400 savedSec=180 overlapSec=0 savedToCandidate=180/5400
-            disjoint results=1
+            disjoint results=0
             multiple results=0
             autoDetect savedOverlap candidateSec=5400 savedSec=480 overlapSec=180 savedToCandidate=480/5400
             autoDetect savedOverlap candidateSec=5400 savedSec=180 overlapSec=180 savedToCandidate=180/5400

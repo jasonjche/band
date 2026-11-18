@@ -6,10 +6,12 @@ import Foundation
 /// for turning the UUID *strings* exposed here into `CBUUID` values. Keeping CBUUID out of this
 /// module lets the protocol code run on any platform (and in CLI tools / tests) unchanged.
 public enum DeviceFamily: String, Sendable, CaseIterable {
-    /// Whoop 4.0 — 0x07 CRC8 header check.
+    /// Whoop 4.0 — 0x07 CRC8 header check. Kept for stored-frame decode; not connectable.
     case whoop4
     /// Whoop 5.0 / MG — CRC16-Modbus header check, "puffin" packet types.
     case whoop5
+    /// Stored WHOOP 4.0 registry labels, and any other unsupported generation.
+    case unsupported
 }
 
 /// Which checksum guards the frame header for a given device family.
@@ -71,7 +73,7 @@ public enum WhoopGattServiceFamily: String, Sendable, CaseIterable {
 
     public var connectableDeviceFamily: DeviceFamily? {
         switch self {
-        case .whoop4: return .whoop4
+        case .whoop4: return nil
         case .maverickGooseFD4B: return .whoop5
         case .puffin1150, .monument, .symphony: return nil
         }
@@ -125,6 +127,10 @@ public func whoopGattScanDecision(
     advertisedServiceUUIDStrings: [String]
 ) -> WhoopGattScanDecision {
     let advertised = Set(advertisedServiceUUIDStrings.map { $0.lowercased() })
+    if let selected = WhoopGattServiceFamily.forServiceUUIDString(selectedServiceUUIDString),
+       !selected.isConnectable {
+        return WhoopGattScanDecision(shouldConnect: false, unsupportedFamily: selected)
+    }
     if advertised.isEmpty || advertised.contains(selectedServiceUUIDString.lowercased()) {
         return WhoopGattScanDecision(shouldConnect: true)
     }
@@ -140,7 +146,7 @@ public extension DeviceFamily {
     static func confirmedRegistryFamily(model: String?, brand: String?) -> DeviceFamily? {
         if let brand, !brand.isEmpty, brand.caseInsensitiveCompare("WHOOP") != .orderedSame { return nil }
         switch model?.lowercased() {
-        case "4.0", "whoop 4.0": return .whoop4
+        case "4.0", "whoop 4.0": return .unsupported
         case "5.0", "5.0 mg", "whoop 5.0", "whoop 5.0 / mg", "mg", "whoop5": return .whoop5
         default: return nil
         }
@@ -160,7 +166,7 @@ public extension DeviceFamily {
     /// changes scale (#938). Mirrors the Kotlin `DeviceFamily.forRegistryModel`.
     static func forRegistryModel(_ model: String?) -> DeviceFamily {
         switch model {
-        case "4.0", "WHOOP 4.0": return .whoop4
+        case "4.0", "WHOOP 4.0": return .unsupported
         default: return .whoop5
         }
     }
@@ -206,7 +212,7 @@ public extension DeviceFamily {
     var headerCRCKind: HeaderCRCKind {
         switch self {
         case .whoop4: return .crc8
-        case .whoop5: return .crc16Modbus
+        case .whoop5, .unsupported: return .crc16Modbus
         }
     }
 
@@ -215,7 +221,7 @@ public extension DeviceFamily {
     var serviceUUIDString: String {
         switch self {
         case .whoop4: return "61080001-8d6d-82b8-614a-1c8cb0f8dcc6"
-        case .whoop5: return "fd4b0001-cce1-4033-93ce-002d5875f58a"
+        case .whoop5, .unsupported: return "fd4b0001-cce1-4033-93ce-002d5875f58a"
         }
     }
 
@@ -232,7 +238,7 @@ public extension DeviceFamily {
                 "61080004-8d6d-82b8-614a-1c8cb0f8dcc6",
                 "61080005-8d6d-82b8-614a-1c8cb0f8dcc6",
             ]
-        case .whoop5:
+        case .whoop5, .unsupported:
             return [
                 "fd4b0002-cce1-4033-93ce-002d5875f58a",
                 "fd4b0003-cce1-4033-93ce-002d5875f58a",
@@ -248,7 +254,7 @@ public extension DeviceFamily {
     var commandCharacteristicUUIDString: String {
         switch self {
         case .whoop4: return "61080002-8d6d-82b8-614a-1c8cb0f8dcc6"
-        case .whoop5: return "fd4b0002-cce1-4033-93ce-002d5875f58a"
+        case .whoop5, .unsupported: return "fd4b0002-cce1-4033-93ce-002d5875f58a"
         }
     }
 
@@ -260,7 +266,7 @@ public extension DeviceFamily {
     /// (`GooseHello.clientHelloFrameHex` = "aa0108000001e67123019101363e5c8d").
     var clientHello: [UInt8]? {
         switch self {
-        case .whoop4:
+        case .whoop4, .unsupported:
             return nil
         case .whoop5:
             return DeviceFamily.whoop5ClientHello

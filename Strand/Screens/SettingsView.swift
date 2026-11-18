@@ -14,12 +14,13 @@ import WhoopStore
 // the hardcoded "15" outlived the sequence growing to 16 and declared success a flag early.
 import WhoopProtocol
 
-/// Settings — profile (powers zones / calories / recovery), strap connection, and about.
-/// Grouped cards on surface.raised with a two-column form feel.
+/// Settings — diagnostics and experimental controls on Band (More → Settings → Advanced).
+/// Everyday units, strain scale, appearance, and sync live on NativeAppSettingsView.
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var live: LiveState
     @EnvironmentObject var profile: ProfileStore
+    @Environment(\.appleSettingsStyle) private var appleSettingsStyle
 
     /// Profile-photo picker selection (PhotosUI). Cleared back to nil once the bytes are loaded.
     @State private var avatarPickerItem: PhotosPickerItem?
@@ -55,7 +56,6 @@ struct SettingsView: View {
     /// as a "strap estimate (unverified)" fallback when no calibrated `spo2Pct` exists. Display-only —
     /// writes nothing to the strap. See [PuffinExperiment.spo2CandidateDisplayKey].
     @AppStorage(PuffinExperiment.spo2CandidateDisplayKey) private var spo2CandidateDisplayEnabled = false
-    @AppStorage(AppModel.ouraAllDayLiveHRKey) private var ouraAllDayLiveHREnabled = false   // item 27
 
     /// #1545 opt-in: score Effort with Banister's exponential TRIMP instead of Edwards' heart-rate zones.
     /// Default OFF — it re-scores the whole window against a different recipe. See
@@ -114,7 +114,7 @@ struct SettingsView: View {
     @AppStorage(UnitPrefs.skinTempDisplayKey) private var skinTempDisplayRaw = ""   // #1846
     // Effort display scale (#268). Display-only — Effort stays stored 0–100, this only chooses whether
     // it's shown on NOOP's 0–100 axis or WHOOP's 0–21 Day Strain axis.
-    @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.hundred.rawValue
+    @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     @AppStorage(UnitPrefs.trendChartStyleKey) private var trendChartStyleRaw = TrendChartStyle.line.rawValue
     @AppStorage(UnitPrefs.hrvWindowKey) private var hrvWindowRaw = HrvWindow.whole.rawValue
     // Live-HR Live Activity (Lock Screen + Dynamic Island), iOS only (#336). Default on.
@@ -146,7 +146,7 @@ struct SettingsView: View {
     @AppStorage(SkyBehindCardsPrefs.enabledKey) private var skyBehindCards = true
     // Card-surface opacity percent (100 = solid). Reactive — moving the slider live-updates every card.
     @AppStorage(CardAppearancePrefs.opacityKey) private var cardOpacityPercent = CardAppearancePrefs.defaultPercent
-    // "Reduce motion in NOOP" (default OFF): pose every looping animation still and stop the decorative
+    // "Reduce motion in Band" (default OFF): pose every looping animation still and stop the decorative
     // tilt sensor, without needing system Low Power Mode or system Reduce Motion. Apple-only so far —
     // Android has no such toggle yet and its gate reads two signals, not three (#941).
     @AppStorage(QuietMotionPrefs.enabledKey) private var quietMotion = false
@@ -175,7 +175,7 @@ struct SettingsView: View {
 
     /// The strap model the user last picked (same key the scan pickers write). Gates the WHOOP 4.0-only
     /// rename control in the strap card — renaming uses the Harvard command set, which a 5/MG doesn't share.
-    @AppStorage("selectedWhoopModel") private var selectedWhoopModelRaw = WhoopModel.whoop4.rawValue
+    @AppStorage("selectedWhoopModel") private var selectedWhoopModelRaw = WhoopModel.whoop5mg.rawValue
     /// Draft text for the strap-rename field (strap card). Empty placeholder; never pre-seeded so the
     /// current name stays visible separately above it.
     @State private var strapNameDraft = ""
@@ -219,7 +219,7 @@ struct SettingsView: View {
     /// "How your scores work" explainer sheet, reachable any time from About.
     @State private var showScoringGuide = false
 
-    /// "How NOOP works" primer sheet (the four-section explainability primer), reachable any
+    /// "How Band works" primer sheet (the four-section explainability primer), reachable any
     /// time from About — covers how sleep is sorted, how scores + calibration work, what
     /// recording means, and where the provenance badges come from.
     @State private var showHowNoopWorks = false
@@ -253,11 +253,288 @@ struct SettingsView: View {
     @AppStorage(SettingsDisclosureDefaults.advancedOpenKey) private var advancedOpen = SettingsDisclosureDefaults.advancedOpenDefault
 
     var body: some View {
+        settingsRoot
+            .alert(backupAlertTitle, isPresented: $showBackupAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(backupAlertMessage)
+            }
+            .alert("Backup problem", isPresented: $showOversizeRestoreConfirm) {
+                Button("Restore") { runImport(allowOversize: true) }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text(oversizeRestoreMessage)
+            }
+            .confirmationDialog("Recalibrate your Charge baseline?",
+                                isPresented: $showRecalibrateConfirm, titleVisibility: .visible) {
+                Button("Recalibrate") { recalibrateHrvBaseline() }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays. Use it if a bad first week, like wearing it while sick, set your baseline off.")
+            }
+            .confirmationDialog("Clear the R22 flags on your strap?",
+                                isPresented: $confirmingDeepDataDisable, titleVisibility: .visible) {
+                Button("Clear flags on strap") { model.ble.disableWhoop5DeepData() }
+                Button("Just stop sending", role: .cancel) { }
+            } message: {
+                Text("Turning this switch off only stops Band sending the unlock. The flags it already wrote stay on the strap until something clears them. Band can write the off value to all 16 now and read each one back so you can see what the strap actually stores. Needs the strap connected and bonded.")
+            }
+            .confirmationDialog("Mark optical experiment phase",
+                                isPresented: $showOpticalPhasePicker, titleVisibility: .visible) {
+                ForEach(PuffinOpticalExperimentPhase.allCases, id: \.self) { phase in
+                    Button(phase.displayName) { markOpticalPhase(phase) }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("A marker starts the selected phase and ends the previous one. This only timestamps the local capture file; it sends nothing to the strap.")
+            }
+            .sheet(isPresented: $showWhatsNew) {
+                WhatsNewView(onClose: { showWhatsNew = false })
+            }
+            .sheet(isPresented: $showScoringGuide) {
+                ScoringGuideView(onClose: { showScoringGuide = false })
+            }
+            .sheet(isPresented: $showHowNoopWorks) {
+                HowNoopWorksView(onClose: { showHowNoopWorks = false })
+            }
+            .sheet(isPresented: $showAppleWatchSetup) {
+                AppleWatchSetupView(onClose: { showAppleWatchSetup = false })
+            }
+            .sheet(isPresented: $showStepsCalibration) {
+                StepsCalibrationSheet(repo: model.repo, onClose: { showStepsCalibration = false })
+                    .environmentObject(profile)
+            }
+            #if os(iOS)
+            .sheet(isPresented: $showDiagnostics) {
+                DiagnosticsSheet(onClose: { showDiagnostics = false })
+            }
+            #endif
+    }
+
+    /// iOS Native uses an inset-grouped Settings list. macOS Native keeps NativeChrome. Off is upstream.
+    @ViewBuilder private var settingsRoot: some View {
+        if nativeTodayEnabled {
+            #if os(iOS)
+            appleSettingsRoot
+            #else
+            macNativeSettingsList
+            #endif
+        } else {
+            upstreamSettingsScaffold
+        }
+    }
+
+    #if os(iOS)
+    /// iOS Settings-style root: inset grouped list, coloured glyphs, one screen per group.
+    /// Band More owns Profile, everyday Settings, Strap, Backup, Notifications, and About.
+    /// Personal builds open this page from Settings → Advanced, so Profile and Backup stay off it.
+    @ViewBuilder
+    private var appleSettingsRoot: some View {
+        if AppBrand.isPersonalBuild {
+            List {
+                stockAppleSettingsSections
+            }
+            .listStyle(.insetGrouped)
+            .appleSettingsChrome("Advanced")
+        } else {
+            List {
+                stockAppleSettingsSections
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.large)
+        }
+    }
+
+    @ViewBuilder private var stockAppleSettingsSections: some View {
+        Section {
+            if !AppBrand.isPersonalBuild {
+                appleSettingsNav("Profile", "person.fill", .blue) {
+                    appleSettingsPage("Profile") {
+                        profileCard
+                    }
+                }
+            }
+            appleSettingsNav("Units", "ruler", .orange) {
+                appleSettingsPage("Units") {
+                    unitsCard
+                }
+            }
+            appleSettingsNav("Appearance", "circle.lefthalf.filled", .purple) {
+                appleSettingsPage("Appearance") {
+                    appearanceCard
+                }
+            }
+            appleSettingsNav("Layout", "rectangle.split.3x3", .teal) {
+                appleSettingsPage("Layout", footer: "WHOOP layout and the Apple / WHOOP drawing.") {
+                    liquidTodayCard
+                }
+            }
+        }
+
+        Section {
+            appleSettingsNav("Devices", "badge.plus.radiowaves.right", .blue) {
+                DevicesView()
+            }
+            appleSettingsNav("Strap", "antenna.radiowaves.left.and.right", .green) {
+                appleSettingsPage("Strap") {
+                    strapCard
+                }
+            }
+            appleSettingsNav("Live Notifications", "bell.badge.fill", .red) {
+                appleSettingsPage("Notifications") {
+                    liveNotificationsCard
+                }
+            }
+            appleSettingsNav("Sync", "arrow.triangle.2.circlepath", .blue) {
+                appleSettingsPage("Sync") {
+                    syncCard
+                }
+            }
+        }
+
+        Section {
+            appleSettingsNav("Features", "star.fill", .yellow) {
+                appleSettingsPage("Features") {
+                    featuresCard
+                }
+            }
+            appleStreakRow
+        }
+
+        Section {
+            appleSettingsNav("Recovery", "heart.fill", .pink) {
+                appleSettingsPage("Recovery") {
+                    recoveryCard
+                }
+            }
+            appleSettingsNav("HRV", "waveform.path.ecg", .indigo) {
+                appleSettingsPage("HRV") {
+                    hrvCard
+                }
+            }
+            appleSettingsNav("Sleep", "bed.double.fill", Color.indigo) {
+                appleSettingsPage("Sleep") {
+                    sleepStagingCard
+                }
+            }
+            appleSettingsNav("Experimental", "flask.fill", .orange) {
+                appleSettingsPage("Experimental") {
+                    experimentalAdvancedPages
+                }
+            }
+            if !AppBrand.isPersonalBuild {
+                appleSettingsNav("Backup", "externaldrive.fill", Color(white: 0.45)) {
+                    appleSettingsPage("Backup") {
+                        backupCard
+                    }
+                }
+            }
+        } header: {
+            Text("Advanced")
+        }
+
+        Section {
+            appleSettingsNav("About", "info.circle.fill", .gray) {
+                appleSettingsPage("About") {
+                    aboutCard
+                }
+            }
+        }
+    }
+
+    private var appleStreakRow: some View {
+        let days = model.repo.days
+        let today = AnalyticsEngine.dayString(Int(Date().timeIntervalSince1970),
+                                              offsetSec: TimeZone.current.secondsFromGMT())
+        let s = StreakCalculator.streaks(dayKeys: days.map { $0.day },
+                                         qualified: days.map { $0.recovery != nil },
+                                         today: today)
+        return HStack(spacing: 12) {
+            AppleSettingsGlyph(systemName: "flame.fill", background: .orange)
+            Text("Streak")
+            Spacer()
+            Text(s.current == 1 ? "1 day" : "\(s.current) days")
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Streak")
+    }
+
+    private func appleSettingsNav<Dest: View>(_ title: LocalizedStringKey,
+                                              _ icon: String,
+                                              _ color: Color,
+                                              @ViewBuilder destination: () -> Dest) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            HStack(spacing: 12) {
+                AppleSettingsGlyph(systemName: icon, background: color)
+                Text(title)
+            }
+        }
+    }
+
+    private func appleSettingsPage<Content: View>(_ title: LocalizedStringKey,
+                                                  footer: LocalizedStringKey? = nil,
+                                                  @ViewBuilder content: () -> Content) -> some View {
+        Form {
+            content()
+            if let footer {
+                Section {
+                    EmptyView()
+                } footer: {
+                    Text(footer)
+                }
+            }
+        }
+        .appleSettingsChrome(title)
+    }
+
+    /// Experimental probes minus Layout (own page) and Sleep (own page).
+    @ViewBuilder private var experimentalAdvancedPages: some View {
+        liveSessionsCard
+        if showFiveMGControls || (!AppBrand.isPersonalBuild && model.repo.activeDeviceIsOura) {
+            spo2CandidateCard
+        }
+        rawSensorDiagnosticsCard
+    }
+    #endif
+
+    private var macNativeSettingsList: some View {
+        NativeChrome.screen {
+            profileCard
+            unitsCard
+            appearanceCard
+            strapCard
+            #if os(iOS)
+            liveNotificationsCard
+            syncCard
+            #endif
+            streakCard
+            featuresCard
+            SettingsDisclosureGroup(
+                title: "Advanced",
+                subtitle: "Recovery, HRV tuning, experimental probes, and backup.",
+                isExpanded: $advancedOpen
+            ) {
+                recoveryCard
+                hrvCard
+                experimentalCard
+                backupCard
+            }
+            aboutCard
+        }
+        .navigationTitle("Settings")
+        .modifier(NativeInlineTitle())
+        .tint(Color.primary)
+        .symbolRenderingMode(.monochrome)
+        .nativeStyleBridge()
+    }
+
+    private var upstreamSettingsScaffold: some View {
         ScreenScaffold(title: "Settings",
-                       subtitle: "Your numbers, your strap, and how NOOP works. All on \(Platform.deviceNounPhrase).",
-                       // The day-of-sky liquid backdrop, matching Today / Health / Sleep / Trends / Devices:
-                       // a fixed, full-bleed time-of-day sky behind the scroll content (it does not scroll).
-                       // Settings' own frosted cards sit on the dark canvas below the sky band, unchanged.
+                       subtitle: "Your numbers, your strap, and how Band works. All on \(Platform.deviceNounPhrase).",
                        topBackground: liquidScaffoldSky()) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 // Everyday sections stay expanded (S3): the ones a first-run user actually needs.
@@ -280,12 +557,11 @@ struct SettingsView: View {
                 // Backup & restore) stays one tap away. Modelled on the Test Centre "Advanced" group.
                 SettingsDisclosureGroup(
                     title: "Advanced",
-                    subtitle: "Recovery, HRV tuning, Test Centre, experimental probes, and backup. Tucked away to keep the everyday screen tidy.",
+                    subtitle: "Recovery, HRV tuning, experimental probes, and backup. Tucked away to keep the everyday screen tidy.",
                     isExpanded: $advancedOpen
                 ) {
                     recoveryCard
                     hrvCard   // #518: Continuous HRV capture + HRV window moved here out of the always-visible Strap card
-                    testCentreCard
                     experimentalCard
                     backupCard
                 }
@@ -295,80 +571,24 @@ struct SettingsView: View {
                 aboutCard.staggeredAppear(index: 7)
             }
         }
-        .alert(backupAlertTitle, isPresented: $showBackupAlert) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(backupAlertMessage)
-        }
-        // Title and buttons reuse catalogue strings that already carry all nine locales, rather than
-        // minting new copy that would ship English everywhere until someone translated it. The message
-        // below is where the specifics live. (#1807)
-        .alert("Backup problem", isPresented: $showOversizeRestoreConfirm) {
-            Button("Restore") { runImport(allowOversize: true) }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text(oversizeRestoreMessage)
-        }
-        .confirmationDialog("Recalibrate your Charge baseline?",
-                            isPresented: $showRecalibrateConfirm, titleVisibility: .visible) {
-            Button("Recalibrate") { recalibrateHrvBaseline() }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays. Use it if a bad first week, like wearing it while sick, set your baseline off.")
-        }
-        // #174: the switch going OFF is the moment to offer the undo. Declining leaves the flags set and
-        // says so — which is still an improvement on the old behaviour, where the same tap silently left
-        // them set with no indication either way.
-        .confirmationDialog("Clear the R22 flags on your strap?",
-                            isPresented: $confirmingDeepDataDisable, titleVisibility: .visible) {
-            Button("Clear flags on strap") { model.ble.disableWhoop5DeepData() }
-            Button("Just stop sending", role: .cancel) { }
-        } message: {
-            Text("Turning this switch off only stops NOOP sending the unlock. The flags it already wrote stay on the strap until something clears them. NOOP can write the off value to all 16 now and read each one back so you can see what the strap actually stores. Needs the strap connected and bonded.")
-        }
-        .confirmationDialog("Mark optical experiment phase",
-                            isPresented: $showOpticalPhasePicker, titleVisibility: .visible) {
-            ForEach(PuffinOpticalExperimentPhase.allCases, id: \.self) { phase in
-                Button(phase.displayName) { markOpticalPhase(phase) }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("A marker starts the selected phase and ends the previous one. This only timestamps the local capture file; it sends nothing to the strap.")
-        }
-        .sheet(isPresented: $showWhatsNew) {
-            WhatsNewView(onClose: { showWhatsNew = false })
-        }
-        .sheet(isPresented: $showScoringGuide) {
-            ScoringGuideView(onClose: { showScoringGuide = false })
-        }
-        .sheet(isPresented: $showHowNoopWorks) {
-            HowNoopWorksView(onClose: { showHowNoopWorks = false })
-        }
-        .sheet(isPresented: $showAppleWatchSetup) {
-            AppleWatchSetupView(onClose: { showAppleWatchSetup = false })
-        }
-        .sheet(isPresented: $showStepsCalibration) {
-            StepsCalibrationSheet(repo: model.repo, onClose: { showStepsCalibration = false })
-                .environmentObject(profile)
-        }
-        #if os(iOS)
-        .sheet(isPresented: $showDiagnostics) {
-            DiagnosticsSheet(onClose: { showDiagnostics = false })
-        }
-        #endif
     }
 
     // MARK: - Profile
 
-    private var profileCard: some View {
+    @ViewBuilder private var profileCard: some View {
+        if appleSettingsStyle {
+            nativeProfileSections
+        } else {
         SettingsSection(
             icon: "person.fill",
             title: "Profile",
             blurb: "These power your heart-rate zones, calorie estimates and recovery baselines. Keep them accurate."
         ) {
             VStack(spacing: 0) {
-                profilePhotoRow
-                rowDivider
+                if !AppBrand.isPersonalBuild {
+                    profilePhotoRow
+                    rowDivider
+                }
                 FormRow(label: "Date of birth") {
                     HStack(spacing: 12) {
                         Text("\(profile.age)")
@@ -381,7 +601,7 @@ struct SettingsView: View {
                                    in: ProfileStore.dateOfBirthRange,
                                    displayedComponents: .date)
                             .labelsHidden()
-                            .tint(StrandPalette.accent)
+                            .tint(controlTint)
                             .accessibilityLabel("Date of birth, age \(profile.age) years")
                     }
                 }
@@ -398,7 +618,7 @@ struct SettingsView: View {
                     // the labels are long (German "Nicht-binär") or Text Size is enlarged — the oversized
                     // Settings screen users reported. A menu is a compact button that fits any label length.
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Sex")
                 }
                 rowDivider
@@ -447,7 +667,7 @@ struct SettingsView: View {
                         hrMaxField
                         Text(profile.hrMaxOverride > 0
                              ? "Manual override"
-                             : "Auto · \(profile.hrMax) bpm (Tanaka)")
+                             : "Auto · \(profile.hrMax) bpm (Gellish)")
                             .font(StrandFont.footnote)
                             .foregroundStyle(profile.hrMaxOverride > 0
                                              ? StrandPalette.accent
@@ -477,6 +697,7 @@ struct SettingsView: View {
                         }
                     }
                 }
+                if !AppBrand.isPersonalBuild {
                 rowDivider
                 FormRow(label: "Day cycle") {
                     Picker("Day starts", selection: Binding(
@@ -498,6 +719,7 @@ struct SettingsView: View {
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
+                }
                 rowDivider
                 // Step calibration (#139/#132): daily steps = @57 counter ticks ÷ this divisor.
                 // 1.0 = raw pass-through until the true 5/MG tick rate is known. The divisor goes
@@ -518,7 +740,7 @@ struct SettingsView: View {
                             .accessibilityLabel("Step calibration, \(String(format: "%.1f", profile.stepTicksPerStep)) counter ticks per step")
                     }
                 }
-                Text("Counter ticks per step. Leave at 1.0 unless your steps run high. On a WHOOP 5/MG they can run very high (10× or more), so this goes up to 30. Walk a known 1,000 steps and divide NOOP's count by the real count to get your value.")
+                Text("Counter ticks per step. Leave at 1.0 unless your steps run high. On a WHOOP 5/MG they can run very high (10× or more), so this goes up to 30. Walk a known 1,000 steps and divide Band's count by the real count to get your value.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -545,10 +767,145 @@ struct SettingsView: View {
                 }
                 .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("Steps estimate calibration. \(stepsCalibrationSummary). Opens the calibration screen.")
-                Text("For a WHOOP 4.0, which sends no step count: NOOP estimates steps from motion, calibrated to your phone. Tap to see how close it is and adjust it.")
+                Text("For a WHOOP 4.0, which sends no step count: Band estimates steps from motion, calibrated to your phone. Tap to see how close it is and adjust it.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        }
+    }
+
+    @ViewBuilder private var nativeProfileSections: some View {
+        if !AppBrand.isPersonalBuild {
+            Section {
+                nativeProfilePhotoRow
+            } header: {
+                Text("Photo")
+            }
+        }
+
+        Section {
+            DatePicker("Birthday",
+                       selection: $profile.dateOfBirth,
+                       in: ProfileStore.dateOfBirthRange,
+                       displayedComponents: .date)
+            LabeledContent("Age", value: "\(profile.age)")
+            Picker("Sex", selection: $profile.sex) {
+                Text("Male").tag("male")
+                Text("Female").tag("female")
+                Text("Non-binary").tag("nonbinary")
+            }
+            LabeledContent("Height") {
+                if unitSystem == .imperial {
+                    feetInchesField(heightCm: $profile.heightCm)
+                } else {
+                    measureField(value: $profile.heightCm, unit: "cm",
+                                 range: 120...230, step: 1, format: "%.0f",
+                                 accessibility: String(localized: "Height in centimetres"))
+                }
+            }
+            LabeledContent("Weight") {
+                if unitSystem == .imperial {
+                    poundsField(weightKg: $profile.weightKg)
+                } else {
+                    measureField(value: $profile.weightKg, unit: "kg",
+                                 range: 30...250, step: 0.5, format: "%.1f",
+                                 accessibility: String(localized: "Weight in kilograms"))
+                }
+            }
+            if !AppBrand.isPersonalBuild {
+                LabeledContent("Waist") {
+                    if unitSystem == .imperial {
+                        waistInchesField(waistCm: $profile.waistCm)
+                    } else {
+                        waistCentimetresField(waistCm: $profile.waistCm)
+                    }
+                }
+            }
+            LabeledContent("Max Heart Rate") {
+                hrMaxField
+            }
+            Toggle("Custom HR Zones", isOn: Binding(
+                get: { profile.hasCustomHRZones },
+                set: { profile.setCustomHRZonesEnabled($0) }
+            ))
+            if profile.hasCustomHRZones {
+                ForEach(profile.hrZoneThresholds.indices, id: \.self) { index in
+                    LabeledContent("Zone \(index + 1) Starts") {
+                        hrZoneThresholdField(index: index)
+                    }
+                }
+            }
+        } header: {
+            if !AppBrand.isPersonalBuild { Text("Health Details") }
+        }
+
+        if !AppBrand.isPersonalBuild {
+            Section {
+                Picker("Day Starts", selection: Binding(
+                    get: { DayCycleMode.persisted(dayCycleModeRaw) },
+                    set: { mode in
+                        dayCycleModeRaw = mode.rawValue
+                        Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
+                    }
+                )) {
+                    Text("Main sleep").tag(DayCycleMode.sleepOnset)
+                    Text("00:00").tag(DayCycleMode.midnight)
+                }
+            } header: {
+                Text("Day Cycle")
+            }
+        }
+
+        if !AppBrand.isPersonalBuild {
+            Section {
+                LabeledContent("Step Calibration") {
+                    HStack(spacing: 10) {
+                        Text(String(format: "%.1f", profile.stepTicksPerStep))
+                        Stepper("Step calibration") {
+                            profile.stepTicksPerStep = ProfileStore.steppedStepScale(profile.stepTicksPerStep, up: true)
+                        } onDecrement: {
+                            profile.stepTicksPerStep = ProfileStore.steppedStepScale(profile.stepTicksPerStep, up: false)
+                        }
+                        .labelsHidden()
+                        .accessibilityLabel("Step calibration, \(String(format: "%.1f", profile.stepTicksPerStep)) counter ticks per step")
+                    }
+                }
+                Button("Steps Estimate") { showStepsCalibration = true }
+            } header: {
+                Text("Steps")
+            } footer: {
+                Text("Calibration for strap step counts and the WHOOP 4.0 estimate.")
+            }
+        }
+    }
+
+    private var nativeProfilePhotoRow: some View {
+        let hasAvatar = profile.hasAvatar
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                ProfileAvatarView(
+                    imageData: profile.avatarImageData,
+                    size: NoopMetrics.profileAvatarDiameter
+                )
+                .accessibilityLabel(hasAvatar ? "Your profile photo" : "No profile photo set")
+                PhotosPicker(selection: $avatarPickerItem, matching: .images) {
+                    Text(hasAvatar ? "Change Photo" : "Choose Photo")
+                }
+                if hasAvatar {
+                    Button("Remove Photo", role: .destructive) { profile.clearAvatar() }
+                }
+            }
+        }
+        .onChange(of: avatarPickerItem) { newItem in
+            guard let newItem else { return }
+            Task {
+                let data = try? await newItem.loadTransferable(type: Data.self)
+                await MainActor.run {
+                    if let data { profile.setAvatar(data) }
+                    avatarPickerItem = nil
+                }
             }
         }
     }
@@ -674,7 +1031,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
 
                 FormRow(label: "Scaling") {
                     Picker("Scaling", selection: Binding(
@@ -686,7 +1043,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Background scaling")
                 }
 
@@ -889,7 +1246,8 @@ struct SettingsView: View {
             }
             .fixedSize()
             Stepper("Max heart rate override",
-                    value: $profile.hrMaxOverride, in: 0...230, step: 1)
+                    onIncrement: { profile.stepHRMaxOverride(up: true) },
+                    onDecrement: { profile.stepHRMaxOverride(up: false) })
                 .labelsHidden()
                 .accessibilityLabel("Max heart rate override, \(profile.hrMaxOverride == 0 ? "automatic" : "\(profile.hrMaxOverride) bpm")")
         }
@@ -925,7 +1283,40 @@ struct SettingsView: View {
 
     /// Independent body and exercise-distance unit choices plus temperature and Effort overrides.
     /// Display-only — nothing stored changes; NOOP keeps everything in SI.
-    private var unitsCard: some View {
+    @ViewBuilder private var unitsCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Picker("Body Measurements", selection: $unitSystemRaw) {
+                    Text("Metric").tag(UnitSystem.metric.rawValue)
+                    Text("Imperial").tag(UnitSystem.imperial.rawValue)
+                }
+                Picker("Exercise Distance & Pace", selection: distanceSystemBinding) {
+                    Text("Kilometres").tag(UnitSystem.metric.rawValue)
+                    Text("Miles").tag(UnitSystem.imperial.rawValue)
+                }
+                Picker("Temperature", selection: $temperatureRaw) {
+                    Text("Follow body").tag("")
+                    Text("°C").tag(TemperatureUnit.celsius.rawValue)
+                    Text("°F").tag(TemperatureUnit.fahrenheit.rawValue)
+                }
+                Picker("Skin Temperature", selection: $skinTempDisplayRaw) {
+                    Text("Temperature").tag("")
+                    Text("vs baseline").tag(SkinTempDisplay.Kind.deviation.rawValue)
+                }
+                Picker("Effort Scale", selection: $effortScaleRaw) {
+                    Text("0-100").tag(EffortScale.hundred.rawValue)
+                    Text("0-21").tag(EffortScale.whoop.rawValue)
+                }
+                Toggle("Exponential Intensity Scale", isOn: $banisterEffortEnabled)
+                    .onChangeCompat(of: banisterEffortEnabled) { _ in
+                        Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
+                    }
+            } header: {
+                Text("Units")
+            } footer: {
+                Text("Display only. Stored data stays in SI units.")
+            }
+        } else {
         SettingsSection(
             icon: "ruler",
             title: "Units",
@@ -939,7 +1330,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Body measurement units")
                 }
                 rowDivider
@@ -950,7 +1341,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Exercise distance and pace units")
                 }
                 rowDivider
@@ -963,7 +1354,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Temperature unit")
                 }
                 rowDivider
@@ -977,7 +1368,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Skin temperature display")
                 }
                 rowDivider
@@ -990,7 +1381,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Effort scale")
                 }
 
@@ -1008,7 +1399,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 .onChangeCompat(of: banisterEffortEnabled) { _ in
                     // Re-score immediately on the flip. The recipe changes stored Effort for EVERY day in
                     // the window, so without this the user waits up to 30 min for the next analyze loop
@@ -1022,6 +1413,7 @@ struct SettingsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
         }
     }
 
@@ -1087,7 +1479,15 @@ struct SettingsView: View {
         )
     }
 
-    private var appearanceCard: some View {
+    @ViewBuilder private var appearanceCard: some View {
+        if appleSettingsStyle {
+            nativeAppearanceSections
+        } else {
+            appearanceClassicCard
+        }
+    }
+
+    @ViewBuilder private var appearanceClassicCard: some View {
         SettingsSection(
             icon: "circle.lefthalf.filled",
             title: "Appearance",
@@ -1106,11 +1506,11 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Language")
                     .onChangeCompat(of: appLanguageRaw) { AppLanguage.apply($0) }
                 }
-                Text("Language changes take effect after you reopen NOOP.")
+                Text("Language changes take effect after you reopen Band.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1128,7 +1528,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Clock")
                     // #1829: the resolved clock is memoised, so the write has to drop the memo or the
                     // picker would appear to do nothing until the app restarted.
@@ -1144,7 +1544,7 @@ struct SettingsView: View {
                 FormRow(label: "AI Coach") {
                     Toggle("", isOn: $coachEnabled)
                         .labelsHidden()
-                        .tint(StrandPalette.accent)
+                        .tint(controlTint)
                         .accessibilityLabel("AI Coach")
                 }
                 .onChangeCompat(of: coachEnabled) { on in
@@ -1164,7 +1564,7 @@ struct SettingsView: View {
                     FormRow(label: "Hide bar when scrolling") {
                         Toggle("", isOn: $bottomBarAutoHide)
                             .labelsHidden()
-                            .tint(StrandPalette.accent)
+                            .tint(controlTint)
                             .accessibilityLabel("Hide bar when scrolling")
                     }
                 }
@@ -1180,7 +1580,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Theme preset")
                 }
                 rowDivider
@@ -1192,7 +1592,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Theme")
                 }
                 rowDivider   // #79: the segmented rows sat flush against each other (missing separator)
@@ -1206,7 +1606,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Chart colours")
                 }
                 rowDivider
@@ -1221,7 +1621,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Sleep chart")
                 }
                 rowDivider
@@ -1235,7 +1635,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Accent colour")
                 }
                 if AccentColor.resolve(accentRaw) == .custom {
@@ -1257,7 +1657,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("Trend chart style")
                 }
                 #if os(iOS)
@@ -1269,7 +1669,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("App icon")
                     .onChangeCompat(of: useNavyIcon) { applyAppIcon($0) }
                 }
@@ -1280,12 +1680,12 @@ struct SettingsView: View {
                 // sensor, WITHOUT requiring system Low Power Mode. Off by default; system Reduce Motion
                 // and Low Power Mode already force the same behaviour, this is the third, in-app signal.
                 Toggle(isOn: $quietMotion) {
-                    Text("Reduce motion in NOOP")
+                    Text("Reduce motion in Band")
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 Text("Holds the liquid gauges, the sky and the tilt response still, and turns off the motion sensor that drives them. Saves battery. Low Power Mode and the system Reduce Motion setting already do this.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -1301,7 +1701,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 Text("Shows a soft sunrise, day, dusk and night scene behind the Today screen. Turn it off for a plain dark canvas. Your cards stay exactly as readable.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -1318,7 +1718,7 @@ struct SettingsView: View {
                         .foregroundStyle(showDayCycleBackground ? StrandPalette.textPrimary : StrandPalette.textTertiary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 .disabled(!showDayCycleBackground)
                 Text("Extends the sky behind the whole Today screen, so lowering Card transparency lets it show through every card. Needs the day-cycle background on.")
                     .font(StrandFont.caption)
@@ -1339,7 +1739,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 Text("Let the background show through every card. Tune how much just below.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -1365,7 +1765,7 @@ struct SettingsView: View {
                     ),
                     in: 0...100, step: 1
                 )
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 Text("How see-through the cards (Heart Rate, Key Metrics, Recovery Vitals, …) are. Left = solid, right = clear.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -1375,6 +1775,109 @@ struct SettingsView: View {
                 rowDivider
                 backgroundImageControls
             }
+        }
+    }
+
+    @ViewBuilder private var nativeAppearanceSections: some View {
+        Section {
+            Picker("Language", selection: $appLanguageRaw) {
+                ForEach(AppLanguage.allCases) { language in
+                    Text(language == .system ? String(localized: "System default") : language.autonym)
+                        .tag(language.rawValue)
+                }
+            }
+            .onChangeCompat(of: appLanguageRaw) { AppLanguage.apply($0) }
+            Picker("Clock", selection: $clockFormatRaw) {
+                Text("System default").tag(ClockFormatPreference.system.rawValue)
+                Text("12-hour").tag(ClockFormatPreference.twelveHour.rawValue)
+                Text("24-hour").tag(ClockFormatPreference.twentyFourHour.rawValue)
+            }
+            .onChangeCompat(of: clockFormatRaw) { _ in AppClock.invalidate() }
+            Toggle("AI Coach", isOn: $coachEnabled)
+                .onChangeCompat(of: coachEnabled) { on in
+                    CoachBriefScheduler.applyMasterSwitch(on)
+                }
+            #if os(iOS)
+            if #available(iOS 26.0, *) {
+                Toggle("Hide Bar When Scrolling", isOn: $bottomBarAutoHide)
+            }
+            #endif
+        } header: {
+            Text("General")
+        } footer: {
+            Text("Language changes take effect after you reopen Band.")
+        }
+
+        Section {
+            Picker("Preset", selection: themePresetBinding) {
+                ForEach(ThemePreset.allCases) { p in
+                    Text(p.label).tag(p)
+                }
+            }
+            Picker("Theme", selection: $appearanceRaw) {
+                ForEach(AppearanceMode.allCases) { mode in
+                    Text(mode.label).tag(mode.rawValue)
+                }
+            }
+            Picker("Chart Colours", selection: $chartStyleRaw) {
+                ForEach(ChartStyle.allCases) { style in
+                    Text(style.label).tag(style.rawValue)
+                }
+            }
+            Picker("Sleep Chart", selection: $sleepChartStyleRaw) {
+                ForEach(SleepChartStyle.allCases) { style in
+                    Text(style.label).tag(style.rawValue)
+                }
+            }
+            Picker("Accent", selection: $accentRaw) {
+                ForEach(AccentColor.allCases) { c in
+                    Text(c.label).tag(c.rawValue)
+                }
+            }
+            if AccentColor.resolve(accentRaw) == .custom {
+                ColorPicker("Custom Colour", selection: customAccentBinding, supportsOpacity: false)
+            }
+            Picker("Trend Charts", selection: $trendChartStyleRaw) {
+                ForEach(TrendChartStyle.allCases) { style in
+                    Text(style.label).tag(style.rawValue)
+                }
+            }
+            #if os(iOS)
+            Picker("App Icon", selection: $useNavyIcon) {
+                Text("Default").tag(false)
+                Text("Navy").tag(true)
+            }
+            .onChangeCompat(of: useNavyIcon) { applyAppIcon($0) }
+            #endif
+        } header: {
+            Text("Look")
+        }
+
+        Section {
+            Toggle("Reduce Motion", isOn: $quietMotion)
+            Toggle("Day-Cycle Background", isOn: $showDayCycleBackground)
+            Toggle("Sky Behind Cards", isOn: $skyBehindCards)
+                .disabled(!showDayCycleBackground)
+            Toggle("Transparent Cards", isOn: Binding(
+                get: { cardOpacityPercent < 100 },
+                set: { on in cardOpacityPercent = on ? (cardOpacityPercent >= 100 ? 70 : cardOpacityPercent) : 100 }
+            ))
+            LabeledContent("Card Transparency", value: "\(100 - cardOpacityPercent)%")
+            Slider(
+                value: Binding(
+                    get: { Double(100 - cardOpacityPercent) },
+                    set: { cardOpacityPercent = 100 - Int($0.rounded()) }
+                ),
+                in: 0...100, step: 1
+            )
+        } header: {
+            Text("Motion & Cards")
+        }
+
+        Section {
+            backgroundImageControls
+        } header: {
+            Text("Background")
         }
     }
 
@@ -1402,11 +1905,14 @@ struct SettingsView: View {
 
     // MARK: - Strap
 
-    private var strapCard: some View {
+    @ViewBuilder private var strapCard: some View {
+        if appleSettingsStyle {
+            nativeStrapSections
+        } else {
         SettingsSection(
             icon: "antenna.radiowaves.left.and.right",
             title: "Strap",
-            blurb: "NOOP pairs directly with your WHOOP over Bluetooth: no WHOOP app, no cloud."
+            blurb: "Band pairs directly with your WHOOP over Bluetooth: no WHOOP app, no cloud."
         ) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 12) {
@@ -1466,6 +1972,64 @@ struct SettingsView: View {
                     strapNameControl
                 }
 
+            }
+        }
+        }
+    }
+
+    @ViewBuilder private var nativeStrapSections: some View {
+        Section {
+            LabeledContent("Status", value: strapStatusTitle)
+            if let pct = live.batteryPct {
+                LabeledContent("Battery", value: live.charging == true
+                               ? "\(Int(pct.rounded()))% · Charging"
+                               : "\(Int(pct.rounded()))%")
+            }
+            if let name = live.advertisingName, !name.isEmpty {
+                LabeledContent("Name", value: name)
+            }
+            if let fw = live.strapFirmware, !fw.isEmpty {
+                LabeledContent("Firmware", value: fw)
+            }
+        } footer: {
+            Text(strapStatusDetail)
+        }
+
+        Section {
+            Button("Re-scan") { model.scan() }
+            Button("Disconnect") { model.disconnect() }
+                .disabled(!live.connected && !live.bonded)
+        }
+
+        Section {
+            Button("Copy strap log") { PlatformPasteboard.copy(live.exportableLogText()) }
+            Button("Save strap log…") {
+                Task {
+                    let extra = await DebugDataDiagnostics.dynamicLines(repo: model.repo)
+                    FileExport.exportText(live.exportableLogText(extraHeaderLines: extra),
+                                          suggestedName: FileExport.timestampedName("noop-strap-log", ext: "txt"))
+                }
+            }
+        } header: {
+            Text("Strap Log")
+        } footer: {
+            Text("Attach this when you report a bug.")
+        }
+
+        if !AppBrand.isPersonalBuild,
+           live.connected && selectedWhoopModelRaw == WhoopModel.whoop4.rawValue {
+            Section {
+                LabeledContent("Current", value: live.advertisingName ?? "—")
+                TextField("New name", text: $strapNameDraft)
+                Button("Rename") { model.ble.renameStrap(strapNameDraft) }
+                    .disabled(strapNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if let status = live.renameStatus {
+                    Text(status).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Name")
+            } footer: {
+                Text("The strap reboots to apply a WHOOP 4.0 Bluetooth name.")
             }
         }
     }
@@ -1563,11 +2127,22 @@ struct SettingsView: View {
     /// each: the live heart rate, a Lift Log session, a strap sync. These three are every Live Activity the app has.
     /// A switch only decides whether its notification is SHOWN: the heart rate is still measured, recorded and
     /// scored, a session still runs and buzzes, a sync still runs, with any of them off.
-    private var liveNotificationsCard: some View {
+    @ViewBuilder private var liveNotificationsCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Toggle("Live heart rate", isOn: $liveActivityEnabled)
+                Toggle("Lift Log session", isOn: $liftLiveActivityEnabled)
+                Toggle("Strap sync", isOn: $syncLiveActivityEnabled)
+            } header: {
+                Text("Live Notifications")
+            } footer: {
+                Text("Lock Screen and Dynamic Island. Off only hides the banner.")
+            }
+        } else {
         SettingsSection(
             icon: "bell.badge",
             title: "Live notifications",
-            blurb: "Shown on the Lock Screen and in the Dynamic Island. A switch only hides one: NOOP still measures and records everything."
+            blurb: "Shown on the Lock Screen and in the Dynamic Island. A switch only hides one: Band still measures and records everything."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 liveNotificationSwitch("Live heart rate", isOn: $liveActivityEnabled,
@@ -1577,8 +2152,9 @@ struct SettingsView: View {
                                        detail: "Your set, rest and heart rate, and the Lock Screen light-up on a double-tap.")
                 rowDivider
                 liveNotificationSwitch("Strap sync", isOn: $syncLiveActivityEnabled,
-                                       detail: "Progress while NOOP pulls history from the strap.")
+                                       detail: "Progress while Band pulls history from the strap.")
             }
+        }
         }
     }
 
@@ -1591,7 +2167,7 @@ struct SettingsView: View {
                     .foregroundStyle(StrandPalette.textPrimary)
             }
             .toggleStyle(.switch)
-            .tint(StrandPalette.accent)
+            .tint(controlTint)
             Text(detail)
                 .font(StrandFont.caption)
                 .foregroundStyle(StrandPalette.textTertiary)
@@ -1600,7 +2176,18 @@ struct SettingsView: View {
     }
     #endif
 
-    private var recoveryCard: some View {
+    @ViewBuilder private var recoveryCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Button("Recalibrate Charge Baseline", role: .destructive) {
+                    showRecalibrateConfirm = true
+                }
+            } header: {
+                Text("Recovery")
+            } footer: {
+                Text("Re-learn Charge from tonight. History stays.")
+            }
+        } else {
         SettingsSection(
             icon: "heart.text.square",
             title: "Recovery",
@@ -1617,6 +2204,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        }
     }
 
     /// Write the recalibration anchor and trigger a recompute. Re-anchors EVERY baseline that feeds
@@ -1632,43 +2220,27 @@ struct SettingsView: View {
             await model.repo.refresh()
         }
         backupAlertTitle = String(localized: "Charge baseline recalibrating")
-        backupAlertMessage = String(localized: "NOOP will re-learn your baseline from tonight's data onward. Your history is kept, and it takes a few nights to settle.")
+        backupAlertMessage = String(localized: "Band will re-learn your baseline from tonight's data onward. Your history is kept, and it takes a few nights to settle.")
         showBackupAlert = true
-    }
-
-    // MARK: - Test Centre (the diagnostic home, #507/#509)
-
-    /// A nav row into the Test Centre, the single home for the diagnostic, log and test controls (spec
-    /// section 7). The strap log, recalibrate, scheduled export and experimental toggles also live there
-    /// on the same bindings, so this is a faster door to the full set without growing this screen.
-    private var testCentreCard: some View {
-        SettingsSection(
-            icon: "testtube.2",
-            title: "Test Centre",
-            blurb: "Turn on a test for the thing that's wrong, wear the strap, then tap Report. Your strap log, recalibrate, scheduled export and experimental probes all live here too."
-        ) {
-            NavigationLink(destination: TestCentreView()) {
-                HStack {
-                    Text("Open Test Centre")
-                        .font(StrandFont.body)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(StrandPalette.textTertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(LiquidPressStyle())
-            .accessibilityLabel("Open Test Centre")
-        }
     }
 
     // MARK: - Features (opt-in trackers)
 
     /// Opt-in, manual-first feature toggles (default OFF). Hydration tracking gates the water-log card on
     /// the Today dashboard and its detail screen, plus Apple Health water imports on iOS.
-    private var featuresCard: some View {
+    @ViewBuilder private var featuresCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Toggle("Hydration Tracking", isOn: $hydrationEnabled)
+                Toggle("Auto-Detect Workouts", isOn: $autoDetectWorkoutsEnabled)
+                Toggle("Journal Reminder", isOn: $journalReminderEnabled)
+                Toggle("Keep Screen On During a Workout", isOn: $workoutKeepScreenOn)
+            } header: {
+                Text("Features")
+            } footer: {
+                Text("Optional trackers. Off by default.")
+            }
+        } else {
         SettingsSection(
             icon: "drop.fill",
             title: "Features",
@@ -1681,7 +2253,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 .accessibilityHint("Adds a water-log card to your dashboard")
 
                 Text("Adds a fluid log and an effort-adjusted daily goal. Log a sip, cup or bottle to fill your progress ring. Data stays on this device.")
@@ -1690,7 +2262,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 #if os(iOS)
-                Text("Also imports water from Apple Health when connected and allowed to read water data. Drinks logged in NOOP are not written to Apple Health.")
+                Text("Also imports water from Apple Health when connected and allowed to read water data. Drinks logged in Band are not written to Apple Health.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1704,10 +2276,10 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 .accessibilityHint("Offers to save a workout when it spots sustained elevated heart rate")
 
-                Text("After a sync, NOOP looks over your recent heart rate for a sustained, raised stretch that looks like exercise and offers to save it. It only ever suggests. Nothing is saved until you tap Save, and you can dismiss any suggestion. Turning this off stops future suggestions but keeps your existing workout history. Deliberately conservative, so the odd workout may be missed. On \(Platform.deviceNounPhrase) only.")
+                Text("After a sync, Band looks over your recent heart rate for a sustained, raised stretch that looks like exercise and offers to save it. It only ever suggests. Nothing is saved until you tap Save, and you can dismiss any suggestion. Turning this off stops future suggestions but keeps your existing workout history. Deliberately conservative, so the odd workout may be missed. On \(Platform.deviceNounPhrase) only.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1725,7 +2297,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 .accessibilityHint("Show a Today card reminding you to log your journal")
 
                 Text("Show a Today card reminding you to log your journal")
@@ -1741,7 +2313,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 .accessibilityHint("Stops the screen dimming while a workout is recording")
 
                 Text("Holds the screen awake while you're recording a workout, so your live heart rate stays visible without the device dimming. Only applies during a recording. The screen sleeps normally the rest of the time. Leaving it on does use a bit more battery, and means your unlocked screen stays visible for the whole workout, so flip it off if that's a concern.")
@@ -1750,6 +2322,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        }
     }
 
     #if os(iOS)
@@ -1757,11 +2330,20 @@ struct SettingsView: View {
 
     /// Behaviour while a strap history sync runs. Its own section rather than a row under Features, which holds
     /// optional trackers. `SyncKeepAwake` reads the same key.
-    private var syncCard: some View {
+    @ViewBuilder private var syncCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Toggle("Keep Screen On While Syncing", isOn: $syncKeepScreenOn)
+            } header: {
+                Text("Sync")
+            } footer: {
+                Text("Holds the screen awake while a strap history sync runs.")
+            }
+        } else {
         SettingsSection(
             icon: "arrow.triangle.2.circlepath",
             title: "Sync",
-            blurb: "How NOOP behaves while it pulls stored history from your strap."
+            blurb: "How Band behaves while it pulls stored history from your strap."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.space2 + 2) {
                 Toggle(isOn: $syncKeepScreenOn) {
@@ -1770,14 +2352,15 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 .accessibilityHint("Stops the screen locking while your strap's history syncs")
 
-                Text("Holds the screen awake while NOOP pulls stored history from your strap, so you can watch a long sync finish without the phone locking. Only applies while a sync is running and NOOP is open. The screen sleeps normally the rest of the time. It uses a bit more battery while the screen stays on.")
+                Text("Holds the screen awake while Band pulls stored history from your strap, so you can watch a long sync finish without the phone locking. Only applies while a sync is running and Band is open. The screen sleeps normally the rest of the time. It uses a bit more battery while the screen stays on.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
         }
     }
     #endif
@@ -1788,11 +2371,34 @@ struct SettingsView: View {
 
     // #518 (declutter): HRV tuning relocated out of the always-visible Strap card into Advanced. Same
     // @AppStorage bindings and the same BLE + re-score wiring — just tucked away as power-user tuning.
-    private var hrvCard: some View {
+    @ViewBuilder private var hrvCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Toggle("Continuous HRV Capture", isOn: $continuousHrvEnabled)
+                    .onChangeCompat(of: continuousHrvEnabled) { on in model.ble.setKeepRealtimeForData(on) }
+                if continuousHrvEnabled {
+                    Toggle("Overnight Only", isOn: $continuousHrvOvernightOnly)
+                        .onChangeCompat(of: continuousHrvOvernightOnly) { _ in
+                            model.ble.setKeepRealtimeForData(PuffinExperiment.keepRealtimeForDataEnabled)
+                        }
+                }
+                Picker("HRV Window", selection: $hrvWindowRaw) {
+                    Text("Night").tag(HrvWindow.whole.rawValue)
+                    Text("Deep sleep").tag(HrvWindow.deep.rawValue)
+                }
+                .onChangeCompat(of: hrvWindowRaw) { _ in
+                    Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
+                }
+            } header: {
+                Text("HRV")
+            } footer: {
+                Text("Tune capture and the overnight HRV window.")
+            }
+        } else {
         SettingsSection(
             icon: "waveform.path.ecg",
             title: "HRV",
-            blurb: "Tune how NOOP captures and windows your heart-rate-variability reading."
+            blurb: "Tune how Band captures and windows your heart-rate-variability reading."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 // MARK: Continuous HRV capture — keep the dense beat-to-beat (R-R) stream armed 24/7.
@@ -1802,9 +2408,9 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 .onChangeCompat(of: continuousHrvEnabled) { on in model.ble.setKeepRealtimeForData(on) }
-                Text("Keeps the detailed beat-to-beat heart-rate stream running all day and night, not just while a live screen is open, so NOOP captures much more for overnight HRV, recovery and sleep. Uses more battery: your strap streams heart rate continuously while connected.")
+                Text("Keeps the detailed beat-to-beat heart-rate stream running all day and night, not just while a live screen is open, so Band captures much more for overnight HRV, recovery and sleep. Uses more battery: your strap streams heart rate continuously while connected.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1817,7 +2423,7 @@ struct SettingsView: View {
                             .foregroundStyle(StrandPalette.textPrimary)
                     }
                     .toggleStyle(.switch)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .onChangeCompat(of: continuousHrvOvernightOnly) { _ in
                         model.ble.setKeepRealtimeForData(PuffinExperiment.keepRealtimeForDataEnabled)
                     }
@@ -1839,7 +2445,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
                     .accessibilityLabel("HRV window")
                     .onChangeCompat(of: hrvWindowRaw) { _ in
                         // #201/#195: analyzeRecent re-scores the recent ~21 nights' avgHrv under the new
@@ -1848,11 +2454,12 @@ struct SettingsView: View {
                         Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
                     }
                 }
-                Text("Whole night is NOOP's default measure; Deep sleep pools HRV over slow-wave sleep only, reading lower and matching WHOOP. Switching re-scores your recent nights over the new window and takes effect right away once you have a few nights of data.")
+                Text("Whole night is Band's default measure; Deep sleep pools HRV over slow-wave sleep only, reading lower and matching WHOOP. Switching re-scores your recent nights over the new window and takes effect right away once you have a few nights of data.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
         }
     }
 
@@ -1866,15 +2473,98 @@ struct SettingsView: View {
         // WHOOP 5/MG protocol research now lives in Test Centre. Everyday Settings no longer carries
         // a second copy; the persisted keys and reversible disable actions remain unchanged there.
         if showFiveMGControls || model.repo.activeDeviceIsOura { spo2CandidateCard }
-        if model.repo.activeDeviceIsOura { ouraAllDayLiveHRCard }   // item 27
         sleepStagingCard
         rawSensorDiagnosticsCard
     }
 
+    /// Fork presentation. On by default in this install. Off restores the upstream
+    /// Liquid or classic Today, whichever the toggle below selects.
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+    @AppStorage(NativeStyle.storageKey) private var nativeStyleRaw = NativeStyle.apple.rawValue
+    @AppStorage(PuffinExperiment.experimentalSleepStressKey) private var sleepStressEnabled = false
+    private var controlTint: Color {
+        #if os(iOS)
+        return nativeTodayEnabled ? Color.accentColor : StrandPalette.accent
+        #else
+        return nativeTodayEnabled ? Color.primary : StrandPalette.accent
+        #endif
+    }
     /// Opt-in liquid Today redesign (default ON in this build). Off falls back to the
     /// classic dashboard immediately, no rebuild. Same data either way.
     @AppStorage("noop.liquidTodayEnabled") private var liquidTodayEnabled = true
-    private var liquidTodayCard: some View {
+    @ViewBuilder private var liquidTodayCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Toggle("WHOOP Layout, Apple Controls", isOn: $nativeTodayEnabled)
+                if nativeTodayEnabled {
+                    Picker("Style", selection: $nativeStyleRaw) {
+                        ForEach(NativeStyle.allCases) { option in
+                            Text(option.label).tag(option.rawValue)
+                        }
+                    }
+                    Toggle("High Sleep Stress", isOn: $sleepStressEnabled)
+                }
+            } header: {
+                Text("Today")
+            } footer: {
+                Text("Three rings and the score pages. Same stored data.")
+            }
+            Section {
+                Toggle("Liquid Today (prototype)", isOn: $liquidTodayEnabled)
+            } footer: {
+                Text("Prototype Today layout. Same live data.")
+            }
+        } else {
+        Group {
+            SettingsSection(
+                icon: "heart.text.square",
+                title: "Today",
+                blurb: "Home, Health, and Sleep follow the WHOOP screenshot map, built from Apple controls. Turn it off to get the original screens back."
+            ) {
+                VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
+                    Toggle(isOn: $nativeTodayEnabled) {
+                        Text("WHOOP layout, Apple controls")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                    }
+                    .toggleStyle(.switch)
+                    .tint(controlTint)
+                    Text("Three rings, My Day, and the score pages. Same stored data.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if nativeTodayEnabled {
+                        Picker("Style", selection: $nativeStyleRaw) {
+                            ForEach(NativeStyle.allCases) { option in
+                                Text(option.label).tag(option.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityLabel("Style")
+                        Text("Apple is Health chrome with WHOOP's rings, contributor bands, and charts. WHOOP is the dark faithful drawing — without branding.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Toggle(isOn: $sleepStressEnabled) {
+                            Text("High Sleep Stress (experimental)")
+                                .font(StrandFont.subhead)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                        }
+                        .toggleStyle(.switch)
+                        .tint(controlTint)
+                        Text("Percent of last night spent in high stress, from overnight beat-to-beat windows. Off by default. Display only — it never changes Sleep, Recovery, or Strain.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            upstreamLiquidTodayCard
+        }
+        }
+    }
+
+    private var upstreamLiquidTodayCard: some View {
         SettingsSection(
             icon: "drop.fill",
             title: "Experimental · Liquid Today",
@@ -1887,7 +2577,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 Text("Replaces the Today tab with the prototype redesign. Turn it off any time to return to the classic dashboard. Reads the same live data from your strap.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -1900,11 +2590,21 @@ struct SettingsView: View {
     /// BETA-labelled on the Liquid Today); off removes the Start-session control entirely. Same key the
     /// Today entry reads (`LiveSessionPrefs.betaKey`).
     @AppStorage(LiveSessionPrefs.betaKey) private var liveSessionsBeta = true
-    private var liveSessionsCard: some View {
+    @ViewBuilder private var liveSessionsCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Toggle("Live Sessions (beta)", isOn: $liveSessionsBeta)
+            } header: {
+                Text("Live Sessions")
+            } footer: {
+                Text("Silence-first strap coaching during workouts.")
+            }
+        } else {
         SettingsSection(
             icon: "shield.lefthalf.filled",
             title: "Experimental · Live Sessions",
-            blurb: "A one-tap guarded workout: the strap watches your heart rate against a band gated on today's Charge, and only ever buzzes to correct course. Silence means you're on track."
+            blurb: "A one-tap guarded workout: the strap watches your heart rate against a band gated on today's Charge, and only ever buzzes to correct course. Silence means you're on track.",
+            shortFooter: "Silence-first strap coaching during workouts."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 Toggle(isOn: $liveSessionsBeta) {
@@ -1913,12 +2613,13 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 Text("Silence-first strap coaching during workouts.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
         }
     }
 
@@ -1926,11 +2627,22 @@ struct SettingsView: View {
     /// cross-subject benchmark; model-agnostic — it works on WHOOP 4 and 5 — so it renders on every strap.
     /// Turning the toggle OFF falls back to the older V1 percentile-band stager; either way only future
     /// (and re-derived) nights are affected.
-    private var sleepStagingCard: some View {
+    @ViewBuilder private var sleepStagingCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Toggle("Sleep Staging (V2)", isOn: $experimentalSleepV2Enabled)
+                Toggle("Motion-Aware Wake Refinement", isOn: $motionAwareWakeEnabled)
+            } header: {
+                Text("Sleep Staging")
+            } footer: {
+                Text("V2 is the default. Off falls back to V1 on the next night staged.")
+            }
+        } else {
         SettingsSection(
             icon: "bed.double.fill",
             title: "Sleep staging",
-            blurb: "How NOOP splits a night into light / deep / REM. The V2 recipe is the default; turn it off to fall back to the older V1 staging."
+            blurb: "How Band splits a night into light / deep / REM. The V2 recipe is the default; turn it off to fall back to the older V1 staging.",
+            shortFooter: "V2 is the default. Off falls back to V1 on the next night staged."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 Toggle(isOn: $experimentalSleepV2Enabled) {
@@ -1939,7 +2651,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 Text("A transparent cardiorespiratory recipe that recovers deep and REM better than the older V1 staging, and is now the default. It only changes how already-detected nights are split into stages (detection and scores are unchanged); turn it off to fall back to V1. Takes effect on the next nights staged.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -1954,12 +2666,13 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 Text("Reviews each scored wake block for real evidence of getting up (walking cadence, a change in body position) instead of just a heart-rate rise. A wake block with no locomotion and a stable posture — a hot night, a brief turn-over — is folded back into light sleep; a real get-up is left alone. Self-checks how much motion detail your strap actually recorded and stays off on a night that's too sparse to trust (older WHOOP 4.0 firmware, mainly). Off by default; takes effect on the next nights staged.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
         }
     }
 
@@ -1972,11 +2685,24 @@ struct SettingsView: View {
     /// and a full screenshot sweep of Settings confirmed the section never renders. Same split as
     /// `rawSensorDiagnosticsCard` just below (#22) — this card shows for a 5/MG OR an active Oura
     /// device, not just a 5/MG.
-    private var spo2CandidateCard: some View {
+    @ViewBuilder private var spo2CandidateCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Toggle("Strap SpO₂ Estimate", isOn: $spo2CandidateDisplayEnabled)
+                    .onChangeCompat(of: spo2CandidateDisplayEnabled) { _ in
+                        Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
+                    }
+            } header: {
+                Text("Blood Oxygen")
+            } footer: {
+                Text("Shows an unverified strap SpO₂ estimate. Never feeds recovery.")
+            }
+        } else {
         SettingsSection(
             icon: "lungs.fill",
             title: "Experimental · Blood Oxygen",
-            blurb: "Surfaces a device-conditional, unverified SpO₂ estimate in the Blood Oxygen tile when no calibrated reading exists."
+            blurb: "Surfaces a device-conditional, unverified SpO₂ estimate in the Blood Oxygen tile when no calibrated reading exists.",
+            shortFooter: "Shows an unverified strap SpO₂ estimate. Never feeds recovery."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 Toggle(isOn: $spo2CandidateDisplayEnabled) {
@@ -1985,7 +2711,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
+                .tint(controlTint)
                 .onChangeCompat(of: spo2CandidateDisplayEnabled) { _ in
                     // Re-score immediately so the candidate is computed and persisted on this
                     // toggle flip — without this the user waits up to 15 min for the next analyze
@@ -1999,44 +2725,42 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        }
     }
 
     /// Item 27: keep the Oura ring in daytime-HR mode while the screen is off during the DAY. The ring
     /// produces daytime heart rate (and the beats behind windowed rMSSD) only while a client holds that
     /// mode, so the screen-keyed suspend that protects the night suite also empties a pocketed-phone day.
     /// ON stands the hold down only for the learned night band; OFF is today's behaviour. Oura-only.
-    private var ouraAllDayLiveHRCard: some View {
-        SettingsSection(
-            icon: "waveform.path.ecg",
-            title: "Experimental · Oura ring all-day heart rate",
-            blurb: "Oura ring only. Keeps your ring measuring heart rate through the day, standing it down only for your night. A WHOOP strap is not affected."
-        ) {
-            VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
-                Toggle(isOn: $ouraAllDayLiveHREnabled) {
-                    Text("Oura ring: all-day heart rate & HRV")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                Text("Your Oura ring only measures daytime heart rate while NOOP keeps it in that mode, and NOOP stops asking whenever the screen has been off for five minutes — which protects the ring's own sleep tracking at night, but also leaves a pocketed phone's day blank on the Heart Rate and HRV charts. On, NOOP keeps asking through the day and stops only for your usual night, learned from your sleep history (an hour before your typical bedtime to an hour after your usual wake), so the night is unchanged. Costs ring battery: the ring runs its own optical sensor all day. Until enough nights are learned it behaves as if off. Off by default.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
     // MARK: - Diagnostics (every model)
 
     /// Raw-sensor CSV export — a read-only diagnostic over the decoded streams NOOP already stores
     /// (HR, R-R, motion, steps, PPG-HR, SpO₂, skin temp, resp, events). Split out of the 5/MG card so it
     /// stays visible on EVERY model (#22): a WHOOP 4.0 owner still needs this to share decoded data.
-    private var rawSensorDiagnosticsCard: some View {
+    @ViewBuilder private var rawSensorDiagnosticsCard: some View {
+        if appleSettingsStyle {
+            Section {
+                Button {
+                    exportRawSensorCSV()
+                } label: {
+                    if rawCsvBusy {
+                        ProgressView("Exporting…")
+                    } else {
+                        Text("Export Raw Sensor Data (CSV)")
+                    }
+                }
+                .disabled(rawCsvBusy)
+            } header: {
+                Text("Diagnostics")
+            } footer: {
+                Text("Exports the last 24 hours of decoded sensor streams. Nothing is uploaded.")
+            }
+        } else {
         SettingsSection(
             icon: "doc.text.magnifyingglass",
             title: "Diagnostics",
-            blurb: "A read-only export of the decoded sensor streams NOOP already stores. Works on any strap. Nothing is written to your device, and nothing is uploaded."
+            blurb: "A read-only export of the decoded sensor streams Band already stores. Works on any strap. Nothing is written to your device, and nothing is uploaded.",
+            shortFooter: "Exports the last 24 hours of decoded sensor streams. Nothing is uploaded."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 // MARK: Export raw sensor data (CSV) — a read-only diagnostic over the decoded streams
@@ -2069,6 +2793,7 @@ struct SettingsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
         }
     }
 
@@ -2145,11 +2870,14 @@ struct SettingsView: View {
     #if os(macOS)
     #endif
 
-    private var backupCard: some View {
+    @ViewBuilder private var backupCard: some View {
+        if appleSettingsStyle {
+            nativeBackupSections
+        } else {
         SettingsSection(
             icon: "externaldrive.fill",
             title: "Backup & restore",
-            blurb: "Move all your NOOP data to another machine. Export saves everything (history, sleeps, workouts, settings) to a single file you can copy across; import replaces \(Platform.deviceNounPhrase)'s data with a backup."
+            blurb: "Move all your Band data to another machine. Export saves everything (history, sleeps, workouts, settings) to a single file you can copy across; import replaces \(Platform.deviceNounPhrase)'s data with a backup."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.space4) {
                 // Three labelled buttons must share a narrow iPhone row without wrapping mid-word
@@ -2198,7 +2926,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textTertiary)
                         .font(.system(size: 13))
                         .accessibilityHidden(true)
-                    Text("Importing overwrites everything currently on \(Platform.deviceNounPhrase). Your old data is kept in a side file just in case. NOOP needs a relaunch for an import to take effect. Export CSV writes a WHOOP-format zip of your days, sleeps, workouts and journal that re-imports into NOOP on Mac, iPhone, or Android. On-device computed rows are marked APPROXIMATE in its Source column; the full backup stays the lossless restore path.")
+                    Text("Importing overwrites everything currently on \(Platform.deviceNounPhrase). Your old data is kept in a side file just in case. Band needs a relaunch for an import to take effect. Export CSV writes a WHOOP-format zip of your days, sleeps, workouts and journal that re-imports into Band or WHOOP. The full backup stays the lossless restore path.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2239,6 +2967,35 @@ struct SettingsView: View {
                 }
                 .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("Open Backup and Sync to a folder")
+            }
+        }
+        }
+    }
+
+    @ViewBuilder private var nativeBackupSections: some View {
+        Section {
+            Button("Export…") { runExport() }
+                .disabled(backupBusy)
+            Button("Import…") { runImport() }
+                .disabled(backupBusy)
+            if !AppBrand.isPersonalBuild {
+                Button("Export CSV…") { runCsvExport() }
+                    .disabled(backupBusy)
+            }
+            if backupBusy {
+                ProgressView("Working…")
+            }
+        } footer: {
+            Text("Importing replaces all data on this device. Backups are unencrypted ZIP files.")
+        }
+
+        if !AppBrand.isPersonalBuild {
+            Section {
+                NavigationLink("Backup & Sync") {
+                    BackupSyncView()
+                }
+            } footer: {
+                Text("Save dated snapshots to a folder you choose.")
             }
         }
     }
@@ -2284,7 +3041,7 @@ struct SettingsView: View {
                 return
             case .exported(let url):
                 backupAlertTitle = String(localized: "CSV exported")
-                backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). The zip re-imports into NOOP (Data Sources → WHOOP Export) on any Mac, iPhone, or Android device.")
+                backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). The zip re-imports into Band (Data Sources → WHOOP Export) on any Mac, iPhone, or Android device.")
                 showBackupAlert = true
             case .failure(let message):
                 backupAlertTitle = String(localized: "Export problem")
@@ -2311,15 +3068,15 @@ struct SettingsView: View {
             let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
             let cap = ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)
             backupAlertTitle = String(localized: "Backup exported")
-            backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). Your database is \(size), over the \(cap) NOOP restores without asking — the backup is complete and valid, and restoring it will ask you to confirm once.")
+            backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). Your database is \(size), over the \(cap) Band restores without asking — the backup is complete and valid, and restoring it will ask you to confirm once.")
             showBackupAlert = true
         case .restoreTooLarge(let name, let limit):
             let cap = ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)
-            oversizeRestoreMessage = String(localized: "\(name) is larger than the \(cap) NOOP restores without asking. That limit guards against a malicious archive expanding to fill this \(Platform.deviceNoun) — a backup you exported yourself is not that. Restoring it needs the space the database will take. You'll be asked to choose the file again.")
+            oversizeRestoreMessage = String(localized: "\(name) is larger than the \(cap) Band restores without asking. That limit guards against a malicious archive expanding to fill this \(Platform.deviceNoun) — a backup you exported yourself is not that. Restoring it needs the space the database will take. You'll be asked to choose the file again.")
             showOversizeRestoreConfirm = true
         case .imported:
             backupAlertTitle = String(localized: "Backup imported")
-            backupAlertMessage = String(localized: "Your data has been restored. Quit and reopen NOOP for it to take effect.")
+            backupAlertMessage = String(localized: "Your data has been restored. Quit and reopen Band for it to take effect.")
             showBackupAlert = true
         case .failure(let message):
             backupAlertTitle = String(localized: "Backup problem")
@@ -2336,15 +3093,23 @@ struct SettingsView: View {
     /// the hand-maintained changelog version only if the Info.plist key is somehow missing.
     private var bundleVersionString: String { UpdateWatch.installedVersion }
 
-    private var aboutCard: some View {
+    @ViewBuilder private var aboutCard: some View {
+        if appleSettingsStyle {
+            nativeAboutSections
+        } else {
+            aboutClassicCard
+        }
+    }
+
+    @ViewBuilder private var aboutClassicCard: some View {
         SettingsSection(
             icon: "info.circle.fill",
             title: "About",
-            blurb: "NOOP: all your data, none of the cloud."
+            blurb: LocalizedStringKey("\(AppBrand.name): all your data, none of the cloud.")
         ) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 10) {
-                    Text("NOOP")
+                    Text(AppBrand.name)
                         .font(StrandFont.title2)
                         .foregroundStyle(StrandPalette.textPrimary)
                     StatePill("v\(bundleVersionString)", tone: .neutral, showsDot: false)
@@ -2365,7 +3130,7 @@ struct SettingsView: View {
                             .foregroundStyle(StrandPalette.accent)
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text("How NOOP works")
+                            Text("How \(AppBrand.name) works")
                                 .font(StrandFont.body)
                                 .foregroundStyle(StrandPalette.textPrimary)
                             Text("Sleep sorting, scores, recording, and where your numbers come from.")
@@ -2382,7 +3147,7 @@ struct SettingsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(LiquidPressStyle())
-                .accessibilityLabel("How NOOP works")
+                .accessibilityLabel("How \(AppBrand.name) works")
 
                 // How your scores work — the honest explainer for Charge / Effort / Rest and the
                 // confidence labels. Always reachable here, mirroring the "What's new" affordance.
@@ -2429,7 +3194,7 @@ struct SettingsView: View {
                             Text("About Apple Watch data")
                                 .font(StrandFont.body)
                                 .foregroundStyle(StrandPalette.textPrimary)
-                            Text("Use NOOP with just an Apple Watch. What it's great at, and where it's lighter than a strap.")
+                            Text("Use Band with just an Apple Watch. What it's great at, and where it's lighter than a strap.")
                                 .font(StrandFont.footnote)
                                 .foregroundStyle(StrandPalette.textTertiary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -2459,7 +3224,7 @@ struct SettingsView: View {
                             Text("Storage")
                                 .font(StrandFont.body)
                                 .foregroundStyle(StrandPalette.textPrimary)
-                            Text("Where NOOP's on-device space is going, and a one-tap clean-up.")
+                            Text("Where Band's on-device space is going, and a one-tap clean-up.")
                                 .font(StrandFont.footnote)
                                 .foregroundStyle(StrandPalette.textTertiary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -2485,6 +3250,8 @@ struct SettingsView: View {
 
                 // Check for updates — a single, user-initiated read of GitHub's public releases API.
                 // No background polling, no auto-update; sends nothing about you, just reads the version.
+                // Personal builds skip this: GitHub nags point at upstream NOOP releases.
+                if !AppBrand.isPersonalBuild {
                 VStack(alignment: .leading, spacing: NoopMetrics.space2) {
                     HStack(spacing: NoopMetrics.space2 + 2) {
                         Button {
@@ -2527,12 +3294,12 @@ struct SettingsView: View {
                             Text("Check automatically")
                                 .font(StrandFont.subhead)
                                 .foregroundStyle(StrandPalette.textPrimary)
-                            Text("Once a day, NOOP asks GitHub for the latest version number and puts a note in Updates if there's a newer one. Nothing about you is sent, and it never installs anything.")
+                            Text("Once a day, \(AppBrand.name) asks GitHub for the latest version number and puts a note in Updates if there's a newer one. Nothing about you is sent, and it never installs anything.")
                                 .font(StrandFont.footnote)
                                 .foregroundStyle(StrandPalette.textSecondary)
                         }
                     }
-                    .tint(StrandPalette.accent)
+                    .tint(controlTint)
 
                     // Update available: show what's new, with a download straight to the release.
                     if case .available(let v, let url, let notes) = updateChecker.state {
@@ -2574,6 +3341,7 @@ struct SettingsView: View {
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
                 }
+                }
 
                 // Project home — NOOP's code, releases, issues and wiki live on GitHub.
                 Link(destination: URL(string: "https://github.com/ryanbr/noop")!) {
@@ -2600,7 +3368,7 @@ struct SettingsView: View {
                 }
                 .accessibilityLabel("Project home and source code on GitHub")
 
-                Text("A standalone companion for your WHOOP. Everything stays on this device: your history, your live stream, your numbers. Nothing is uploaded. NOOP is an independent, experimental project, not the WHOOP app.")
+                Text("A standalone companion for your WHOOP. Everything stays on this device: your history, your live stream, your numbers. Nothing is uploaded. Band is an independent, experimental project, not the WHOOP app.")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2611,7 +3379,7 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.statusWarning)
                         .font(.system(size: 13))
                         .accessibilityHidden(true)
-                    Text("NOOP is not a medical device. It is for informational and personal-insight purposes only and is not intended to diagnose, treat, cure or prevent any condition. Talk to a clinician for medical advice.")
+                    Text("\(AppBrand.name) is not a medical device. It is for informational and personal-insight purposes only and is not intended to diagnose, treat, cure or prevent any condition. Talk to a clinician for medical advice.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2638,6 +3406,55 @@ struct SettingsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
             }
         }
+    }
+
+    @ViewBuilder private var nativeAboutSections: some View {
+        Section {
+            LabeledContent("Version", value: "\(bundleVersionString) (\(bundleBuildString))")
+            NavigationLink("Licenses") { LicensesView() }
+            if !AppBrand.isPersonalBuild {
+                NavigationLink("Storage") { StorageView() }
+                Button("What's New") { showWhatsNew = true }
+                Button("How \(AppBrand.name) Works") { showHowNoopWorks = true }
+                Button("How Your Scores Work") { showScoringGuide = true }
+                NavigationLink("Apple Watch") {
+                    AppleWatchAboutView(onStartSetup: { showAppleWatchSetup = true })
+                }
+                #if os(iOS)
+                Button("Diagnostics") { showDiagnostics = true }
+                #endif
+            }
+        }
+    }
+
+    private var bundleBuildString: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String).flatMap {
+            $0.isEmpty ? nil : $0
+        } ?? "—"
+    }
+
+    @ViewBuilder private var aboutAppIcon: some View {
+        #if os(iOS)
+        if let icons = Bundle.main.object(forInfoDictionaryKey: "CFBundleIcons") as? [String: Any],
+           let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+           let files = primary["CFBundleIconFiles"] as? [String],
+           let last = files.last,
+           let image = UIImage(named: last) {
+            Image(uiImage: image).resizable().scaledToFit()
+        } else {
+            Image(systemName: "app.fill")
+                .font(.system(size: 36))
+                .foregroundStyle(.tint)
+        }
+        #else
+        if let name = NSApplication.shared.applicationIconImage {
+            Image(nsImage: name).resizable().scaledToFit()
+        } else {
+            Image(systemName: "app.fill")
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+        }
+        #endif
     }
 
     private func attribution(repo: String, note: String) -> some View {
@@ -2689,7 +3506,7 @@ struct SettingsView: View {
         .accessibilityLabel("Diagnostics")
     }
 
-    /// Calm, honest "what to expect running NOOP on iPhone" callout — sideloading reality, re-sign
+    /// Calm, honest "what to expect running Band on iPhone" callout — sideloading reality, re-sign
     /// cadence, the unlock-after-reboot (#222) note, background-BLE limits, and beta-iOS caveat. Surfaces
     /// the live sideload-cert expiry when we can read it, with a gentle warning under ~3 days.
     private var iphoneExpectations: some View {
@@ -2700,14 +3517,14 @@ struct SettingsView: View {
                 Image(systemName: "iphone.gen3")
                     .foregroundStyle(StrandPalette.accent)
                     .accessibilityHidden(true)
-                Text("Using NOOP on iPhone")
+                Text("Using Band on iPhone")
                     .font(StrandFont.subhead.weight(.semibold))
                     .foregroundStyle(StrandPalette.textPrimary)
             }
 
             iphoneExpectationLine(String(localized: "This is a sideloaded build, installed outside the App Store. It needs re-signing periodically: roughly every 7 days on a free Apple ID, about a year on a paid developer account."))
-            iphoneExpectationLine(String(localized: "After your iPhone reboots, unlock it once. Until you do, iOS keeps NOOP's files locked (Data Protection), so new history can't be written or synced."))
-            iphoneExpectationLine(String(localized: "Background Bluetooth has OS limits: iOS may pause NOOP when it's not in the foreground, so keep it open while syncing a fresh strap."))
+            iphoneExpectationLine(String(localized: "After your iPhone reboots, unlock it once. Until you do, iOS keeps Band's files locked (Data Protection), so new history can't be written or synced."))
+            iphoneExpectationLine(String(localized: "Background Bluetooth has OS limits: iOS may pause Band when it's not in the foreground, so keep it open while syncing a fresh strap."))
             iphoneExpectationLine(String(localized: "On a beta version of iOS, things can break that work on the release build."))
 
             if let days = expiry {
@@ -2764,12 +3581,7 @@ struct SettingsView: View {
 
     // MARK: - Shared bits
 
-    private var rowDivider: some View {
-        Rectangle()
-            .fill(StrandPalette.hairline)
-            .frame(height: 1)
-            .padding(.vertical, 4)
-    }
+    private var rowDivider: some View { SettingsRowDivider() }
 }
 
 // MARK: - Advanced disclosure (S3)
@@ -2840,27 +3652,47 @@ private struct SettingsSection<Content: View>: View {
     let icon: String
     let title: LocalizedStringKey
     let blurb: LocalizedStringKey
+    var shortFooter: LocalizedStringKey? = nil
     @ViewBuilder var content: () -> Content
 
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+    @Environment(\.appleSettingsStyle) private var appleSettingsStyle
+
     var body: some View {
-        StrandCard(padding: NoopMetrics.space5) {
-            VStack(alignment: .leading, spacing: NoopMetrics.space4) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Settings").strandOverline()
-                    HStack(spacing: NoopMetrics.space2 + 2) {
-                        Image(systemName: icon)
-                            .foregroundStyle(StrandPalette.accent)
-                            .accessibilityHidden(true)
-                        Text(title)
-                            .font(StrandFont.title2)
-                            .foregroundStyle(StrandPalette.textPrimary)
-                    }
-                }
-                Text(blurb)
-                    .font(StrandFont.subhead)
-                    .foregroundStyle(StrandPalette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        if appleSettingsStyle {
+            Section {
                 content()
+            } header: {
+                Text(title)
+            } footer: {
+                Text(shortFooter ?? blurb)
+            }
+        } else if nativeTodayEnabled {
+            NativeChrome.panel {
+                Text(title)
+                    .font(.headline)
+                content()
+            }
+        } else {
+            StrandCard(padding: NoopMetrics.space5) {
+                VStack(alignment: .leading, spacing: NoopMetrics.space4) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Settings").strandOverline()
+                        HStack(spacing: NoopMetrics.space2 + 2) {
+                            Image(systemName: icon)
+                                .foregroundStyle(StrandPalette.accent)
+                                .accessibilityHidden(true)
+                            Text(title)
+                                .font(StrandFont.title2)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                        }
+                    }
+                    Text(blurb)
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    content()
+                }
             }
         }
     }
@@ -3008,7 +3840,7 @@ struct StepsCalibrationSheet: View {
     /// #107: the sheet's guidance depends on the strap family. A WHOOP 4.0 streams motion automatically, so
     /// "let it sync" is right; a 5/MG only streams motion once the experimental deep-data unlock is on, so
     /// the 4.0 advice is futile there and the empty state must say so instead.
-    @AppStorage("selectedWhoopModel") private var selectedWhoopModelRaw = WhoopModel.whoop4.rawValue
+    @AppStorage("selectedWhoopModel") private var selectedWhoopModelRaw = WhoopModel.whoop5mg.rawValue
     @AppStorage(PuffinExperiment.deepDataKey) private var deepDataEnabled = false
     private var is5MG: Bool { selectedWhoopModelRaw == WhoopModel.whoop5mg.rawValue }
 
@@ -3096,12 +3928,12 @@ struct StepsCalibrationSheet: View {
                     .font(StrandFont.headline)
                     .foregroundStyle(StrandPalette.textPrimary)
                 Text(is5MG
-                     ? String(localized: "NOOP estimates your steps from your WHOOP's stored motion, calibrated to your phone's step count. It's an estimate, not a hardware step counter; normal WHOOP 5/MG history sync supplies the motion data.")
-                     : String(localized: "NOOP estimates your steps from your WHOOP's motion, calibrated to your phone's step count. It's an estimate, not a step counter. A WHOOP 4.0 doesn't transmit steps."))
+                     ? String(localized: "Band estimates your steps from your WHOOP's stored motion, calibrated to your phone's step count. It's an estimate, not a hardware step counter; normal WHOOP 5/MG history sync supplies the motion data.")
+                     : String(localized: "Band estimates your steps from your WHOOP's motion, calibrated to your phone's step count. It's an estimate, not a step counter. A WHOOP 4.0 doesn't transmit steps."))
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("On the days your phone also counted steps, NOOP learns how much your motion maps to steps, then applies that to the strap-only days. The more matching days it has, the more it trusts the estimate.")
+                Text("On the days your phone also counted steps, Band learns how much your motion maps to steps, then applies that to the strap-only days. The more matching days it has, the more it trusts the estimate.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3137,20 +3969,20 @@ struct StepsCalibrationSheet: View {
     /// The "why it's empty" line — a 5/MG needs the deep-data unlock before it streams motion at all.
     private var noMotionLead: String {
         if is5MG {
-            return String(localized: "We're not seeing motion from your WHOOP 5.0 / MG yet. Keep NOOP connected and let strap history finish syncing; the experimental R22 flags are not required. Account or Apple Health imports do not contain the raw strap motion this estimate needs.")
+            return String(localized: "We're not seeing motion from your WHOOP 5.0 / MG yet. Keep Band connected and let strap history finish syncing; the experimental R22 flags are not required. Account or Apple Health imports do not contain the raw strap motion this estimate needs.")
         }
-        return String(localized: "We're not seeing any motion from your strap yet. Steps are estimated from your WHOOP's banked motion history, so your strap needs to sync that history before NOOP has anything to count.")
+        return String(localized: "We're not seeing any motion from your strap yet. Steps are estimated from your WHOOP's banked motion history, so your strap needs to sync that history before Band has anything to count.")
     }
 
     /// The "what to do" line — 5/MG points at the deep-data toggle (unless it's already on, then just sync).
     private var noMotionAction: String {
         if is5MG && !deepDataEnabled {
-            return String(localized: "Open NOOP near the strap and let WHOOP 5/MG history finish syncing. The step estimate and calibration fill in once enough stored motion has arrived; the legacy R22 experiment is not required.")
+            return String(localized: "Open Band near the strap and let WHOOP 5/MG history finish syncing. The step estimate and calibration fill in once enough stored motion has arrived; the legacy R22 experiment is not required.")
         }
         if is5MG {
-            return String(localized: "Deep data is on — open NOOP near your strap and let it sync its motion history (a full first-run sync can take a while). Once a day or two of motion lands, your step estimate and the calibration below fill in.")
+            return String(localized: "Deep data is on — open Band near your strap and let it sync its motion history (a full first-run sync can take a while). Once a day or two of motion lands, your step estimate and the calibration below fill in.")
         }
-        return String(localized: "Open NOOP near your strap and let it catch up (a full history sync can take a while on first run). Once a day or two of motion lands, your step estimate and the calibration below will start to fill in.")
+        return String(localized: "Open Band near your strap and let it catch up (a full history sync can take a while on first run). Once a day or two of motion lands, your step estimate and the calibration below will start to fill in.")
     }
 
     /// The current calibration read-out: coefficient, sample days, and a Low/Medium/High confidence —
@@ -3208,7 +4040,7 @@ struct StepsCalibrationSheet: View {
                         .headline)
                         .font(StrandFont.bodyNumber)
                         .foregroundStyle(StrandPalette.accent)
-                    Text("These are the days where your phone also counted steps, so NOOP can learn how your motion maps to steps. Or set the coefficient manually below.")
+                    Text("These are the days where your phone also counted steps, so Band can learn how your motion maps to steps. Or set the coefficient manually below.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3225,7 +4057,7 @@ struct StepsCalibrationSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Estimated vs your phone").strandOverline()
                 if comparison.isEmpty {
-                    Text("No days yet where both NOOP and your phone counted steps. Once your phone logs a few days alongside the strap, they'll appear here so you can see how close the estimate is.")
+                    Text("No days yet where both Band and your phone counted steps. Once your phone logs a few days alongside the strap, they'll appear here so you can see how close the estimate is.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3421,17 +4253,41 @@ struct StepsCalibrationSheet: View {
 private struct FormRow<Control: View>: View {
     let label: LocalizedStringKey
     @ViewBuilder var control: () -> Control
+    @Environment(\.appleSettingsStyle) private var appleSettingsStyle
 
     var body: some View {
-        HStack(alignment: .center, spacing: NoopMetrics.space4) {
-            Text(label)
-                .font(StrandFont.body)
-                .foregroundStyle(StrandPalette.textPrimary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            control()
-                .layoutPriority(1)
+        if appleSettingsStyle {
+            LabeledContent {
+                control()
+            } label: {
+                Text(label)
+            }
+        } else {
+            HStack(alignment: .center, spacing: NoopMetrics.space4) {
+                Text(label)
+                    .font(StrandFont.body)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                control()
+                    .layoutPriority(1)
+            }
+            .frame(minHeight: 32)
         }
-        .frame(minHeight: 32)
+    }
+}
+
+private struct SettingsRowDivider: View {
+    @Environment(\.appleSettingsStyle) private var appleSettingsStyle
+
+    var body: some View {
+        if appleSettingsStyle {
+            EmptyView()
+        } else {
+            Rectangle()
+                .fill(StrandPalette.hairline)
+                .frame(height: 1)
+                .padding(.vertical, 4)
+        }
     }
 }
 
@@ -3454,6 +4310,241 @@ private struct FormRow<Control: View>: View {
         .preferredColorScheme(.dark)
 }
 #endif
+
+/// More → Backup. WHOOP-format export, full Band backup / restore, optional iCloud Drive auto-backup.
+struct BandBackupView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var work: BackupWork?
+    @State private var actionsReady = false
+    @State private var backupAlertTitle = ""
+    @State private var backupAlertMessage = ""
+    @State private var showBackupAlert = false
+    @State private var showOversizeRestoreConfirm = false
+    @State private var oversizeRestoreMessage = ""
+    #if os(iOS)
+    @State private var autoBackupEnabled = AutoICloudBackup.isEnabled
+    @State private var autoBackupLastDay = AutoICloudBackup.lastBackupDay
+    @State private var autoBackupError = AutoICloudBackup.lastError
+    #endif
+
+    private enum BackupWork {
+        case whoopExport
+        case fullBackup
+        case restore
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Button {
+                    runWhoopExport()
+                } label: {
+                    HStack {
+                        Text("Export (WHOOP format)")
+                        Spacer()
+                        if work == .whoopExport {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(work != nil)
+            } footer: {
+                Text("A zip of the same four CSVs WHOOP exports, so you can continue there or re-import into Band.")
+            }
+
+            Section {
+                Button {
+                    runExport()
+                } label: {
+                    HStack {
+                        Text("Full backup (.zip)")
+                        Spacer()
+                        if work == .fullBackup {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(work != nil)
+                Button {
+                    runImport()
+                } label: {
+                    HStack {
+                        Text("Restore from backup…")
+                        Spacer()
+                        if work == .restore {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(work != nil)
+            } footer: {
+                Text("Importing replaces all data on this device. Backups are unencrypted ZIP files.")
+            }
+
+            #if os(iOS)
+            Section {
+                Toggle("Automatic backup to iCloud Drive", isOn: $autoBackupEnabled)
+                    .disabled(work != nil)
+                    .onChangeCompat(of: autoBackupEnabled) { on in
+                        Task { await setAutoBackup(on) }
+                    }
+                if autoBackupEnabled {
+                    Button("Choose folder…") {
+                        Task { await pickAutoBackupFolder() }
+                    }
+                    .disabled(work != nil)
+                }
+                if let last = formattedLastBackup {
+                    Text("Last backup: \(last)")
+                        .foregroundStyle(StrandPalette.textSecondary)
+                }
+                if let err = autoBackupError, !err.isEmpty {
+                    Text(err)
+                        .foregroundStyle(StrandPalette.statusWarning)
+                }
+            } footer: {
+                Text("Writes a dated full backup to a folder you pick in Files or iCloud Drive, at most once a day when Band is opened. Keeps the newest 7 Band-backup files and leaves everything else in the folder alone.")
+            }
+            #endif
+        }
+        #if os(iOS)
+        .listStyle(.insetGrouped)
+        #endif
+        .appleSettingsChrome("Backup")
+        .task {
+            // The NavigationLink tap that pushed this page can land on Export. Wait one
+            // turn so appear does not start a checkpoint / zip / integrity check.
+            await Task.yield()
+            actionsReady = true
+            #if os(iOS)
+            refreshAutoBackupState()
+            #endif
+        }
+        .alert(backupAlertTitle, isPresented: $showBackupAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(backupAlertMessage)
+        }
+        .alert("Backup problem", isPresented: $showOversizeRestoreConfirm) {
+            Button("Restore") { runImport(allowOversize: true) }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(oversizeRestoreMessage)
+        }
+    }
+
+    #if os(iOS)
+    private var formattedLastBackup: String? {
+        guard let day = autoBackupLastDay else { return nil }
+        let parse = DateFormatter()
+        parse.locale = Locale(identifier: "en_US_POSIX")
+        parse.dateFormat = "yyyy-MM-dd"
+        guard let date = parse.date(from: day) else { return day }
+        let show = DateFormatter()
+        show.dateStyle = .medium
+        return show.string(from: date)
+    }
+
+    private func refreshAutoBackupState() {
+        autoBackupEnabled = AutoICloudBackup.isEnabled
+        autoBackupLastDay = AutoICloudBackup.lastBackupDay
+        autoBackupError = AutoICloudBackup.lastError
+    }
+
+    private func setAutoBackup(_ on: Bool) async {
+        if on {
+            if AutoICloudBackup.hasFolder, AutoICloudBackup.resolveFolder() != nil {
+                AutoICloudBackup.isEnabled = true
+                AutoICloudBackup.lastError = nil
+                await AutoICloudBackup.catchUpIfDue(checkpoint: { await model.repo.checkpointForBackup() })
+            } else {
+                let picked = await AutoICloudBackup.enablePickingFolder()
+                if picked {
+                    await AutoICloudBackup.catchUpIfDue(checkpoint: { await model.repo.checkpointForBackup() })
+                } else {
+                    AutoICloudBackup.isEnabled = false
+                }
+            }
+        } else {
+            AutoICloudBackup.disable()
+        }
+        refreshAutoBackupState()
+    }
+
+    private func pickAutoBackupFolder() async {
+        _ = await AutoICloudBackup.enablePickingFolder()
+        refreshAutoBackupState()
+    }
+    #endif
+
+    private func runWhoopExport() {
+        guard actionsReady, work == nil else { return }
+        work = .whoopExport
+        Task {
+            let result = await CsvExport.run(repo: model.repo)
+            work = nil
+            switch result {
+            case .cancelled:
+                return
+            case .exported(let url):
+                backupAlertTitle = String(localized: "WHOOP export saved")
+                backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). The zip has WHOOP's four CSVs and re-imports into Band or WHOOP.")
+                showBackupAlert = true
+            case .failure(let message):
+                backupAlertTitle = String(localized: "Export problem")
+                backupAlertMessage = message
+                showBackupAlert = true
+            }
+        }
+    }
+
+    private func runExport() {
+        guard actionsReady, work == nil else { return }
+        work = .fullBackup
+        Task {
+            handleBackup(await DataBackup.runExport(checkpoint: { await model.repo.checkpointForBackup() }))
+        }
+    }
+
+    private func runImport(allowOversize: Bool = false) {
+        guard actionsReady, work == nil else { return }
+        work = .restore
+        Task {
+            handleBackup(await DataBackup.runImport(allowOversize: allowOversize))
+        }
+    }
+
+    @MainActor
+    private func handleBackup(_ result: DataBackup.BackupResult) {
+        work = nil
+        switch result {
+        case .cancelled:
+            return
+        case .exported(let url):
+            backupAlertTitle = String(localized: "Backup exported")
+            backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent).")
+            showBackupAlert = true
+        case .exportedOversize(let url, _, _):
+            backupAlertTitle = String(localized: "Backup exported")
+            backupAlertMessage = String(localized: "Saved to \(url.lastPathComponent). Restoring it will ask you to confirm once.")
+            showBackupAlert = true
+        case .restoreTooLarge(let name, _):
+            oversizeRestoreMessage = String(localized: "\(name) is larger than Band restores without asking. You'll be asked to choose the file again.")
+            showOversizeRestoreConfirm = true
+        case .imported:
+            backupAlertTitle = String(localized: "Backup imported")
+            backupAlertMessage = String(localized: "Your data has been restored. Quit and reopen for it to take effect.")
+            showBackupAlert = true
+        case .failure(let message):
+            backupAlertTitle = String(localized: "Backup problem")
+            backupAlertMessage = message
+            showBackupAlert = true
+        }
+    }
+}
 
 // MARK: - Custom accent colour bridge
 

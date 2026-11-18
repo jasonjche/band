@@ -277,14 +277,14 @@ struct NOOPChargeView: View {
             }
             return String(localized: "Charge · cal")
         case .missing:
-            return noSnapshot ? String(localized: "Open NOOP") : String(localized: "Charge")
+            return noSnapshot ? String(localized: "Open Band") : String(localized: "Charge")
         }
     }
 
     // MARK: accessoryInline — a single line of text along the top of the face
 
     private var inlineText: String {
-        if noSnapshot { return String(localized: "NOOP · open on iPhone") }
+        if noSnapshot { return String(localized: "Band · open on iPhone") }
         // When the snapshot has aged out we never print the old number; we say it is stale and how old.
         if isStale {
             let fresh = freshness ?? String(localized: "old")
@@ -320,7 +320,7 @@ struct NOOPChargeView: View {
         VStack(alignment: .leading, spacing: 3) {
             // Header: the wordmark + the snapshot age (or a sync hint when empty).
             HStack(spacing: 4) {
-                Text("NOOP")
+                Text("Band")
                     .font(StrandFont.rounded(11, weight: .bold))
                     .tracking(0.5)
                     .foregroundStyle(StrandPalette.textSecondary)
@@ -409,21 +409,21 @@ struct NOOPChargeView: View {
         // is a dash plainly so it is never mistaken for "still calibrating".
         if isStale {
             let fresh = freshness ?? String(localized: "a while ago")
-            return String(localized: "Charge out of date, last synced \(fresh). Open NOOP on iPhone.")
+            return String(localized: "Charge out of date, last synced \(fresh). Open Band on iPhone.")
         }
         switch charge {
         case .value(let v):    return String(localized: "Charge \(v) out of 100")
         case .calibrating:     return String(localized: "Charge calibrating, needs more data")
-        case .missing:         return noSnapshot ? String(localized: "No data, open NOOP on iPhone")
+        case .missing:         return noSnapshot ? String(localized: "No data, open Band on iPhone")
                                                  : String(localized: "Charge unavailable")
         }
     }
 
     private var accessibilityRectangular: String {
-        if noSnapshot { return String(localized: "NOOP. No data yet, open NOOP on your iPhone to sync.") }
+        if noSnapshot { return String(localized: "Band. No data yet, open Band on your iPhone to sync.") }
         if isStale {
             let fresh = freshness ?? String(localized: "a while ago")
-            return String(localized: "NOOP. Scores out of date, last synced \(fresh). Open NOOP on iPhone to refresh.")
+            return String(localized: "Band. Scores out of date, last synced \(fresh). Open Band on iPhone to refresh.")
         }
         func phrase(_ label: String, _ r: ScoreReadout) -> String {
             switch r {
@@ -435,7 +435,7 @@ struct NOOPChargeView: View {
         let chargePhrase = phrase(String(localized: "Charge"), charge)
         let effortPhrase = phrase(String(localized: "Effort"), effort)
         let restPhrase = phrase(String(localized: "Rest"), rest)
-        return String(localized: "NOOP. \(chargePhrase), \(effortPhrase), \(restPhrase).")
+        return String(localized: "Band. \(chargePhrase), \(effortPhrase), \(restPhrase).")
     }
 
     // Snapshot recency now comes straight from the shared contract (`freshnessText` / `isStale` on
@@ -453,13 +453,20 @@ struct NOOPChargeComplication: Widget {
             NOOPChargeView(entry: entry)
                 .containerBackground(StrandPalette.surfaceBase, for: .widget)
         }
-        .configurationDisplayName("NOOP Charge")
+        .configurationDisplayName("Band Charge")
         .description("Your Charge (recovery) on the watch face, with Effort and Rest in the rectangular card.")
-        .supportedFamilies([
-            .accessoryCircular,
-            .accessoryCorner,
-            .accessoryInline,
-            .accessoryRectangular
-        ])
+        .supportedFamilies(WatchComplicationFamilies.all)
+    }
+}
+
+/// Corner faces exist only on watchOS. Xcode 27 compiles this embedded extension
+/// against the iOS simulator SDK, where `.accessoryCorner` is unavailable.
+private enum WatchComplicationFamilies {
+    static var all: [WidgetFamily] {
+        #if os(watchOS)
+        [.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular]
+        #else
+        [.accessoryCircular, .accessoryInline, .accessoryRectangular]
+        #endif
     }
 }

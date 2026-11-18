@@ -15,11 +15,8 @@ on:
       - 'Tools/SleepBench/**'
       - 'Tools/SleepPSG/**'
       - 'Tools/Backfill/**'
+      - 'Tools/BandCheck/**'
       - '.github/workflows/swift-packages.yml'
-      # Mirror of the note in android.yml: package tests read the ANDROID oracles to catch a one-sided
-      # edit, and one reads Strand/Liquid/LiquidCore.swift. Editing only that side would otherwise skip
-      # the guard written for exactly that case. Keep in step with what the tests read.
-      - 'android/app/src/test/resources/**'
       - 'Strand/Liquid/LiquidCore.swift'
   push:
     branches: [main]
@@ -28,11 +25,8 @@ on:
       - 'Tools/SleepBench/**'
       - 'Tools/SleepPSG/**'
       - 'Tools/Backfill/**'
+      - 'Tools/BandCheck/**'
       - '.github/workflows/swift-packages.yml'
-      # Mirror of the note in android.yml: package tests read the ANDROID oracles to catch a one-sided
-      # edit, and one reads Strand/Liquid/LiquidCore.swift. Editing only that side would otherwise skip
-      # the guard written for exactly that case. Keep in step with what the tests read.
-      - 'android/app/src/test/resources/**'
       - 'Strand/Liquid/LiquidCore.swift'
   workflow_dispatch:
 
@@ -72,7 +66,9 @@ jobs:
   # SleepBench is the instrument the sleep work is argued with — #934's stage-fraction tables came out of
   # it — and #935 added 13 tests that no job ran. A tool whose numbers decide whether a staging change
   # lands has to keep compiling against the packages it measures, or it bitrots silently and the next
-  # person to reach for it finds it broken. Backfill has no tests yet, so it is build-only.
+  # person to reach for it finds it broken. BandCheck is the same kind of gate for WHOOP agreement on a
+  # real wearer DB (run locally with --db/--export; CI is build+unit tests, no health data). Backfill has
+  # no tests yet, so it is build-only.
   #
   # SleepPSG has a second, sharper reason to be here. Its variant scores run through a knob-for-knob PORT of
   # `SleepStagerV2`, and its test suite is what proves that port still reproduces the shipped stager
@@ -87,6 +83,7 @@ jobs:
           - SleepBench
           - SleepPSG
           - Backfill
+          - BandCheck
     steps:
       - name: Checkout
         uses: actions/checkout@v5

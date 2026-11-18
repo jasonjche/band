@@ -45,15 +45,11 @@ public enum DeviceBrandCatalog {
     /// are otherwise disjoint across rows, so the remaining order is cosmetic.
     public static let all: [DeviceBrandSpec] = [
         // EXPERIMENTAL tier — custom-protocol or broadcast live sources, opt-in and best-effort.
-        DeviceBrandSpec(brand: "Mi Band", nameTokens: ["mi band", "miband", "smart band", "xiaomi"],
-                        sourceKind: .huami, idPrefix: "huami", canStreamLiveHR: true, isExperimentalTier: true),
         DeviceBrandSpec(brand: "Amazfit", nameTokens: ["amazfit", "zepp", "helio", "huami"],
                         sourceKind: .huami, idPrefix: "huami", canStreamLiveHR: true, isExperimentalTier: true),
         DeviceBrandSpec(brand: "Garmin",
                         nameTokens: ["garmin", "forerunner", "fenix", "vivoactive", "venu", "instinct", "epix", "vivosmart", "hrm"],
                         sourceKind: .liveBLE, idPrefix: "garmin", canStreamLiveHR: true, isExperimentalTier: true),
-        DeviceBrandSpec(brand: "Oura", nameTokens: ["oura"],
-                        sourceKind: .oura, idPrefix: "oura", canStreamLiveHR: false, isExperimentalTier: true),
         // Shipped generic HR straps — standard 0x180D broadcast, labelled for display only. All route as a
         // generic live-BLE strap; the wizard picks these through the "Heart-rate strap" type.
         DeviceBrandSpec(brand: "Polar", nameTokens: ["polar"],
@@ -87,6 +83,6 @@ public enum DeviceBrandCatalog {
     /// "<idPrefix>-<uuid>", so the prefix IS the brand key). Read/UI side only: it lets the sleep surfaces
     /// name an Oura night's provenance "Oura". Twin of Kotlin `DeviceBrandCatalog.isOura`.
     public static func isOura(_ deviceId: String) -> Bool {
-        all.first { deviceId.hasPrefix($0.idPrefix + "-") }?.sourceKind == .oura
+        deviceId.hasPrefix("oura-")
     }
 }

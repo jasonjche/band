@@ -245,7 +245,7 @@ struct InsightsView: View {
                     if behaviours.isEmpty {
                         // No journal yet, explain, without dead-ending on a paid export.
                         NoopCard {
-                            Text("Log behaviours above. After a few days of answers, NOOP ranks how each one moves your charge, HRV and rest. Importing a WHOOP export (which includes its journal) backfills history instantly.")
+                            Text("Log behaviours above. After a few days of answers, Band ranks how each one moves your charge, HRV and rest. Importing a WHOOP export (which includes its journal) backfills history instantly.")
                                 .font(StrandFont.subhead)
                                 .foregroundStyle(StrandPalette.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -361,7 +361,8 @@ struct InsightsView: View {
         var byBehaviour: [String: Set<String>] = [:]
         var controlsByBehaviour: [String: Set<String>] = [:]
         var numericByBehaviour: [String: [String: Double]] = [:]
-        for e in entries {
+        // Fold imported titles onto library ids so a behaviour is ranked once.
+        for e in NativeJournalIdentity.winningEntries(entries) {
             if e.answeredYes { byBehaviour[e.question, default: []].insert(e.day) }
             else { controlsByBehaviour[e.question, default: []].insert(e.day) }
         }
@@ -369,7 +370,7 @@ struct InsightsView: View {
         // numeric series is the same [day: value] shape a metric outcome is, so the effect ranker can
         // consume it directly (dose-response lands in the v5 hub). Additive: yes/no-only journals
         // never populate this, so the boolean effect cards are untouched.
-        for e in entries {
+        for e in NativeJournalIdentity.winningEntries(entries) {
             if let v = e.numericValue { numericByBehaviour[e.question, default: [:]][e.day] = v }
         }
 
@@ -573,7 +574,7 @@ struct InsightsView: View {
                     Text("Run a clean personal test")
                         .font(StrandFont.headline)
                         .foregroundStyle(StrandPalette.textPrimary)
-                    Text("Pick one behaviour you log, one outcome, and a short window. NOOP compares the days you log the behaviour against your behaviour-free days before the start.")
+                    Text("Pick one behaviour you log, one outcome, and a short window. Band compares the days you log the behaviour against your behaviour-free days before the start.")
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -754,15 +755,15 @@ struct InsightsView: View {
     /// instead includes only behaviours with history and excludes hidden questions.
     private var experimentCandidates: [String] {
         let saved = experimentBehaviour.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hidden = Set(catalog.hiddenQuestions.map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
+        let hidden = Set(catalog.hiddenQuestions.map { JournalCatalogStore.norm(JournalCatalogStore.canonicalId(for: $0)) })
         // Logged behaviours first (most relevant), then imported wording, then the saved
         // selection so an in-flight pick never vanishes mid-edit.
         let raw = behaviours.keys.sorted() + importedQuestions + (saved.isEmpty ? [] : [saved])
         var seen = Set<String>()
         var out: [String] = []
         for q in raw {
-            let t = q.trimmingCharacters(in: .whitespaces)
-            let key = t.lowercased()
+            let t = JournalCatalogStore.canonicalId(for: q)
+            let key = JournalCatalogStore.norm(t)
             if !t.isEmpty, !hidden.contains(key), seen.insert(key).inserted { out.append(t) }
         }
         return out
@@ -771,7 +772,10 @@ struct InsightsView: View {
     private var resolvedExperimentBehaviour: String? {
         let candidates = experimentCandidates
         let saved = experimentBehaviour.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !saved.isEmpty, candidates.contains(saved) { return saved }
+        if !saved.isEmpty {
+            let id = JournalCatalogStore.canonicalId(for: saved)
+            if candidates.contains(id) { return id }
+        }
         return candidates.first
     }
 
@@ -1152,7 +1156,7 @@ struct InsightsView: View {
             SectionHeader("Activity Cost", overline: "What each activity costs your recovery")
             if activityCosts.isEmpty {
                 NoopCard {
-                    Text("Tag a few sessions of the same activity and NOOP will learn its personal recovery cost.")
+                    Text("Tag a few sessions of the same activity and Band will learn its personal recovery cost.")
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

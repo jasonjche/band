@@ -1,4 +1,5 @@
 import Foundation
+import WhoopProtocol
 
 /// Pure mapping from NOOP's persisted sleep-stage JSON to the interval list the iOS HealthKit
 /// write-back turns into `sleepAnalysis` category samples. Lives here (not in the app target) so
@@ -216,6 +217,48 @@ public enum HealthWriteback {
     /// The workout key: `noop:workout:<startTs>`.
     public static func appleHealthWorkoutKey(startTs: Int) -> String {
         appleHealthExternalUUID(kind: "workout", identity: "\(startTs)")
+    }
+
+    // MARK: - Workout heart-rate write-back
+
+    /// Apple Watch workout HR cadence: about one quantity sample per 5 seconds.
+    public static let workoutHeartRateIntervalSeconds = 5
+
+    /// Custom metadata on workout-attached HR samples. Value is the workout key
+    /// (`noop:workout:<startTs>`). Lets the delete path remove those samples in one
+    /// source-scoped query without sweeping the 1-minute HR stream.
+    public static let appleHealthWorkoutHeartRateMetadataKey = "noop.workoutHeartRate"
+
+    /// Strap HR to attach to a Health workout: samples strictly inside `[startTs, endTs]`,
+    /// sorted by time, deduped by timestamp (first wins), then downsampled to about one
+    /// reading per `intervalSeconds`.
+    ///
+    /// Beats outside the closed workout window are dropped. Invalid bpm (outside 25...240)
+    /// is dropped, matching the HealthKit read path. An empty or inverted window yields `[]`.
+    public static func workoutHeartRateSamples(
+        _ samples: [HRSample],
+        startTs: Int,
+        endTs: Int,
+        intervalSeconds: Int = workoutHeartRateIntervalSeconds
+    ) -> [HRSample] {
+        guard endTs > startTs else { return [] }
+        let interval = max(1, intervalSeconds)
+        var byTs: [Int: HRSample] = [:]
+        byTs.reserveCapacity(samples.count)
+        for sample in samples {
+            guard sample.ts >= startTs, sample.ts <= endTs else { continue }
+            guard sample.bpm >= 25, sample.bpm <= 240 else { continue }
+            if byTs[sample.ts] == nil { byTs[sample.ts] = sample }
+        }
+        let sorted = byTs.keys.sorted().compactMap { byTs[$0] }
+        var out: [HRSample] = []
+        out.reserveCapacity(min(sorted.count, 1 + (endTs - startTs) / interval))
+        var nextTs = startTs
+        for sample in sorted where sample.ts >= nextTs {
+            out.append(sample)
+            nextTs = sample.ts + interval
+        }
+        return out
     }
 
     // MARK: - #1503 stranded-records sweep completion tracking

@@ -1,4 +1,5 @@
 import Foundation
+import zlib
 
 // CRC8 lookup table (poly 0x07). Ported verbatim from framing.py.
 private let crc8Table: [UInt8] = [
@@ -34,8 +35,10 @@ public func crc8(_ bytes: [UInt8], _ from: Int = 0, _ to: Int? = nil) -> UInt8 {
     return crc
 }
 
-// Standard zlib CRC-32 (reflected, poly 0xEDB88320), table built in code.
-private let crc32Table: [UInt32] = {
+// Standard zlib CRC-32 (reflected, poly 0xEDB88320), table built in code. Kept as the bitwise
+// reference the hardware/zlib path is checked against so a CRC change cannot silently disagree
+// with the strap's trailer.
+private let crc32Lut: [UInt32] = {
     var table = [UInt32](repeating: 0, count: 256)
     for i in 0..<256 {
         var c = UInt32(i)
@@ -47,24 +50,66 @@ private let crc32Table: [UInt32] = {
     return table
 }()
 
-/// Standard zlib CRC-32 over `bytes[from..<(to ?? count)]`. The optional range defaults to the whole
-/// array (existing callers unchanged); the validator passes a range to checksum the inner record or
-/// payload in place, skipping the per-frame sub-array copy that added up over a multi-night offload.
-public func crc32(_ bytes: [UInt8], _ from: Int = 0, _ to: Int? = nil) -> UInt32 {
+/// Byte-at-a-time zlib CRC-32. Identical to the previous public `crc32` implementation; tests
+/// compare it to the zlib/hardware path on fixtures and corrupted frames.
+func crc32Table(_ bytes: [UInt8], _ from: Int = 0, _ to: Int? = nil) -> UInt32 {
     let upper = to ?? bytes.count
     var crc: UInt32 = 0xFFFFFFFF
     var i = from
     while i < upper {
-        crc = crc32Table[Int((crc ^ UInt32(bytes[i])) & 0xFF)] ^ (crc >> 8)
+        crc = crc32Lut[Int((crc ^ UInt32(bytes[i])) & 0xFF)] ^ (crc >> 8)
         i += 1
     }
     return crc ^ 0xFFFFFFFF
 }
 
+/// Standard zlib CRC-32 over `bytes[from..<(to ?? count)]`. The optional range defaults to the whole
+/// array (existing callers unchanged); the validator passes a range to checksum the inner record or
+/// payload in place, skipping the per-frame sub-array copy that added up over a multi-night offload.
+///
+/// Implemented with zlib's `crc32` so Apple platforms can use the ARM CRC32 instruction. The
+/// numeric result is IEEE/zlib CRC-32, byte-identical to `crc32Table`.
+public func crc32(_ bytes: [UInt8], _ from: Int = 0, _ to: Int? = nil) -> UInt32 {
+    let upper = to ?? bytes.count
+    guard from >= 0, upper <= bytes.count, from < upper else { return 0 }
+    return bytes.withUnsafeBufferPointer { buf in
+        let n = uInt(upper - from)
+        let crc = zlib.crc32(0, buf.baseAddress! + from, n)
+        return UInt32(truncatingIfNeeded: crc)
+    }
+}
+
+/// CRC16-Modbus lookup (poly 0xA001, reflected). Same polynomial and bit order as the previous
+/// bit-at-a-time loop, so the 5.0 header check is unchanged.
+private let crc16ModbusLut: [UInt16] = {
+    var table = [UInt16](repeating: 0, count: 256)
+    for i in 0..<256 {
+        var crc = UInt16(i)
+        for _ in 0..<8 {
+            crc = (crc & 1) == 1 ? (crc >> 1) ^ 0xA001 : (crc >> 1)
+        }
+        table[i] = crc
+    }
+    return table
+}()
+
 /// CRC16-Modbus (poly 0xA001, init 0xFFFF, reflected) over `bytes[from..<(to ?? count)]`. Used for the
 /// Whoop 5.0 frame header check. The optional range defaults to the whole array; the validator passes
 /// a range so the 6-byte header check needs no `Array(frame[0..<6])` copy.
 public func crc16Modbus(_ bytes: [UInt8], _ from: Int = 0, _ to: Int? = nil) -> UInt16 {
+    let upper = to ?? bytes.count
+    var crc: UInt16 = 0xFFFF
+    var i = from
+    while i < upper {
+        crc = crc16ModbusLut[Int((crc ^ UInt16(bytes[i])) & 0xFF)] ^ (crc >> 8)
+        i += 1
+    }
+    return crc
+}
+
+/// Bit-at-a-time CRC16-Modbus. Tests compare it to the table path so a lookup-table bug cannot
+/// change the 5.0 header verdict.
+func crc16ModbusBitwise(_ bytes: [UInt8], _ from: Int = 0, _ to: Int? = nil) -> UInt16 {
     let upper = to ?? bytes.count
     var crc: UInt16 = 0xFFFF
     var i = from
@@ -122,7 +167,7 @@ public enum FrameLimits {
     public static func minimumFrameBytes(for family: DeviceFamily) -> Int {
         switch family {
         case .whoop4: return whoop4MinimumFrameBytes
-        case .whoop5: return whoop5MinimumFrameBytes
+        case .whoop5, .unsupported: return whoop5MinimumFrameBytes
         }
     }
 }
@@ -225,7 +270,7 @@ public func verifyFrame(_ frame: [UInt8], family: DeviceFamily) -> FrameCheck {
     switch family {
     case .whoop4:
         return verifyFrame(frame)
-    case .whoop5:
+    case .whoop5, .unsupported:
         return verifyFrameWhoop5(frame)
     }
 }
@@ -314,7 +359,7 @@ public func puffinCommandFrame(cmd: UInt8, seq: UInt8, payload: [UInt8] = [0x00]
     var frame: [UInt8] = [0xAA, 0x01,
                           UInt8(declLen & 0xFF), UInt8((declLen >> 8) & 0xFF),
                           header[0], header[1]]
-    let c16 = crc16Modbus(Array(frame[0..<6]))
+    let c16 = crc16Modbus(frame, 0, 6)
     frame.append(UInt8(c16 & 0xFF)); frame.append(UInt8((c16 >> 8) & 0xFF))
     frame.append(contentsOf: inner)
     let c32 = crc32(inner)
@@ -389,7 +434,7 @@ public final class Reassembler {
             switch family {
             case .whoop4:
                 total = (Int(buf[head + 1]) | (Int(buf[head + 2]) << 8)) + 4
-            case .whoop5:
+            case .whoop5, .unsupported:
                 total = (Int(buf[head + 2]) | (Int(buf[head + 3]) << 8)) + 8
             }
             if total < FrameLimits.minimumFrameBytes(for: family) {
@@ -429,7 +474,7 @@ public final class Reassembler {
             switch family {
             case .whoop4:
                 headerOK = crc8(buf, head + 1, head + 3) == buf[head + 3]
-            case .whoop5:
+            case .whoop5, .unsupported:
                 let got = UInt16(buf[head + 6]) | (UInt16(buf[head + 7]) << 8)
                 headerOK = crc16Modbus(buf, head, head + 6) == got
             }

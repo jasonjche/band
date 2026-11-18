@@ -296,7 +296,7 @@ public enum DeviceConfigReadProbe {
 /// reaches, the values it manages to read, and the copyable transcript. Pure and order-dependent
 /// (`nextStep` → `note…` → `nextStep` → …), so `swift test` covers the whole probe — plan, verdicts,
 /// rendering — without a strap. Kotlin twin: `DeviceConfigReadProbeReport` in
-/// `android/…/protocol/DeviceConfigReadProbe.kt`; the rendered text is byte-identical across platforms so
+/// ; the rendered text is byte-identical across platforms so
 /// a shared strap log reads the same either side.
 public struct DeviceConfigReadProbeReport: Equatable, Sendable {
 

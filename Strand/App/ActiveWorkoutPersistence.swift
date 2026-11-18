@@ -10,8 +10,9 @@ import WhoopProtocol
 /// records a route too, and its fixes are banked by `ActiveRouteStore` rather than by this snapshot,
 /// which stays the cheap per-sample write it was built as.) This is the Apple analogue of Android's
 /// `ActiveWorkoutStore`/`ActiveWorkoutPersistence`: a tiny `Codable` snapshot (start time, sport, the
-/// accumulated HR samples + running stats) is written to `UserDefaults` on start and on every captured
-/// sample, and read back on launch so an interrupted session can still be ended and saved.
+/// accumulated HR samples + running stats) is written to `UserDefaults` on start, on pause/resume,
+/// and at most every 15 s while samples accrue (`PersistCadence`), and read back on launch so an
+/// interrupted session can still be ended and saved.
 ///
 /// On-device only; mirrors the existing `moments` / `sleepMarks` `UserDefaults` persistence in `AppModel`.
 /// The encode/decode is pure (no `UserDefaults` dependency on the codec itself) so the persist/rehydrate
@@ -63,7 +64,22 @@ enum ActiveWorkoutPersistence {
         )
     }
 
-    /// Persist (overwrite) the snapshot. Cheap; called on start + each captured sample.
+    /// How often an in-flight session may rewrite UserDefaults while samples accrue.
+    ///
+    /// Start / pause / resume / end still persist immediately (`force`). Between those, a 15 s
+    /// floor stops a 1 Hz HR stream from JSON-encoding a growing sample array on every beat —
+    /// a one-hour session was ~3600 full-blob writes. Crash recovery loses at most this window.
+    enum PersistCadence {
+        static let interval: TimeInterval = 15
+
+        static func due(lastPersistedAt: Date?, now: Date, force: Bool) -> Bool {
+            if force { return true }
+            guard let lastPersistedAt else { return true }
+            return now.timeIntervalSince(lastPersistedAt) >= interval
+        }
+    }
+
+    /// Persist (overwrite) the snapshot. Callers cadence-gate sample ticks.
     static func store(_ snapshot: Snapshot, into defaults: UserDefaults = .standard) {
         guard let data = encode(snapshot) else { return }
         defaults.set(data, forKey: defaultsKey)

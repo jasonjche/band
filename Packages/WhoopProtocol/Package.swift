@@ -13,7 +13,13 @@ let package = Package(
     targets: [
         .target(
             name: "WhoopProtocol",
-            resources: [.process("Resources/whoop_protocol.json")]
+            resources: [.process("Resources/whoop_protocol.json")],
+            linkerSettings: [
+                // libz is in the Apple SDK. The ingest path uses zlib's crc32 (hardware CRC32
+                // on ARM) instead of a byte-at-a-time table; the public `crc32` result stays
+                // IEEE/zlib identical.
+                .linkedLibrary("z"),
+            ]
         ),
         .executableTarget(
             name: "whoop-decode",

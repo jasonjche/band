@@ -419,7 +419,7 @@ public enum FeatureFlagProbe {
 /// The running result of one enumeration probe, rendered into the copyable text the Devices dialog and
 /// the strap log both show. Pure and order-dependent (start → next… → finish), so `swift test` covers
 /// the whole report without a strap. Kotlin twin: `FeatureFlagProbeReport` in
-/// `android/…/protocol/FeatureFlagProbe.kt`; the rendered text is byte-identical across platforms so a
+/// ; the rendered text is byte-identical across platforms so a
 /// shared strap log reads the same either side.
 public struct FeatureFlagProbeReport: Equatable, Sendable {
 

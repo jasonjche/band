@@ -13,12 +13,12 @@ final class RegistryModelFamilyTests: XCTestCase {
 
     // MARK: - WHOOP 4.0 — every stored spelling must positively identify (the #171 fix)
 
-    func testWizardBare40LabelResolvesToWhoop4() {
-        XCTAssertEqual(DeviceFamily.forRegistryModel("4.0"), .whoop4)
+    func testWizardBare40LabelResolvesToUnsupported() {
+        XCTAssertEqual(DeviceFamily.forRegistryModel("4.0"), .unsupported)
     }
 
-    func testFullPicker40LabelResolvesToWhoop4() {
-        XCTAssertEqual(DeviceFamily.forRegistryModel("WHOOP 4.0"), .whoop4)
+    func testFullPicker40LabelResolvesToUnsupported() {
+        XCTAssertEqual(DeviceFamily.forRegistryModel("WHOOP 4.0"), .unsupported)
     }
 
     // MARK: - WHOOP 5/MG — both spellings keep the /100 path
@@ -66,8 +66,8 @@ final class RegistryModelFamilyTests: XCTestCase {
 
     /// A WHOOP brand still resolves by model spelling, exactly as `forRegistryModel` does.
     func testWhoopBrandResolvesByModel() {
-        XCTAssertEqual(DeviceFamily.forRegistryDevice(model: "4.0", brand: "WHOOP"), .whoop4)
-        XCTAssertEqual(DeviceFamily.forRegistryDevice(model: "WHOOP 4.0", brand: "WHOOP"), .whoop4)
+        XCTAssertEqual(DeviceFamily.forRegistryDevice(model: "4.0", brand: "WHOOP"), .unsupported)
+        XCTAssertEqual(DeviceFamily.forRegistryDevice(model: "WHOOP 4.0", brand: "WHOOP"), .unsupported)
         XCTAssertEqual(DeviceFamily.forRegistryDevice(model: "5.0 MG", brand: "WHOOP"), .whoop5)
         XCTAssertEqual(DeviceFamily.forRegistryDevice(model: "WHOOP 5.0 / MG", brand: "WHOOP"), .whoop5)
     }
@@ -75,7 +75,7 @@ final class RegistryModelFamilyTests: XCTestCase {
     /// A nil/empty brand carries no non-WHOOP signal (legacy rows, WHOOP straps), so it defers to the
     /// model mapping — never `nil`.
     func testMissingBrandDefersToModel() {
-        XCTAssertEqual(DeviceFamily.forRegistryDevice(model: "4.0", brand: nil), .whoop4)
+        XCTAssertEqual(DeviceFamily.forRegistryDevice(model: "4.0", brand: nil), .unsupported)
         XCTAssertEqual(DeviceFamily.forRegistryDevice(model: "5.0 MG", brand: ""), .whoop5)
         XCTAssertEqual(DeviceFamily.forRegistryDevice(model: nil, brand: nil), .whoop5)
     }

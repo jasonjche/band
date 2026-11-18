@@ -18,8 +18,62 @@ struct StorageView: View {
     @State private var lastCleanedSummary: String?
 
     var body: some View {
+        Group {
+            #if os(iOS)
+            if AppleSettingsLayout.isEnabled {
+                nativeForm
+            } else {
+                storageScaffold
+            }
+            #else
+            storageScaffold
+            #endif
+        }
+        .task { await load() }
+    }
+
+    #if os(iOS)
+    private var nativeForm: some View {
+        Form {
+            if loading && report == nil {
+                Section {
+                    ProgressView("Measuring…")
+                }
+            } else if let report {
+                Section {
+                    LabeledContent("Health Database", value: report.db.map(Self.format) ?? "—")
+                    LabeledContent("Leftover Import Copies", value: Self.format(report.inbox))
+                    LabeledContent("Import Temp Files", value: Self.format(report.importTemp))
+                } header: {
+                    Text("On This Device")
+                }
+                Section {
+                    if let lastCleanedSummary {
+                        LabeledContent("Last Clean-Up", value: lastCleanedSummary)
+                    }
+                    Button("Clean Up Now") {
+                        Task { await cleanUp() }
+                    }
+                    .disabled(cleaning || (report.inbox + report.importTemp) == 0)
+                    if cleaning { ProgressView() }
+                } header: {
+                    Text("Clean Up")
+                } footer: {
+                    Text("Removes leftover import copies. Live data stays.")
+                }
+            } else {
+                Section {
+                    LabeledContent("Storage", value: "Unavailable")
+                }
+            }
+        }
+        .appleSettingsChrome("Storage")
+    }
+    #endif
+
+    private var storageScaffold: some View {
         ScreenScaffold(title: "Storage",
-                       subtitle: "Where NOOP's on-device space is going, and a one-tap clean-up.") {
+                       subtitle: "Where Band's on-device space is going, and a one-tap clean-up.") {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 if loading && report == nil {
                     StatePill("Measuring…", tone: .accent, pulsing: true)
@@ -36,7 +90,6 @@ struct StorageView: View {
                 explainerCard.staggeredAppear(index: 2)
             }
         }
-        .task { await load() }
     }
 
     // MARK: - Cards
@@ -77,7 +130,7 @@ struct StorageView: View {
                     .foregroundStyle(StrandPalette.textPrimary)
                 Text(reclaimable > 0
                      ? "There's about \(Self.format(reclaimable)) of leftover import scratch space to reclaim. This never removes your imported data."
-                     : "Nothing to reclaim right now. NOOP already cleans up import scratch space automatically.")
+                     : "Nothing to reclaim right now. Band already cleans up import scratch space automatically.")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -106,7 +159,7 @@ struct StorageView: View {
     private var explainerCard: some View {
         DataPendingNote(
             title: "Why does this grow?",
-            message: "When you import an Apple Health or WHOOP export, iOS hands NOOP a private copy of the file. NOOP reads it, saves your data into the health database, then deletes the copy. Older builds didn't delete every copy. This screen reclaims any that were left behind.",
+            message: "When you import an Apple Health or WHOOP export, iOS hands Band a private copy of the file. Band reads it, saves your data into the health database, then deletes the copy. Older builds didn't delete every copy. This screen reclaims any that were left behind.",
             symbol: "questionmark.circle")
     }
 

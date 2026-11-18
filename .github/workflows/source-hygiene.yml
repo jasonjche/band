@@ -1,23 +1,17 @@
-# Catches doc comments that bind to nothing, BEFORE merge. Kotlin and Swift attach a doc block to
-# the declaration that FOLLOWS it and keep only the LAST of several stacked ones, so an inserted
+# Catches doc comments that bind to nothing, BEFORE merge. Swift attaches a doc block to
+# the declaration that FOLLOWS it and keeps only the LAST of several stacked ones, so an inserted
 # block or an inserted declaration silently orphans the text above it. Nothing looks wrong: the
 # comment is still there, still above the right function, still correct prose — it just no longer
-# reaches Dokka or IDE hover. That is why review does not catch it.
+# reaches IDE hover. That is why review does not catch it.
 #
-# It recurs because it is a side effect of editing by INSERTION rather than in place. #846 fixed
-# three sites in one day, one of which #842 had introduced that same morning, and the block that
-# came adrift was "Byte-parity twin of Swift classifyCoverage" — a parity-contract statement, and
-# parity is the #1 rule in CLAUDE.md. Losing that note is not a cosmetic problem.
-#
-# Pure Python + git, no Xcode/Gradle: runs in seconds on ubuntu-latest, independent of the
-# disabled-by-default app-build.yml / android.yml compile jobs. Same shape as i18n-coverage.yml.
+# Pure Python + git, no Xcode: runs in seconds on ubuntu-latest.
 name: Source Hygiene
 
 on:
   pull_request:
     branches: [main]
   # Audit main itself too, not just PRs into it — a release pushes straight to main with no PR, so a
-  # PR-only trigger would let a regression land unaudited. Same reasoning as i18n-coverage.yml.
+  # PR-only trigger would let a regression land unaudited.
   push:
     branches: [main]
 

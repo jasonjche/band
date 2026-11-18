@@ -1,27 +1,15 @@
 import XCTest
 @testable import WhoopProtocol
 
-/// SHARED FRAME-INTEGRITY ORACLE — the Swift half of a Swift <-> Kotlin drift guard for the
-/// `frame-integrity` capability (requirement "Plattformgleichheit des Integritätsurteils", D5).
+/// FRAME-INTEGRITY ORACLE for the `frame-integrity` capability.
 ///
-/// `Resources/frame_integrity_oracle.json` holds one line per frame with the three values the two
-/// platforms must agree on: the verifier's FULL verdict, the rejection reason, and the historical
-/// metadata classification. The IDENTICAL file is committed at
-/// `android/app/src/test/resources/frame_integrity_oracle.json`, where `FrameIntegrityOracleTest.kt`
-/// asserts the same lines through the Kotlin `Framing.parseFrame` / `classifyHistoricalMeta`.
+/// `Resources/frame_integrity_oracle.json` holds one line per frame with three values: the
+/// verifier's FULL verdict, the rejection reason, and the historical metadata classification.
 ///
-/// Why a shared file rather than two per-platform suites: both platforms already had their own
-/// integrity tests, and both were green while the Kotlin ECG payload path still applied the older,
-/// looser envelope bounds. Each suite asserted its own answer, so nothing compared the two answers.
-/// This does, over every case and every field.
+/// The committed fixture is the expectation. No generator is retained in this repository.
 ///
-/// The committed fixture is the cross-platform expectation. No generator is retained in this
-/// repository, so maintenance must update both byte-identical copies deliberately and validate the
-/// result with both suites rather than claiming regeneration from a missing tool.
-///
-/// Deliberately NOT pinned: the export spelling of a reason. The Kotlin capture writer omits the
-/// `reject_reason` key when there is no reason, Swift's `Codable` always writes it. That is a textual
-/// difference in a different artefact; the oracle pins the judgement, not the serialisation.
+/// Deliberately NOT pinned: the export spelling of a reason. The oracle pins the judgement, not
+/// the serialisation.
 ///
 final class FrameIntegrityOracleTests: XCTestCase {
 
@@ -60,7 +48,6 @@ final class FrameIntegrityOracleTests: XCTestCase {
     }
 
     private static let oracleResource = "frame_integrity_oracle"
-    private static let androidCopy = "android/app/src/test/resources/frame_integrity_oracle.json"
 
     private func loadOracle() throws -> Oracle {
         let url = try XCTUnwrap(Bundle.module.url(forResource: Self.oracleResource, withExtension: "json"),
@@ -176,22 +163,4 @@ final class FrameIntegrityOracleTests: XCTestCase {
         XCTAssertTrue(metas.contains { $0.hasPrefix("end(") })
     }
 
-    func testOracleCopiesAreIdentical() throws {
-        let swiftURL = try XCTUnwrap(Bundle.module.url(forResource: Self.oracleResource, withExtension: "json"))
-        let swiftData = try Data(contentsOf: swiftURL)
-
-        // .../Packages/WhoopProtocol/Tests/WhoopProtocolTests/FrameIntegrityOracleTests.swift -> repo root
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // WhoopProtocolTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // WhoopProtocol
-            .deletingLastPathComponent()  // Packages
-            .deletingLastPathComponent()  // repo root
-        let androidURL = repoRoot.appendingPathComponent(Self.androidCopy)
-        guard FileManager.default.fileExists(atPath: androidURL.path) else {
-            throw XCTSkip("android oracle copy not present at \(androidURL.path)")
-        }
-        XCTAssertEqual(swiftData, try Data(contentsOf: androidURL),
-                       "frame_integrity_oracle.json copies differ — keep the Swift and Android copies in lockstep")
-    }
 }

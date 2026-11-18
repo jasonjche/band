@@ -420,8 +420,30 @@ public enum SleepStager {
     /// HR in the interval, the answer is false (cannot vouch for the gap → treat as a real break).
     static func hrSleepBandAcross(_ a: Int, _ b: Int, hr: [HRSample], baseline: Double?) -> Bool {
         guard let baseline = baseline else { return false }
-        let seg = hr.filter { $0.ts > a && $0.ts <= b }
-        if seg.isEmpty { return false }
+        let seg: ArraySlice<HRSample>
+        var sorted = true
+        if hr.count >= 2 {
+            for i in 1..<hr.count where hr[i].ts < hr[i - 1].ts { sorted = false; break }
+        }
+        if sorted {
+            var lo = 0, hi = hr.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if hr[mid].ts <= a { lo = mid + 1 } else { hi = mid }
+            }
+            let first = lo
+            hi = hr.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if hr[mid].ts <= b { lo = mid + 1 } else { hi = mid }
+            }
+            if first >= lo { return false }
+            seg = hr[first..<lo]
+        } else {
+            let filtered = hr.filter { $0.ts > a && $0.ts <= b }
+            if filtered.isEmpty { return false }
+            seg = filtered[...]
+        }
         // MEDIAN, not mean (#1657). `confirmSleepWithHR` below already documents why the mean is the
         // wrong statistic here — "a real sleep night carries brief arousal / wake HR spikes (observed to
         // ~190 bpm)" that drag it above the band — and uses the median for exactly that reason. This gate
@@ -728,10 +750,19 @@ public enum SleepStager {
     }
 
     /// Absorb runs shorter than mergeMin minutes into their neighbours.
+    ///
+    /// A short run is never absorbed into a neighbour across a data gap longer than `maxGapMin`, because
+    /// `buildRuns` closed the run there for that reason. Absorbing across it moves the neighbour's edge
+    /// over hours with no data. On a real WHOOP 5.0 night, a few minutes of evening stillness before a
+    /// charging gap of several hours were folded into the night that followed the gap. The merged run was
+    /// then more than half HR gap, so the off-wrist backstop dropped the whole night, including the hours
+    /// that were worn. A short run with no reachable neighbour is kept as it is, and the gates downstream
+    /// decide on it (a short sleep run still fails `minSleepMin`).
     static func mergePeriods(_ periods: [Period], mergeMinutes: Int = mergeMin) -> [Period] {
         if periods.isEmpty { return [] }
         var pending = periods
         let thresholdS = mergeMinutes * 60
+        let maxGapS = maxGapMin * 60
         var merged: [Period] = []
         var i = 0
         while i < pending.count {
@@ -741,17 +772,24 @@ public enum SleepStager {
 
             let hasPrev = i > 0 && !merged.isEmpty
             let hasNext = i + 1 < pending.count
-            let bridgesSame = hasPrev && hasNext && pending[i - 1].stage == pending[i + 1].stage
+            let prevReachable = hasPrev && current.start - merged[merged.count - 1].end <= maxGapS
+            let nextReachable = hasNext && pending[i + 1].start - current.end <= maxGapS
+            if (hasPrev || hasNext) && !prevReachable && !nextReachable {
+                merged.append(current)
+                i += 1
+                continue
+            }
+            let bridgesSame = prevReachable && nextReachable && pending[i - 1].stage == pending[i + 1].stage
 
             if bridgesSame {
                 let prev = merged.removeLast()
                 merged.append(Period(stage: prev.stage, start: prev.start, end: pending[i + 1].end))
                 i += 2
-            } else if hasNext {
+            } else if nextReachable {
                 pending[i + 1] = Period(stage: pending[i + 1].stage,
                                         start: current.start, end: pending[i + 1].end)
                 i += 1
-            } else if hasPrev {
+            } else if prevReachable {
                 let prev = merged.removeLast()
                 merged.append(Period(stage: prev.stage, start: prev.start, end: current.end))
                 i += 1
@@ -1308,6 +1346,11 @@ public enum SleepStager {
     /// `useSleepStagerV2` (7.0.0; default ON since #277/#351): which recipe stages an accepted night — the cardiorespiratory
     /// `SleepStagerV2.stageSession` when true, V1's `stageSession` when false. DETECTION is unchanged
     /// (same accepted windows); only the per-epoch hypnogram differs.
+    /// `useSleepStageLearned`: when true, a dense night (HR and motion covering ≥ 80 % of the window) is
+    /// staged by the bundled boosted-tree pair (`SleepStageLearned`); coverage failure and a missing
+    /// model fall back to V1/V2 as `useSleepStagerV2` says. This PARAMETER defaults false so
+    /// pure-function callers and frozen-golden tests stay byte-identical. The shipped app threads it
+    /// default ON.
     ///
     /// THE TWO DEFAULTS ARE NOT THE SAME, and reading only the signature gets this backwards. This
     /// PARAMETER defaults false so pure-function callers and the frozen-golden tests stay byte-identical.
@@ -1327,6 +1370,7 @@ public enum SleepStager {
                                    wristOff: [(start: Int, end: Int)] = [],
                                    bandSleepState: [(ts: Int, state: Int)] = [],
                                    useSleepStagerV2: Bool = false,
+                                   useSleepStageLearned: Bool = false,
                                    sleepHRBaseline: Double? = nil,
                                    traceSink: ((String) -> Void)? = nil) -> [SleepSession] {
         // Sleep & Rest test mode only: when a trace is requested we MUST run the live ladder, not a
@@ -1338,6 +1382,7 @@ public enum SleepStager {
             return detectSleepUncached(hr: hr, rr: rr, resp: resp, gravity: gravity,
                                        tzOffsetSeconds: tzOffsetSeconds, wristOff: wristOff,
                                        bandSleepState: bandSleepState, useSleepStagerV2: useSleepStagerV2,
+                                       useSleepStageLearned: useSleepStageLearned,
                                        sleepHRBaseline: sleepHRBaseline, traceSink: traceSink)
         }
         // v7.0.2 perf (#707): the single heaviest analytics call — it sorts the dense full-day gravity
@@ -1360,11 +1405,13 @@ public enum SleepStager {
             wristOff: StreamFingerprint.of(wristOff, ts: { $0.start }, quant: { $0.end }),
             band: StreamFingerprint.of(bandSleepState, ts: { $0.ts }, quant: { $0.state }),
             v2: useSleepStagerV2,
+            learned: SleepStageLearned.resolved(useBundled: useSleepStageLearned)?.version ?? "",
             sleepHRBaseline: sleepHRBaseline)
         return detectSleepCache.value(key) {
             detectSleepUncached(hr: hr, rr: rr, resp: resp, gravity: gravity,
                                 tzOffsetSeconds: tzOffsetSeconds, wristOff: wristOff,
                                 bandSleepState: bandSleepState, useSleepStagerV2: useSleepStagerV2,
+                                useSleepStageLearned: useSleepStageLearned,
                                 sleepHRBaseline: sleepHRBaseline, traceSink: nil)
         }
     }
@@ -1375,6 +1422,9 @@ public enum SleepStager {
         let tz: Int
         let wristOff: StreamFingerprint; let band: StreamFingerprint
         let v2: Bool
+        /// The learned stage model in use, empty when none: it stages in the recipe's place wherever it
+        /// can (`SleepStageLearned`), so a night cached under one model is not another's.
+        let learned: String
         let sleepHRBaseline: Double?
     }
     /// ≈ the number of distinct days in a scoring window; FIFO-evicted, holds only small session arrays.
@@ -1389,6 +1439,7 @@ public enum SleepStager {
                                             wristOff: [(start: Int, end: Int)],
                                             bandSleepState: [(ts: Int, state: Int)],
                                             useSleepStagerV2: Bool,
+                                            useSleepStageLearned: Bool,
                                             sleepHRBaseline: Double? = nil,
                                             traceSink: ((String) -> Void)? = nil) -> [SleepSession] {
         let grav = gravity.sorted { $0.ts < $1.ts }
@@ -1580,11 +1631,15 @@ public enum SleepStager {
                     detail: "daytime=true restingHR=\(resting ?? -1) baseline=\(baseline.map { Int($0) } ?? -1) nightTail=false"))
                 continue
             }
-            let rawStages = useSleepStagerV2
+            // The learned model stages the window when the flag is on (or a test has installed one)
+            // and the night's motion and heart rate are dense enough; otherwise the recipe below does.
+            let rawStages = SleepStageLearned.stageSession(start: p.start, end: p.end, grav: grav, hr: hrS, rr: rrS,
+                                                           useBundled: useSleepStageLearned)
+                ?? (useSleepStagerV2
                 ? SleepStagerV2.stageSession(start: p.start, end: p.end, grav: grav,
                                              hr: hrS, rr: rrS, resp: respS)
                 : stageSession(start: p.start, end: p.end, grav: grav,
-                               hr: hrS, rr: rrS, resp: respS)
+                               hr: hrS, rr: rrS, resp: respS))
             // Band sleep_state WAKE-veto: recover INTERIOR false-wake epochs the strap's OWN band
             // (`bandSleepState`) scored "asleep". No-op when the band is absent (WHOOP 4.0) or the flag is
             // off; stager-agnostic (corrects whichever hypnogram V1/V2 produced). Efficiency below is then
@@ -1941,18 +1996,25 @@ public enum SleepStager {
         if maskIdx.isEmpty { return [Double](repeating: 0, count: n) }
 
         // Linear interpolation over the grid (numpy.interp semantics: clamp at edges).
+        // maskIdx is strictly increasing; bisect instead of a linear scan per NaN.
         var filled = [Double](repeating: 0, count: n)
+        let firstKnown = maskIdx[0], lastKnown = maskIdx[maskIdx.count - 1]
         for i in 0..<n {
             if !hrPerEpoch[i].isNaN { filled[i] = hrPerEpoch[i]; continue }
-            // find surrounding known points
-            if i <= maskIdx.first! { filled[i] = hrPerEpoch[maskIdx.first!]; continue }
-            if i >= maskIdx.last! { filled[i] = hrPerEpoch[maskIdx.last!]; continue }
-            var lo = maskIdx.first!, hi = maskIdx.last!
-            for m in maskIdx { if m <= i { lo = m } ; if m >= i { hi = m; break } }
-            if hi == lo { filled[i] = hrPerEpoch[lo] }
+            if i <= firstKnown { filled[i] = hrPerEpoch[firstKnown]; continue }
+            if i >= lastKnown { filled[i] = hrPerEpoch[lastKnown]; continue }
+            var lo = 0, hi = maskIdx.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if maskIdx[mid] <= i { lo = mid + 1 } else { hi = mid }
+            }
+            let hiPos = lo
+            let loPos = hiPos - 1
+            let loI = maskIdx[loPos], hiI = maskIdx[hiPos]
+            if hiI == loI { filled[i] = hrPerEpoch[loI] }
             else {
-                let frac = Double(i - lo) / Double(hi - lo)
-                filled[i] = hrPerEpoch[lo] + frac * (hrPerEpoch[hi] - hrPerEpoch[lo])
+                let frac = Double(i - loI) / Double(hiI - loI)
+                filled[i] = hrPerEpoch[loI] + frac * (hrPerEpoch[hiI] - hrPerEpoch[loI])
             }
         }
 
@@ -2057,6 +2119,31 @@ public enum SleepStager {
     static let rsaMinBreathIntervalS = 2.5   // 24 bpm
     static let rsaMaxBreathIntervalS = 10.0  // 6 bpm
 
+    /// Half-width, as a fraction of the window's median breath interval, of the intervals averaged into
+    /// that window's rate (`rsaAnchoredMeanInterval`).
+    static let rsaIntervalBand = 0.4
+
+    /// One window's breath interval: the MEAN of the intervals within ±`rsaIntervalBand` of their median.
+    ///
+    /// Peak positions sit on the 0.25 s resample grid and, on a piecewise-linear tachogram, near beat
+    /// times, so single intervals come in coarse steps. The median of such values is itself one of those
+    /// steps, which left the nightly rate on a handful of values (60/4.25 = 14.12 for every true rate
+    /// from about 13.3 to 15.0 in a 7 h synthetic replay). Averaging the ~60 intervals of a window
+    /// cancels the grid jitter; anchoring on the median keeps the #958 protection, since a missed
+    /// breath (≈2× the median) or a split one (≈0.5×) falls outside the band and is not averaged in.
+    /// Replay over 11–17 bpm, three nights each: mean absolute error 0.63 → 0.06 bpm.
+    static func rsaAnchoredMeanInterval(_ intervals: [Double]) -> Double {
+        let med = HRVAnalyzer.median(intervals)
+        guard med > 0.0 else { return med }
+        var sum = 0.0
+        var count = 0
+        for iv in intervals where abs(iv - med) <= rsaIntervalBand * med {
+            sum += iv
+            count += 1
+        }
+        return count > 0 ? sum / Double(count) : med
+    }
+
     /// THE canonical plausible sleeping-respiratory-rate band (bpm). The RSA peak-pick below can
     /// yield 6–8 bpm at its noise floor, but every consumer (illness/readiness gates) only acts on
     /// 8–25 — so respRateFromRR clamps its output to this band (NaN outside it) and the stored
@@ -2082,7 +2169,7 @@ public enum SleepStager {
     ///   4. Detrend: subtract a centered moving mean (rsaDetrendWindowS).
     ///   5. Per ~5-min window, SKIPPING any window containing a splice: findPeaks
     ///      (min distance rsaMinPeakDistanceS) on the detrended grid, keep peak-to-peak
-    ///      intervals in the 6–24 bpm band, rate = 60 / median(intervals). Take the
+    ///      intervals in the 6–24 bpm band, rate = 60 / anchored-mean(intervals). Take the
     ///      median across windows.
     ///
     /// Known bound on the splice skip (#977): step 4's centered mean spans ±rsaDetrendWindowS/2, so a
@@ -2202,7 +2289,7 @@ public enum SleepStager {
         }
         if standardDeviation(detrended) <= 1e-9 { return nan }  // flat → no RSA
 
-        // 5. Per ~5-min window peak-pick → 60/median(breath interval); median across.
+        // 5. Per ~5-min window peak-pick → 60/anchored-mean(breath interval); median across.
         let spliceGrid = spliceAtS.map { Int($0 / dt) }
         let minDistSamples = max(2, Int((rsaMinPeakDistanceS * rsaResampleHz).rounded()))
         let windowSamples = max(minDistSamples * 3, Int((rsaWindowS * rsaResampleHz).rounded()))
@@ -2228,8 +2315,8 @@ public enum SleepStager {
                         }
                     }
                     if intervals.count >= 2 {
-                        let med = HRVAnalyzer.median(intervals)
-                        if med > 0.0 { perWindowRates.append(60.0 / med) }
+                        let mean = rsaAnchoredMeanInterval(intervals)
+                        if mean > 0.0 { perWindowRates.append(60.0 / mean) }
                     }
                 }
             }
@@ -2915,9 +3002,29 @@ public enum SleepStager {
             + "gated=\(gatedFloor.map(String.init) ?? "nil") shipped=\(shippedFloor) gateMoved=\(moved)"
     }
 
-    static func sessionRestingHR(start: Int, end: Int, hr: [HRSample]) -> Int? {
-        let seg = hr.filter { $0.ts >= start && $0.ts <= end }
-        guard !seg.isEmpty else { return nil }
+    public static func sessionRestingHR(start: Int, end: Int, hr: [HRSample]) -> Int? {
+        // Same samples as `hr.filter { start...end }`, walked in timestamp order so each 5-min bin
+        // is a two-pointer slice instead of a fresh O(n) filter. Means are order-independent.
+        let ordered: [HRSample]
+        if hr.count >= 2 {
+            var sorted = true
+            for i in 1..<hr.count where hr[i].ts < hr[i - 1].ts { sorted = false; break }
+            ordered = sorted ? hr : hr.sorted { $0.ts < $1.ts }
+        } else {
+            ordered = hr
+        }
+        var lo = 0, hi = ordered.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if ordered[mid].ts < start { lo = mid + 1 } else { hi = mid }
+        }
+        let a = lo
+        hi = ordered.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if ordered[mid].ts <= end { lo = mid + 1 } else { hi = mid }
+        }
+        if a >= lo { return nil }
         let windowS = 5 * 60
         // #1943: a bin qualifies to WIN the floor only when it is well-populated (≥ rhrMinBinSamples)
         // and its mean is physiologically plausible (≥ rhrMinPlausibleBpm). A one-sample bin at the
@@ -2928,23 +3035,39 @@ public enum SleepStager {
         var gatedMeans: [Double] = []
         var allMeans: [Double] = []
         var t = start
+        var i = a
+        var allSum = 0
         repeat {
             // The last bin (its half-open end reaches or passes `end`) closes on `end` instead,
             // catching an endpoint sample the prefilter already admitted. `seg` holds nothing past
             // `end`, so "everything from t onwards" IS [t, end]. `repeat` runs once for a
             // zero-length window, where that single closed bin is the whole window.
             let isFinal = t + windowS >= end
-            let win = seg.filter { $0.ts >= t && (isFinal || $0.ts < t + windowS) }
-            if !win.isEmpty {
-                let mean = Double(win.reduce(0) { $0 + $1.bpm }) / Double(win.count)
+            let binHi = isFinal ? end : t + windowS - 1
+            while i < lo && ordered[i].ts < t { i += 1 }
+            var j = i, sum = 0, n = 0
+            if isFinal {
+                while j < lo {
+                    sum += ordered[j].bpm; n += 1; j += 1
+                }
+            } else {
+                while j < lo && ordered[j].ts <= binHi {
+                    sum += ordered[j].bpm; n += 1; j += 1
+                }
+            }
+            if n > 0 {
+                let mean = Double(sum) / Double(n)
                 allMeans.append(mean)
-                if win.count >= rhrMinBinSamples && mean >= rhrMinPlausibleBpm { gatedMeans.append(mean) }
+                allSum += sum
+                if n >= rhrMinBinSamples && mean >= rhrMinPlausibleBpm { gatedMeans.append(mean) }
             }
             t += windowS
+            i = j
         } while t < end
         if let m = gatedMeans.min() { return Int(m.rounded()) }
         if let m = allMeans.min() { return Int(m.rounded()) }
-        let all = Double(seg.reduce(0) { $0 + $1.bpm }) / Double(seg.count)
+        let nSeg = lo - a
+        let all = Double(allSum) / Double(nSeg)
         return Int(all.rounded())
     }
 
@@ -3025,6 +3148,12 @@ public enum SleepStager {
         // 480 nights covering dense, sparse, duplicate-timestamp, tail-loaded, boundary and empty input and
         // found them identical.
         var i = seg.startIndex
+        var bucket = [Double]()
+        bucket.reserveCapacity(64)
+        var rangedIdx: [Int] = []
+        var rangedVal: [Double] = []
+        var keptOrig: [Int] = []
+        var keptVal: [Double] = []
         repeat {
             // Final window closes on `end` — same closed-window rule as sessionRestingHR, so an
             // endpoint beat counts instead of vanishing after admission. `repeat` runs once for a
@@ -3042,7 +3171,9 @@ public enum SleepStager {
                 let upper = t + windowS
                 while j < seg.endIndex && seg[j].ts < upper { j += 1 }
             }
-            let bucket = seg[i..<j].map { Double($0.rrMs) }
+            bucket.removeAll(keepingCapacity: true)
+            var k = i
+            while k < j { bucket.append(Double(seg[k].rrMs)); k += 1 }
             if !isFinal { i = j }
             // Full clean (range + Malik ectopic rejection), not just range — matches the
             // analyze() pipeline. The 0x2A37 RR on a WHOOP 5/MG is PPG-derived and noisier
@@ -3050,15 +3181,33 @@ public enum SleepStager {
             // jitter spike inflates the session HRV. Ectopic rejection drops those (#262/#235).
             // #204/#195: gap-aware — a successive difference straddling a dropped beat is skipped so a
             // removed out-of-range/ectopic beat can't splice its neighbours into a spurious delta.
-            let cleaned = HRVAnalyzer.cleanRRGapAware(bucket)
-            // The same `minBeats` floor the spot reading and the SDNN index apply. The night is a plain mean
-            // over windows, so without it a window left with a handful of clean beats (a dropout, a
-            // movement-shredded stretch, a short final window) weighed as much as a full five minutes.
-            let rmssd: Double? = (cleaned.nn.count >= HRVAnalyzer.minBeats)
-                ? HRVAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous) : nil
+            let nClean: Int
+            let rmssd: Double?
+            bucket.withUnsafeBufferPointer { buf in
+                HRVAnalyzer.rangeAndEctopic(
+                    ms: buf, start: 0, end: buf.count,
+                    rangedIdx: &rangedIdx, rangedVal: &rangedVal,
+                    keptOrig: &keptOrig, keptVal: &keptVal
+                )
+            }
+            nClean = keptVal.count
+            if nClean >= HRVAnalyzer.minBeats {
+                var sumSq = 0.0, pairs = 0, p = 1
+                while p < keptVal.count {
+                    if keptOrig[p] == keptOrig[p - 1] + 1 {
+                        let d = keptVal[p] - keptVal[p - 1]
+                        sumSq += d * d
+                        pairs += 1
+                    }
+                    p += 1
+                }
+                rmssd = pairs < 1 ? nil : (sumSq / Double(pairs)).squareRoot()
+            } else {
+                rmssd = nil
+            }
             let center = t + windowS / 2
             let stage = stages.first { center >= $0.start && center < $0.end }?.stage ?? "?"
-            out.append(HrvWindow(startTs: t, stage: stage, cleanBeats: cleaned.nn.count, rmssd: rmssd))
+            out.append(HrvWindow(startTs: t, stage: stage, cleanBeats: nClean, rmssd: rmssd))
             t += windowS
         } while t < end
         return out

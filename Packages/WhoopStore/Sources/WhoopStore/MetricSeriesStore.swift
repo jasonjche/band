@@ -29,9 +29,14 @@ extension WhoopStore {
     /// creating a duplicate.
     @discardableResult
     public func upsertMetricSeries(_ rows: [MetricPoint], deviceId: String) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             try Self.upsertMetricSeries(rows, deviceId: deviceId, in: db)
         }
+        if n > 0 {
+            let days = rows.compactMap { WhoopStore.dashboardMetricKeys.contains($0.key) ? $0.day : nil }
+            if !days.isEmpty { noteDashboardDays(days) }
+        }
+        return n
     }
 
     /// Transaction-sharing primitive used by computed-score persistence.

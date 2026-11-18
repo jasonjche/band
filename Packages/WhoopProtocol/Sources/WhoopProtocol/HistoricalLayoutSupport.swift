@@ -68,7 +68,7 @@ public func historicalLayoutSupport(version: Int,
                                     hasPpgWaveform: Bool) -> HistoricalLayoutSupport {
     let carriesNamedSignal = hasHeartRate || hasGravity || hasPpgWaveform
     switch family {
-    case .whoop5:
+    case .whoop5, .unsupported:
         if !mappedWhoop5HistoricalVersions.contains(version) { return .unmapped }
         if carriesNamedSignal { return .supported }
         if whoop5HistoricalVersionsWithOwnStream.contains(version) { return .decodesIntoItsOwnStream }

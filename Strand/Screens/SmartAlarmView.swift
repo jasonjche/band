@@ -42,26 +42,105 @@ struct SmartAlarmView: View {
     /// Calendar weekday numbers laid out Monday-first (Mon…Sun → 2,3,4,5,6,7,1), matching AutomationsView.
     private static let weekdayOrder = [2, 3, 4, 5, 6, 7, 1]
 
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+
     var body: some View {
-        // #766: retitled to "Alarms" because it now holds BOTH the strap's silent wake-alarm and the
-        // evening wind-down reminder, so naming it "Wind-Down" undersold it. One surface, clearly labelled.
-        ScreenScaffold(title: "Alarms",
-                       subtitle: "Your strap wake-alarm and the evening wind-down reminder, in one place.") {
-            VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
-                windowHero
-                strapAlarmCard
-                strapRejectedCard   // #34: only shows when the strap keeps refusing the alarm
-                honestyCard
-                windDownCard
+        Group {
+            #if os(iOS)
+            if nativeTodayEnabled {
+                Form {
+                    nativeAlarmSections
+                }
+                .appleSettingsChrome(AppBrand.isPersonalBuild ? "Alarm" : "Alarms")
+            } else {
+                alarmsScaffold
             }
+            #else
+            alarmsScaffold
+            #endif
         }
         .alert(String(localized: "Notifications are off"), isPresented: $showNotifDeniedAlert) {
             Button(String(localized: "Open Settings")) { Self.openNotificationSettings() }
             Button(String(localized: "Not now"), role: .cancel) {}
         } message: {
-            Text("Turn on notifications for NOOP in Settings to get your wind-down reminder.")
+            Text("Turn on notifications for Band in Settings to get your wind-down reminder.")
         }
     }
+
+    private var alarmsScaffold: some View {
+        ScreenScaffold(title: "Alarms",
+                       subtitle: "Your strap wake-alarm and the evening wind-down reminder, in one place.") {
+            VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
+                windowHero
+                strapAlarmCard
+                strapRejectedCard
+                honestyCard
+                windDownCard
+            }
+        }
+    }
+
+    #if os(iOS)
+    @ViewBuilder private var nativeAlarmSections: some View {
+        Section {
+            Toggle("Strap Wake-Alarm", isOn: $behavior.smartAlarmEnabled)
+            if behavior.smartAlarmEnabled {
+                DatePicker("Wake At", selection: alarmTimeBinding, displayedComponents: .hourAndMinute)
+                alarmWeekdayPicker
+                if model.whoop5Detected && !PuffinExperiment.isEnabled && !AppBrand.isPersonalBuild {
+                    Text("WHOOP 5/MG alarms need Protocol probes in Test Centre.")
+                        .foregroundStyle(.secondary)
+                }
+                if !model.whoop5Detected && !AppBrand.isPersonalBuild {
+                    Button("Check What the Strap Has Stored") { model.ble.getStrapAlarm() }
+                }
+            }
+        } header: {
+            if !AppBrand.isPersonalBuild { Text("Morning") }
+        } footer: {
+            Text("Buzzes the wrist from the strap. Keep a phone alarm for anything you cannot miss.")
+        }
+        .onChangeCompat(of: behavior.smartAlarmEnabled) { _ in model.applySmartAlarm() }
+        .onChangeCompat(of: behavior.smartAlarmMinutes) { _ in model.applySmartAlarm() }
+        .onChangeCompat(of: behavior.smartAlarmWeekdays) { _ in model.applySmartAlarm() }
+
+        if !AppBrand.isPersonalBuild {
+            strapRejectedCard
+        }
+
+        if !AppBrand.isPersonalBuild {
+        Section {
+            Toggle("Wind-Down Nudge", isOn: $windDownOn)
+                .onChangeCompat(of: windDownOn) { on in
+                    WindDownNudge.setEnabled(on) { outcome in
+                        if outcome == .denied {
+                            windDownOn = false
+                            showNotifDeniedAlert = true
+                        }
+                    }
+                }
+            if windDownOn {
+                DatePicker("Usual Wake", selection: wakeBinding, displayedComponents: .hourAndMinute)
+                Toggle("Per-Day Times", isOn: $perDayOn)
+                    .onChangeCompat(of: perDayOn) { on in
+                        if !on {
+                            for weekday in 1...7 { WindDownNudge.setWakeOverride(weekday: weekday, minutes: nil) }
+                            overrides = [:]
+                            model.applySmartAlarm()
+                        }
+                    }
+                if perDayOn {
+                    perDaySection
+                }
+            }
+        } header: {
+            Text("Evening")
+        } footer: {
+            Text("A reminder before your usual wake. It is not a loud alarm.")
+        }
+        }
+    }
+    #endif
 
     /// Deep-link to the OS notification settings so a user who denied can flip it back on — the system
     /// permission dialog only appears once, so Settings is the only recovery path.
@@ -174,7 +253,7 @@ struct SmartAlarmView: View {
                         Text("Your strap isn't accepting the alarm")
                             .font(StrandFont.headline)
                             .foregroundStyle(StrandPalette.textPrimary)
-                        Text("The strap keeps reporting a different time than NOOP sends, so its firmware alarm won't fire at your wake time — usually a strap whose clock or alarm has reset. Reset the strap in the official WHOOP app (or fully charge it and reconnect), and keep your phone's Clock alarm as your wake until it takes.")
+                        Text("The strap keeps reporting a different time than Band sends, so its firmware alarm won't fire at your wake time — usually a strap whose clock or alarm has reset. Reset the strap in the official WHOOP app (or fully charge it and reconnect), and keep your phone's Clock alarm as your wake until it takes.")
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -197,7 +276,7 @@ struct SmartAlarmView: View {
                     Text("The strap alarm is a silent buzz, not a sound")
                         .font(StrandFont.headline)
                         .foregroundStyle(StrandPalette.textPrimary)
-                    Text("The wake-alarm above buzzes your wrist from the strap's own firmware. It can't sound a loud alarm. We also schedule a backup notification at your wake time, but a sideloaded app can't sound a guaranteed wake on this device (that needs a critical-alert permission this build doesn't have), so Focus or silent mode can still mute it. Keep your phone's built-in Clock alarm as your real backup. NOOP's phone-based smart wake (light-sleep detection) is available on the Android app.")
+                    Text("The wake-alarm above buzzes your wrist from the strap's own firmware. It can't sound a loud alarm. We also schedule a backup notification at your wake time, but a sideloaded app can't sound a guaranteed wake on this device (that needs a critical-alert permission this build doesn't have), so Focus or silent mode can still mute it. Keep your phone's built-in Clock alarm as your real backup. Band's phone-based smart wake (light-sleep detection) is available on the Android app.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -231,7 +310,7 @@ struct SmartAlarmView: View {
                         Text("Wake me with a strap buzz")
                             .font(StrandFont.body)
                             .foregroundStyle(StrandPalette.textPrimary)
-                        Text("Arms the strap to buzz at your wake time, even if NOOP is closed. Sends the exact alarm command the official app sends, confirmed buzzing on a real WHOOP 4.0 (community wire capture + on-device test, #535). Keep a backup alarm for anything you truly can't miss.")
+                        Text("Arms the strap to buzz at your wake time, even if Band is closed. Sends the exact alarm command the official app sends, confirmed buzzing on a real WHOOP 4.0 (community wire capture + on-device test, #535). Keep a backup alarm for anything you truly can't miss.")
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -292,7 +371,7 @@ struct SmartAlarmView: View {
                             .foregroundStyle(StrandPalette.textTertiary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        Text("Armed on the strap itself, so it can buzz at your wake time even if your phone is asleep or NOOP is closed. Sends the exact alarm command the official app sends, confirmed buzzing on a real WHOOP 4.0 (community wire capture + on-device test, #535). Keep a backup alarm for anything you truly can't miss.")
+                        Text("Armed on the strap itself, so it can buzz at your wake time even if your phone is asleep or Band is closed. Sends the exact alarm command the official app sends, confirmed buzzing on a real WHOOP 4.0 (community wire capture + on-device test, #535). Keep a backup alarm for anything you truly can't miss.")
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textTertiary)
                             .frame(maxWidth: .infinity, alignment: .leading)

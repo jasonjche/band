@@ -130,4 +130,17 @@ final class HeartRateRecoveryTests: XCTestCase {
                                                  workoutEnd: end, maxHR: 200)
         XCTAssertEqual(result?.after1Minute, -5)
     }
+
+    func testCessationUsesMedianSoASingleSpikeDoesNotOwnEndHR() {
+        var samples = (end - 300...end).map { ts -> HRSample in
+            let bpm = ts >= end - 30 ? 160 : 145
+            return HRSample(ts: ts, bpm: bpm)
+        }
+        samples.append(HRSample(ts: end - 5, bpm: 220))
+        samples += window(minutes: 1, values: [140, 140, 140])
+        let result = HeartRateRecovery.calculate(samples: samples, workoutStart: end - 300,
+                                                 workoutEnd: end, maxHR: 200)
+        XCTAssertEqual(result?.endHR, 160)
+        XCTAssertEqual(result?.after1Minute, 20)
+    }
 }

@@ -80,6 +80,67 @@ final class ReadTests: XCTestCase {
         let withGravity = try await store.analysisFingerprint()
         XCTAssertNotEqual(hrOnly, withGravity)
         XCTAssertTrue(withGravity.contains("|g1|"))
+        XCTAssertTrue(withGravity.hasPrefix("v7|"), "HR frontier encoding is v7 (rowid+max ts)")
+    }
+
+    /// `analysisFingerprint`'s HR half used to be COUNT(*)+MAX(ts). COUNT(*) over millions of 1 Hz
+    /// rows is the Band-library tax. MAX(rowid)+MAX(ts) must move on exactly the inserts COUNT would
+    /// (new row, including a backfilled older ts) and stay still when COUNT would (ON CONFLICT miss).
+    func testAnalysisFingerprintHrFrontierMovesExactlyWhenCountWould() async throws {
+        let store = try await WhoopStore.inMemory()
+        try await store.upsertDevice(id: "dev1", mac: nil, name: nil)
+
+        func countAndMaxTs() async throws -> (Int, Int) {
+            try await store.hrFingerprint()
+        }
+
+        let empty = try await store.analysisFingerprint()
+        let (c0, t0) = try await countAndMaxTs()
+        XCTAssertEqual(c0, 0)
+        XCTAssertEqual(t0, 0)
+
+        _ = try await store.insert(Streams(hr: [HRSample(ts: 500, bpm: 60)]), deviceId: "dev1")
+        let afterFirst = try await store.analysisFingerprint()
+        let (c1, t1) = try await countAndMaxTs()
+        XCTAssertEqual(c1, 1)
+        XCTAssertEqual(t1, 500)
+        XCTAssertNotEqual(empty, afterFirst, "a new HR row must move the fingerprint")
+
+        // Duplicate: ON CONFLICT DO NOTHING — COUNT would stay, so must the fingerprint.
+        _ = try await store.insert(Streams(hr: [HRSample(ts: 500, bpm: 60)]), deviceId: "dev1")
+        let afterDup = try await store.analysisFingerprint()
+        let (cDup, tDup) = try await countAndMaxTs()
+        XCTAssertEqual(cDup, c1)
+        XCTAssertEqual(tDup, t1)
+        XCTAssertEqual(afterFirst, afterDup, "a no-op insert must not move the fingerprint")
+
+        // Older ts: COUNT would increment while MAX(ts) stays. The rowid frontier must still move.
+        _ = try await store.insert(Streams(hr: [HRSample(ts: 100, bpm: 58)]), deviceId: "dev1")
+        let afterOlder = try await store.analysisFingerprint()
+        let (c2, t2) = try await countAndMaxTs()
+        XCTAssertEqual(c2, 2)
+        XCTAssertEqual(t2, 500, "max ts unmoved; count moved")
+        XCTAssertNotEqual(afterDup, afterOlder, "a backfilled older ts must move the fingerprint")
+
+        // Newer ts: both COUNT and MAX(ts) move.
+        _ = try await store.insert(Streams(hr: [HRSample(ts: 900, bpm: 62)]), deviceId: "dev1")
+        let afterNewer = try await store.analysisFingerprint()
+        let (c3, t3) = try await countAndMaxTs()
+        XCTAssertEqual(c3, 3)
+        XCTAssertEqual(t3, 900)
+        XCTAssertNotEqual(afterOlder, afterNewer)
+
+        // Empty re-read: identical.
+        let reread = try await store.analysisFingerprint()
+        XCTAssertEqual(afterNewer, reread)
+    }
+
+    func testHrSamplesBucketSecondsMatchesHrBuckets() async throws {
+        let store = try await seeded()
+        let buckets = try await store.hrBuckets(deviceId: "dev1", from: 0, to: 1000, bucketSeconds: 100)
+        let aliased = try await store.hrSamples(deviceId: "dev1", from: 0, to: 1000, bucketSeconds: 100)
+        XCTAssertEqual(aliased, buckets)
+        XCTAssertFalse(aliased.isEmpty)
     }
 
     /// #29: the per-DAY twin of the test above. `analysisFingerprint` answers "did anything change

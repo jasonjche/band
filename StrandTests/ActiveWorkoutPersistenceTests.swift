@@ -72,7 +72,7 @@ final class ActiveWorkoutPersistenceTests: XCTestCase {
     }
 
     func testStoreOverwritesPreviousSnapshot() {
-        // Each captured sample re-stores; the latest write wins (mirrors the per-sample persist).
+        // Each store overwrites; the latest write wins (mirrors the cadence-gated persist).
         let defaults = freshDefaults()
         ActiveWorkoutPersistence.store(snapshot(samples: [sample(1_700_000_001, 120)], avgHr: 120, peakHr: 120),
                                        into: defaults)

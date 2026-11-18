@@ -78,32 +78,19 @@ struct DataSourcesView: View {
         }))
     }
 
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+
     var body: some View {
-        ScreenScaffold(title: "Data Sources",
-                       subtitle: "Everything stays on \(Platform.deviceNounPhrase). Bring your history in once, then it's yours.",
-                       onRefresh: { await repo.refresh() },
-                       // PERF: a ten-card import/source column (WHOOP, Apple Health, Xiaomi, nutrition,
-                       // lifting, activity files, wearables, Oura cloud, broadcast-out, live strap). The LazyVStack
-                       // path is byte-identical layout. The cards stay in their inner VStack(sectionSpacing)
-                       // for pixel-identical spacing, so the lazy win is partial until they're promoted to
-                       // direct children. NOTE: this screen still observes `LiveState` for the broadcaster
-                       // lifecycle binding in onAppear/onDisappear, so a ~1 Hz tick still re-evaluates the
-                       // built cards — that observation can't be removed here (see the lane-B2 note).
-                       lazy: true) {
-            VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
-                whoopCard.staggeredAppear(index: 0)
-                appleHealthCard.staggeredAppear(index: 1)
-                xiaomiCard.staggeredAppear(index: 2)
-                nutritionCard.staggeredAppear(index: 3)
-                liftingCard.staggeredAppear(index: 4)
-                activityFileCard.staggeredAppear(index: 5)
-                wearableCard.staggeredAppear(index: 6)
-                #if OURA_CLOUD_IMPORT
-                ouraCloudCard.staggeredAppear(index: 7)
-                #endif
-                broadcastHrCard.staggeredAppear(index: 8)
-                liveCard.staggeredAppear(index: 9)
+        Group {
+            #if os(iOS)
+            if nativeTodayEnabled {
+                nativeForm
+            } else {
+                legacyScaffold
             }
+            #else
+            legacyScaffold
+            #endif
         }
         .onAppear {
             // Point the broadcaster's diagnostic sink at this screen's `live` so its broadcast-out
@@ -132,6 +119,232 @@ struct DataSourcesView: View {
             Text("This permanently deletes everything imported from Apple Health: heart rate, HRV, sleep, steps, workouts and more. Your live strap data is untouched. This can't be undone.")
         }
     }
+
+    private var legacyScaffold: some View {
+        ScreenScaffold(title: "Data Sources",
+                       subtitle: "Everything stays on \(Platform.deviceNounPhrase). Bring your history in once, then it's yours.",
+                       onRefresh: { await repo.refresh() },
+                       lazy: true) {
+            VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
+                whoopCard.staggeredAppear(index: 0)
+                appleHealthCard.staggeredAppear(index: 1)
+                nutritionCard.staggeredAppear(index: 3)
+                liftingCard.staggeredAppear(index: 4)
+                activityFileCard.staggeredAppear(index: 5)
+                wearableCard.staggeredAppear(index: 6)
+                #if OURA_CLOUD_IMPORT
+                ouraCloudCard.staggeredAppear(index: 7)
+                #endif
+                broadcastHrCard.staggeredAppear(index: 8)
+                liveCard.staggeredAppear(index: 9)
+            }
+        }
+    }
+
+    #if os(iOS)
+    private var nativeForm: some View {
+        Form {
+            nativeWhoopSection
+            if !AppBrand.isPersonalBuild {
+                nativeAppleHealthSection
+                nativeNutritionSection
+                nativeLiftingSection
+                nativeActivityFileSection
+                nativeWearableSection
+                #if OURA_CLOUD_IMPORT
+                nativeOuraCloudSection
+                #endif
+                nativeBroadcastSection
+                nativeLiveStrapSection
+            }
+        }
+        .appleSettingsChrome(AppBrand.isPersonalBuild ? "Import WHOOP Export" : "Data Sources")
+    }
+
+    private var nativeWhoopSection: some View {
+        let importing = model.isImporting(.whoop)
+        return Section {
+            Button("Import WHOOP Export…") { presentImporter(.whoop) }
+                .disabled(model.hasActiveImport || nutritionImporting || liftingImporting || activityFileImporting)
+            if importing {
+                ProgressView(model.importPhase ?? "Importing…")
+            }
+            if let s = model.whoopImportSummary {
+                if model.whoopImportFailed {
+                    LabeledContent("Error", value: s)
+                        .foregroundStyle(.red)
+                } else {
+                    LabeledContent("Last Import", value: s)
+                }
+            }
+            LabeledContent("Stored", value: "\(repo.days.count) days, \(repo.sleeps.count) sleeps")
+        } header: {
+            if !AppBrand.isPersonalBuild { Text("WHOOP") }
+        } footer: {
+            Text("Import a WHOOP data export (.zip or .csv).")
+        }
+    }
+
+    private var nativeAppleHealthSection: some View {
+        let importing = model.isImporting(.appleHealth)
+        return Section {
+            Button("Import Health Export…") { presentImporter(.appleHealth) }
+                .disabled(model.hasActiveImport || appleHealthDeleting)
+            if importing { ProgressView("Working…") }
+            if let s = model.appleHealthImportSummary {
+                if model.appleHealthImportFailed {
+                    LabeledContent("Error", value: s).foregroundStyle(.red)
+                } else {
+                    LabeledContent("Last Import", value: s)
+                }
+            }
+            Button("Remove Imported Data", role: .destructive) {
+                confirmDeleteAppleHealth = true
+            }
+            .disabled(model.hasActiveImport || appleHealthDeleting)
+            if appleHealthDeleting { ProgressView("Removing…") }
+            if let s = appleHealthDeletedSummary {
+                LabeledContent("Removed", value: s)
+            }
+        } header: {
+            Text("Apple Health")
+        } footer: {
+            Text("Import an Apple Health export.zip. Removing imported data cannot be undone.")
+        }
+    }
+
+    private var nativeNutritionSection: some View {
+        Section {
+            Button("Import Nutrition CSV…") { presentImporter(.nutrition) }
+                .disabled(model.hasActiveImport || nutritionImporting)
+            if nutritionImporting { ProgressView("Importing…") }
+            if let s = nutritionSummary {
+                if nutritionFailed {
+                    LabeledContent("Error", value: s).foregroundStyle(.red)
+                } else {
+                    LabeledContent("Last Import", value: s)
+                }
+            }
+        } header: {
+            Text("Nutrition")
+        }
+    }
+
+    private var nativeLiftingSection: some View {
+        Section {
+            Button("Import Lifting Log…") { presentImporter(.lifting) }
+                .disabled(model.hasActiveImport || liftingImporting)
+            if liftingImporting { ProgressView("Importing…") }
+            if let s = liftingSummary {
+                if liftingFailed {
+                    LabeledContent("Error", value: s).foregroundStyle(.red)
+                } else {
+                    LabeledContent("Last Import", value: s)
+                }
+            }
+        } header: {
+            Text("Lifting")
+        }
+    }
+
+    private var nativeActivityFileSection: some View {
+        Section {
+            Button("Import Workout File…") { presentImporter(.activityFile) }
+                .disabled(model.hasActiveImport || activityFileImporting)
+            if activityFileImporting { ProgressView("Importing…") }
+            if let s = activityFileSummary {
+                if activityFileFailed {
+                    LabeledContent("Error", value: s).foregroundStyle(.red)
+                } else {
+                    LabeledContent("Last Import", value: s)
+                }
+            }
+        } header: {
+            Text("Workout File")
+        } footer: {
+            Text("GPX, TCX, or FIT.")
+        }
+    }
+
+    private var nativeWearableSection: some View {
+        Section {
+            Button("Import Wearable Export…") { presentImporter(.wearable) }
+                .disabled(model.hasActiveImport || wearableImporting)
+            if wearableImporting { ProgressView("Importing…") }
+            if let s = wearableSummary {
+                if wearableFailed {
+                    LabeledContent("Error", value: s).foregroundStyle(.red)
+                } else {
+                    LabeledContent("Last Import", value: s)
+                }
+            }
+        } header: {
+            Text("Oura / Fitbit / Garmin")
+        }
+    }
+
+    #if OURA_CLOUD_IMPORT
+    private var nativeOuraCloudSection: some View {
+        Section {
+            if oura.isConnected {
+                Button("Import Again") { oura.connectAndImport(repo: repo) }
+                    .disabled(oura.busy)
+                Button("Forget Oura Access", role: .destructive) { oura.disconnect(repo: repo) }
+                    .disabled(oura.busy)
+            } else {
+                Button(oura.busy ? "Working…" : "Import Oura History") {
+                    oura.connectAndImport(repo: repo)
+                }
+                .disabled(oura.busy || !oura.isConfigured)
+            }
+            if oura.busy { ProgressView() }
+            if let s = oura.statusText {
+                LabeledContent("Status", value: s)
+            }
+        } header: {
+            Text("Oura API")
+        }
+    }
+    #endif
+
+    private var nativeBroadcastSection: some View {
+        Section {
+            Toggle("Broadcast Heart Rate", isOn: $broadcastHrEnabled)
+                .onChangeCompat(of: broadcastHrEnabled) { on in
+                    if on { hrBroadcaster.start() } else { hrBroadcaster.stop() }
+                }
+            if broadcastHrEnabled {
+                LabeledContent("Broadcast", value: hrBroadcaster.advertising ? "Broadcasting" : "Starting…")
+                if let note = hrBroadcaster.statusNote {
+                    LabeledContent("Error", value: note).foregroundStyle(.red)
+                } else if hrBroadcaster.subscriberCount > 0 {
+                    LabeledContent("Readers", value: "\(hrBroadcaster.subscriberCount)")
+                }
+            }
+            Toggle("Strap Broadcast Heart Rate", isOn: $strapBroadcastHrEnabled)
+                .onChangeCompat(of: strapBroadcastHrEnabled) { model.ble.setBroadcastHr($0) }
+        } header: {
+            Text("Broadcast")
+        } footer: {
+            Text("Advertise live heart rate over Bluetooth so a treadmill or trainer can read it. Nothing leaves this device.")
+        }
+    }
+
+    private var nativeLiveStrapSection: some View {
+        Section {
+            LabeledContent("Status", value: liveStrapStatus)
+        } header: {
+            Text("Live Strap")
+        }
+    }
+
+    private var liveStrapStatus: String {
+        if live.encryptedBond { return String(localized: "Bonded, streaming") }
+        if live.bonded { return String(localized: "Live HR (not fully paired)") }
+        if live.connected { return String(localized: "Connected") }
+        return String(localized: "Not connected")
+    }
+    #endif
 
     private var whoopCard: some View {
         let hasWhoop = !repo.days.isEmpty
@@ -196,26 +409,6 @@ struct DataSourcesView: View {
             if let s = appleHealthDeletedSummary {
                 Text(s).font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.statusPositive)
-            }
-        }
-    }
-
-    private var xiaomiCard: some View {
-        card(title: "Xiaomi Smart Band (Mi Band)", icon: "figure.walk.motion",
-             tint: StrandPalette.metricAmber,
-             subtitle: String(localized: "Import your Mi Band history (steps, heart rate, resting HR, sleep stages, SpO₂, stress and sleep score) straight from the Mi Fitness app. On your iPhone: Files → On My iPhone → Mi Fitness, long-press the folder → Compress, then choose the .zip here. Fully offline; no Xiaomi account or Bluetooth needed. Smart Band 8/9/10.")) {
-            let importingXiaomi = model.isImporting(.xiaomi)
-            HStack(spacing: NoopMetrics.space3) {
-                Button { presentImporter(.xiaomi) } label: {
-                    Label(importingXiaomi ? "Importing…" : "Choose Mi Fitness export…", systemImage: "tray.and.arrow.down")
-                }
-                .buttonStyle(NoopButtonStyle(.primary))
-                .disabled(model.hasActiveImport || nutritionImporting || liftingImporting || activityFileImporting)
-                if importingXiaomi { ProgressView().controlSize(.small) }
-            }
-            if let s = model.xiaomiImportSummary {
-                Text(s).font(StrandFont.subhead)
-                    .foregroundStyle(model.xiaomiImportFailed ? StrandPalette.statusWarning : StrandPalette.statusPositive)
             }
         }
     }
@@ -364,8 +557,6 @@ struct DataSourcesView: View {
             model.importWhoop(url: url)
         case .appleHealth:
             model.importAppleHealth(url: url)
-        case .xiaomi:
-            model.importXiaomi(url: url)
         case .nutrition:
             importNutrition(url: url)
         case .lifting:
@@ -752,7 +943,6 @@ struct DataSourcesView: View {
     private enum ImportTarget {
         case whoop
         case appleHealth
-        case xiaomi
         case nutrition
         case lifting
         case activityFile
@@ -766,24 +956,15 @@ struct DataSourcesView: View {
             switch self {
             case .whoop:
                 #if os(macOS)
-                return [.zip, .folder]
+                return [.zip, .commaSeparatedText, .folder]
                 #else
-                return [.zip]
+                return [.zip, .commaSeparatedText]
                 #endif
             case .appleHealth:
                 #if os(macOS)
                 return [.zip, .xml, .folder]
                 #else
                 return [.zip, .xml]
-                #endif
-            case .xiaomi:
-                // The Mi Fitness sandbox is shared as a .zip (or, on macOS, an unzipped
-                // folder); the bare `<user_id>.db` is also accepted directly.
-                let db = UTType(filenameExtension: "db") ?? .data
-                #if os(macOS)
-                return [.zip, .folder, db]
-                #else
-                return [.zip, db]
                 #endif
             case .nutrition:
                 return [.commaSeparatedText, .plainText]
@@ -832,7 +1013,7 @@ struct DataSourcesView: View {
             .onChangeCompat(of: broadcastHrEnabled) { on in
                 if on { hrBroadcaster.start() } else { hrBroadcaster.stop() }
             }
-            Text("Acts as a standard Bluetooth heart-rate strap. Pair NOOP from your treadmill, bike or app to see your strap's heart rate there.")
+            Text("Acts as a standard Bluetooth heart-rate strap. Pair Band from your treadmill, bike or app to see your strap's heart rate there.")
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -881,7 +1062,7 @@ struct DataSourcesView: View {
             generationRow(title: "WHOOP 4.0",
                           detail: String(localized: "Broadcasts the strap's own live heart rate over Bluetooth."))
             generationRow(title: "WHOOP 5.0 & MG",
-                          detail: String(localized: "Broadcasts the live heart rate NOOP derives from the strap once connected."))
+                          detail: String(localized: "Broadcasts the live heart rate Band derives from the strap once connected."))
         }
         .padding(.top, 2)
         .padding(.horizontal, 10).padding(.vertical, 8)

@@ -8,7 +8,6 @@ import Foundation
 // These deliberately mirror the existing `DailyMetricSource` / `SourcedDailyMetric` provenance
 // vocabulary (Repository.swift L61-82) but generalised to cover every importer source so a future
 // Polar/Garmin/Oura is a table entry, not a type change. Value-for-value Kotlin twin in
-// android/.../analytics/FusionTypes.kt.
 
 /// Where a fused number came from — a superset of the legacy `DailyMetricSource` (whoopImport /
 /// noopComputed / appleHealth / localCache), extended to every source the importers already write.

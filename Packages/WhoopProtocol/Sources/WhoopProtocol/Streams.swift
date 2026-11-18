@@ -245,7 +245,7 @@ public struct SkinTempSample: Equatable, Codable {
 public func skinTempCelsius(raw: Int, family: DeviceFamily,
                             anchorRaw: Double = Whoop4SkinTemp.anchorRaw) -> Double {
     switch family {
-    case .whoop5:
+    case .whoop5, .unsupported:
         return Double(raw) / 100.0
     case .whoop4:
         // Anchor: worn resting raw `anchorRaw` (per-device, default 826) → 33.0 °C. Provisional slope 0.05 °C

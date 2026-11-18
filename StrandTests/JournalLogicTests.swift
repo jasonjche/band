@@ -46,8 +46,7 @@ final class JournalLogicTests: XCTestCase {
     @MainActor
     func testCatalogAdoptsImportedCasing() {
         let cat = makeCatalog().resolvedItems(imported: ["DID YOU DRINK ANY ALCOHOL?"]).map(\.canonical)
-        XCTAssertEqual(cat.first, "DID YOU DRINK ANY ALCOHOL?")
-        // The starter alcohol question deduped case-insensitively: 9 starters survive + 1 imported.
+        XCTAssertEqual(cat.first, "Did you drink any alcohol?")
         XCTAssertEqual(cat.count, JournalCatalogStore.starterQuestions.count)
     }
 
@@ -161,7 +160,7 @@ final class JournalLogicTests: XCTestCase {
         // which is keyed on the canonical question string, still lines up after a rename.
         let store = makeCatalog()
         store.items = []   // start from a clean catalog for a deterministic assertion
-        let canonical = "Did you have caffeine late in the day?"
+        let canonical = "Did you have caffeine?"
 
         // Before: display resolves to the canonical verbatim.
         XCTAssertEqual(store.displayName(for: canonical), canonical)
@@ -213,7 +212,8 @@ final class JournalLogicTests: XCTestCase {
         XCTAssertEqual(resolved.count, JournalCatalogStore.starterQuestions.count)
         let alcohol = resolved.first { $0.canonical == "Did you drink any alcohol?" }
         XCTAssertEqual(alcohol?.group, .nutrition)
-        XCTAssertFalse(alcohol?.kind.isNumeric ?? true)
+        XCTAssertTrue(alcohol?.kind.isNumeric ?? false)
+        XCTAssertEqual(alcohol?.kind.unitLabel, "drinks")
         // Hidden items are dropped unless includeHidden.
         store.remove("Did you drink any alcohol?")
         let afterHide = store.resolvedItems(imported: [], includeHidden: false)
@@ -240,5 +240,214 @@ final class JournalLogicTests: XCTestCase {
         XCTAssertTrue(key.hasPrefix("journal.numeric:"))
         XCTAssertNotEqual(key, "recovery")
         XCTAssertNotEqual(key, "hrv")
+    }
+
+    // MARK: - WHOOP import aliases fold onto catalogue ids
+
+    func testTitleKeyIgnoresCaseAndPunctuation() {
+        XCTAssertEqual(
+            JournalCatalogStore.titleKey("Consumed caffeine?"),
+            JournalCatalogStore.titleKey("consumed caffeine")
+        )
+        XCTAssertEqual(
+            JournalCatalogStore.titleKey("Shared your bed?"),
+            JournalCatalogStore.titleKey("shared your bed")
+        )
+    }
+
+    func testWhoopImportTitlesMapOntoCatalogueIds() {
+        let pairs: [(String, String)] = [
+            ("Consumed caffeine?", "Did you have caffeine?"),
+            ("Have any alcoholic drinks?", "Did you drink any alcohol?"),
+            ("Ate food close to bedtime?", "Did you eat close to bedtime?"),
+            ("Shared your bed?", "Did you share your bed?"),
+            ("Read (non-screened device) while in bed?", "Did you read before bed?"),
+            ("e-close", "Did you eat close to bedtime?"),
+            ("DID YOU DRINK ANY ALCOHOL?", "Did you drink any alcohol?"),
+            ("Engaged in sexual activity?", "Did you have sex?"),
+            ("Masturbated?", "Did you masturbate?"),
+        ]
+        for (imported, canonical) in pairs {
+            XCTAssertEqual(JournalCatalogStore.canonicalId(for: imported), canonical, imported)
+        }
+    }
+
+    func testAnswerIdsIncludeImportedAlias() {
+        let ids = JournalCatalogStore.answerIds(for: "Did you have caffeine?")
+        XCTAssertTrue(ids.contains("Did you have caffeine?"))
+        XCTAssertTrue(ids.contains("Consumed caffeine?"))
+    }
+
+    @MainActor
+    func testResolvedItemsFoldWhoopDuplicatesAndKeepCaffeineInNutrition() {
+        let imported = [
+            "Consumed caffeine?",
+            "Have any alcoholic drinks?",
+            "Ate food close to bedtime?",
+            "Shared your bed?",
+            "Engaged in sexual activity?",
+            "Masturbated?",
+        ]
+        let items = makeCatalog().resolvedItems(imported: imported)
+        let titles = items.map(\.canonical)
+        XCTAssertEqual(titles.filter { JournalCatalogStore.canonicalId(for: $0) == "Did you have caffeine?" }.count, 1)
+        XCTAssertEqual(titles.filter { JournalCatalogStore.canonicalId(for: $0) == "Did you drink any alcohol?" }.count, 1)
+        XCTAssertEqual(titles.filter { JournalCatalogStore.canonicalId(for: $0) == "Did you eat close to bedtime?" }.count, 1)
+        XCTAssertEqual(titles.filter { JournalCatalogStore.canonicalId(for: $0) == "Did you share your bed?" }.count, 1)
+        XCTAssertFalse(titles.contains("Consumed caffeine?"))
+        XCTAssertTrue(titles.contains("Did you have caffeine?"))
+        XCTAssertFalse(titles.contains("Engaged in sexual activity?"))
+        XCTAssertFalse(titles.contains("Masturbated?"))
+        XCTAssertTrue(titles.contains("Did you have sex?"))
+        XCTAssertTrue(titles.contains("Did you masturbate?"))
+        let caffeine = items.first { $0.canonical == "Did you have caffeine?" }
+        XCTAssertEqual(caffeine?.group, .nutrition)
+        XCTAssertEqual(caffeine?.display, "Caffeine")
+        XCTAssertEqual(items.first { $0.canonical == "Did you have sex?" }?.group, .lifestyle)
+        XCTAssertEqual(items.first { $0.canonical == "Did you masturbate?" }?.group, .lifestyle)
+        XCTAssertEqual(items.first { $0.canonical == "Did you view a screen in bed?" }?.group, .sleep)
+        XCTAssertEqual(items.first { $0.canonical == "Did you feel stressed?" }?.group, .mental)
+        XCTAssertEqual(
+            items.count,
+            JournalCatalogStore.starterQuestions.count + 2
+        )
+    }
+
+    func testDefaultGroupPutsCaffeineInNutrition() {
+        XCTAssertEqual(JournalCatalogStore.defaultGroup(for: "Consumed caffeine?"), .nutrition)
+        XCTAssertEqual(JournalCatalogStore.defaultGroup(for: "Did you have caffeine?"), .nutrition)
+    }
+
+    // MARK: - Behaviour library
+
+    func testLibraryHasAboutOneHundredUniqueBehaviours() {
+        let entries = JournalCatalogStore.libraryEntries
+        XCTAssertEqual(entries.count, 100)
+        let ids = entries.map { JournalCatalogStore.norm($0.canonical) }
+        XCTAssertEqual(ids.count, Set(ids).count)
+        let titleKeys = entries.map { JournalCatalogStore.titleKey($0.canonical) }
+        XCTAssertEqual(titleKeys.count, Set(titleKeys).count)
+        let shorts = entries.map { JournalCatalogStore.norm($0.shortTitle) }
+        XCTAssertEqual(shorts.count, Set(shorts).count)
+    }
+
+    func testLibraryFillsEveryNamedCategory() {
+        let expected: [JournalGroup] = [
+            .nutrition, .sleep, .recovery, .lifestyle, .health,
+            .mental, .training, .environment, .womensHealth
+        ]
+        for group in expected {
+            XCTAssertGreaterThan(
+                JournalCatalogStore.libraryCount(in: group), 0,
+                group.rawValue
+            )
+        }
+    }
+
+    func testEveryStarterIsInTheLibrary() {
+        for question in JournalCatalogStore.starterQuestions {
+            let entry = JournalCatalogStore.libraryEntry(for: question)
+            XCTAssertEqual(entry?.canonical, question)
+            XCTAssertEqual(JournalCatalogStore.starterGroups[question], entry?.group)
+        }
+    }
+
+    func testAliasTitlesPointAtLibraryEntries() {
+        for pair in JournalCatalogStore.aliasTitles {
+            XCTAssertNotNil(
+                JournalCatalogStore.libraryEntry(for: pair.canonical),
+                pair.canonical
+            )
+            XCTAssertEqual(
+                JournalCatalogStore.canonicalId(for: pair.imported),
+                pair.canonical,
+                pair.imported
+            )
+        }
+    }
+
+    func testKnownImportTitlesAllMapOntoTheLibrary() {
+        let imported = [
+            "Consumed caffeine?",
+            "Have any alcoholic drinks?",
+            "Ate food close to bedtime?",
+            "Shared your bed?",
+            "Read (non-screened device) while in bed?",
+            "Engaged in sexual activity?",
+            "Masturbated?",
+        ]
+        let stats = JournalCatalogStore.libraryMapping(of: imported)
+        XCTAssertEqual(stats.mapped, imported.count)
+        XCTAssertEqual(stats.unmapped, 0)
+    }
+
+    @MainActor
+    func testDailyFormStaysOnStartersUntilALibraryItemIsAdded() {
+        let store = makeCatalog()
+        let daily = store.resolvedItems(imported: [])
+        XCTAssertEqual(daily.count, JournalCatalogStore.starterQuestions.count)
+        XCTAssertEqual(store.libraryItems().count, JournalCatalogStore.libraryEntries.count)
+        XCTAssertGreaterThan(store.libraryItems().count, daily.count)
+        for item in store.libraryItems(imported: []) {
+            XCTAssertEqual(item.hidden, !store.isOnDailyForm(item.canonical, imported: []), item.canonical)
+        }
+
+        let extra = "Did you take a cold plunge?"
+        XCTAssertFalse(daily.contains { $0.canonical == extra })
+        store.setOnDailyForm(extra, enabled: true)
+        let afterAdd = store.resolvedItems(imported: [])
+        XCTAssertEqual(afterAdd.count, JournalCatalogStore.starterQuestions.count + 1)
+        XCTAssertTrue(afterAdd.contains { $0.canonical == extra && !$0.hidden })
+        XCTAssertTrue(store.isOnDailyForm(extra))
+
+        store.setOnDailyForm(extra, enabled: false)
+        let afterRemove = store.resolvedItems(imported: [])
+        XCTAssertEqual(afterRemove.count, JournalCatalogStore.starterQuestions.count)
+        XCTAssertFalse(store.isOnDailyForm(extra))
+        for item in store.libraryItems(imported: []) {
+            XCTAssertEqual(item.hidden, !store.isOnDailyForm(item.canonical), item.canonical)
+        }
+    }
+
+    @MainActor
+    func testImportedHistorySeedsDailyFormWithoutDumpingTheLibrary() {
+        let store = makeCatalog()
+        let imported = ["Engaged in sexual activity?", "Consumed caffeine?"]
+        let daily = store.resolvedItems(imported: imported)
+        XCTAssertTrue(daily.contains { $0.canonical == "Did you have sex?" })
+        XCTAssertEqual(daily.filter { $0.canonical == "Did you have caffeine?" }.count, 1)
+        XCTAssertEqual(daily.count, JournalCatalogStore.starterQuestions.count + 1)
+        XCTAssertFalse(store.isOnDailyForm("Did you train late?", imported: imported))
+        let library = store.libraryItems(imported: imported)
+        XCTAssertEqual(library.count, JournalCatalogStore.libraryEntries.count)
+        for item in library {
+            XCTAssertEqual(
+                item.hidden,
+                !store.isOnDailyForm(item.canonical, imported: imported),
+                item.canonical
+            )
+        }
+        XCTAssertEqual(library.first { $0.canonical == "Did you have sex?" }?.hidden, false)
+        XCTAssertEqual(library.first { $0.canonical == "Did you train late?" }?.hidden, true)
+    }
+
+    func testLibrarySearchMatchesShortTitleAndCategory() {
+        let item = JournalCatalogItem(
+            canonical: "Did you take a cold plunge?", displayName: nil,
+            kind: .bool, group: .recovery, sortIndex: 0, hidden: true, custom: false
+        )
+        XCTAssertTrue(JournalCatalogStore.libraryMatches(item, query: "cold"))
+        XCTAssertTrue(JournalCatalogStore.libraryMatches(item, query: "recovery"))
+        XCTAssertTrue(JournalCatalogStore.libraryMatches(item, query: "plunge"))
+        XCTAssertFalse(JournalCatalogStore.libraryMatches(item, query: "caffeine"))
+        XCTAssertTrue(JournalCatalogStore.libraryMatches(item, query: "  "))
+    }
+
+    func testImpactCopyResolvesAnyLibraryId() {
+        XCTAssertEqual(JournalCatalogStore.shortTitle(for: "Did you take a cold plunge?"), "Cold plunge")
+        XCTAssertEqual(JournalCatalogStore.shortTitle(for: "Did you have sex?"), "Sex")
+        XCTAssertEqual(JournalCatalogStore.shortTitle(for: "Engaged in sexual activity?"), "Sex")
+        XCTAssertEqual(NativeJournalImpactCopy.title(for: "Did you train late?"), "Late training")
+        XCTAssertEqual(NativeJournalImpactCopy.title(for: "Have any alcoholic drinks?"), "Alcohol")
     }
 }

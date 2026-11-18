@@ -1,0 +1,43 @@
+{
+  "agreement": {
+    "stored_imported.day_strain": { "max_mae": 0.05, "max_abs_bias": 0.05, "min_within_tol": 0.99, "min_n": 100 },
+    "stored_imported.recovery": { "max_mae": 0.05, "max_abs_bias": 0.05, "min_within_tol": 0.99, "min_n": 100 },
+    "stored_imported.sleep_duration": { "max_mae": 0.05, "max_abs_bias": 0.05, "min_within_tol": 0.99, "min_n": 100 },
+    "stored_imported.rhr": { "max_mae": 0.05, "max_abs_bias": 0.05, "min_within_tol": 0.99, "min_n": 100 },
+    "stored_imported.hrv": { "max_mae": 0.05, "max_abs_bias": 0.05, "min_within_tol": 0.99, "min_n": 100 },
+    "stored_imported.resp": { "max_mae": 0.05, "max_abs_bias": 0.05, "min_within_tol": 0.99, "min_n": 100 },
+    "replay.recovery": { "max_mae": 7.5, "max_abs_bias": 3.0, "min_within_tol": 0.65, "min_n": 100 },
+    "replay.recovery_v3": { "max_mae": 5.6, "max_abs_bias": 1.5, "min_within_tol": 0.72, "min_n": 100 },
+    "replay.sleep_performance": { "max_mae": 6.0, "max_abs_bias": 3.5, "min_within_tol": 0.75, "min_n": 100 },
+    "stored_imported.energy": { "max_mae": 0.05, "max_abs_bias": 0.05, "min_within_tol": 0.99, "min_n": 100 },
+    "replay.day_calories": { "max_mae": 550, "max_abs_bias": 550, "min_within_tol": 0.35, "min_n": 100 },
+    "replay.workout_calories": { "max_mae": 80, "max_abs_bias": 80, "min_within_tol": 0.70, "min_n": 50 },
+    "replay.workout_strain_zones": { "max_mae": 1.2, "max_abs_bias": 0.8, "min_within_tol": 0.80, "min_n": 100 },
+    "eval.strain_c_heldout": { "max_mae": 1.1, "max_abs_bias": 0.7, "min_within_tol": 0.75, "min_n": 50 },
+    "stored.workout_strain": { "max_mae": 0.05, "max_abs_bias": 0.05, "min_within_tol": 0.99, "min_n": 100 },
+    "stored.sleep_light": { "max_mae": 3.0, "max_abs_bias": 2.0, "min_within_tol": 0.90, "min_n": 100 },
+    "stored.sleep_deep": { "max_mae": 2.0, "max_abs_bias": 1.5, "min_within_tol": 0.90, "min_n": 100 },
+    "stored.sleep_rem": { "max_mae": 2.0, "max_abs_bias": 1.5, "min_within_tol": 0.90, "min_n": 100 },
+    "stored.sleep_awake": { "max_mae": 2.0, "max_abs_bias": 1.5, "min_within_tol": 0.90, "min_n": 100 },
+    "stored.sleep_asleep_stages": { "max_mae": 5.0, "max_abs_bias": 3.0, "min_within_tol": 0.90, "min_n": 100 },
+    "stored.sleep_inbed_stages": { "max_mae": 6.0, "max_abs_bias": 3.0, "min_within_tol": 0.90, "min_n": 100 }
+  },
+  "detection": {
+    "min_precision": 0.5,
+    "min_recall": 0.2,
+    "min_reference": 1
+  },
+  "healthspan_calibration": {
+    "max_abs_total_years": 0.5
+  },
+  "invariants": {
+    "max_steps_undercount_days": 1,
+    "max_duplicate_daily_metric": 0,
+    "max_auto_overlap": 0,
+    "max_workouts_without_hr": 1,
+    "max_journal_duplicate_titles": 0,
+    "max_metrics_without_source": 1,
+    "max_unresolved_steps_days": 0,
+    "max_stress_gate_worse": 0
+  }
+}

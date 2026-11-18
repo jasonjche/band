@@ -13,15 +13,9 @@ public enum ExperimentalBrand: String, CaseIterable, Sendable, Equatable {
     /// Amazfit / Zepp / Huami family (incl. the Helio ring/band). Live HR is best-effort: standard
     /// 0x180D where exposed, else the documented Huami custom HR characteristic.
     case amazfit
-    /// Xiaomi Mi Band (Huami-family). Older bands expose HR on a custom char; newer need an auth
-    /// handshake we can't do — the driver surfaces that honestly rather than faking it.
-    case miBand
     /// Garmin watch. Live HR is the STANDARD broadcast-HR path (0x180D) when the user enables
     /// "Broadcast Heart Rate" on the watch — there is no NOOP-proprietary Garmin protocol.
     case garmin
-    /// Oura ring. No open live health stream — proprietary, syncs to Oura's own app. The driver makes
-    /// the detection attempt and then points honestly at file import.
-    case oura
 
     /// Best-effort brand from an advertised name. Returns `nil` for an unrecognised name, OR for a name the
     /// catalog recognises as a NON-experimental generic strap (Polar / Wahoo / …) — `ExperimentalBrand`
@@ -39,9 +33,7 @@ public enum ExperimentalBrand: String, CaseIterable, Sendable, Equatable {
     public var displayBrand: String {
         switch self {
         case .amazfit: return "Amazfit"
-        case .miBand:  return "Mi Band"
         case .garmin:  return "Garmin"
-        case .oura:    return "Oura"
         }
     }
 
@@ -70,9 +62,7 @@ public enum ExperimentalBrand: String, CaseIterable, Sendable, Equatable {
     private init?(displayBrand brand: String) {
         switch brand {
         case "Amazfit": self = .amazfit
-        case "Mi Band": self = .miBand
         case "Garmin":  self = .garmin
-        case "Oura":    self = .oura
         default:        return nil
         }
     }

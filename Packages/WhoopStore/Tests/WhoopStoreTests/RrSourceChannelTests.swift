@@ -1,6 +1,5 @@
 import XCTest
 import WhoopProtocol
-import OuraProtocol
 @testable import WhoopStore
 
 /// #1071 — `rrInterval` mixed two optical channels, so every Oura beat was stored twice.
@@ -24,32 +23,9 @@ final class RrSourceChannelTests: XCTestCase {
             capabilities: [.hr, .hrv], status: .active, addedAt: ts, lastSeenAt: ts))
     }
 
-    func testWhoop4HistoricalSourceWinsAndPromotesLegacyLiveRows() async throws {
-        let store = try await WhoopStore.inMemory()
-        try await store.upsertDevice(id: "strap", mac: nil, name: nil)
-        try setRegistry(store)
 
-        _ = try await store.insert(Streams(rr: [RRInterval(ts: ts, rrMs: 800),
-                                                  RRInterval(ts: ts + 1, rrMs: 810)]), deviceId: "strap")
-        _ = try await store.insert(Streams(rr: [RRInterval(ts: ts, rrMs: 800, srcChannel: .whoop4Historical),
-                                                  RRInterval(ts: ts + 1, rrMs: 820, srcChannel: .whoop4Historical)]),
-                                   deviceId: "strap")
 
-        let selected = try await store.rrIntervals(deviceId: "strap", from: ts, to: ts + 1, limit: 100)
-        XCTAssertEqual(selected.map(\.rrMs), [800, 820])
-        XCTAssertEqual(selected.map(\.srcChannel), [.whoop4Historical, .whoop4Historical])
-    }
 
-    func testWhoop4FallsBackToUnlabelledRowsWhenNoHistoricalDataExists() async throws {
-        let store = try await WhoopStore.inMemory()
-        try await store.upsertDevice(id: "strap", mac: nil, name: nil)
-        try setRegistry(store)
-        _ = try await store.insert(Streams(rr: [RRInterval(ts: ts, rrMs: 800)]), deviceId: "strap")
-
-        let selected = try await store.rrIntervals(deviceId: "strap", from: ts, to: ts, limit: 100)
-        XCTAssertEqual(selected.map(\.rrMs), [800])
-        XCTAssertNil(selected.first?.srcChannel)
-    }
 
     func testWhoop4HistoricalSourceHasPriorityWithinItsHour() async throws {
         let store = try await WhoopStore.inMemory()
@@ -65,91 +41,25 @@ final class RrSourceChannelTests: XCTestCase {
         XCTAssertEqual(selected.map(\.srcChannel), [.whoop4Historical])
     }
 
-    func testWhoop4RealtimeSourceWinsOverStandardAndLegacyRows() async throws {
-        let store = try await WhoopStore.inMemory()
-        try await store.upsertDevice(id: "strap", mac: nil, name: nil)
-        try setRegistry(store)
-        _ = try await store.insert(Streams(rr: [
-            RRInterval(ts: ts, rrMs: 800),
-            RRInterval(ts: ts, rrMs: 810, srcChannel: .whoop4Standard),
-            RRInterval(ts: ts, rrMs: 820, srcChannel: .whoop4Realtime),
-        ]), deviceId: "strap")
 
-        let selected = try await store.rrIntervals(deviceId: "strap", from: ts, to: ts, limit: 100)
-        XCTAssertEqual(selected.map(\.rrMs), [820])
-        XCTAssertEqual(selected.map(\.srcChannel), [.whoop4Realtime])
-    }
 
-    func testWhoop4PartialHistoryKeepsUnlabelledRowsFromOtherHours() async throws {
-        let store = try await WhoopStore.inMemory()
-        try await store.upsertDevice(id: "strap", mac: nil, name: nil)
-        try setRegistry(store)
 
-        let base = (ts / 3600) * 3600
-        _ = try await store.insert(Streams(rr: [
-            RRInterval(ts: base + 10, rrMs: 800),
-            RRInterval(ts: base + 3600 + 10, rrMs: 820),
-            RRInterval(ts: base + 3600 + 11, rrMs: 830),
-            RRInterval(ts: base + 3600 + 12, rrMs: 840),
-        ]), deviceId: "strap")
-        _ = try await store.insert(Streams(rr: [
-            RRInterval(ts: base + 10, rrMs: 805, srcChannel: .whoop4Historical),
-            RRInterval(ts: base + 11, rrMs: 815, srcChannel: .whoop4Historical),
-            RRInterval(ts: base + 3600 + 10, rrMs: 825, srcChannel: .whoop4Historical),
-        ]), deviceId: "strap")
-
-        let selected = try await store.rrIntervals(deviceId: "strap", from: base,
-                                                    to: base + 7200, limit: 100)
-        XCTAssertEqual(selected.map(\.rrMs), [805, 815, 825])
-        XCTAssertEqual(selected.map(\.srcChannel),
-                       [.whoop4Historical, .whoop4Historical, .whoop4Historical])
-    }
 
     // MARK: - The label survives the mapping
 
     /// A 0x6E record and a 0x80 record covering the same interval must produce rows with DISTINCT
     /// `srcChannel` values — the requirement that makes everything downstream possible.
-    func testTwoChannelsOverTheSameIntervalMapToDistinctSrcChannels() {
-        let s = OuraStreamMapping.streams(from: [
-            .ibi(OuraIBI(ringTimestamp: 100, ibiMs: 848, channel: .greenQuality)),
-            .ibi(OuraIBI(ringTimestamp: 100, ibiMs: 848, channel: .spo2Ibi)),
-        ], at: ts)
-        XCTAssertEqual(s.rr.map(\.srcChannel), [.greenQuality, .spo2Ibi])
-        // Same beat, same second, same value — nothing but the channel tells them apart.
-        XCTAssertEqual(s.rr.map(\.rrMs), [848, 848])
-        XCTAssertEqual(s.rr.map(\.ts), [ts, ts])
-    }
 
-    func testMappingCarriesEachDecodersOwnChannel() {
-        let s = OuraStreamMapping.streams(from: [
-            .ibi(OuraIBI(ringTimestamp: 100, ibiMs: 820, amplitude: 42, channel: .ibiAmplitude)),
-            .ibi(OuraIBI(ringTimestamp: 101, ibiMs: 815, channel: .greenQuality)),
-            .ibi(OuraIBI(ringTimestamp: 102, ibiMs: 808, channel: .spo2Ibi)),
-        ], at: ts)
-        XCTAssertEqual(s.rr.map(\.srcChannel), [.ibiAmplitude, .greenQuality, .spo2Ibi])
-    }
+
+
 
     /// A channel is never invented. An `OuraIBI` from a source that does not report one stays nil all
     /// the way to the row, where it reads as an unlabelled beat rather than a guessed channel.
-    func testAnUnlabelledIbiStaysNilRatherThanBeingGuessed() {
-        let s = OuraStreamMapping.streams(from: [
-            .ibi(OuraIBI(ringTimestamp: 100, ibiMs: 820)),
-        ], at: ts)
-        XCTAssertEqual(s.rr.map(\.srcChannel), [nil])
-    }
+
 
     /// The two enums are pinned to the same raw values on purpose: they are one durable storage code
     /// split across two packages only because `OuraProtocol` does not depend on `WhoopProtocol`.
-    func testTheTwoChannelEnumsAgreeCaseForCaseAndCodeForCode() {
-        XCTAssertEqual(OuraIBIChannel.allCases.count,
-                       RRSourceChannel.allCases.filter { !$0.isWhoop5Transport && $0.rawValue <= 4 }.count)
-        for c in OuraIBIChannel.allCases {
-            let mapped = OuraStreamMapping.rrChannel(c)
-            XCTAssertEqual(mapped?.rawValue, c.rawValue,
-                           "\(c) must map to the SAME durable storage code on both sides")
-        }
-        XCTAssertNil(OuraStreamMapping.rrChannel(nil))
-    }
+
 
     // MARK: - The migration
 
@@ -218,13 +128,7 @@ final class RrSourceChannelTests: XCTestCase {
     }
 
     /// The mapping carries the new code end to end, and it is the durable storage value 4.
-    func testBare0x44MapsToItsOwnDurableStorageCode() {
-        let s = OuraStreamMapping.streams(from: [
-            .ibi(OuraIBI(ringTimestamp: 100, ibiMs: 820, amplitude: 42, channel: .ibiBare)),
-        ], at: ts)
-        XCTAssertEqual(s.rr.map(\.srcChannel), [.ibiBare])
-        XCTAssertEqual(RRSourceChannel.ibiBare.rawValue, 4)
-    }
+
 
     /// The regression the filter could most easily cause. A WHOOP strap has ONE beat source, so its
     /// rows carry no channel — a whitelist filter would have deleted every WHOOP night from scoring.

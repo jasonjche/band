@@ -10,21 +10,21 @@ final class BatteryAlertPolicyTests: XCTestCase {
     private typealias Policy = BatteryNotifier.BatteryAlertPolicy
 
     // 1. Cross down fires once; the next reading below threshold does not re-fire.
-    // NB: the threshold is `pct <= 15` (≤, not <), so the alert fires AT 15, not at 16 — 16% is
+    // NB: the threshold is `pct <= 20` (≤, not <), so the alert fires AT 20, not at 21 — 21% is
     // still above the low line. This pins that boundary so a future <-vs-≤ slip can't pass silently.
     func testCrossDownFiresOnceNoReFire() {
-        // 16% is above the ≤15 line: no fire yet.
-        let above = Policy.evaluate(pct: 16, charging: nil, lowAlerted: false, fullAlerted: false)
+        // 21% is above the ≤20 line: no fire yet.
+        let above = Policy.evaluate(pct: 21, charging: nil, lowAlerted: false, fullAlerted: false)
         XCTAssertFalse(above.fireLow)
         XCTAssertFalse(above.newLowAlerted)
 
         // First reading at/under the threshold fires once.
-        let a = Policy.evaluate(pct: 15, charging: nil, lowAlerted: above.newLowAlerted, fullAlerted: above.newFullAlerted)
+        let a = Policy.evaluate(pct: 20, charging: nil, lowAlerted: above.newLowAlerted, fullAlerted: above.newFullAlerted)
         XCTAssertTrue(a.fireLow)
         XCTAssertTrue(a.newLowAlerted)
 
         // A further drop does not re-fire.
-        let b = Policy.evaluate(pct: 14, charging: nil, lowAlerted: a.newLowAlerted, fullAlerted: a.newFullAlerted)
+        let b = Policy.evaluate(pct: 19, charging: nil, lowAlerted: a.newLowAlerted, fullAlerted: a.newFullAlerted)
         XCTAssertFalse(b.fireLow)
     }
 
@@ -81,8 +81,8 @@ final class BatteryAlertPolicyTests: XCTestCase {
         XCTAssertFalse(gap.fireLow)   // was `true` before the #80 fix
     }
 
-    // 5. Full fires once at 100%; stays quiet until pct drops below 100, then 100 again re-fires.
-    func testFullFiresOnceThenReArmsBelow100() {
+    // 5. Full fires once at 100%; stays quiet until pct drops below the unplug-full band, then 100 again re-fires.
+    func testFullFiresOnceThenReArmsBelowUnplugFull() {
         let hit = Policy.evaluate(pct: 100, charging: nil, lowAlerted: false, fullAlerted: false)
         XCTAssertTrue(hit.fireFull)
         XCTAssertTrue(hit.newFullAlerted)
@@ -91,8 +91,14 @@ final class BatteryAlertPolicyTests: XCTestCase {
         let hold = Policy.evaluate(pct: 100, charging: nil, lowAlerted: hit.newLowAlerted, fullAlerted: hit.newFullAlerted)
         XCTAssertFalse(hold.fireFull)
 
-        // Drop below 100 — re-arms the full flag, no fire.
-        let drop = Policy.evaluate(pct: 96, charging: nil, lowAlerted: hold.newLowAlerted, fullAlerted: hold.newFullAlerted)
+        // 99 is still inside the near-full band — stay latched, no clear.
+        let near = Policy.evaluate(pct: 99, charging: nil, lowAlerted: hold.newLowAlerted, fullAlerted: hold.newFullAlerted)
+        XCTAssertFalse(near.fireFull)
+        XCTAssertFalse(near.clearFull)
+        XCTAssertTrue(near.newFullAlerted)
+
+        // Drop below unplugFull (98) — re-arms the full flag, no fire.
+        let drop = Policy.evaluate(pct: 96, charging: nil, lowAlerted: near.newLowAlerted, fullAlerted: near.newFullAlerted)
         XCTAssertFalse(drop.fireFull)
         XCTAssertFalse(drop.newFullAlerted)
 
@@ -101,23 +107,23 @@ final class BatteryAlertPolicyTests: XCTestCase {
         XCTAssertTrue(again.fireFull)
     }
 
-    // 6. (#514) Dropping below 100 while the full alert is standing signals clearFull exactly once,
-    //    so the notifier can pull the stale "fully charged" note. It does NOT fire/clear the low alert.
+    // 6. (#514) Dropping below the unplug-full band while the full alert is standing signals
+    //    clearFull exactly once, so the notifier can pull the stale "fully charged" note.
     func testDropBelowFullClearsStaleFullNote() {
-        // Standing full alert (fullAlerted == true) drops to 99% — clearFull, re-arms, nothing fires.
-        let drop = Policy.evaluate(pct: 99, charging: nil, lowAlerted: false, fullAlerted: true)
+        // Standing full alert drops to 97% — below unplugFull — clearFull, re-arms, nothing fires.
+        let drop = Policy.evaluate(pct: 97, charging: nil, lowAlerted: false, fullAlerted: true)
         XCTAssertTrue(drop.clearFull)
         XCTAssertFalse(drop.fireFull)
         XCTAssertFalse(drop.fireLow)
         XCTAssertFalse(drop.newFullAlerted)
 
-        // The next reading below 100 with the flag already re-armed does NOT keep asking to clear.
+        // The next reading below the band with the flag already re-armed does NOT keep asking to clear.
         let next = Policy.evaluate(pct: 90, charging: nil, lowAlerted: drop.newLowAlerted, fullAlerted: drop.newFullAlerted)
         XCTAssertFalse(next.clearFull)
     }
 
     // 7. (#514) Holding at 100 (full still standing) must NOT clear the note, and a fresh fire at
-    //    100 from a clean state must NOT clear either — clearFull is the below-100 transition only.
+    //    100 from a clean state must NOT clear either — clearFull is the below-band transition only.
     func testHoldingAtFullDoesNotClear() {
         let hold = Policy.evaluate(pct: 100, charging: nil, lowAlerted: false, fullAlerted: true)
         XCTAssertFalse(hold.clearFull)
@@ -125,6 +131,43 @@ final class BatteryAlertPolicyTests: XCTestCase {
         let fresh = Policy.evaluate(pct: 100, charging: nil, lowAlerted: false, fullAlerted: false)
         XCTAssertTrue(fresh.fireFull)
         XCTAssertFalse(fresh.clearFull)
+    }
+
+    // 11. WHOOP 5.0 live 0x2A19 is an integer percent that often tops out at 99. ≥99 while
+    //     charging counts as full; 99 not charging, never having been charging, does not.
+    func testNearFullWhileChargingCountsAsFull() {
+        let hit = Policy.evaluate(pct: 99, charging: true, lowAlerted: false, fullAlerted: false)
+        XCTAssertTrue(hit.fireFull)
+        XCTAssertTrue(hit.newFullAlerted)
+
+        let hold = Policy.evaluate(pct: 99, charging: true, lowAlerted: false, fullAlerted: true)
+        XCTAssertFalse(hold.fireFull)
+
+        let idle = Policy.evaluate(pct: 99, charging: false, lowAlerted: false, fullAlerted: false)
+        XCTAssertFalse(idle.fireFull)
+    }
+
+    // 12. Some 5.0 straps report full only by the charge bit going off at ≥98.
+    func testChargingEndedAtOrAbove98CountsAsFull() {
+        let unplug = Policy.evaluate(pct: 98, charging: false, lowAlerted: false, fullAlerted: false,
+                                     wasCharging: true)
+        XCTAssertTrue(unplug.fireFull)
+
+        let stillCharging = Policy.evaluate(pct: 98, charging: true, lowAlerted: false, fullAlerted: false,
+                                            wasCharging: true)
+        XCTAssertFalse(stillCharging.fireFull)
+
+        let tooLow = Policy.evaluate(pct: 97, charging: false, lowAlerted: false, fullAlerted: false,
+                                     wasCharging: true)
+        XCTAssertFalse(tooLow.fireFull)
+    }
+
+    // 13. The ~8 min BATTERY_LEVEL gap reports charging as nil, not false. That must not look
+    //     like an unplug, or a 99% charge would fire full in the gap then again on CHARGING_OFF.
+    func testChargeBitGapDoesNotCountAsUnplugFull() {
+        let gap = Policy.evaluate(pct: 99, charging: nil, lowAlerted: false, fullAlerted: false,
+                                  wasCharging: true)
+        XCTAssertFalse(gap.fireFull)
     }
 
     // 8. The ESCALATION contract — the bug that cost a real night of biometrics. The 15% alert fires

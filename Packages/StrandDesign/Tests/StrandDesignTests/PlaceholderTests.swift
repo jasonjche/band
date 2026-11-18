@@ -75,6 +75,21 @@ final class StrandDesignTests: XCTestCase {
                        StrandPalette.zone5.rgbaComponents.r, accuracy: 0.001)
     }
 
+    func testNativeHRZoneTokensAreAllDistinct() {
+        let colors = (0...5).map { NativeTokens.hrZone($0).rgbaComponents }
+        for i in 0...5 {
+            for j in 0...5 where j > i {
+                let a = colors[i], b = colors[j]
+                let dist = abs(a.r - b.r) + abs(a.g - b.g) + abs(a.b - b.b)
+                XCTAssertGreaterThan(dist, 0.04, "zone \(i) and zone \(j) must be distinct")
+            }
+        }
+        XCTAssertEqual(NativeTokens.hrZone(0).rgbaComponents.r,
+                       NativeTokens.hrZone0.rgbaComponents.r, accuracy: 0.001)
+        XCTAssertEqual(NativeTokens.hrZone(1).rgbaComponents.b,
+                       NativeTokens.hrZone1.rgbaComponents.b, accuracy: 0.001)
+    }
+
     func testSleepStageColorMapping() {
         XCTAssertEqual(StrandPalette.sleepStageColor(.rem).rgbaComponents.g,
                        StrandPalette.sleepREM.rgbaComponents.g, accuracy: 0.001)

@@ -203,6 +203,10 @@ final class Repository: ObservableObject {
     /// data load on this so they reload when fresh strap data lands , `today?.day` alone is a stable
     /// date string within a day and would freeze e.g. the Today HR trend until the date rolls over.
     @Published private(set) var refreshSeq = 0
+    /// Parsed `stagesJSON` / `zonesJSON` keyed by row identity. Built off the main actor when
+    /// `refresh()` / `workoutRows` load, so a Home/Score redraw never re-decodes hundreds of blobs.
+    private var stagesByRowId: [String: [ParsedSleepStage]] = [:]
+    private var zonesByRowId: [String: [Double]] = [:]
 
     /// #989: bumped by every hydration mutation (log / edit / delete). Today's hydration card re-reads on
     /// this instead of waiting for a full `refreshSeq` data refresh, which a hydration write never causes,
@@ -259,13 +263,19 @@ final class Repository: ObservableObject {
         let trimmed = id.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, trimmed != deviceId else { return false }
         deviceId = trimmed
+        rawDashboard = nil
+        lastDashboardRevision = -1
         return true
     }
 
     #if DEBUG
     /// Inject a pre-opened store so unit tests can exercise the read facades (e.g. `timelineSeries`)
     /// against an in-memory `WhoopStore` without touching the on-disk path. DEBUG-only test seam.
-    func setStoreForTesting(_ s: WhoopStore) { self.store = s }
+    func setStoreForTesting(_ s: WhoopStore) {
+        self.store = s
+        rawDashboard = nil
+        lastDashboardRevision = -1
+    }
     #endif
 
     // MARK: - Union reads (active strap + canonical)
@@ -803,6 +813,17 @@ final class Repository: ObservableObject {
     /// Expose the shared store handle (used by the importer to persist mapped rows).
     func storeHandle() async -> WhoopStore? { await ensureStore() }
 
+    /// Finished display series for `(kind, day)` when the stored algorithm version matches.
+    func derivedSeries(kind: String, day: String, version: Int) async -> DerivedSeriesRow? {
+        guard let store = await ensureStore() else { return nil }
+        return try? await store.derivedSeries(kind: kind, day: day, version: version)
+    }
+
+    func upsertDerivedSeries(_ row: DerivedSeriesRow) async {
+        guard let store = await ensureStore() else { return }
+        _ = try? await store.upsertDerivedSeries(row)
+    }
+
     /// CAPTURE-D (#797): the on-device DATA VOLUME read FRESH from the STORE (never the `@Published`
     /// dashboard caches), for the Display & Performance test mode's `dataVolume` line. dbRows is the raw
     /// decoded-stream footprint; importedDays is the count of imported daily-metric rows under the active
@@ -856,6 +877,7 @@ final class Repository: ObservableObject {
         let sleeps: [CachedSleepSession]
         let vitalRows: [SourcedDailyMetric]
         let freshness: RepositoryFreshness
+        let stagesByRowId: [String: [ParsedSleepStage]]
     }
 
     /// Reload the dashboard caches over the last `nDays`, merging imported history with the
@@ -875,6 +897,41 @@ final class Repository: ObservableObject {
     /// newer one. Each call captures the token at entry and only publishes if it is still the latest. Not
     /// @Published (pure ordering, never drives the UI); race-free since Repository is @MainActor.
     private var refreshGen = 0
+    /// Coalesce overlapping `refresh()` calls (offload chunk storm, analyze-tail + backfill) into one
+    /// store load. Callers still await the drain that includes their write.
+    private var refreshPending = false
+    private var pendingRefreshDays = 0
+    private var pendingForceFull = false
+    private var refreshInFlight = false
+    private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Last consumed dashboard writer revision. Equal + already loaded → skip SQLite.
+    private var lastDashboardRevision = -1
+    /// Unmerged store snapshot so an incremental refresh can patch changed days without a 4000-day reread.
+    private var rawDashboard: RawDashboard?
+
+    /// How many times `performRefresh` actually ran (including cheap revision no-ops). Test seam.
+    private(set) var refreshPerformCount = 0
+    /// How many of those runs read SQLite (full or incremental). Test seam.
+    private(set) var refreshStoreLoadCount = 0
+    /// Callers that joined an in-flight drain instead of starting another load. Test seam.
+    private(set) var refreshCoalesceSkipCount = 0
+    /// True when the last store load patched a changed-day window instead of rereading all `nDays`.
+    private(set) var lastRefreshUsedIncremental = false
+
+    private struct RawDashboard {
+        var imported: [DailyMetric]
+        var computed: [DailyMetric]
+        var apple: [DailyMetric]
+        var activityFile: [DailyMetric]
+        var impSleep: [CachedSleepSession]
+        var compSleep: [CachedSleepSession]
+        var perf: [MetricPoint]
+        var cons: [MetricPoint]
+        var need: [MetricPoint]
+        var debt: [MetricPoint]
+        var appleSteps: [String: Int]
+        var nDays: Int
+    }
 
     /// #849: the `refreshSeq` value at which Today last ran its heavy history-wide reload (the ~40 reads +
     /// per-day raw-HR pass). Lives HERE, on the long-lived Repository, not in TodayView's `@State`, so it
@@ -941,109 +998,250 @@ final class Repository: ObservableObject {
     var loadFireCounts: [String: Int] = [:]
     #endif
 
+    /// When the last full (non-incremental) dashboard reload ran. See `fullRefreshMaxAge`.
+    private var lastFullRefreshAt: Date = .distantPast
+    /// Longest an incremental-only dashboard may go without a full reload.
+    static let fullRefreshMaxAge: TimeInterval = 300
+
     func refresh(days nDays: Int = 4000) async {
+        await scheduleRefresh(days: nDays, forceFull: false)
+    }
+
+    /// Old full-history reload, kept callable so tests can A/B it against incremental `refresh()`.
+    func refreshFull(days nDays: Int = 4000) async {
+        await scheduleRefresh(days: nDays, forceFull: true)
+    }
+
+    private func scheduleRefresh(days nDays: Int, forceFull: Bool) async {
+        pendingRefreshDays = max(pendingRefreshDays, nDays)
+        if forceFull { pendingForceFull = true }
+        refreshPending = true
+        if refreshInFlight {
+            refreshCoalesceSkipCount += 1
+            await withCheckedContinuation { refreshWaiters.append($0) }
+            return
+        }
+        refreshInFlight = true
+        defer {
+            refreshInFlight = false
+            let waiters = refreshWaiters
+            refreshWaiters.removeAll(keepingCapacity: true)
+            waiters.forEach { $0.resume() }
+        }
+        await drainRefresh()
+    }
+
+    private func drainRefresh() async {
+        while refreshPending {
+            refreshPending = false
+            let days = pendingRefreshDays
+            let full = pendingForceFull
+            pendingRefreshDays = 0
+            pendingForceFull = false
+            await performRefresh(days: max(days, 1), forceFull: full)
+        }
+    }
+
+    private func performRefresh(days nDays: Int, forceFull: Bool) async {
         guard let store = await ensureStore() else { return }
+        refreshPerformCount += 1
         refreshGen &+= 1
         let myGen = refreshGen
+
+        // Safety net: a writer that forgets to note its days would otherwise leave the dashboard stale
+        // until the next noted write. A full reload at most every 5 minutes bounds that.
+        let fullIsStale = Date().timeIntervalSince(lastFullRefreshAt) > Self.fullRefreshMaxAge
+        let peek = await store.peekDashboardChanges()
+        if loaded, rawDashboard != nil, !forceFull, !fullIsStale, peek.revision == lastDashboardRevision {
+            lastRefreshUsedIncremental = false
+            return
+        }
+
+        let taken = await store.takeDashboardChanges()
+        lastDashboardRevision = taken.revision
+
         let now = Date()
         let fromDay = Self.dayString(now.addingTimeInterval(-Double(nDays) * 86_400))
         let toDay = Self.dayString(now.addingTimeInterval(86_400))
         let nowTs = Int(now.timeIntervalSince1970)
         let lo = nowTs - nDays * 86_400, hi = nowTs + 86_400
 
-        // UNION the active strap (live raw, #814) with the canonical "my-whoop" import so a re-added strap's
-        // live data AND the canonical history both surface, deduped per day (active strap wins). Collapses to
-        // a single id on a single-device install (byte-identical to before).
+        let canIncremental = !forceFull
+            && !fullIsStale
+            && loaded
+            && rawDashboard != nil
+            && (rawDashboard?.nDays ?? 0) >= nDays
+            && taken.isIncremental
+        let raw: RawDashboard
+        if canIncremental, let existing = rawDashboard,
+           let patchFrom = taken.days.min(), let patchTo = taken.days.max() {
+            lastRefreshUsedIncremental = true
+            refreshStoreLoadCount += 1
+            raw = await loadRawWindow(store: store, nDays: max(existing.nDays, nDays),
+                                      fromDay: patchFrom, toDay: patchTo,
+                                      lo: Self.sleepLo(for: patchFrom), hi: Self.sleepHi(for: patchTo),
+                                      patching: existing)
+        } else {
+            lastRefreshUsedIncremental = false
+            refreshStoreLoadCount += 1
+            lastFullRefreshAt = Date()
+            raw = await loadRawWindow(store: store, nDays: nDays,
+                                      fromDay: fromDay, toDay: toDay, lo: lo, hi: hi,
+                                      patching: nil)
+        }
+
+        let chargeAnchorDay = AnalyticsEngine.dayString(nowTs, offsetSec: TimeZone.current.secondsFromGMT(for: now))
+        let hrvEpoch = Baselines.hrvBaselineEpoch()
+        let recoveryEpoch = Baselines.recoveryBaselineEpoch()
+        let captured = raw
+        let merged: MergedCaches = await Task.detached(priority: .utility) {
+            Self.mergeCaches(captured, chargeAnchorDay: chargeAnchorDay,
+                             hrvEpoch: hrvEpoch, recoveryEpoch: recoveryEpoch)
+        }.value
+
+        guard myGen == refreshGen else { return }
+        rawDashboard = captured
+        publishMerged(merged)
+    }
+
+    private func loadRawWindow(store: WhoopStore, nDays: Int, fromDay: String, toDay: String,
+                               lo: Int, hi: Int, patching: RawDashboard?) async -> RawDashboard {
         let imported = await unionDailyMetrics(store: store, from: fromDay, to: toDay)
         let computed = await unionComputedDailyMetrics(store: store, from: fromDay, to: toDay)
         let apple = (try? await store.dailyMetrics(deviceId: Self.appleHealthSource, from: fromDay, to: toDay)) ?? []
         let activityFile = (try? await store.dailyMetrics(deviceId: Self.activityFileSource, from: fromDay, to: toDay)) ?? []
         let impSleep = await unionSleepSessions(store: store, from: lo, to: hi)
         let compSleep = await unionComputedSleepSessions(store: store, from: lo, to: hi)
-
-        // #2525: the Charge baselines' inputs, read on the main actor before detaching: today's local day
-        // (the same local-calendar key the engine anchors its fold on) and the two recalibration epochs the
-        // engine reads from the same UserDefaults keys.
-        let chargeAnchorDay = AnalyticsEngine.dayString(nowTs, offsetSec: TimeZone.current.secondsFromGMT(for: now))
-        let hrvEpoch = Baselines.hrvBaselineEpoch()
-        let recoveryEpoch = Baselines.recoveryBaselineEpoch()
-
-        // Export-verbatim sleep figures (long-format metricSeries rows from WhoopImporter).
-        // SleepView prefers these per day over its APPROXIMATE recomputations.
         let perf = await unionMetricSeries(store: store, key: "sleep_performance", from: fromDay, to: toDay)
         let cons = await unionMetricSeries(store: store, key: "sleep_consistency", from: fromDay, to: toDay)
         let need = await unionMetricSeries(store: store, key: "sleep_need_min", from: fromDay, to: toDay)
         let debt = await unionMetricSeries(store: store, key: "sleep_debt_min", from: fromDay, to: toDay)
+        var appleSteps: [String: Int] = [:]
+        if AppBrand.isPersonalBuild {
+            let rows = (try? await store.appleDaily(deviceId: "apple-health", from: fromDay, to: toDay)) ?? []
+            for row in rows {
+                if let steps = row.steps, steps > 0 { appleSteps[row.day] = steps }
+            }
+        }
+        guard let base = patching else {
+            return RawDashboard(imported: imported, computed: computed, apple: apple,
+                                activityFile: activityFile, impSleep: impSleep, compSleep: compSleep,
+                                perf: perf, cons: cons, need: need, debt: debt,
+                                appleSteps: appleSteps, nDays: nDays)
+        }
+        return RawDashboard(
+            imported: Self.patchDays(base.imported, replacing: imported, from: fromDay, to: toDay),
+            computed: Self.patchDays(base.computed, replacing: computed, from: fromDay, to: toDay),
+            apple: Self.patchDays(base.apple, replacing: apple, from: fromDay, to: toDay),
+            activityFile: Self.patchDays(base.activityFile, replacing: activityFile, from: fromDay, to: toDay),
+            impSleep: Self.patchSleep(base.impSleep, replacing: impSleep, from: lo, to: hi),
+            compSleep: Self.patchSleep(base.compSleep, replacing: compSleep, from: lo, to: hi),
+            perf: Self.patchPoints(base.perf, replacing: perf, from: fromDay, to: toDay),
+            cons: Self.patchPoints(base.cons, replacing: cons, from: fromDay, to: toDay),
+            need: Self.patchPoints(base.need, replacing: need, from: fromDay, to: toDay),
+            debt: Self.patchPoints(base.debt, replacing: debt, from: fromDay, to: toDay),
+            appleSteps: Self.patchSteps(base.appleSteps, replacing: appleSteps, from: fromDay, to: toDay),
+            nDays: max(base.nDays, nDays))
+    }
 
-        // Merge + sort OFF the main actor (FIX 3): the figures build, the two O(n log n) daily/sleep merges,
-        // the source-row sort, and the freshness counts are all pure over the rows just read, so they run in
-        // a detached task and the main actor stays free for SwiftUI during a deep-history refresh.
-        let merged: MergedCaches = await Task.detached(priority: .utility) {
-            var fig: [String: ImportedSleepFigures] = [:]
-            for p in perf { fig[p.day, default: ImportedSleepFigures()].performancePct = p.value }
-            for p in cons { fig[p.day, default: ImportedSleepFigures()].consistencyPct = p.value }
-            for p in need { fig[p.day, default: ImportedSleepFigures()].needMin = p.value }
-            for p in debt { fig[p.day, default: ImportedSleepFigures()].debtMin = p.value }
-            // H5 (#509): a night the user hand-edited (userEdited) must keep its corrected sleep figures even
-            // when a WHOOP/Apple import also covers that day. The computed ("-noop") session carries the edit,
-            // and IntelligenceEngine re-keys the computed DAILY row from it; collect those edited days so the
-            // merge lets the computed row's SLEEP fields win there (imports still win on every un-edited day).
-            let editedDays = Self.userEditedDays(compSleep)
-            return MergedCaches(
-                importedSleep: fig,
-                days: Self.mergeActivityFileSteps(
-                    into: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
-                    activityFile
+    nonisolated private static func mergeCaches(_ raw: RawDashboard, chargeAnchorDay: String,
+                                                hrvEpoch: Double, recoveryEpoch: Double) -> MergedCaches {
+        var fig: [String: ImportedSleepFigures] = [:]
+        for p in raw.perf { fig[p.day, default: ImportedSleepFigures()].performancePct = p.value }
+        for p in raw.cons { fig[p.day, default: ImportedSleepFigures()].consistencyPct = p.value }
+        for p in raw.need { fig[p.day, default: ImportedSleepFigures()].needMin = p.value }
+        for p in raw.debt { fig[p.day, default: ImportedSleepFigures()].debtMin = p.value }
+        let editedDays = Self.userEditedDays(raw.compSleep)
+        let sleeps = Self.mergeSleep(imported: raw.impSleep, computed: raw.compSleep)
+        var stages: [String: [ParsedSleepStage]] = [:]
+        stages.reserveCapacity(sleeps.count)
+        for s in sleeps {
+            stages[Self.sleepStageCacheKey(s)] = Self.parseStagesJSON(s.stagesJSON)
+        }
+        return MergedCaches(
+            importedSleep: fig,
+            days: Self.mergeAppleSteps(
+                into: Self.mergeActivityFileSteps(
+                    into: Self.mergeDaily(imported: raw.imported, computed: raw.computed, userEditedDays: editedDays),
+                    raw.activityFile
                 ),
-                // From the two buckets BEFORE `mergeDaily` blends them: the rule needs to know which nights
-                // are imported and which are the wearer's own.
-                chargeBaselines: ChargeBaselines.resolve(imported: imported, own: computed,
-                                                         anchorDay: chargeAnchorDay,
-                                                         hrvEpoch: hrvEpoch, recoveryEpoch: recoveryEpoch),
-                sleeps: Self.mergeSleep(imported: impSleep, computed: compSleep),
-                vitalRows: Self.sourceRows(imported: imported, computed: computed, apple: apple),
-                freshness: Self.computeFreshness(imported: imported, computed: computed, apple: apple,
-                                                 importedSleeps: impSleep, computedSleeps: compSleep))
-        }.value
+                raw.appleSteps
+            ),
+            chargeBaselines: ChargeBaselines.resolve(imported: raw.imported, own: raw.computed,
+                                                     anchorDay: chargeAnchorDay,
+                                                     hrvEpoch: hrvEpoch, recoveryEpoch: recoveryEpoch),
+            sleeps: sleeps,
+            vitalRows: Self.sourceRows(imported: raw.imported, computed: raw.computed, apple: raw.apple),
+            freshness: Self.computeFreshness(imported: raw.imported, computed: raw.computed, apple: raw.apple,
+                                             importedSleeps: raw.impSleep, computedSleeps: raw.compSleep),
+            stagesByRowId: stages)
+    }
 
-        // Generation guard (#review): if a newer refresh() started while this one merged off-actor, drop
-        // this now-stale result so it can't clobber the newer caches or re-fire loadAll out of order.
-        guard myGen == refreshGen else { return }
-
-        // DIFF before publishing (FIX 3): if this refresh produced byte-identical caches AND we've already
-        // loaded once, skip the re-publish and the `refreshSeq` bump entirely , assigning an equal value to
-        // an @Published prop still fires objectWillChange, so the skip must cover the assignments too. This
-        // is what stops the analyze-tail's burst of refresh() calls each re-firing TodayView.loadAll().
-        let unchanged = loaded
+    private func publishMerged(_ merged: MergedCaches) {
+        // Cheap count/revision check before walking the full arrays. Assigning an equal value to an
+        // @Published prop still fires objectWillChange, so skip each field independently.
+        let daysSame = loaded && merged.days.count == days.count
+            && merged.days.last?.day == days.last?.day
             && merged.days == days
-            && merged.chargeBaselines == chargeBaselines
+        let sleepsSame = loaded && merged.sleeps.count == sleeps.count
+            && merged.sleeps.last?.endTs == sleeps.last?.endTs
             && merged.sleeps == sleeps
+        let importedSame = loaded && merged.importedSleep.count == importedSleep.count
             && merged.importedSleep == importedSleep
+        let vitalsSame = loaded && merged.vitalRows.count == vitalRows.count
             && merged.vitalRows == vitalRows
-            && merged.freshness == freshness
-        guard !unchanged else { return }
-
-        // One consistent publish per refresh: assign every cache, flip `loaded`, then bump `refreshSeq` so
-        // the intraday-updating views reload exactly once for this real change.
-        self.importedSleep = merged.importedSleep
-        self.days = merged.days
-        self.chargeBaselines = merged.chargeBaselines
-        self.sleeps = merged.sleeps
-        self.vitalRows = merged.vitalRows
-        self.freshness = merged.freshness
+        let baselinesSame = loaded && merged.chargeBaselines == chargeBaselines
+        let freshnessSame = loaded && merged.freshness == freshness
+        if daysSame && sleepsSame && importedSame && vitalsSame && baselinesSame && freshnessSame {
+            return
+        }
+        if !importedSame { self.importedSleep = merged.importedSleep }
+        if !daysSame { self.days = merged.days }
+        if !baselinesSame { self.chargeBaselines = merged.chargeBaselines }
+        if !sleepsSame { self.sleeps = merged.sleeps }
+        if !vitalsSame { self.vitalRows = merged.vitalRows }
+        if !freshnessSame { self.freshness = merged.freshness }
+        self.stagesByRowId = merged.stagesByRowId
         self.loaded = true
-        // Drop the Explorer's cross-catalog memo rather than leaving it to be evicted lazily by a key
-        // mismatch: its key is about to go stale, and lazy eviction only frees the memory when the NEXT
-        // scan replaces it — so a user who opens Explore once and never returns keeps a whole catalog of
-        // series resident for the rest of the session. The key check stays; it still guards what this
-        // line cannot, an active-strap re-point with no refresh behind it.
-        //
-        // BEFORE the bump, with the other caches, per this block's own ordering. Nothing can currently
-        // observe the gap — the assignments are synchronous on the main actor and a @Published bump only
-        // schedules SwiftUI work — but "clear every cache, then publish" is the invariant stated above,
-        // and an appended line after the bump is how that invariant quietly stops being true.
         self.exploreAllCache = nil
         self.refreshSeq += 1
+    }
+
+    nonisolated private static func patchDays(_ existing: [DailyMetric], replacing: [DailyMetric],
+                                              from: String, to: String) -> [DailyMetric] {
+        let kept = existing.filter { $0.day < from || $0.day > to }
+        return (kept + replacing).sorted { $0.day < $1.day }
+    }
+
+    nonisolated private static func patchSleep(_ existing: [CachedSleepSession],
+                                               replacing: [CachedSleepSession],
+                                               from: Int, to: Int) -> [CachedSleepSession] {
+        let kept = existing.filter { $0.startTs < from || $0.startTs > to }
+        return (kept + replacing).sorted { $0.startTs < $1.startTs }
+    }
+
+    nonisolated private static func patchPoints(_ existing: [MetricPoint], replacing: [MetricPoint],
+                                                from: String, to: String) -> [MetricPoint] {
+        let kept = existing.filter { $0.day < from || $0.day > to }
+        return (kept + replacing).sorted { $0.day < $1.day }
+    }
+
+    nonisolated private static func patchSteps(_ existing: [String: Int], replacing: [String: Int],
+                                               from: String, to: String) -> [String: Int] {
+        var out = existing
+        for key in out.keys where key >= from && key <= to { out.removeValue(forKey: key) }
+        for (day, steps) in replacing { out[day] = steps }
+        return out
+    }
+
+    private static func sleepLo(for day: String) -> Int {
+        let start = dayFormatter.date(from: day) ?? Date()
+        return Int(start.timeIntervalSince1970) - 12 * 3_600
+    }
+
+    private static func sleepHi(for day: String) -> Int {
+        let start = dayFormatter.date(from: day) ?? Date()
+        return Int(start.timeIntervalSince1970) + 36 * 3_600
     }
 
     /// Per-source coverage counts for the Freshness Pipeline card. Pure over the rows already read.
@@ -1087,6 +1285,51 @@ final class Repository: ObservableObject {
             }
         }
         return byDay.values.sorted { $0.day < $1.day }
+    }
+
+    /// One day's steps: the larger of the strap count and Apple Health. Nil when neither
+    /// source has a positive reading. Home, the steps metric page, and `self.days` all
+    /// read this — two readouts of one fact must not disagree.
+    nonisolated static func resolvedSteps(strap: Int?, apple: Int?) -> Int? {
+        [strap, apple].compactMap { $0 }.filter { $0 > 0 }.max()
+    }
+
+    /// Personal build: a day's steps are the larger of the strap's count and Apple Health's.
+    /// The strap count only covers the history this app managed to pull, so when another app
+    /// took records off the strap first it reads far too low (98 against 8,202 on the day this
+    /// was written). Step counts only grow, so the larger figure is the more complete one.
+    /// Apple-only days (no strap row) are inserted so a phone-only day still has a value.
+    /// Duplicate `base` rows for one day collapse to the larger strap count before overlay.
+    nonisolated static func mergeAppleSteps(into base: [DailyMetric],
+                                            _ appleSteps: [String: Int]) -> [DailyMetric] {
+        var byDay = Dictionary(base.map { ($0.day, $0) }, uniquingKeysWith: { a, b in
+            (a.steps ?? -1) >= (b.steps ?? -1) ? a : b
+        })
+        for (day, apple) in appleSteps {
+            guard let resolved = resolvedSteps(strap: byDay[day]?.steps, apple: apple) else { continue }
+            if let existing = byDay[day] {
+                if existing.steps != resolved {
+                    byDay[day] = replacingSteps(existing, resolved)
+                }
+            } else {
+                byDay[day] = DailyMetric(
+                    day: day, totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil,
+                    lightMin: nil, disturbances: nil, restingHr: nil, avgHrv: nil, recovery: nil,
+                    strain: nil, exerciseCount: nil, steps: resolved)
+            }
+        }
+        return byDay.values.sorted { $0.day < $1.day }
+    }
+
+    nonisolated private static func replacingSteps(_ d: DailyMetric, _ steps: Int) -> DailyMetric {
+        DailyMetric(
+            day: d.day, totalSleepMin: d.totalSleepMin, efficiency: d.efficiency, deepMin: d.deepMin,
+            remMin: d.remMin, lightMin: d.lightMin, disturbances: d.disturbances, restingHr: d.restingHr,
+            avgHrv: d.avgHrv, recovery: d.recovery, strain: d.strain, exerciseCount: d.exerciseCount,
+            spo2Pct: d.spo2Pct, skinTempDevC: d.skinTempDevC, respRateBpm: d.respRateBpm,
+            steps: steps, activeKcalEst: d.activeKcalEst,
+            spo2Red: d.spo2Red, spo2Ir: d.spo2Ir, avgSdnn: d.avgSdnn, skinTempC: d.skinTempC,
+            sleepHrOnly: d.sleepHrOnly)
     }
 
     nonisolated static func mergeActivityFileSteps(into base: [DailyMetric],
@@ -1249,7 +1492,34 @@ final class Repository: ObservableObject {
                 byTs[s.ts] = s
             }
         }
-        return byTs.values.sorted { $0.ts < $1.ts }
+        return await Task.detached(priority: .utility) {
+            byTs.values.sorted { $0.ts < $1.ts }
+        }.value
+    }
+
+    /// Downsampled HR (avg/min/max per `bucketSeconds`) for a chart. Aggregated in SQL so a 24h
+    /// 1 Hz window returns hundreds of buckets instead of tens of thousands of raw samples.
+    /// Keep `hrSamples(from:to:limit:)` for callers that need the raw series (live Effort).
+    func hrSamples(from: Int, to: Int, bucketSeconds: Int) async -> [HRBucket] {
+        await hrBuckets(from: from, to: to, bucketSeconds: bucketSeconds)
+    }
+
+    /// Parsed hypnogram segments for a sleep row. Hits the per-row cache filled on `refresh()`.
+    func parsedStages(for session: CachedSleepSession) -> [ParsedSleepStage] {
+        let key = Self.sleepStageCacheKey(session)
+        if let hit = stagesByRowId[key] { return hit }
+        let parsed = Self.parseStagesJSON(session.stagesJSON)
+        stagesByRowId[key] = parsed
+        return parsed
+    }
+
+    /// Parsed Z1…Z5 percentages for a workout row. Hits the per-row cache filled on `workoutRows()`.
+    func parsedZones(for workout: WorkoutRow) -> [Double]? {
+        let key = Self.workoutZoneCacheKey(workout)
+        if let hit = zonesByRowId[key] { return hit }
+        guard let parsed = Self.parseZonesJSON(workout.zonesJSON) else { return nil }
+        zonesByRowId[key] = parsed
+        return parsed
     }
 
     /// R-R beats across the active physical WHOOP and canonical history. Exact duplicates are removed
@@ -1338,6 +1608,34 @@ final class Repository: ObservableObject {
             if let ticks = StepsCounter.stepsInWindow(samples) { return ticks }
         }
         return nil
+    }
+
+    /// Steps covering a workout window: strap `StepsCounter` first, then overlapping Apple Health
+    /// hours, then a stored row count. Any sport, any source.
+    func workoutStepCount(from: Int, to: Int, ticksPerStep: Double, stored: Int?) async -> Int? {
+        let strap = WorkoutSteps.scaledTicks(
+            await strapStepTicks(from: from, to: to),
+            ticksPerStep: ticksPerStep
+        )
+        let hourStart = (from / WorkoutSteps.hourSeconds) * WorkoutSteps.hourSeconds
+        let hours = await appleStepHours(from: hourStart, to: to)
+        let apple = WorkoutSteps.appleStepsInWindow(hours, from: from, to: to)
+        return WorkoutSteps.resolve(strap: strap, apple: apple, stored: stored)
+    }
+
+    /// Lift-log sets paired to this workout through (deviceId, startTs, sport).
+    func liftSets(startTs: Int, sport: String) async -> [LiftSetRow] {
+        guard let store = await ensureStore() else { return [] }
+        for id in importedReadIds {
+            let sessions = (try? await store.liftSessions(deviceId: id, fromTs: startTs, toTs: startTs)) ?? []
+            let match = sessions.first {
+                $0.startTs == startTs && $0.sport.caseInsensitiveCompare(sport) == .orderedSame
+            } ?? sessions.first { $0.startTs == startTs }
+            if let session = match {
+                return (try? await store.liftSets(sessionId: session.id)) ?? []
+            }
+        }
+        return []
     }
 
     /// Pure pick of the latest classed activity across the union's per-id step lists: the non-nil
@@ -1735,16 +2033,13 @@ final class Repository: ObservableObject {
     /// JSON is the fallback awake-only block / unparseable. Used to seed a manually-added nap's efficiency
     /// so its hypnogram footer reads sensibly before the next recompute re-derives it. (#508)
     private func sleepEfficiency(fromStagesJSON json: String?) -> Double? {
-        guard let json, let data = json.data(using: .utf8),
-              let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+        let segs = Self.parseStagesJSON(json)
+        guard !segs.isEmpty else { return nil }
         var asleep = 0.0, total = 0.0
-        for seg in arr {
-            guard let s = (seg["start"] as? NSNumber)?.intValue,
-                  let e = (seg["end"] as? NSNumber)?.intValue,
-                  let stage = seg["stage"] as? String, e > s else { continue }
-            let dur = Double(e - s)
+        for seg in segs {
+            let dur = Double(seg.end - seg.start)
             total += dur
-            if stage != "wake" && stage != "awake" { asleep += dur }
+            if seg.stage != "wake" && seg.stage != "awake" { asleep += dur }
         }
         return total > 0 && asleep > 0 ? asleep / total : nil
     }
@@ -1784,10 +2079,13 @@ final class Repository: ObservableObject {
         // which engine runs over the already-detected window — detection is identical either way.
         // (V7 Pillar 3b)
         let useV2 = PuffinExperiment.experimentalSleepV2Enabled
+        let useLearned = PuffinExperiment.learnedSleepStagerEnabled
         let segs = await Task.detached(priority: .utility) {
-            let staged = useV2
+            let staged = SleepStageLearned.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr,
+                                                        useBundled: useLearned)
+                ?? (useV2
                 ? SleepStagerV2.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr, resp: resp)
-                : SleepStager.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr, resp: resp)
+                : SleepStager.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr, resp: resp))
             // #364 follow-up: motion-aware wake refinement post-pass, same toggle-shaped no-op when off
             // as every other Experimental switch here.
             return WakeMotionRefinement.apply(staged, grav: grav, steps: steps, enabled: useMotionAwareWake)
@@ -1802,15 +2100,26 @@ final class Repository: ObservableObject {
     /// raw over each edited night's LOCKED bounds and rewrite the stage breakdown ONLY, never the user's
     /// bed/wake correction. Idempotent: a night already staged from raw re-derives to the same JSON
     /// (equality-skip, no write); a night edited-too-early heals the moment its raw arrives; a true
-    /// imported night (raw never dense) is left untouched (`restageFromRaw` returns nil). Reads/writes the
-    /// COMPUTED source , the same one `analyzeRecent` reads edited rows from. Returns the (possibly
-    /// refreshed) edited rows so the caller recomputes daily aggregates from the corrected stages.
+    /// imported night (raw never dense) is left untouched (`restageFromRaw` returns nil). Reads/writes
+    /// every computed namespace the Sleep tab can show (`rawComputedReadIds`), because IntelligenceEngine
+    /// banks computed nights under `"my-whoop-noop"` while a paired strap's `computedDeviceId` is
+    /// `"whoop-<uuid>-noop"`. Returns the (possibly refreshed) edited rows so the caller recomputes
+    /// daily aggregates from the corrected stages.
     func selfHealEditedStages(from windowStart: Int, to windowEnd: Int) async -> [CachedSleepSession] {
         guard let store = await ensureStore() else { return [] }
+        let ownerIds = rawComputedReadIds(store: store)
         func editedRows() async -> [CachedSleepSession] {
-            ((try? await store.sleepSessions(deviceId: computedDeviceId, from: windowStart,
-                                             to: windowEnd, limit: 100_000)) ?? [])
-                .filter { $0.userEdited }
+            var rows: [CachedSleepSession] = []
+            var seen = Set<Int>()
+            for id in ownerIds {
+                let found = ((try? await store.sleepSessions(deviceId: id, from: windowStart,
+                                                             to: windowEnd, limit: 100_000)) ?? [])
+                    .filter { $0.userEdited }
+                for row in found where seen.insert(row.startTs).inserted {
+                    rows.append(row)
+                }
+            }
+            return rows
         }
         let edited = await editedRows()
         guard !edited.isEmpty else { return [] }
@@ -1820,10 +2129,19 @@ final class Repository: ObservableObject {
             // isn't dense yet, or when the result already matches what's stored (steady state , no write).
             guard let newJSON = await restageFromRaw(start: row.effectiveStartTs, end: row.endTs),
                   newJSON != row.stagesJSON else { continue }
-            let n = (try? await store.updateSleepStages(deviceId: computedDeviceId,
-                                                        detectedStartTs: row.startTs,
-                                                        stagesJSON: newJSON)) ?? 0
-            if n > 0 { healed = true }
+            var owners = ownerIds
+            if let deviceId = row.deviceId, !owners.contains(deviceId) {
+                owners.insert(deviceId, at: 0)
+            }
+            for id in owners {
+                let n = (try? await store.updateSleepStages(deviceId: id,
+                                                            detectedStartTs: row.startTs,
+                                                            stagesJSON: newJSON)) ?? 0
+                if n > 0 {
+                    healed = true
+                    break
+                }
+            }
         }
         return healed ? await editedRows() : edited
     }
@@ -2169,17 +2487,7 @@ final class Repository: ObservableObject {
                 s.map { Self.timelinePoint($0.ts, Double($0.state)) }
             }.value
         case .ouraMovement:
-            // The ring's OWN per-window motion from OURA_MOTION events (0x47, movement-gated): plot
-            // `motion_seconds` (0 when still, up to 31 s of movement in the ~30 s window). An honest
-            // activity track, NEVER scored and NEVER a step count; empty for a WHOOP strap (no such events).
-            let evs = (try? await store.events(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
-            return await Task.detached(priority: .utility) {
-                evs.compactMap { e -> TrendPoint? in
-                    guard e.kind == OuraStreamMapping.motionEventKind,
-                          let ms = e.payload["motion_seconds"]?.intValue else { return nil }
-                    return Self.timelinePoint(e.ts, Double(ms))
-                }
-            }.value
+            return []
         }
     }
 
@@ -2768,6 +3076,48 @@ final class Repository: ObservableObject {
         guard let store = await ensureStore() else { return [] }
         let now = Int(Date().timeIntervalSince1970)
         let lo = now - days * 86_400, hi = now + 86_400
+        // Capture MainActor-only inputs as values so the store reads, natural-key dedup, dismissed
+        // filter, cross-source collapse and sort can run off the main actor. Zone-cache mutation
+        // and the display HR projection hop back.
+        let namespaces = Self.workoutNamespaces(rawIds: rawPhysiologyReadIds(store: store))
+        let dismissed = dismissedDetectedSpans
+        let includeDedupTrace = TestCentre.active(.workouts) && workoutsLog != nil
+        let (visible, trace) = await Task.detached(priority: .utility) {
+            await Self.loadVisibleWorkoutRows(
+                store: store,
+                namespaces: namespaces,
+                from: lo, to: hi,
+                dismissedTokens: dismissed,
+                includeDedupTrace: includeDedupTrace)
+        }.value
+        if includeDedupTrace {
+            for line in trace { emitWorkouts(line) }
+        }
+        let zoneMap = await Task.detached(priority: .utility) {
+            var map: [String: [Double]] = [:]
+            for row in visible {
+                if let p = Self.parseZonesJSON(row.zonesJSON) {
+                    map[Self.workoutZoneCacheKey(row)] = p
+                }
+            }
+            return map
+        }.value
+        for (k, v) in zoneMap { zonesByRowId[k] = v }
+        return await reconcileWorkoutHrWithTrace(visible, store: store)
+    }
+
+    /// Store reads + the same dismissed / natural-key / cross-source collapse `workoutRows` used
+    /// to run on the main actor. `nonisolated static` so a `Task.detached` can call it with value
+    /// inputs (WhoopStore is an actor; the id lists are strings). Trace lines are returned rather
+    /// than emitted so the MainActor sink still logs them.
+    nonisolated private static func loadVisibleWorkoutRows(
+        store: WhoopStore,
+        namespaces: [String],
+        from lo: Int,
+        to hi: Int,
+        dismissedTokens: [String],
+        includeDedupTrace: Bool
+    ) async -> (rows: [WorkoutRow], trace: [String]) {
         // UNION every registered WHOOP + canonical (and computed siblings) so workouts banked before a
         // re-add remain visible alongside every retained strap's live workouts.
         // De-dup identical same-source rows that appear under both union ids by natural key (the cross-SOURCE
@@ -2777,29 +3127,23 @@ final class Repository: ObservableObject {
         // row lives. Covers each raw id, its computed `-noop` sibling, Apple Health, imported lifting
         // sessions (Hevy / Liftosaur) and imported activity FILES (#29: FIT / GPX / TCX, or a successful
         // file import never appears here at all). HR is reconciled from the strap trace at the end.
-        for id in Self.workoutNamespaces(rawIds: rawPhysiologyReadIds(store: store)) {
+        for id in namespaces {
             rows += (try? await store.workouts(deviceId: id, from: lo, to: hi, limit: 5000)) ?? []
         }
-        rows = Self.dedupWorkoutsByNaturalKey(rows)
-        let spans = WorkoutSource.parseDismissedSpans(dismissedDetectedSpans)
+        rows = dedupWorkoutsByNaturalKey(rows)
+        let spans = WorkoutSource.parseDismissedSpans(dismissedTokens)
         // #687: collapse the SAME activity tracked live under the strap AND imported from Health Connect /
         // Apple Health into one richer entry , they sit under different sources so without this they show
         // as two sessions. Dedup runs on the dismissed-filtered set, before the final newest-first sort.
         let filtered = rows.filter { !WorkoutSource.isDismissed($0, spans: spans) }
         // Workouts & GPS test mode: when on, run the dedup twin which returns the BYTE-IDENTICAL kept list
-        // plus a trace line per collapsed cross-source pair, tagged `.workouts`. Zero-cost when off (the gate
-        // is one UserDefaults bool read inside emitWorkouts), and the kept list equals dedupCrossSource(...)
-        // exactly, so the workout list the screen shows is unchanged.
-        let deduped: [WorkoutRow]
-        if TestCentre.active(.workouts), workoutsLog != nil {
+        // plus a trace line per collapsed cross-source pair, tagged `.workouts`. Zero-cost when off, and the
+        // kept list equals dedupCrossSource(...) exactly, so the workout list the screen shows is unchanged.
+        if includeDedupTrace {
             let (kept, trace) = WorkoutSource.dedupCrossSourceTrace(filtered)
-            for line in trace { emitWorkouts(line) }
-            deduped = kept
-        } else {
-            deduped = WorkoutSource.dedupCrossSource(filtered)
+            return (kept.sorted { $0.startTs > $1.startTs }, trace)
         }
-        let visible = deduped.sorted { $0.startTs > $1.startTs }
-        return await reconcileWorkoutHrWithTrace(visible, store: store)
+        return (WorkoutSource.dedupCrossSource(filtered).sorted { $0.startTs > $1.startTs }, [])
     }
 
     /// DISPLAY-ONLY: reconcile each workout's shown Avg/Max HR with the strap trace that actually drives
@@ -2874,6 +3218,7 @@ final class Repository: ObservableObject {
                     // so the child task crosses only Sendable scalars.
                     let cls = WorkoutSource.classify(rows[idx].source)
                     let wantStrain = (cls == .manual || cls == .detected) && rows[idx].strain == nil
+                        && ActivityScoring.contributesActivityStrain(rows[idx].sport)
                     // #510: read HR under the workout's OWN recording strap, not a single active id. A detected
                     // row's `source` IS its computed strap id ("<base>-noop"), so a bout auto-detected on a 2nd
                     // WHOOP reads "<base>" instead of the active strap's empty window. Resolved on the main actor;
@@ -2904,8 +3249,13 @@ final class Repository: ObservableObject {
                             let samples = (try? await store.hrSamples(deviceId: hrIds[0],
                                                                       from: startTs, to: endTs,
                                                                       limit: 8000)) ?? []
-                            strain = StrainScorer.strain(samples, maxHR: p.hrMax,
+                            if AppBrand.isPersonalBuild {
+                                strain = NativeStrain.score(samples, maxHR: p.hrMax,
+                                                            restingHR: BandStrain.defaultRestingHR)
+                            } else {
+                                strain = StrainScorer.strain(samples, maxHR: p.hrMax,
                                                 method: PuffinExperiment.effortMethod, sex: p.sex)
+                            }
                         } else {
                             strain = nil
                         }
@@ -3064,6 +3414,13 @@ final class Repository: ObservableObject {
     func deleteWorkout(_ row: WorkoutRow) async {
         if WorkoutSource.classify(row.source) == .detected { await dismissDetected(row); return }
         guard let store = await ensureStore() else { return }
+        // Personal build: bouts are saved automatically, so a delete must also stop the detector
+        // saving the same span again on the next pass.
+        if AppBrand.isPersonalBuild {
+            let token = WorkoutSource.dismissedToken(for: row)
+            var spans = dismissedDetectedSpans
+            if !spans.contains(token) { spans.append(token); dismissedDetectedSpans = spans }
+        }
         // Sweep every STRAP namespace, not just the active one. A manual row banked under a retained
         // strap or a computed sibling is shown by `workoutRows` and was previously undeletable: the
         // delete touched one namespace, the reload re-read the row from another, and it reappeared
@@ -3167,6 +3524,14 @@ final class Repository: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: Self.autoDetectDismissedKey) }
     }
 
+    /// Tokens of rows this detector saved (`startTs:endTs`). nil means the key has never been
+    /// written, so the next pass grandfathers unmarked Activity/manual rows in the scan window.
+    private static let autoSavedKey = "workouts.autoSaved"
+    private var autoSavedTokens: [String]? {
+        get { UserDefaults.standard.stringArray(forKey: Self.autoSavedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.autoSavedKey) }
+    }
+
     /// Token for one auto-detect span (matches the detector's integer seconds).
     nonisolated private static func autoDetectToken(_ w: DetectedWorkout) -> String {
         "\(w.startSec):\(w.endSec)"
@@ -3245,6 +3610,9 @@ final class Repository: ObservableObject {
         // Exclude every already-saved workout window (any source , strap, manual, imported, detected).
         let saved = await workoutRows()
         let savedSpans = saved.map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
+        let gravity = await gravitySamplesUnion(from: from, to: now)
+        let motion = AutoWorkoutDetector.motionPoints(gravity)
+        let steps = await autoDetectStepTicks(from: from, to: now)
 
         // Workouts & GPS test mode: the published 12-minute result remains byte-identical. Aggregate,
         // local-only comparisons include that 12-minute baseline plus the 10- and 15-minute alternatives.
@@ -3253,7 +3621,7 @@ final class Repository: ObservableObject {
         let candidates: [DetectedWorkout]
         if TestCentre.active(.workouts), workoutsLog != nil {
             let (results, trace) = AutoWorkoutDetector.detectTrace(
-                hr: hr, restingBpm: restingBpm, motion: nil, savedSpans: savedSpans,
+                hr: hr, restingBpm: restingBpm, motion: motion, steps: steps, savedSpans: savedSpans,
                 minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin,
                 path: "autoDetect")
             for line in trace { emitWorkouts(line) }
@@ -3267,14 +3635,17 @@ final class Repository: ObservableObject {
                 }
                 .map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
             for line in AutoWorkoutDetector.shadowComparisonLines(
-                hr: hr, restingBpm: restingBpm, motion: nil, savedSpans: labelledSpans) {
+                hr: hr, restingBpm: restingBpm, motion: motion, savedSpans: labelledSpans) {
                 emitWorkouts(line)
             }
             candidates = results
         } else {
-            candidates = AutoWorkoutDetector.detect(hr: hr, restingBpm: restingBpm,
-                                                    motion: nil, savedSpans: savedSpans,
-                                                    minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin)
+            candidates = AutoWorkoutDetector.detect(
+                hr: hr, restingBpm: restingBpm,
+                motion: motion,
+                steps: steps,
+                savedSpans: savedSpans,
+                minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin)
         }
         return Self.selectAutoDetectCandidate(
             candidates,
@@ -3295,6 +3666,151 @@ final class Repository: ObservableObject {
                                                      energyKcal: nil) else { return false }
         await saveManualWorkout(row)
         return true
+    }
+
+    /// Personal build: save every finished detected bout as an "Activity" with no prompt, the way
+    /// WHOOP logs a workout nobody started by hand. Returns how many rows changed (saved or removed).
+    /// A bout whose end is within `settleSeconds` of the newest stored HR sample is left for the next
+    /// pass, because it may still be in progress and a saved span blocks the detector from ever
+    /// extending it. Auto-saved rows are marked in UserDefaults (`workouts.autoSaved`) as
+    /// `startTs:endTs` — source "manual" + sport "Activity" is not unique (a user can type that), so
+    /// the token list is the marker, with a one-time grandfather of unmarked Activity/manual rows in
+    /// this scan window. A delete leaves a tombstone (see `deleteWorkout`) so the same bout is not
+    /// saved again; pruning a row that no longer qualifies does not tombstone it.
+    @discardableResult
+    func autoSaveDetectedWorkouts(daysBack: Int = 2, settleSeconds: Int = 600) async -> Int {
+        guard AppBrand.isPersonalBuild else { return 0 }
+        let now = Int(Date().timeIntervalSince1970)
+        let from = now - daysBack * 86_400
+        let samples = await hrSamples(from: from, to: now, limit: 200_000)
+        guard samples.count >= 2, let frontier = samples.map(\.ts).max() else { return 0 }
+        let restingBpm = days.last(where: { $0.restingHr != nil })?.restingHr
+        let allRows = await workoutRows()
+        let storedTokens = autoSavedTokens
+        let tokenSet = Set(storedTokens ?? [])
+        let grandfather = storedTokens == nil
+        let autoSaved = allRows.filter {
+            Self.isAutoSavedActivity(startTs: $0.startTs, endTs: $0.endTs, sport: $0.sport,
+                                     source: $0.source, tokens: tokenSet,
+                                     grandfather: grandfather, scanFrom: from)
+        }
+        let autoKeys = Set(autoSaved.map { Self.autoSavedToken(startTs: $0.startTs, endTs: $0.endTs) })
+        let savedSpans = allRows
+            .filter { !autoKeys.contains(Self.autoSavedToken(startTs: $0.startTs, endTs: $0.endTs)) }
+            .map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
+        let gravity = await gravitySamplesUnion(from: from, to: now)
+        let steps = await autoDetectStepTicks(from: from, to: now)
+        let candidates = AutoWorkoutDetector.detect(
+            hr: samples.map { (ts: $0.ts, bpm: $0.bpm) }, restingBpm: restingBpm,
+            motion: AutoWorkoutDetector.motionPoints(gravity),
+            steps: steps,
+            savedSpans: savedSpans,
+            minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin)
+        let keep = Self.autoSavableWorkouts(
+            candidates, frontierTs: frontier, settleSeconds: settleSeconds,
+            autoDismissedTokens: autoDetectDismissedSpans,
+            detectedDismissedTokens: dismissedDetectedSpans)
+        let stale = Self.staleAutoSavedWorkouts(autoSaved, qualifying: keep)
+        var changed = 0
+        if !stale.isEmpty, let store = await ensureStore() {
+            let ids = Self.deletableWorkoutNamespaces(rawIds: rawPhysiologyReadIds(store: store))
+            for row in stale {
+                for id in ids {
+                    if let n = try? await store.deleteWorkouts(deviceId: id, sport: row.sport,
+                                                               from: row.startTs, to: row.startTs),
+                       n > 0 {
+                        changed += 1
+                    }
+                }
+            }
+        }
+        let keptAuto = autoSaved.filter { row in
+            !stale.contains { $0.startTs == row.startTs && $0.endTs == row.endTs }
+        }
+        var tokens = Set(keptAuto.map { Self.autoSavedToken(startTs: $0.startTs, endTs: $0.endTs) })
+        for w in keep {
+            let token = Self.autoDetectToken(w)
+            if tokens.contains(token) { continue }
+            if keptAuto.contains(where: { $0.startTs == w.startSec && $0.endTs == w.endSec }) {
+                tokens.insert(token)
+                continue
+            }
+            let start = Date(timeIntervalSince1970: TimeInterval(w.startSec))
+            guard let row = WorkoutSource.buildManualRow(start: start, durationMin: max(1, w.durationMin),
+                                                         sport: "Activity", avgHr: w.avgBpm,
+                                                         energyKcal: nil) else { continue }
+            await saveManualWorkout(row)
+            tokens.insert(token)
+            changed += 1
+        }
+        autoSavedTokens = Array(tokens)
+        return changed
+    }
+
+    /// Strap gait-class ticks (0 still / 1 walk / 2 run) for stress motion gating and
+    /// auto-detect. Active strap first so it wins a timestamp tie.
+    func stepTicks(from: Int, to: Int) async -> [AutoWorkoutDetector.StepTick] {
+        await autoDetectStepTicks(from: from, to: to)
+    }
+
+    /// Strap gait-class ticks for the detector, active strap first so it wins a timestamp tie.
+    private func autoDetectStepTicks(from: Int, to: Int) async -> [AutoWorkoutDetector.StepTick] {
+        guard let store = await ensureStore() else { return [] }
+        var seen = Set<Int>()
+        var out: [AutoWorkoutDetector.StepTick] = []
+        for id in importedReadIds {
+            let samples = (try? await store.stepSamples(deviceId: id, from: from, to: to, limit: 200_000)) ?? []
+            for sample in samples {
+                guard let cls = sample.activityClass, seen.insert(sample.ts).inserted else { continue }
+                out.append(AutoWorkoutDetector.StepTick(ts: sample.ts, activityClass: cls))
+            }
+        }
+        return out.sorted { $0.ts < $1.ts }
+    }
+
+    /// Finished, never-dismissed candidates, oldest first. Pure so the rule is testable.
+    nonisolated static func autoSavableWorkouts(
+        _ candidates: [DetectedWorkout],
+        frontierTs: Int,
+        settleSeconds: Int,
+        autoDismissedTokens: [String],
+        detectedDismissedTokens: [String]
+    ) -> [DetectedWorkout] {
+        let exact = Set(autoDismissedTokens)
+        let tombstones = WorkoutSource.parseDismissedSpans(detectedDismissedTokens)
+        return candidates
+            .filter { c in
+                c.endSec <= frontierTs - settleSeconds
+                    && !exact.contains(autoDetectToken(c))
+                    && !tombstones.contains { c.startSec < $0.end && $0.start < c.endSec }
+            }
+            .sorted { $0.startSec < $1.startSec }
+    }
+
+    nonisolated static func autoSavedToken(startTs: Int, endTs: Int) -> String {
+        "\(startTs):\(endTs)"
+    }
+
+    /// Auto-saved rows are source `manual` + sport `Activity` AND either a stored token or a
+    /// one-time grandfather in the scan window. User-entered rows of other sports are never marked.
+    nonisolated static func isAutoSavedActivity(startTs: Int, endTs: Int, sport: String, source: String,
+                                                tokens: Set<String>, grandfather: Bool,
+                                                scanFrom: Int) -> Bool {
+        guard source == "manual", sport == "Activity" else { return false }
+        if tokens.contains(autoSavedToken(startTs: startTs, endTs: endTs)) { return true }
+        return grandfather && startTs >= scanFrom
+    }
+
+    /// Auto-saved rows that no longer overlap a qualifying candidate. Pure so the prune is testable.
+    nonisolated static func staleAutoSavedWorkouts(
+        _ rows: [WorkoutRow],
+        qualifying: [DetectedWorkout]
+    ) -> [WorkoutRow] {
+        rows.filter { row in
+            !qualifying.contains { candidate in
+                candidate.startSec <= row.endTs && row.startTs <= candidate.endSec
+            }
+        }
     }
 
     /// DISMISS a suggested window: record its span durably so it never re-prompts. Idempotent.
@@ -3374,6 +3890,22 @@ final class Repository: ObservableObject {
                                            maxHR: maxHR)
     }
 
+    /// Heart-rate series for the workout page: strap samples when they cover at least half the
+    /// minutes, otherwise the Apple Health samples stored for this natural key, otherwise nothing.
+    /// Apple rows live in `AppleWorkoutHRStore`, not `hrSample`, so sleep/recovery/strain never see them.
+    func workoutHeartRate(startTs: Int, endTs: Int, sport: String, source: String) async -> WorkoutHeartRate {
+        let ids = Self.workoutHrDeviceIds(source: source, activeStrapId: deviceId,
+                                          importedIds: importedReadIds)
+        let strap = await hrSamples(deviceIds: ids, from: startTs, to: endTs,
+                                    limit: AppleWorkoutHRStore.maxSamples)
+        let coverage = WorkoutHeartRateSelection.minuteCoverage(samples: strap, from: startTs, to: endTs)
+        if coverage >= WorkoutHeartRateSelection.coverageThreshold {
+            return WorkoutHeartRate(samples: strap, origin: .strap)
+        }
+        let apple = AppleWorkoutHRStore.load(startTs: startTs, sport: sport) ?? []
+        return WorkoutHeartRateSelection.select(strap: strap, apple: apple, from: startTs, to: endTs)
+    }
+
     /// Apple Health daily aggregates (steps/energy/vo2/hr).
     func appleDailyRows(days: Int = 4000) async -> [AppleDaily] {
         guard let store = await ensureStore() else { return [] }
@@ -3382,6 +3914,21 @@ final class Repository: ObservableObject {
             deviceId: "apple-health",
             from: Self.dayString(now.addingTimeInterval(-Double(days) * 86_400)),
             to: Self.dayString(now.addingTimeInterval(86_400)))) ?? []
+    }
+
+    /// Hourly Apple Health step counts over `[from, to]` inclusive, oldest hour first.
+    func appleStepHours(from: Int, to: Int) async -> [(ts: Int, steps: Int)] {
+        guard let store = await ensureStore() else { return [] }
+        return (try? await store.appleStepHours(
+            deviceId: Self.appleHealthSource, fromTs: from, toTs: to)) ?? []
+    }
+
+    /// Latest measured Apple Health VO₂ max (ml/kg/min) and the day it was recorded.
+    /// Nil when `appleDaily` has no positive reading — never a formula estimate.
+    nonisolated static func latestAppleVo2Max(_ rows: [AppleDaily]) -> (day: String, value: Double)? {
+        rows.filter { ($0.vo2max ?? 0) > 0 }
+            .max(by: { $0.day < $1.day })
+            .flatMap { row in row.vo2max.map { (row.day, $0) } }
     }
 
     /// #833/v7.7.2 (Apple Health per-source freeze): the SHARED heavy-load seam behind `AppleHealthView.load()`.

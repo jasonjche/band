@@ -581,10 +581,12 @@ final class Backfiller {
     /// records is still acked (it advances the strap's trim) — that's how the offload progresses.
     /// `endFrame` carries the 8-byte `end_data` the ack requires.
     /// The pure decode result of one offload chunk, produced OFF the main actor (see finishChunk).
+    /// `facts` replaces `[ParsedFrame]` so a fused decode does not retain a dictionary per frame.
     private struct DecodedChunk {
-        let parsed: [ParsedFrame]
+        let facts: DecodeFacts
         let decoded: Streams
-        let rejected: [[UInt8]]
+        /// DEBUG shadow only: how many fused-vs-old disagreements this chunk saw. nil when shadow is off.
+        let shadowMismatches: Int?
     }
 
     private func finishChunk(unix: UInt32, trim: UInt32, endFrame: [UInt8]) async {
@@ -631,13 +633,67 @@ final class Backfiller {
             let dev = ref.device, wall = ref.wall
             let oldest = sessionOldestUnix, newest = sessionNewestUnix
             let extractFn = extract   // keep the injected Extractor seam (tests override it); prod == extractHistoricalStreams
+            // Kill switch: `band.fusedHistoryDecode` default ON. false restores parseFrame ×N +
+            // extractHistoricalStreams + rejectedHistoricalRecords unchanged.
+            let fusedOn = UserDefaults.standard.object(forKey: "band.fusedHistoryDecode") as? Bool ?? true
+            #if DEBUG
+            let shadowOn = UserDefaults.standard.object(forKey: "band.fusedHistoryDecodeShadow") as? Bool ?? false
+            #else
+            let shadowOn = false
+            #endif
+            let subLag = PuffinExperiment.ppgHrSubLagInterpEnabled
             let d = await Task.detached(priority: .utility) { () -> DecodedChunk in
-                let parsed = frames.map { parseFrame($0, family: fam) }
-                let decoded = extractFn(parsed, dev, wall, fam, oldest, newest)
-                let rejected = rejectedHistoricalRecords(frames, family: fam)
-                return DecodedChunk(parsed: parsed, decoded: decoded, rejected: rejected)
+                func factsFromParsed(_ parsed: [ParsedFrame], rejected: [[UInt8]]) -> DecodeFacts {
+                    DecodeFacts(
+                        frames: parsed.map { p in
+                            HistoryFrameFact(
+                                typeName: p.typeName,
+                                histVersion: p.parsed["hist_version"]?.intValue,
+                                unix: p.parsed["unix"]?.intValue,
+                                hasHeartRate: p.parsed["heart_rate"] != nil,
+                                hasGravity: p.parsed["gravity_x"] != nil,
+                                hasPpgWaveform: p.parsed["ppg_waveform"] != nil,
+                                spo2Red: p.parsed["spo2_red"]?.intValue,
+                                spo2Ir: p.parsed["spo2_ir"]?.intValue,
+                                skinTempRaw: p.parsed["skin_temp_raw"]?.intValue)
+                        },
+                        rejected: rejected)
+                }
+                if fusedOn {
+                    let (decoded, facts) = HistoricalStreamDecoder.decode(
+                        frames: frames, family: fam,
+                        deviceClockRef: dev, wallClockRef: wall,
+                        sessionOldestUnix: oldest, sessionNewestUnix: newest,
+                        subLagInterp: subLag)
+                    var mismatches: Int? = nil
+                    if shadowOn {
+                        let parsed = frames.map { parseFrame($0, family: fam) }
+                        let oldDecoded = extractFn(parsed, dev, wall, fam, oldest, newest)
+                        let oldRejected = rejectedHistoricalRecords(frames, family: fam)
+                        var n = 0
+                        if oldDecoded != decoded { n += 1 }
+                        if oldRejected != facts.rejected { n += 1 }
+                        let oldFacts = factsFromParsed(parsed, rejected: oldRejected)
+                        if oldFacts.firstHistVersion != facts.firstHistVersion { n += 1 }
+                        if oldFacts.anyHeartRate != facts.anyHeartRate { n += 1 }
+                        if oldFacts.anyGravity != facts.anyGravity { n += 1 }
+                        mismatches = n
+                    }
+                    return DecodedChunk(facts: facts, decoded: decoded, shadowMismatches: mismatches)
+                } else {
+                    let parsed = frames.map { parseFrame($0, family: fam) }
+                    let decoded = extractFn(parsed, dev, wall, fam, oldest, newest)
+                    let rejected = rejectedHistoricalRecords(frames, family: fam)
+                    return DecodedChunk(facts: factsFromParsed(parsed, rejected: rejected),
+                                        decoded: decoded, shadowMismatches: nil)
+                }
             }.value
-            let parsed = d.parsed
+            let facts = d.facts
+            #if DEBUG
+            if let n = d.shadowMismatches {
+                log?("Backfill: fused-history-decode shadow mismatches=\(n)")
+            }
+            #endif
             // #1008: per-chunk clock basis + R-R packing. The session summary logs only the FIRST chunk's
             // correlation, which cannot show the offset moving across a long offload nor separate "the same
             // beats arrived twice" from "one record stamped 8 intervals on one second". Log-only.
@@ -651,7 +707,7 @@ final class Backfiller {
             // Observability (PR #241): log which layout this strap emits on a HEALTHY sync too — the
             // unmapped-version path below only fires for layouts NOOP can't decode, so a normal log
             // never revealed v18/v24/v25/v26. Once per distinct layout this session.
-            if let v = parsed.lazy.compactMap({ $0.parsed["hist_version"]?.intValue }).first,
+            if let v = facts.firstHistVersion,
                loggedLayoutVersions.insert(v).inserted {
                 log?("Backfill: historical records use layout v\(v)")
                 // UNIVERSAL clock-drift: bank the layout so the export's universal clock-drift line is
@@ -666,10 +722,7 @@ final class Backfiller {
                 // "UNMAPPED (no motion/HR decoded)" for v16 while the line below reported that NOOP
                 // decodes and stores it. One function means they cannot disagree again.
                 emitConnection({
-                    let carries = parsed.contains {
-                        $0.parsed["heart_rate"] != nil || $0.parsed["gravity_x"] != nil
-                            || $0.parsed["ppg_waveform"] != nil
-                    }
+                    let carries = facts.anyHeartRate || facts.anyGravity || facts.anyPpgWaveform
                     let support = historicalLayoutSupport(version: v, family: family,
                                                           hasHeartRate: carries, hasGravity: false,
                                                           hasPpgWaveform: false)
@@ -687,22 +740,22 @@ final class Backfiller {
             // the #194 lesson). Twin of the Android Backfiller emit.
             if spo2Dumped < Spo2ReTrace.maxSamples, spo2Examined < Spo2ReTrace.maxExamined,
                connectionActive(), let connectionLog {
-                for (raw, p) in zip(frames, parsed) where spo2Dumped < Spo2ReTrace.maxSamples {
+                for (raw, p) in zip(frames, facts.frames) where spo2Dumped < Spo2ReTrace.maxSamples {
                     if spo2Examined >= Spo2ReTrace.maxExamined { break }
                     spo2Examined += 1
-                    guard let unix = p.parsed["unix"]?.intValue else { continue }
+                    guard let unix = p.unix else { continue }
                     // Stratify by layout: without this the first chunk's dominant layout eats the whole
                     // budget and the rare, still-unmapped one never gets a frame. See `maxPerVersion`.
-                    let ver = p.parsed["hist_version"]?.intValue ?? -1
+                    let ver = p.histVersion ?? -1
                     let dumpedForVer = spo2DumpedByVersion[ver] ?? 0
                     if dumpedForVer >= Spo2ReTrace.maxPerVersion { continue }
                     connectionLog(Spo2ReTrace.recordLine(
                         frame: raw,
-                        version: p.parsed["hist_version"]?.intValue,
+                        version: p.histVersion,
                         unix: unix,
-                        red: p.parsed["spo2_red"]?.intValue,
-                        ir: p.parsed["spo2_ir"]?.intValue,
-                        skinRaw: p.parsed["skin_temp_raw"]?.intValue))
+                        red: p.spo2Red,
+                        ir: p.spo2Ir,
+                        skinRaw: p.skinTempRaw))
                     spo2DumpedByVersion[ver] = dumpedForVer + 1
                     spo2Dumped += 1
                 }
@@ -723,14 +776,7 @@ final class Backfiller {
             // when ANY of its records did. Judging it on whichever record happened to come first would let
             // one thin or off-wrist v18 record condemn v18 for the rest of the session — the old form had
             // that same hole, and it is worse now that the verdict names a specific reason.
-            var signalByVersion: [Int: Bool] = [:]
-            for p in parsed {
-                guard let v = p.parsed["hist_version"]?.intValue else { continue }
-                let carries = p.parsed["heart_rate"] != nil
-                    || p.parsed["gravity_x"] != nil
-                    || p.parsed["ppg_waveform"] != nil
-                signalByVersion[v] = (signalByVersion[v] ?? false) || carries
-            }
+            let signalByVersion = facts.signalByVersion
             for (v, carriesSignal) in signalByVersion.sorted(by: { $0.key < $1.key }) {
                 guard !loggedUnmappedVersions.contains(v) else { continue }
                 let support = historicalLayoutSupport(
@@ -808,7 +854,7 @@ final class Backfiller {
                     // builds its own ParsedFrame. The raw bytes only exist at this level. Same log line on
                     // both platforms; no prefix cap, for the reason the reject dump has none.
                     if let line = Backfiller.unmappedTypeDumpLine(typeName: typeName, frames: frames,
-                                                                  typeNames: parsed.map(\.typeName)) {
+                                                                  typeNames: facts.typeNames) {
                         log?(line)
                     }
                 }
@@ -822,7 +868,7 @@ final class Backfiller {
             // type-50 console/diagnostic frames, which decode to 0 rows by design and are NOT a loss
             // (the "rejected frames" red herring users kept reporting — #77/#120). Drives both the
             // log wording below and the archive guard further down.
-            let rejected = d.rejected
+            let rejected = facts.rejected
             // Tally this chunk's outcome so a completed-but-empty session is distinguishable from a
             // caught-up one (#77 family): did it decode sensor rows, and was it console-only?
             onChunk?(!decoded.isEmpty, decoded.isEmpty && rejected.isEmpty)

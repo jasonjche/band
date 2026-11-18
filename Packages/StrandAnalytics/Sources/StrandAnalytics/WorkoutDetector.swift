@@ -142,6 +142,23 @@ public enum WorkoutDetector {
         hr.map { (ts: $0.ts, bpm: Double($0.bpm)) }.sorted { $0.ts < $1.ts }
     }
 
+    /// Closed [start, end] slice of timestamp-sorted `cleanHR` output.
+    static func tsSlice(_ seg: [(ts: Int, bpm: Double)], start: Int, end: Int)
+        -> ArraySlice<(ts: Int, bpm: Double)> {
+        var lo = 0, hi = seg.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if seg[mid].ts < start { lo = mid + 1 } else { hi = mid }
+        }
+        let a = lo
+        hi = seg.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if seg[mid].ts <= end { lo = mid + 1 } else { hi = mid }
+        }
+        return seg[a..<lo]
+    }
+
     /// Day resting-HR baseline = nearest-rank RESTING_PERCENTILE of bpm values.
     static func deriveRestingHR(_ hrSeg: [(ts: Int, bpm: Double)]) -> Double {
         let bpms = hrSeg.map { $0.bpm }.sorted()
@@ -429,6 +446,7 @@ public enum WorkoutDetector {
                               // choice so a bout and the day it sits in are never scored by different
                               // recipes, which would be worse than either one being "wrong".
                               effortMethod: StrainScorer.Method = .edwards,
+                              useBandStrain: Bool = false,
                               // #1545: receives the gate-by-gate counts for THIS call. nil (the default)
                               // keeps every existing caller and test byte-identical — nothing is computed
                               // that the detector was not already computing, the counters just record it.
@@ -512,13 +530,13 @@ public enum WorkoutDetector {
             if Double(end - start) < minDurS - motionSmoothS { f.droppedShort += 1; continue }
             // Qualify on the HR-elevated CORE (unchanged gates) so the warm-up's low intensity
             // can't dilute a real workout below the zone-2 bar and drop it (#148).
-            let core = hrSeg.filter { $0.ts >= start && $0.ts <= end }
+            let core = tsSlice(hrSeg, start: start, end: end)
             if core.isEmpty { f.droppedNoHR += 1; continue }
 
             var zonePct: [Int: Double] = [:]
             var avgHRR: Double? = nil
             if let m = effMaxHR, m > restHR {
-                (zonePct, avgHRR) = boutIntensity(core, restingHR: restHR, maxHR: m)
+                (zonePct, avgHRR) = boutIntensity(Array(core), restingHR: restHR, maxHR: m)
             }
 
             // Intensity qualification: require ≥ MIN_INTENSITY_Z2PLUS in zone 2+.
@@ -532,7 +550,7 @@ public enum WorkoutDetector {
             // resting BETWEEN two efforts (so bridgeRuns kept them separate) must not overlap the earlier one.
             let floor = idx > 0 ? runs[idx - 1].1 + 1 : Int.min
             let effStart = max(Self.backdatedStart(start, motionTs, smooth), floor)
-            let window = hrSeg.filter { $0.ts >= effStart && $0.ts <= end }
+            let window = tsSlice(hrSeg, start: effStart, end: end)
             if window.isEmpty { f.droppedNoHR += 1; continue }
             let bpms = window.map { $0.bpm }
             let hrSamples = window.map { HRSample(ts: $0.ts, bpm: Int($0.bpm.rounded())) }
@@ -548,8 +566,16 @@ public enum WorkoutDetector {
             guard !bpms.isEmpty else { f.droppedNoHR += 1; continue }   // degenerate bout, no HR samples
             let avg = bpms.reduce(0, +) / Double(bpms.count)
             let peak = Int(bpms.max()!.rounded())
-            let strain = StrainScorer.strain(hrSamples, maxHR: effMaxHR, restingHR: restHR,
+            let strain: Double?
+            if useBandStrain, let bandParams = BandStrain.bundledParams() {
+                let hrmax = effMaxHR ?? Double(StrainScorer.defaultMaxHR())
+                strain = BandStrain.effort100(
+                    BandStrain.strain(hrSamples, maxHR: hrmax, restingHR: restHR, params: bandParams)
+                )
+            } else {
+                strain = StrainScorer.strain(hrSamples, maxHR: effMaxHR, restingHR: restHR,
                                              method: effortMethod, sex: profile?.sex ?? "male")
+            }
 
             sessions.append(ExerciseSession(
                 start: effStart, end: end, avgHR: avg, peakHR: peak, strain: strain,
@@ -582,19 +608,38 @@ public enum WorkoutDetector {
 
 // MARK: - Calories (calories.py)
 
-/// HR-based calorie estimation (Keytel 2005 active + revised Harris–Benedict BMR).
+/// HR-based calorie estimation (Keytel 2005 active + Mifflin–St Jeor BMR).
 /// APPROXIMATE — not laboratory calorimetry, not medical advice.
+///
+/// WHOOP's "Energy burned (cal)" is total daily energy (resting + active), not active-only.
+/// The day path therefore prorates Mifflin–St Jeor BMR over the elapsed analysis window
+/// (metabolism continues whether or not the strap sampled) and adds Keytel energy above
+/// that floor during supported high-HR intervals. The bout path is unchanged: Keytel
+/// gross above the 30% HRR gate, BMR below.
 public enum Calories {
 
-    /// Whole-day energy split. `restingKcal` is the BMR contribution over supported sample intervals;
-    /// `activeKcal` is energy above that resting floor during supported high-HR intervals.
-    /// `totalKcal` is the backward-compatible value persisted in `DailyMetric.activeKcalEst`.
+    /// Whole-day energy split. `restingKcal` is Mifflin–St Jeor BMR over the elapsed window;
+    /// `activeKcal` is Keytel energy above that floor during supported high-HR intervals.
+    /// `totalKcal` is the WHOOP-style total persisted in `DailyMetric.activeKcalEst`.
     public struct DayEnergyEstimate: Equatable, Sendable {
         public let restingKcal: Double
         public let activeKcal: Double
         public let observedSeconds: Double
 
         public var totalKcal: Double { restingKcal + activeKcal }
+    }
+
+    /// One workout described only by duration and mean HR — the columns a WHOOP
+    /// `workouts.csv` row actually has. Used to replay bout energy without 1 Hz samples.
+    public struct SteadyBout: Equatable, Sendable {
+        public let durationSec: Double
+        public let avgHR: Double
+        public let maxHR: Double?
+        public init(durationSec: Double, avgHR: Double, maxHR: Double? = nil) {
+            self.durationSec = durationSec
+            self.avgHR = avgHR
+            self.maxHR = maxHR
+        }
     }
 
     struct Coeffs {
@@ -663,10 +708,21 @@ public enum Calories {
         }
     }
 
-    static func restingKcalPerS(_ c: Coeffs, weightKg: Double, heightCm: Double, age: Double) -> Double {
-        let heightM = heightCm / 100.0
-        let bmr = c.restingAlpha + c.restingWeight * weightKg + c.restingHeight * heightM - c.restingAge * age
-        return max(0.0, bmr) / 86_400.0
+    /// Mifflin–St Jeor BMR in kcal / 24 h. Male +5, female −161, otherwise the midpoint (−78).
+    public static func mifflinStJeorBmr(weightKg: Double, heightCm: Double, age: Double, sex: String) -> Double {
+        let base = 10.0 * weightKg + 6.25 * heightCm - 5.0 * age
+        let offset: Double
+        switch sex.lowercased() {
+        case "male": offset = 5
+        case "female": offset = -161
+        default: offset = -78
+        }
+        return max(0.0, base + offset)
+    }
+
+    static func restingKcalPerS(_ c: Coeffs, weightKg: Double, heightCm: Double, age: Double, sex: String) -> Double {
+        _ = c
+        return mifflinStJeorBmr(weightKg: weightKg, heightCm: heightCm, age: age, sex: sex) / 86_400.0
     }
 
     /// Uth–Sørensen VO2max estimate (ml·kg⁻¹·min⁻¹) ≈ 15.3 · HRmax / HRrest. Returns nil when no
@@ -719,7 +775,8 @@ public enum Calories {
         let effResting = restingHR ?? 60.0
         let activeThreshold = effResting + activeHRRFraction * (effHRmax - effResting)
 
-        let restingRate = restingKcalPerS(coeffs, weightKg: weightKg, heightCm: heightCm, age: age)
+        let restingRate = restingKcalPerS(coeffs, weightKg: weightKg, heightCm: heightCm, age: age,
+                                          sex: profile.sex)
         // Fitness anchor (Uth VO2max) when a resting HR is known → the Keytel fitness-adjusted rate;
         // nil restingHR → base model, unchanged. Computed once (constant across the bout).
         let vo2max = vo2maxFor(hrmax: effHRmax, restingHR: restingHR)
@@ -753,8 +810,10 @@ public enum Calories {
     }
 
     /// APPROXIMATE whole-day resting + active energy estimate from the full day's HR samples.
-    /// Resting BMR is integrated once over capped, supported sample intervals, independent of HR cadence.
-    /// Supported high-HR intervals then add only the Keytel energy ABOVE that resting floor.
+    /// Resting BMR is Mifflin–St Jeor prorated over the elapsed window (first→last sample, or
+    /// `elapsedSeconds` when the caller knows the calendar/cycle span). Metabolism continues
+    /// across sensor gaps; a dropout is not evidence that BMR stopped. Supported high-HR
+    /// intervals then add only the Keytel energy ABOVE that resting floor.
     ///
     /// The day path uses `dayActiveHRRFraction` (50% HRR), NOT the 30% the bout detector uses
     /// (`activeHRRFraction`). The Keytel 2005 equation is validated for genuine EXERCISE HR;
@@ -765,18 +824,19 @@ public enum Calories {
     /// is appropriate there, on a real detected/manual workout.
     ///
     /// Cadence is inferred from the median positive timestamp gap and capped at
-    /// `dayMaxObservedGapS`. Each sample carries resting energy, and a high-HR sample carries active
-    /// energy, to the next sample for at most that cap. This can credit up to 60 s instead of the old
-    /// flat 1 s for a reading on a gappy day, but never a whole disconnect. Thus a 30 s sparse stream
-    /// and a 1 Hz stream covering the same activity produce comparable energy.
+    /// `dayMaxObservedGapS`. A high-HR sample carries active energy to the next sample for at
+    /// most that cap. A 30 s sparse stream and a 1 Hz stream covering the same activity produce
+    /// comparable active energy. Resting energy no longer follows that cap.
     ///
     /// This is an on-device estimate from heart rate alone — NOT laboratory calorimetry, NOT
-    /// Apple/WHOOP cloud parity, NOT medical advice.
+    /// medical advice. Fit inputs available from a WHOOP export are cycle duration, day strain,
+    /// avg/max HR, RHR, and workouts; the 1 Hz path here is the production estimator.
     public static func estimateDayEnergy(_ hrSamples: [HRSample],
                                          profile: UserProfile,
                                          hrmax: Double?,
-                                         restingHR: Double?) -> DayEnergyEstimate {
-        if hrSamples.isEmpty {
+                                         restingHR: Double?,
+                                         elapsedSeconds: Double? = nil) -> DayEnergyEstimate {
+        if hrSamples.isEmpty, elapsedSeconds == nil {
             return DayEnergyEstimate(restingKcal: 0, activeKcal: 0, observedSeconds: 0)
         }
 
@@ -791,10 +851,17 @@ public enum Calories {
         // gets the Keytel gross rate (see `dayActiveHRRFraction`).
         let activeThreshold = effResting + dayActiveHRRFraction * (effHRmax - effResting)
 
-        let restingRate = restingKcalPerS(coeffs, weightKg: weightKg, heightCm: heightCm, age: age)
+        let restingRate = restingKcalPerS(coeffs, weightKg: weightKg, heightCm: heightCm, age: age,
+                                          sex: profile.sex)
         // Fitness anchor (Uth VO2max) when a resting HR is known → Keytel fitness-adjusted rate; nil
         // restingHR → base model, unchanged. Constant across the day.
         let vo2max = vo2maxFor(hrmax: effHRmax, restingHR: restingHR)
+
+        if hrSamples.isEmpty {
+            let span = min(dayMaxObservedSpanS, max(0, elapsedSeconds ?? 0))
+            return DayEnergyEstimate(restingKcal: restingRate * span, activeKcal: 0,
+                                     observedSeconds: span)
+        }
 
         // Ties are REACHABLE: hrSample is keyed (deviceId, ts) and the day feed unions devices, so a
         // two-strap day carries two readings for the same second. Only the LAST of a tied run gets the
@@ -815,20 +882,20 @@ public enum Calories {
                 : positiveGaps[mid]
             return min(median, dayMaxObservedGapS)
         }()
-        let observedSeconds = min(dayMaxObservedSpanS, positiveGaps.reduce(nominalSampleS) {
-            $0 + min($1, dayMaxObservedGapS)
-        })
-        let restingKcal = restingRate * observedSeconds
+        let sampleSpan: Double = {
+            guard let first = ordered.first, let last = ordered.last else { return 0 }
+            return max(0, Double(last.ts - first.ts) + nominalSampleS)
+        }()
+        let elapsed = min(dayMaxObservedSpanS, max(0, elapsedSeconds ?? sampleSpan))
+        let restingKcal = restingRate * elapsed
 
         var activeKcal = 0.0
         for i in ordered.indices {
             let durationS: Double
-            // Active carry is capped at the INFERRED CADENCE, not at the wider resting cap. A 30 s
-            // stream still carries its full 30 s (the cadence bug this fixes), and a 1 Hz day carries
-            // 1 s so the legacy total is reproduced exactly — but a dropout in an otherwise dense day
-            // no longer credits a full minute of exercise to the last reading before it. That was the
-            // objection the flat one-second model was written to avoid, and capping active at the
-            // cadence answers it rather than narrowing it from 150 s to 60 s.
+            // Active carry is capped at the INFERRED CADENCE, not at the BMR window. A 30 s
+            // stream still carries its full 30 s, and a 1 Hz day carries 1 s — but a dropout
+            // in an otherwise dense day no longer credits a full minute of exercise to the
+            // last reading before it.
             if i < ordered.count - 1 {
                 let gap = Double(ordered[i + 1].ts - ordered[i].ts)
                 durationS = gap > 0 ? min(gap, nominalSampleS) : 0.0
@@ -842,15 +909,68 @@ public enum Calories {
             activeKcal += max(0.0, grossRate - restingRate) * durationS
         }
         return DayEnergyEstimate(restingKcal: restingKcal, activeKcal: activeKcal,
-                                 observedSeconds: observedSeconds)
+                                 observedSeconds: elapsed)
     }
 
     /// Backward-compatible total-kcal facade for the stored daily metric.
     public static func estimateDayCalories(_ hrSamples: [HRSample],
                                            profile: UserProfile,
                                            hrmax: Double?,
-                                           restingHR: Double?) -> Double {
+                                           restingHR: Double?,
+                                           elapsedSeconds: Double? = nil) -> Double {
         estimateDayEnergy(hrSamples, profile: profile, hrmax: hrmax,
-                          restingHR: restingHR).totalKcal
+                          restingHR: restingHR, elapsedSeconds: elapsedSeconds).totalKcal
+    }
+
+    /// Keytel (or BMR, below the bout gate) over a steady interval. Replays a WHOOP
+    /// workout row that only has duration + average HR, without inventing a 1 Hz stream.
+    public static func estimateSteadyCalories(durationSec: Double,
+                                              avgHR: Double,
+                                              profile: UserProfile,
+                                              hrmax: Double?,
+                                              restingHR: Double?) -> Double {
+        guard durationSec > 0, avgHR > 0 else { return 0 }
+        let weightKg = profile.weightKg > 0 ? profile.weightKg : 70.0
+        let heightCm = profile.heightCm > 0 ? profile.heightCm : 170.0
+        let age = profile.age > 0 ? profile.age : 30.0
+        let coeffs = resolveCoeffs(profile.sex)
+        let effHRmax = hrmax ?? 220.0
+        let effResting = restingHR ?? 60.0
+        let activeThreshold = effResting + activeHRRFraction * (effHRmax - effResting)
+        let restingRate = restingKcalPerS(coeffs, weightKg: weightKg, heightCm: heightCm, age: age,
+                                          sex: profile.sex)
+        if avgHR < activeThreshold {
+            return restingRate * durationSec
+        }
+        let vo2max = vo2maxFor(hrmax: effHRmax, restingHR: restingHR)
+        return activeKcalPerS(coeffs, hr: avgHR, hrmax: effHRmax,
+                              weightKg: weightKg, age: age, vo2max: vo2max) * durationSec
+    }
+
+    /// Export-replayable day energy: Mifflin–St Jeor × elapsed + Keytel extra on each
+    /// workout (duration × avg HR). Inputs are the columns `physiological_cycles.csv`
+    /// and `workouts.csv` actually have — no 1 Hz HR, no steps.
+    public static func estimateSummaryEnergy(elapsedSeconds: Double,
+                                             profile: UserProfile,
+                                             hrmax: Double?,
+                                             restingHR: Double?,
+                                             workouts: [SteadyBout]) -> DayEnergyEstimate {
+        let span = min(dayMaxObservedSpanS, max(0, elapsedSeconds))
+        let weightKg = profile.weightKg > 0 ? profile.weightKg : 70.0
+        let heightCm = profile.heightCm > 0 ? profile.heightCm : 170.0
+        let age = profile.age > 0 ? profile.age : 30.0
+        let restingRate = mifflinStJeorBmr(weightKg: weightKg, heightCm: heightCm,
+                                           age: age, sex: profile.sex) / 86_400.0
+        let restingKcal = restingRate * span
+        var activeKcal = 0.0
+        for bout in workouts {
+            let gross = estimateSteadyCalories(durationSec: bout.durationSec, avgHR: bout.avgHR,
+                                               profile: profile,
+                                               hrmax: bout.maxHR ?? hrmax,
+                                               restingHR: restingHR)
+            activeKcal += max(0, gross - restingRate * max(0, bout.durationSec))
+        }
+        return DayEnergyEstimate(restingKcal: restingKcal, activeKcal: activeKcal,
+                                 observedSeconds: span)
     }
 }

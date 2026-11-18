@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import SwiftUI
 import StrandAnalytics
+import WhoopStore
 
 /// User profile (age/sex/body metrics/HR-max) persisted in UserDefaults.
 /// Powers HR zones, calories and recovery baselines.
@@ -27,6 +28,8 @@ final class ProfileStore: ObservableObject {
     @Published var waistCm: Double { didSet { d.set(waistCm, forKey: K.waist) } }
     /// 0 = auto-estimate from age.
     @Published var hrMaxOverride: Int { didSet { d.set(hrMaxOverride, forKey: K.hrMax) } }
+    /// 0 = none. 99th-percentile of stored workout peaks; not part of the `.noopbak` whitelist.
+    @Published var hrMaxObserved: Int { didSet { d.set(hrMaxObserved, forKey: K.hrMaxObserved) } }
     /// Five personalized inclusive zone starts in BPM; empty = conventional %HRmax zones.
     @Published var hrZoneThresholds: [Int] {
         didSet {
@@ -87,6 +90,7 @@ final class ProfileStore: ObservableObject {
         static let legacyAge = "profile.age"
         static let sex = "profile.sex", weight = "profile.weightKg"
         static let height = "profile.heightCm", hrMax = "profile.hrMaxOverride"
+        static let hrMaxObserved = "profile.hrMaxObserved"
         static let hrZoneThresholds = "profile.hrZoneThresholds"
         static let stepScale = "profile.stepTicksPerStep"
         static let waist = "profile.waistCm"
@@ -125,7 +129,13 @@ final class ProfileStore: ObservableObject {
         weightKg = d.object(forKey: K.weight) as? Double ?? 75
         heightCm = d.object(forKey: K.height) as? Double ?? 178
         waistCm = d.object(forKey: K.waist) as? Double ?? 0
-        hrMaxOverride = d.object(forKey: K.hrMax) as? Int ?? 0
+        // A stepper that counted up from Auto (0) could save 1…119 bpm; no adult max is that low,
+        // and a bogus override silently breaks zones and strain everywhere. Treat it as Auto.
+        let storedHRMax = d.object(forKey: K.hrMax) as? Int ?? 0
+        let sanitizedHRMax = Self.sanitizedHRMaxOverride(storedHRMax)
+        if sanitizedHRMax != storedHRMax { d.set(sanitizedHRMax, forKey: K.hrMax) }
+        hrMaxOverride = sanitizedHRMax
+        hrMaxObserved = d.object(forKey: K.hrMaxObserved) as? Int ?? 0
         let storedThresholds = d.string(forKey: K.hrZoneThresholds)?
             .split(separator: ",").compactMap { Int($0) } ?? []
         hrZoneThresholds = Self.validZoneThresholds(storedThresholds) ? storedThresholds : []
@@ -184,27 +194,58 @@ final class ProfileStore: ObservableObject {
         dateOfBirth(forAge: 100)...dateOfBirth(forAge: 13)
     }
 
+    /// Value to pass as `AnalyticsEngine.maxHROverride`: manual override, else observed when it
+    /// exceeds Gellish, else nil so the engine uses Gellish (or its default).
+    ///
+    /// Precedence: override > max(observed, Gellish) > Gellish > existing default.
+    var resolvedMaxHROverride: Double? {
+        if hrMaxOverride > 0 { return Double(hrMaxOverride) }
+        guard hrMaxObserved > 0 else { return nil }
+        if age > 0 {
+            return Double(hrMaxObserved) > HRZones.gellishMaxHR(age: Double(age))
+                ? Double(hrMaxObserved) : nil
+        }
+        return Double(hrMaxObserved)
+    }
+
+    /// `"override"` | `"observed"` | `"gellish"` | `"default"` — same branch the engine logs.
+    var hrMaxSource: String {
+        if hrMaxOverride > 0 { return "override" }
+        if resolvedMaxHROverride != nil { return "observed" }
+        return age > 0 ? "gellish" : "default"
+    }
+
     /// The effective HRmax an EFFORT score is computed against, resolved exactly as `AnalyticsEngine`
-    /// resolves it: the manual override when one is set, else Tanaka from age, else nil.
+    /// resolves it: `resolvedMaxHROverride` when set, else Gellish from age, else nil.
     ///
     /// Deliberately not `hrMax` below, which answers a different question and differs from this one in
-    /// two ways: it rounds Tanaka to an Int, and for an age-less profile it returns 208 rather than nil.
+    /// two ways: it rounds Gellish to an Int, and for an age-less profile it returns 207 rather than nil.
     /// A day scored through it would not match the day the engine stored either.
     ///
     /// #2460: today's live Effort is computed in the Today views rather than read from the scored day,
-    /// and both of them passed Tanaka here with no reference to the override. Because the ring shows
-    /// `StrainScorer.effectiveEffort(live:stored:)`, which is `max(live, stored)`, and an override is
-    /// normally set BECAUSE the real maximum is above the formula, the Tanaka value was not merely
+    /// and both of them passed the age formula here with no reference to the override. Because the ring
+    /// shows `StrainScorer.effectiveEffort(live:stored:)`, which is `max(live, stored)`, and an override
+    /// is normally set BECAUSE the real maximum is above the formula, the formula value was not merely
     /// different, it was always the larger of the two and so always the one displayed. The setting
     /// therefore did nothing until the day stopped being today. Both views now read this, so the live
     /// value and the stored day are scored against one number.
     var effortHRmax: Double? {
-        if hrMaxOverride > 0 { return Double(hrMaxOverride) }
-        return age > 0 ? StrainScorer.tanakaHRmax(age: Double(age)) : nil
+        if let resolved = resolvedMaxHROverride { return resolved }
+        return age > 0 ? HRZones.gellishMaxHR(age: Double(age)) : nil
     }
 
-    /// Tanaka estimate unless overridden.
-    var hrMax: Int { hrMaxOverride > 0 ? hrMaxOverride : Int((208 - 0.7 * Double(age)).rounded()) }
+    /// Override, else max(observed, Gellish), else Gellish (rounded). Age-less with no observed → 207.
+    var hrMax: Int {
+        if hrMaxOverride > 0 { return hrMaxOverride }
+        let gellish = Int(HRZones.gellishMaxHR(age: Double(age)).rounded())
+        return hrMaxObserved > 0 ? max(hrMaxObserved, gellish) : gellish
+    }
+
+    /// Recompute `hrMaxObserved` from every stored workout peak. Writes only when the value changed.
+    func syncObservedHRMax(from repo: Repository) async {
+        let estimated = ObservedHRMax.estimate(await repo.workoutRows().compactMap(\.maxHr)) ?? 0
+        if hrMaxObserved != estimated { hrMaxObserved = estimated }
+    }
 
     /// Personalized zone starts after enforcing the same five-value invariant as `HRZones`.
     var customHRZoneLowerBounds: [Double]? {
@@ -212,10 +253,18 @@ final class ProfileStore: ObservableObject {
         return hrZoneThresholds.map(Double.init)
     }
 
-    /// The single display-zone model used by live HR, workout splits, and haptic coaching.
-    var hrZoneSet: HRZoneSet {
-        HRZones.zones(maxHR: Double(hrMax), customLowerBounds: customHRZoneLowerBounds)
+    /// Display zones (activity page, live HR, splits). Heart-rate reserve with
+    /// `restingHR` when there is no custom override. BandStrain does not read this.
+    func displayZoneSet(restingHR: Double? = nil) -> HRZoneSet {
+        let maxHR = Double(hrMax)
+        if let custom = customHRZoneLowerBounds {
+            return HRZones.zones(maxHR: maxHR, customLowerBounds: custom)
+        }
+        return HRZones.zones(maxHR: maxHR, restingHR: restingHR ?? BandStrain.defaultRestingHR)
     }
+
+    /// The single display-zone model used by live HR, workout splits, and haptic coaching.
+    var hrZoneSet: HRZoneSet { displayZoneSet() }
 
     var hasCustomHRZones: Bool { customHRZoneLowerBounds != nil }
 
@@ -235,6 +284,26 @@ final class ProfileStore: ObservableObject {
         guard floor <= ceiling else { return }   // no room between neighbours -> no-op (parity w/ Kotlin)
         next[index] = min(max(next[index] + (up ? 1 : -1), floor), ceiling)
         hrZoneThresholds = next
+    }
+
+    /// Plausible manual max heart rate. Outside it the override resolves to Auto (0).
+    nonisolated static let hrMaxOverrideRange: ClosedRange<Int> = 120...230
+
+    nonisolated static func sanitizedHRMaxOverride(_ value: Int) -> Int {
+        hrMaxOverrideRange.contains(value) ? value : 0
+    }
+
+    /// One stepper tick. From Auto the first tick starts at the automatic value ±1, never at 1 bpm.
+    nonisolated static func steppedHRMaxOverride(_ override: Int, automatic: Int, up: Bool) -> Int {
+        let base = override > 0 ? override : automatic
+        let next = base + (up ? 1 : -1)
+        return min(max(next, hrMaxOverrideRange.lowerBound), hrMaxOverrideRange.upperBound)
+    }
+
+    /// The Max Heart Rate stepper's action. Auto's value is today's resolved max.
+    func stepHRMaxOverride(up: Bool) {
+        let automatic = hrMaxOverride > 0 ? hrMaxOverride : hrMax
+        hrMaxOverride = Self.steppedHRMaxOverride(hrMaxOverride, automatic: automatic, up: up)
     }
 
     nonisolated static func validZoneThresholds(_ values: [Int]) -> Bool {

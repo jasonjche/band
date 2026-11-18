@@ -59,12 +59,13 @@ public struct WearableExportImporter {
         guard !files.isEmpty else { throw ImportError.emptyExport("No readable JSON/CSV in \(url.lastPathComponent)") }
 
         guard let brand = Self.detectBrand(files) else {
-            throw ImportError.emptyExport("Not an Oura, Fitbit or Garmin data export")
+            throw ImportError.emptyExport("Not a Fitbit or Garmin data export")
         }
 
         let parsed: (days: [WearableDailyRow], sleeps: [WearableSleepSession])
         switch brand {
-        case .oura:   parsed = OuraExportParser.parse(files)
+        case .oura:
+            throw ImportError.emptyExport("Oura file import is not supported")
         case .fitbit: parsed = FitbitExportParser.parse(files)
         case .garmin: parsed = GarminExportParser.parse(files)
         }
@@ -73,15 +74,6 @@ public struct WearableExportImporter {
         let sleeps = Array(parsed.sleeps.sorted { $0.start < $1.start }.prefix(Self.maxRows))
 
         if days.isEmpty && sleeps.isEmpty {
-            // A lone Oura `heartrate.csv` is a raw HR-sample file, not a daily summary, so it carries no
-            // recovery/sleep/HRV NOOP can map. Say so plainly and point at the right file (#857) instead of
-            // a brand-generic "no usable data".
-            if brand == .oura, Self.onlyHeartRateCSV(files) {
-                throw ImportError.emptyExport(
-                    "That file is Oura's raw heart-rate log, which has no daily sleep or recovery values to "
-                    + "import. Export your Oura data as JSON (Account → Export Data), or pick the daily/readiness "
-                    + "CSV, and import that instead.")
-            }
             throw ImportError.emptyExport("\(brand.displayName) export held no sleep or daily wellness data")
         }
         return WearableImportResult(brand: brand, days: days, sleeps: sleeps,
@@ -102,7 +94,7 @@ public struct WearableExportImporter {
     public static func parse(brand: WearableBrand, files: [String: Data]) -> WearableImportResult {
         let parsed: (days: [WearableDailyRow], sleeps: [WearableSleepSession])
         switch brand {
-        case .oura:   parsed = OuraExportParser.parse(files)
+        case .oura:   parsed = ([], [])
         case .fitbit: parsed = FitbitExportParser.parse(files)
         case .garmin: parsed = GarminExportParser.parse(files)
         }
@@ -127,20 +119,9 @@ public struct WearableExportImporter {
         if names.contains(where: { $0.hasPrefix("sleep-") || $0.hasPrefix("resting_heart_rate-") || $0.hasPrefix("steps-") || $0.contains("fitbit") }) {
             return .fitbit
         }
-        // Oura: a single account-export JSON (often "oura_*"), or one whose top-level keys are Oura's.
-        if names.contains(where: { $0.contains("oura") }) { return .oura }
-        // Oura CSV export: the per-category files a user can download alongside (or instead of) the JSON,
-        // e.g. `heartrate.csv` / `readiness.csv` / `sleep.csv`. Routing these to Oura (rather than failing
-        // brand detection) lets the importer give an HONEST per-file outcome instead of an opaque error
-        // (#857): a daily-summary CSV imports, a lone raw `heartrate.csv` reports "no daily wellness data".
-        if names.contains(where: { ouraCSVFilenames.contains(where: $0.contains) }) { return .oura }
-
-        // Content probe: look at the shape of the sample files (JSON keys, or an Oura CSV header).
-        for (name, data) in files.prefix(8) {
+        // Content probe: look at the shape of the sample files (JSON keys).
+        for (_, data) in files.prefix(8) {
             if let b = brandFromJSONShape(data) { return b }
-            if name.hasSuffix(".csv"), OuraExportParser.looksLikeOuraCSV(CSVTable(data: data).normalizedHeaders) {
-                return .oura
-            }
         }
         return nil
     }
@@ -154,11 +135,6 @@ public struct WearableExportImporter {
         guard let obj = try? JSONSerialization.jsonObject(with: BOM.stripUTF8(data)) else { return nil }
         // Oura account export: a dict keyed by "sleep" / "daily_readiness" / "daily_activity".
         if let dict = obj as? [String: Any] {
-            let keys = Set(dict.keys.map { $0.lowercased() })
-            if !keys.isDisjoint(with: ["sleep", "daily_readiness", "daily_activity", "readiness", "activity"]),
-               OuraExportParser.looksLikeOura(dict) {
-                return .oura
-            }
             // Garmin single-day blob.
             if dict["calendarDate"] != nil && (dict["deepSleepSeconds"] != nil || dict["restingHeartRate"] != nil) {
                 return .garmin

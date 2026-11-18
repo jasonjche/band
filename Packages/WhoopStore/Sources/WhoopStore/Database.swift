@@ -1153,6 +1153,87 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "ts", "sequence"])
             }
         }
+        // Band-sized libraries bank ~1 Hz HR (tens of millions of rows). The PK is (deviceId, ts),
+        // which already serves every device-scoped window read. Unbounded MAX(ts) — the
+        // analysisFingerprint / hrFingerprint half that is not COUNT(*) — cannot use that PK
+        // (it leads with deviceId). Additive ts index; no column changes, no rewrite.
+        migrator.registerMigration("v49-hr-read-indexes") { db in
+            try db.create(index: "idx_hrSample_ts", on: "hrSample", columns: ["ts"],
+                          options: [.ifNotExists])
+        }
+        // Band chart cache: one finished display series per (kind, day). Home stress,
+        // the Stress page, Sleep overnight HR, and hourly steps previously rebuilt
+        // from raw 1 Hz HR on every open. Payload is an opaque blob (packed doubles);
+        // algorithm version lives in `version` so a code bump invalidates lazily.
+        // Additive: new table, no existing row touched. Not deviceId-keyed — Band is
+        // a single-user display cache that is rebuilt after each analysis pass.
+        migrator.registerMigration("v50-derived-series") { db in
+            try db.create(table: "derivedSeries", options: [.ifNotExists]) { t in
+                t.column("kind", .text).notNull()
+                t.column("day", .text).notNull()
+                t.column("version", .integer).notNull()
+                t.column("computedAt", .integer).notNull()
+                t.column("payload", .blob).notNull()
+                t.primaryKey(["kind", "day"])
+            }
+        }
+        // v51: covering indexes for the chart/analysis read path.
+        // `hrSample` PK is (deviceId, ts), so a range scan still heap-looks-up `bpm`.
+        // Covering (deviceId, ts, bpm) makes `hrSamples` / `hrBuckets` index-only.
+        // `ppgHrSample` is the sparse optical fallback; covering (deviceId, ts, bpm, conf)
+        // keeps the UNION anti-join from touching the table. Additive, ifNotExists.
+        // Gravity/step covering indexes were measured and dropped: they duplicate almost
+        // the whole 1 Hz table on a 180-day library for a Swift-allocation-bound read.
+        migrator.registerMigration("v51-read-covering-indexes") { db in
+            try db.create(index: "idx_hrSample_device_ts_bpm", on: "hrSample",
+                          columns: ["deviceId", "ts", "bpm"], options: [.ifNotExists])
+            try db.create(index: "idx_ppgHrSample_device_ts_bpm_conf", on: "ppgHrSample",
+                          columns: ["deviceId", "ts", "bpm", "conf"], options: [.ifNotExists])
+        }
+        // v52: maintained per-minute HR rollup for chart buckets ≥ 60 s.
+        // `hrBuckets` GROUP BY over months of 1 Hz is a temp B-tree of every sample;
+        // ~1/60th as many minute rows with SUM/n, MIN, MAX is the same mean and
+        // extrema. WITHOUT ROWID clustered PK (deviceId, minuteTs) is the range
+        // scan. Backfill is chunked by day so a phone with months of 1 Hz does
+        // not run one GROUP BY over 15M rows. Incremental inserts in StreamStore
+        // keep the table current; this migration only copies history.
+        migrator.registerMigration("v52-hr-minute") { db in
+            try db.create(table: "hrMinute", options: [.withoutRowID, .ifNotExists]) { t in
+                t.column("deviceId", .text).notNull()
+                t.column("minuteTs", .integer).notNull()
+                t.column("sumBpm", .integer).notNull()
+                t.column("n", .integer).notNull()
+                t.column("minBpm", .integer).notNull()
+                t.column("maxBpm", .integer).notNull()
+                t.primaryKey(["deviceId", "minuteTs"])
+            }
+            try WhoopStore.backfillHrMinute(db: db)
+        }
         return migrator
+    }
+
+    /// One day of 1 Hz. Each backfill statement GROUPs at most ~86k rows so a
+    /// phone with months of history does not build one temp B-tree over 15M rows.
+    static let hrMinuteBackfillChunkSeconds = 86_400
+
+    /// Copy `hrSample` into `hrMinute`, one day at a time. Chunk bounds are
+    /// minute-aligned so a minute is never split across statements (which would
+    /// insert two incomplete rows for the same PK). Empty stores no-op.
+    static func backfillHrMinute(db: Database) throws {
+        guard let lo = try Int.fetchOne(db, sql: "SELECT MIN(ts) FROM hrSample"),
+              let hi = try Int.fetchOne(db, sql: "SELECT MAX(ts) FROM hrSample") else { return }
+        let chunk = hrMinuteBackfillChunkSeconds
+        var start = (lo / 60) * 60
+        while start <= hi {
+            let end = start + chunk
+            try db.execute(sql: """
+                INSERT INTO hrMinute (deviceId, minuteTs, sumBpm, n, minBpm, maxBpm)
+                SELECT deviceId, (ts / 60) * 60, SUM(bpm), COUNT(*), MIN(bpm), MAX(bpm)
+                FROM hrSample
+                WHERE ts >= ? AND ts < ?
+                GROUP BY deviceId, (ts / 60) * 60
+                """, arguments: [start, end])
+            start = end
+        }
     }
 }

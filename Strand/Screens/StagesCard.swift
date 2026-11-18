@@ -638,6 +638,34 @@ struct StageDetailView: View {
     @ViewBuilder
     private func stageTimelineRow(_ stage: SleepStage, minutes: Double, percent: Int,
                                   intervals: [SleepInterval], origin: TimeInterval, span: TimeInterval) -> some View {
+        StageTimelineRow(
+            stage: stage,
+            minutes: minutes,
+            percent: percent,
+            intervals: intervals,
+            origin: origin,
+            span: span,
+            selectedStage: selectedStage,
+            durationText: durationText(minutes),
+            onSelect: {
+                withAnimation(StrandMotion.fade) { selectedStage = selectedStage == stage ? nil : stage }
+            }
+        )
+    }
+}
+
+private struct StageTimelineRow: View {
+    var stage: SleepStage
+    var minutes: Double
+    var percent: Int
+    var intervals: [SleepInterval]
+    var origin: TimeInterval
+    var span: TimeInterval
+    var selectedStage: SleepStage?
+    var durationText: String
+    var onSelect: () -> Void
+
+    var body: some View {
         let color = StrandPalette.sleepStageColor(stage)
         let isSelected = selectedStage == stage
         let dimmed = selectedStage != nil && !isSelected
@@ -651,7 +679,7 @@ struct StageDetailView: View {
                     .font(StrandFont.captionNumber)
                     .foregroundStyle(dimmed ? StrandPalette.textTertiary : color)
                 Spacer()
-                Text(durationText(minutes))
+                Text(durationText)
                     .font(StrandFont.captionNumber)
                     .foregroundStyle(StrandPalette.textPrimary)
             }
@@ -682,11 +710,9 @@ struct StageDetailView: View {
                 .stroke(isSelected ? StrandPalette.hairlineStrong : Color.clear, lineWidth: 1.5)
         )
         .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(StrandMotion.fade) { selectedStage = isSelected ? nil : stage }
-        }
+        .onTapGesture { onSelect() }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(stage.label): \(durationText(minutes)), \(percent) percent of the night")
+        .accessibilityLabel("\(stage.label): \(durationText), \(percent) percent of the night")
         .accessibilityHint("Highlights this stage on the sleep chart")
         .accessibilityAddTraits(.isButton)
     }
@@ -712,14 +738,16 @@ struct StageDetailView: View {
             }
         }
     }
+}
 
-    private func efficiencyText(_ night: Night) -> String {
+extension StageDetailView {
+    fileprivate func efficiencyText(_ night: Night) -> String {
         let e = efficiencyPct(night)
         return e.map { "\(Int($0.rounded()))%" } ?? "—"
     }
 
     /// Efficiency in percent. Prefer the stored session value, else asleep / time-in-bed.
-    private func efficiencyPct(_ night: Night) -> Double? {
+    fileprivate func efficiencyPct(_ night: Night) -> Double? {
         if let stored = night.session.efficiency ?? repo.today?.efficiency {
             return stored <= 1.0 ? stored * 100 : stored
         }
@@ -728,10 +756,9 @@ struct StageDetailView: View {
         return Swift.min(100, night.stages.asleep / bed * 100)
     }
 
-    private func durationText(_ minutes: Double) -> String {
+    fileprivate func durationText(_ minutes: Double) -> String {
         let m = Swift.max(0, Int(minutes.rounded()))
         if m < 60 { return String(localized: "\(m)m") }
         return String(localized: "\(m / 60)h \(m % 60)m")
     }
-
 }

@@ -8,11 +8,23 @@ import StrandDesign
 /// user's Siri Shortcut reads the file and logs the rows into Apple Health. Default OFF.
 struct ShortcutExportSettingsView: View {
     @AppStorage(ShortcutHealthExport.enabledKey) private var enabled = false
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
 
     var body: some View {
-        ScreenScaffold(title: "Shortcuts Export",
-                       subtitle: "Strap data into Apple Health without HealthKit, for sideloaded installs.") {
-            exportCard
+        if nativeTodayEnabled {
+            Form {
+                Section {
+                    Toggle("Export for Shortcuts", isOn: $enabled)
+                } footer: {
+                    Text("Writes noop_sync.txt when you leave the app, for a Siri Shortcut to log into Apple Health.")
+                }
+            }
+            .appleSettingsChrome("Shortcuts Export")
+        } else {
+            ScreenScaffold(title: "Shortcuts Export",
+                           subtitle: "Strap data into Apple Health without HealthKit, for sideloaded installs.") {
+                exportCard
+            }
         }
     }
 
@@ -34,7 +46,7 @@ struct ShortcutExportSettingsView: View {
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
-                Text("When this is on, NOOP rewrites a plain-text file (On My iPhone › NOOP › noop_sync.txt) each time you leave the app: one line per 15 minutes of heart rate, HRV and steps, read straight from your strap. Pair it with the Siri Shortcut that reads the file and logs everything into Apple Health (no HealthKit entitlement needed), so it works on sideloaded installs. The setup guide and the pre-built Shortcut live in the project wiki on GitHub.")
+                Text("When this is on, Band rewrites a plain-text file (On My iPhone › Band › noop_sync.txt) each time you leave the app: one line per 15 minutes of heart rate, HRV and steps, read straight from your strap. Pair it with the Siri Shortcut that reads the file and logs everything into Apple Health (no HealthKit entitlement needed), so it works on sideloaded installs. The setup guide and the pre-built Shortcut live in the project wiki on GitHub.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -1,11 +1,12 @@
 #if DEBUG
 import Foundation
 import WhoopStore
+import WhoopProtocol
 
 // MARK: - DEBUG-only demo seed (Apple parity with Android's DemoSeeder)
 // Seeds a comprehensive, self-contained synthetic dataset so a DEBUG build can walk every screen —
 // Today, Sleep, Trends, Workouts, Health, Stress, Insights, Explore — with no strap and no import.
-// This is the Apple twin of `android/.../data/DemoSeeder.kt` (same RNG seed, same physiology, same
+// This is the Apple twin of (same RNG seed, same physiology, same
 // 120-day window) and exists so we can render iOS + macOS for verification and marketing screenshots.
 //
 // Gating: the whole file is `#if DEBUG`, so it is stripped from every Release build (the shipped
@@ -36,9 +37,12 @@ enum AppleDemoSeeder {
         guard requested else { return }
         seedDemoDeviceIfNeeded(into: store)
         let existing = (try? await store.dailyMetrics(deviceId: whoop, from: "0000-00-00", to: "9999-99-99")) ?? []
-        guard existing.isEmpty else { return }
-        do { try await seed(into: store) }
-        catch { NSLog("AppleDemoSeeder: seed failed — \(error)") }
+        if existing.isEmpty {
+            do { try await seed(into: store) }
+            catch { NSLog("AppleDemoSeeder: seed failed — \(error)") }
+        } else {
+            await seedHrIfMissing(into: store)
+        }
     }
 
     /// DEBUG/demo-only: so the Devices screen renders with content under `--demo-seed`, pair a second
@@ -72,6 +76,7 @@ enum AppleDemoSeeder {
         var appleRows: [AppleDaily] = []
         var workouts: [WorkoutRow] = []
         var journal: [JournalEntry] = []
+        var hr: [HRSample] = []
 
         var weight = 79.5
         var fitness = 0.0  // slow upward drift: HRV rises, resting-HR falls, VO2max climbs
@@ -93,11 +98,19 @@ enum AppleDemoSeeder {
             let nWorkouts = !trains ? 0 : (rng.nextDouble() < 0.22 ? 2 : 1)
 
             // --- sleep architecture ---
+            // asleep = light + deep + rem; in bed = session end − start. Keep the four numbers
+            // consistent so Home, Sleep hero, Duration, Time in bed, and stage rows agree.
             let totalSleep = gauss(&rng, 430.0, 35.0).clamped(300.0, 540.0)
             let efficiency = gauss(&rng, 89.0, 4.0).clamped(72.0, 98.0)
-            let deep = (totalSleep * gauss(&rng, 0.20, 0.03)).clamped(35.0, 130.0)
-            let rem = (totalSleep * gauss(&rng, 0.23, 0.03)).clamped(45.0, 150.0)
+            var deep = (totalSleep * gauss(&rng, 0.20, 0.03)).clamped(35.0, 130.0)
+            var rem = (totalSleep * gauss(&rng, 0.23, 0.03)).clamped(45.0, 150.0)
+            if deep + rem > totalSleep - 60 {
+                let scale = (totalSleep - 60) / (deep + rem)
+                deep *= scale
+                rem *= scale
+            }
             let light = (totalSleep - deep - rem).atLeast(60.0)
+            let asleep = light + deep + rem
             let disturbances = Int(gauss(&rng, 6.0, 3.0).clamped(0.0, 18.0))
 
             // --- autonomic markers ---
@@ -120,24 +133,33 @@ enum AppleDemoSeeder {
                  : gauss(&rng, 13.5, 2.4) + Double(nWorkouts - 1) * 2.5) * STRAIN_SCALE
             ).clamped(3.0 * STRAIN_SCALE, 100.0)
 
+            let steps = Int(gauss(&rng, 8500.0, 2600.0).clamped(1200.0, 19000.0))
+            let activeKcal = round1((Double(steps) * 0.045 + Double(nWorkouts) * 220).clamped(120.0, 1400.0))
             daily.append(DailyMetric(
-                day: day, totalSleepMin: round1(totalSleep), efficiency: round1(efficiency),
+                day: day, totalSleepMin: round1(asleep), efficiency: round1(efficiency),
                 deepMin: round1(deep), remMin: round1(rem), lightMin: round1(light),
                 disturbances: disturbances, restingHr: rhr, avgHrv: round1(hrv),
                 recovery: round1(recovery), strain: round1(strain), exerciseCount: nWorkouts,
-                spo2Pct: round1(spo2), skinTempDevC: round2(skinTempDev), respRateBpm: round1(resp)))
+                spo2Pct: round1(spo2), skinTempDevC: round2(skinTempDev), respRateBpm: round1(resp),
+                steps: steps, activeKcalEst: activeKcal, skinTempC: round1(34.4 + skinTempDev)))
 
             // --- sleep session: previous night ~23:10 → wake, with a REAL stage timeline so the
             //     hypnogram renders the computed segment path (not just the proportional bar). ---
             let onsetBase = cal.date(byAdding: .day, value: -1, to: date)!
             let onsetDay = cal.startOfDay(for: onsetBase)
             let onset = Int(onsetDay.timeIntervalSince1970) + 23 * 3600 + 10 * 60 + rng.nextInt(-1800, 1800)
-            let inBedSec = Int((totalSleep + totalSleep * (100 - efficiency) / 100) * 60)
+            let inBedMin = asleep / (efficiency / 100.0)
+            let inBedSec = Int(inBedMin * 60)
+            let awakeMin = max(0, inBedMin - asleep)
             sleeps.append(CachedSleepSession(
                 startTs: onset, endTs: onset + inBedSec,
                 efficiency: round1(efficiency), restingHr: rhr, avgHrv: round1(hrv),
                 stagesJSON: segmentsJSON(onset: onset, deep: deep, rem: rem, light: light,
-                                         awakeMin: Double(disturbances) * 1.6)))
+                                         awakeMin: awakeMin)))
+            overnightHr(&hr, from: onset, to: onset + inBedSec, rhr: rhr, rng: &rng)
+            if i >= DAYS - 14 {
+                daytimeHr(&hr, from: onset + inBedSec, hours: 16, rhr: rhr, rng: &rng)
+            }
 
             // --- long-format extras (body composition) under my-whoop ---
             weight += gauss(&rng, -0.02, 0.18)
@@ -146,20 +168,19 @@ enum AppleDemoSeeder {
                 value: round1((18.0 - fitness * 0.2 + gauss(&rng, 0.0, 0.4)).clamped(10.0, 24.0))))
             // Export-verbatim sleep figures (same metricSeries keys the importers write), so the demo
             // Sleep tiles exercise the prefer-imported path.
-            let demoNeedMin = (totalSleep + gauss(&rng, 25.0, 20.0)).clamped(420.0, 560.0)
+            let demoNeedMin = (asleep + gauss(&rng, 25.0, 20.0)).clamped(420.0, 560.0)
             series.append(MetricPoint(day: day, key: "sleep_performance",
-                value: round1(min(totalSleep / demoNeedMin * 100.0, 100.0))))
+                value: round1(min(asleep / demoNeedMin * 100.0, 100.0))))
             series.append(MetricPoint(day: day, key: "sleep_consistency",
                 value: round1(gauss(&rng, 80.0, 8.0).clamped(40.0, 100.0))))
             series.append(MetricPoint(day: day, key: "sleep_need_min", value: round1(demoNeedMin)))
             series.append(MetricPoint(day: day, key: "sleep_debt_min",
-                value: round1((demoNeedMin - totalSleep).atLeast(0.0))))
+                value: round1((demoNeedMin - asleep).atLeast(0.0))))
 
             // --- Apple Health daily aggregate ---
-            let steps = Int(gauss(&rng, 8500.0, 2600.0).clamped(1200.0, 19000.0))
             appleRows.append(AppleDaily(
                 day: day, steps: steps,
-                activeKcal: round1((Double(steps) * 0.045 + Double(nWorkouts) * 220).clamped(120.0, 1400.0)),
+                activeKcal: activeKcal,
                 basalKcal: round1(gauss(&rng, 1650.0, 40.0)),
                 vo2max: round1((46 + fitness * 0.3 + gauss(&rng, 0.0, 0.5)).clamped(38.0, 56.0)),
                 avgHr: Int(gauss(&rng, 72.0, 5.0)), maxHr: Int(gauss(&rng, 150.0, 12.0)),
@@ -179,12 +200,13 @@ enum AppleDemoSeeder {
                              gauss(&rng, 15.0, 6.0), gauss(&rng, 6.0, 3.0)].map { $0.clamped(0.0, 100.0) }
                     return "{\"zone1\":\(round1(z[0])),\"zone2\":\(round1(z[1])),\"zone3\":\(round1(z[2])),\"zone4\":\(round1(z[3])),\"zone5\":\(round1(z[4]))}"
                 }() : nil
+                workoutHr(&hr, from: start, to: start + Int(durSec), avg: avg, rng: &rng)
                 workouts.append(WorkoutRow(
                     startTs: start, endTs: start + Int(durSec), sport: sport, source: src,
                     durationS: round1(durSec),
                     energyKcal: round1((durSec / 60) * gauss(&rng, 9.0, 2.0)),
                     avgHr: avg, maxHr: avg + Int(gauss(&rng, 22.0, 6.0)),
-                    strain: round1((strain * gauss(&rng, 0.6, 0.1)).clamped(4.0 * STRAIN_SCALE, 100.0)),
+                    strain: round1(min(strain, (strain * gauss(&rng, 0.6, 0.1)).clamped(4.0 * STRAIN_SCALE, strain))),
                     distanceM: DISTANCE_SPORTS.contains(sport) ? round1(gauss(&rng, 6500.0, 2500.0).atLeast(500.0)) : nil,
                     zonesJSON: zonesJSON, notes: nil, steps: nil))
             }
@@ -192,7 +214,7 @@ enum AppleDemoSeeder {
             // --- journal answers for the recent 40 days (real catalog strings → Insights light up) ---
             if i >= DAYS - 40 {
                 journal.append(JournalEntry(day: day, question: "Did you drink any alcohol?", answeredYes: rng.nextDouble() < 0.18, notes: nil))
-                journal.append(JournalEntry(day: day, question: "Did you have caffeine late in the day?", answeredYes: rng.nextDouble() < 0.30, notes: nil))
+                journal.append(JournalEntry(day: day, question: "Did you have caffeine?", answeredYes: rng.nextDouble() < 0.30, notes: nil))
                 journal.append(JournalEntry(day: day, question: "Did you feel stressed?", answeredYes: rng.nextDouble() < 0.28, notes: nil))
             }
         }
@@ -228,7 +250,67 @@ enum AppleDemoSeeder {
         _ = try await store.upsertAppleDaily(appleRows, deviceId: apple)
         if !workouts.isEmpty { _ = try await store.upsertWorkouts(workouts, deviceId: whoop) }
         if !journal.isEmpty { _ = try await store.upsertJournal(journal, deviceId: whoop) }
-        NSLog("AppleDemoSeeder: seeded \(daily.count) days, \(workouts.count) workouts.")
+        try await insertHr(hr, into: store)
+        NSLog("AppleDemoSeeder: seeded \(daily.count) days, \(workouts.count) workouts, \(hr.count) HR samples.")
+    }
+
+    /// Existing demo DBs skipped full seed. Fill overnight HR once if the stream is empty.
+    private static func seedHrIfMissing(into store: WhoopStore) async {
+        let now = Int(Date().timeIntervalSince1970)
+        let existing = (try? await store.hrSamples(deviceId: whoop, from: now - 86400 * 3, to: now, limit: 1)) ?? []
+        guard existing.isEmpty else { return }
+        let sleeps = (try? await store.sleepSessions(deviceId: whoop, from: 0, to: now, limit: 40)) ?? []
+        var rng = SplitMix64(seed: 0xBEEF)
+        var hr: [HRSample] = []
+        for sleep in sleeps.suffix(21) {
+            overnightHr(&hr, from: sleep.startTs, to: sleep.endTs, rhr: sleep.restingHr ?? 56, rng: &rng)
+            daytimeHr(&hr, from: sleep.endTs, hours: 16, rhr: sleep.restingHr ?? 56, rng: &rng)
+        }
+        do { try await insertHr(hr, into: store) }
+        catch { NSLog("AppleDemoSeeder: HR fill failed — \(error)") }
+        NSLog("AppleDemoSeeder: filled \(hr.count) HR samples onto existing demo days.")
+    }
+
+    private static func overnightHr(_ hr: inout [HRSample], from: Int, to: Int, rhr: Int, rng: inout SplitMix64) {
+        let span = max(1, to - from)
+        var t = from
+        while t < to {
+            let p = Double(t - from) / Double(span)
+            let base = Double(rhr) + 8 - p * 10
+            let wobble = sin(Double(t) / 220.0) * 3.5 + gauss(&rng, 0, 1.2)
+            hr.append(HRSample(ts: t, bpm: Int((base + wobble).clamped(42, 92))))
+            t += 15
+        }
+    }
+
+    private static func daytimeHr(_ hr: inout [HRSample], from: Int, hours: Int, rhr: Int, rng: inout SplitMix64) {
+        let to = from + hours * 3600
+        var t = from
+        while t < to {
+            let hour = Calendar.current.component(.hour, from: Date(timeIntervalSince1970: TimeInterval(t)))
+            let lift = hour >= 9 && hour <= 18 ? 18.0 : 8.0
+            let bpm = Double(rhr) + lift + gauss(&rng, 0, 4)
+            hr.append(HRSample(ts: t, bpm: Int(bpm.clamped(50, 140))))
+            t += 25
+        }
+    }
+
+    private static func workoutHr(_ hr: inout [HRSample], from: Int, to: Int, avg: Int, rng: inout SplitMix64) {
+        var t = from
+        while t < to {
+            hr.append(HRSample(ts: t, bpm: Int((Double(avg) + gauss(&rng, 0, 8)).clamped(90, 185))))
+            t += 8
+        }
+    }
+
+    private static func insertHr(_ hr: [HRSample], into store: WhoopStore) async throws {
+        guard !hr.isEmpty else { return }
+        var i = 0
+        while i < hr.count {
+            let end = min(i + 4_000, hr.count)
+            try await store.insert(Streams(hr: Array(hr[i..<end])), deviceId: whoop)
+            i = end
+        }
     }
 
     // MARK: - helpers

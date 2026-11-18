@@ -102,7 +102,7 @@ final class IntelligenceEngine: ObservableObject {
     nonisolated static let dayCacheConfigFields: [String] = [
         "hrvBaseline", "rhrBaseline", "age", "sex", "stepTicksPerStep", "maxHROverride",
         "tzOffset", "sleepNeedHours", "sleepConsistency", "habitualMidsleep",
-        "experimentalSleepV2", "motionAwareWake", "deepHrvWindow", "spo2CandidateDisplay",
+        "experimentalSleepV2", "learnedSleepStager", "motionAwareWake", "deepHrvWindow", "spo2CandidateDisplay",
         "effortMethod", "dayCycleMode",
     ]
 
@@ -680,6 +680,18 @@ final class IntelligenceEngine: ObservableObject {
         !effortDone || !sleepWearDone
     }
 
+    /// Cheap UserDefaults fingerprint: true when launch still owes the 4000-day heal or history
+    /// repair. Callers skip the 6 s delay and the passes themselves when this is false.
+    static func launchHistoryPassesArePending() -> Bool {
+        let d = UserDefaults.standard
+        let healPending = d.bool(forKey: timestampHealPendingKey)
+            || !d.bool(forKey: timestampHealFlagKey)
+        let repairPending = historyRepairIsPending(
+            effortDone: d.bool(forKey: effortRescoreFlagKey),
+            sleepWearDone: d.bool(forKey: sleepWearRescoreFlagKey))
+        return healPending || repairPending
+    }
+
     func runSleepWearRescoreIfNeeded(historyDays: Int = 4000) async {
         await runHistoryRepairIfNeeded(historyDays: historyDays)
     }
@@ -797,6 +809,7 @@ final class IntelligenceEngine: ObservableObject {
             }
         }
         guard let store = await repo.storeHandle() else { note = String(localized: "No on-device store yet."); return }
+        await backfillAppleImportedWorkouts(store: store)
         guard let hrvCfg = Baselines.metricCfg["hrv"],
               let rhrCfg = Baselines.metricCfg["resting_hr"],
               let respCfg = Baselines.metricCfg["resp"],
@@ -817,7 +830,10 @@ final class IntelligenceEngine: ObservableObject {
         // Oura / Apple Watch / re-added-WHOOP install the per-device read returned 0, so this gate never
         // fired and a night finishing after launch stayed unscored until relaunch. Scoring below still reads
         // the registry's ACTIVE device (`owner`); only this change-detector needed to be cross-device.
-        let wmKey = (try? await store.analysisFingerprint()) ?? ""
+        let wmRaw = (try? await store.analysisFingerprint()) ?? ""
+        // `|strainGap=1` invalidates watermarks written before uncovered-workout load was
+        // added to day strain, so already-stored days rescore on the next pass.
+        let wmKey = wmRaw.isEmpty ? "" : wmRaw + "|strainGap=1"
         // #1538: read the stored watermark ONCE for both gates and the attribution line below. There is no
         // suspension point between them, so the three reads this replaces could not disagree — but the log
         // line asserting `newData` and the gate deciding whether to run must be the SAME comparison by
@@ -898,7 +914,8 @@ final class IntelligenceEngine: ObservableObject {
                              age: Double(profile.age), sex: profile.sex,
                              stepTicksPerStep: profile.stepTicksPerStep)
 
-        let maxHR = profile.hrMaxOverride > 0 ? Double(profile.hrMaxOverride) : nil
+        let maxHR = profile.resolvedMaxHROverride
+        let hrmaxSource = profile.hrMaxSource
         let now = Int(Date().timeIntervalSince1970)
         // Device wall-clock offset (seconds east of UTC) for the sleep detector's daytime
         // false-sleep guard (#90): the stager places each window's center on the LOCAL clock
@@ -1043,6 +1060,7 @@ final class IntelligenceEngine: ObservableObject {
         // #1545: the Effort TRIMP recipe, read ONCE per pass. Global (same for every day), so it folds
         // into the config signature below rather than the per-day key.
         let effortMethodGlobal = PuffinExperiment.effortMethod
+        let useBandStrain = AppBrand.isPersonalBuild
         let dayCycleMode = DayCycleMode.persisted(UserDefaults.standard.string(forKey: DayCycleMode.storageKey))
 
         // Zero the per-day probe counters so the line emitted after the steps phase describes THIS pass
@@ -1054,6 +1072,7 @@ final class IntelligenceEngine: ObservableObject {
         // day); read them ONCE here too so the config signature can fold them without reaching into the
         // detached loop.
         let useSleepStagerV2Global = PuffinExperiment.experimentalSleepV2Enabled
+        let useSleepStageLearnedGlobal = PuffinExperiment.learnedSleepStagerEnabled
         let useMotionAwareWakeGlobal = PuffinExperiment.motionAwareWakeEnabled
         // Cache eligibility for the whole pass: never reuse while a Test-Centre trace is active (a cached
         // scan carries no fresh gate trace). Owner-level eligibility (registered WHOOP) is checked per day.
@@ -1100,12 +1119,12 @@ final class IntelligenceEngine: ObservableObject {
             String(sleepNeedHours.bitPattern),
             sleepConsistency.map { String($0.bitPattern) } ?? "nil",
             habitualMidsleepSec.map { "\($0)" } ?? "nil",
-            "\(useSleepStagerV2Global)", "\(useMotionAwareWakeGlobal)", "\(deepHrvWindow)",
+            "\(useSleepStagerV2Global)", "\(useSleepStageLearnedGlobal)", "\(useMotionAwareWakeGlobal)", "\(deepHrvWindow)",
             "\(spo2CandidateDisplayOn)",
             // #1545: MUST be here. The Effort recipe changes every day's strain, so a cached scan
             // produced under one method is stale the moment the user switches — serving it would show a
             // window of days scored by a recipe the user just turned off, with nothing to explain it.
-            "\(effortMethodGlobal)",
+            "\(effortMethodGlobal)|bandStrain=gapv1-\(useBandStrain)",
             dayCycleMode.rawValue,
         ].joined(separator: "|")
         // Drop the whole cache on a config change, then snapshot it into a Sendable `let` for the detached
@@ -1124,9 +1143,10 @@ final class IntelligenceEngine: ObservableObject {
         }
         let inDayScanCache = dayScanCache
 
-        let (scanned, skippedDayLines, updatedDayScanCache):
-            ([DayScan], [String], [String: (key: String, scan: DayScan)]) = await Task.detached(priority: .utility) {
+        let (scanned, skippedDayLines, updatedDayScanCache, freshScoredDays):
+            ([DayScan], [String], [String: (key: String, scan: DayScan)], [String]) = await Task.detached(priority: .utility) {
             var out: [DayScan] = []
+            var freshScoredDays: [String] = []
             // Days skipped below (too few HR samples) never get a DayScan, so this diagnostic can't ride
             // along on one; carried out alongside `out` and replayed through `diagnosticSink` on the main
             // actor below, same as `rhrLine`/the trace arrays. Mirrors the Kotlin `diag` sink.
@@ -1187,6 +1207,29 @@ final class IntelligenceEngine: ObservableObject {
             let rrWindow = SlidingStreamWindow<RRInterval>(tsOf: { $0.ts }, limit: StreamReadCap.rr) { o, f, t in
                 try? await store.rrIntervals(deviceId: o, from: f, to: t, limit: StreamReadCap.rr,
                                             unlabelledAliasOfWhoop5: activeWhoop5RR && o == Repository.whoopSource)
+            }
+            let strainFrom = now - maxDays * 86_400 - StreamReadCap.lookbackSeconds
+            var strainRows: [WorkoutRow] = []
+            strainRows += (try? await store.workouts(deviceId: ownerFallbackId, from: strainFrom,
+                                                     to: now, limit: 100_000)) ?? []
+            strainRows += (try? await store.workouts(deviceId: WorkoutSource.appleHealthSource,
+                                                     from: strainFrom, to: now, limit: 100_000)) ?? []
+            strainRows += (try? await store.workouts(deviceId: computedId, from: strainFrom,
+                                                     to: now, limit: 100_000)) ?? []
+            let appleHRAll = (try? await store.hrSamples(deviceId: WorkoutSource.appleHealthSource,
+                                                         from: strainFrom, to: now, limit: 200_000)) ?? []
+            var strainWorkoutsByDay: [String: [BandStrain.WorkoutContribution]] = [:]
+            for w in strainRows {
+                guard w.endTs > w.startTs else { continue }
+                let dayKey = AnalyticsEngine.dayString(w.startTs, offsetSec: tzOffset)
+                var samples = AppleWorkoutHRStore.load(startTs: w.startTs, sport: w.sport) ?? []
+                if samples.isEmpty, !appleHRAll.isEmpty {
+                    samples = appleHRAll.filter { $0.ts >= w.startTs && $0.ts < w.endTs }
+                }
+                strainWorkoutsByDay[dayKey, default: []].append(
+                    BandStrain.WorkoutContribution(
+                        startTs: w.startTs, endTs: w.endTs, samples: samples,
+                        storedStrain21: w.strain.map { $0 * 21.0 / 100.0 }))
             }
             var paceMark = DispatchTime.now().uptimeNanoseconds
             for offset in 0..<maxDays {
@@ -1446,6 +1489,7 @@ final class IntelligenceEngine: ObservableObject {
                 // toggle is the honest escape until real 4.0 ground truth settles it (#271/#319). Matches the
                 // self-heal restage below, which reads the same toggle.
                 let useSleepStagerV2 = PuffinExperiment.experimentalSleepV2Enabled
+                let useSleepStageLearned = PuffinExperiment.learnedSleepStagerEnabled
                 // #364 follow-up: read the motion-aware wake refinement toggle the same way (once, off the
                 // detached executor). Default OFF — see `PuffinExperiment.motionAwareWakeEnabled`. It only
                 // ever runs AFTER whichever stager above just ran, and self-gates on the night's observed
@@ -1526,12 +1570,15 @@ final class IntelligenceEngine: ObservableObject {
                                                      vendorResp: vendorResp, gravity: grav,
                                                      steps: steps, dayHr: dayHr, daySteps: daySteps,
                                                      dayGravity: dayGrav,
+                                                     dayElapsedSeconds: dayStart == nowLocalMidnight
+                                                        ? Double(max(0, now - nowLocalMidnight)) : nil,
                                                      skinTemp: skin,
                                                      skinTempFamily: skinFamily,   // #938
                                                      skinTempAnchorRaw: skinAnchorRaw,   // #938 second capture
                                                      skinTempWornToleranceSec: skinWornToleranceSec,   // #1467
                                                      spo2: spo2,                   // #93
                                                      profile: up, baselines: baselines1, maxHROverride: maxHR,
+                                                     hrmaxSource: hrmaxSource,
                                                      tzOffsetSeconds: tzOffset, wristOff: wristOff,
                                                      sleepNeedHours: sleepNeedHours,
                                                      sleepConsistency: sleepConsistency,
@@ -1540,6 +1587,7 @@ final class IntelligenceEngine: ObservableObject {
                                                      // #690: thread the V2 toggle into the NORMAL staging path so
                                                      // it affects detected nights, not just the self-heal restage.
                                                      useSleepStagerV2: useSleepStagerV2,
+                                                     useSleepStageLearned: useSleepStageLearned,
                                                      // #364 follow-up: same threading for the motion-aware wake
                                                      // refinement post-pass.
                                                      useMotionAwareWake: useMotionAwareWake,
@@ -1553,7 +1601,9 @@ final class IntelligenceEngine: ObservableObject {
                                                      // ring buffer isn't flooded; every night keeps the summary.
                                                      hrvWindowDetail: dayStart == nowLocalMidnight,
                                                      deepHrvWindow: deepHrvWindow,
-                                                     effortMethod: effortMethodGlobal)
+                                                     effortMethod: effortMethodGlobal,
+                                                     useBandStrain: useBandStrain,
+                                                     strainWorkouts: strainWorkoutsByDay[day] ?? [])
                 dayScoreSeconds += Date().timeIntervalSince(tScore0)
                 // #195: whole-night HRV cleaning-pipeline summary for the always-on strap log, so a "reads ~2x
                 // too high" report is triageable without the HRV test mode: RMSSD vs SDNN (rmssd >> sdnn =
@@ -1847,6 +1897,7 @@ final class IntelligenceEngine: ObservableObject {
                     dayScanCacheLocal[day] = (key: key, scan: scan)
                     dayCacheCacheable += 1
                 }
+                freshScoredDays.append(day)
                 out.append(scan)
             }
             // #1005: prune the reuse cache to the current 21-day window (the oldest day ages out at
@@ -1892,7 +1943,7 @@ final class IntelligenceEngine: ObservableObject {
                 rrTruncated: rrWindow.truncatedReads,
                 hrOwnerFlips: hrWindow.ownerFlips, rrOwnerFlips: rrWindow.ownerFlips,
                 hrReuseOff: hrWindow.reuseOffReads, rrReuseOff: rrWindow.reuseOffReads))
-            return (out, skippedDayLines, dayScanCacheLocal)
+            return (out, skippedDayLines, dayScanCacheLocal, freshScoredDays)
         }.value
         // #1005: write the loop's updated reuse cache back to the (main-actor) stored property. The pass ran
         // to completion above (`.value` awaited), so there is no concurrent access.
@@ -3012,7 +3063,7 @@ final class IntelligenceEngine: ObservableObject {
         // today's workout against a resting HR up to `maxDays` old.
         let measuredResting = out.first(where: { $0.rhr != nil })?.rhr.map(Double.init)
         await rescoreManualWorkouts(store: store, profile: up, restingHR: measuredResting,
-                                    effortMethod: effortMethodGlobal)
+                                    effortMethod: effortMethodGlobal, useBandStrain: useBandStrain)
 
         results = out
         note = out.isEmpty
@@ -3023,6 +3074,19 @@ final class IntelligenceEngine: ObservableObject {
         // pass (#899 dedup deleted stale session rows but no daily changed) must refresh too, so the
         // Sleep tab stops showing the removed duplicates right away.
         if !dailies.isEmpty || !healDropped.isEmpty { await repo.refresh() }
+
+        // Finished display series for days whose scored inputs moved, plus today
+        // (today's 1 Hz stream is still growing). Off the main actor; the UI reads
+        // the same builder on a miss, so a race cannot disagree.
+        var fillDays = Set(freshScoredDays)
+        fillDays.insert(newestDay)
+        let fillList = fillDays.sorted()
+        let fillToday = newestDay
+        let fillRepo = self.repo
+        await Task.detached(priority: .utility) {
+            await NativeDerivedSeries.fill(repo: fillRepo, dayKeys: fillList, todayKey: fillToday)
+        }.value
+        markPostLoopPhase("derivedSeries")
 
         markPostLoopPhase("workouts")
         // #836/#sleep-sync: record the complete raw-analysis fingerprint this run scored against, so a later
@@ -3059,6 +3123,47 @@ final class IntelligenceEngine: ObservableObject {
     /// `analyzeRecent` scored against. A non-forced tick whose current fingerprint equals this skips the
     /// 21-day rescore; cleared implicitly by any scoring-stream insert (the fingerprint moves), so it self-heals.
     private static let analyzeWatermarkKey = "noop.analyzeWatermark"
+
+    /// Version-gated one-shot: drop generic Apple `Workout` duplicates and fill missing strain.
+    private static let appleWorkoutStrainBackfillKey = "noop.appleWorkoutStrainBackfill"
+
+    /// Collapse same-window generic Apple Health rows and score any remaining row that still
+    /// has no HR/strain. Runs at most once per `AppleWorkoutImport.backfillVersion`.
+    private func backfillAppleImportedWorkouts(store: WhoopStore) async {
+        let stored = UserDefaults.standard.integer(forKey: Self.appleWorkoutStrainBackfillKey)
+        guard stored < AppleWorkoutImport.backfillVersion else { return }
+        let apple = WorkoutSource.appleHealthSource
+        let now = Int(Date().timeIntervalSince1970) + 86_400
+        let rows = (try? await store.workouts(deviceId: apple, from: 0, to: now, limit: 100_000)) ?? []
+        let (keep, drop) = AppleWorkoutImport.partition(rows)
+        for d in drop {
+            _ = try? await store.deleteWorkouts(deviceId: apple, sport: d.sport,
+                                                from: d.startTs, to: d.startTs)
+        }
+        let hrmax = repo.strainProfile?.hrMax ?? Double(StrainScorer.defaultMaxHR())
+        let rest = BandStrain.defaultRestingHR
+        let hrIds = Repository.workoutHrDeviceIds(source: apple, activeStrapId: deviceId,
+                                                  importedIds: repo.importedReadIds)
+        var filled: [WorkoutRow] = []
+        for w in keep where w.strain == nil || w.avgHr == nil || (w.strain == 0 && (w.avgHr ?? 0) > 0) {
+            var samples = AppleWorkoutHRStore.load(startTs: w.startTs, sport: w.sport) ?? []
+            if samples.isEmpty {
+                samples = (try? await store.hrSamples(deviceId: apple, from: w.startTs, to: w.endTs,
+                                                      limit: 20_000)) ?? []
+            }
+            if samples.isEmpty {
+                samples = await repo.hrSamples(deviceIds: hrIds, from: w.startTs, to: w.endTs,
+                                               limit: 20_000)
+            }
+            if let next = AppleWorkoutImport.filled(w, samples: samples, maxHR: hrmax, restingHR: rest) {
+                filled.append(next)
+            }
+        }
+        if !filled.isEmpty {
+            _ = try? await store.upsertWorkouts(filled, deviceId: apple)
+        }
+        UserDefaults.standard.set(AppleWorkoutImport.backfillVersion, forKey: Self.appleWorkoutStrainBackfillKey)
+    }
 
     /// CAPTURE-B (#814/#799): build the universal `dayOwner …` self-diagnostic line VERBATIM (the Test
     /// Centre export parser depends on this exact shape). `readId` is the owner this day was read+scored
@@ -3195,12 +3300,13 @@ final class IntelligenceEngine: ObservableObject {
                                        // mid-pass score a manual workout by one recipe and the day it
                                        // sits in by the other — the exact day-vs-bout contradiction the
                                        // threading exists to prevent. Twin of the Kotlin parameter.
-                                       effortMethod: StrainScorer.Method = .edwards) async {
+                                       effortMethod: StrainScorer.Method = .edwards,
+                                       useBandStrain: Bool = false) async {
         let now = Int(Date().timeIntervalSince1970)
         let since = now - 14 * 86_400
         guard let rows = try? await store.workouts(deviceId: deviceId, from: since, to: now, limit: 200)
         else { return }
-        let hrMax = Double(profile.hrMax)
+        let hrMax = profile.effortHRmax ?? Double(profile.hrMax)
         var updated: [WorkoutRow] = []
         // A manual row is eligible when it looks under-scored (negligible kcal, #137) OR it's missing
         // strain (the merged-workout case, where kcal is the SUM of inputs so it never looks under-scored
@@ -3211,7 +3317,8 @@ final class IntelligenceEngine: ObservableObject {
                                                            to: row.endTs, limit: 20_000),
                   let s = ManualWorkoutRescore.scored(windowSamples: samples, profile: up, hrMax: hrMax,
                                                       restingHR: restingHR,
-                                                      effortMethod: effortMethod),
+                                                      effortMethod: effortMethod,
+                                                      useBandStrain: useBandStrain),
                   ManualWorkoutRescore.improves(s, over: row.energyKcal, currentStrain: row.strain,
                                                 allowStrainOnlyFill: true)
             else { continue }

@@ -46,12 +46,15 @@ struct StrandiOSApp: App {
     @AppStorage(AccentColor.customHexKey) private var accentCustomHex = AccentColor.defaultCustomHex
     /// Effort's display scale is also embedded in the shared widget snapshot. Observe it here so a
     /// Settings change gets one accurate full rebuild instead of waiting for an unrelated repo refresh.
-    @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.hundred.rawValue
+    @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
     /// kg vs lb for the Lift Log Live Activity's "8 x 30 kg" line — the app formats it, because the
     /// unit preference lives here and not in the widget extension.
     @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
 
     init() {
+        // Band: pin layout / effort / units / High Sleep Stress before any view reads @AppStorage.
+        // Stock NOOP (`NoopPersonalBuild` missing or NO) is a no-op.
+        PersonalDefaults.apply()
         // #1008: pin the pre-change Overnight-only default for existing installs before
         // anything reads it. Idempotent; a no-op on fresh installs and after the first launch.
         PuffinExperiment.migrateContinuousHrvOvernightDefault()
@@ -86,16 +89,20 @@ struct StrandiOSApp: App {
         NotificationPresenter.shared.onCoachBriefTapped = { [weak router] in router?.openCoach() }
         let model = AppModel()
         _model = StateObject(wrappedValue: model)
-        CoachBriefScheduler.register(generateBrief: { [weak coach = model.coach] in
-            await coach?.generateBrief()
-        }, log: { [weak model] line in
-            model?.live.append(log: AppModel.stamped(line))
-        })
+        if !AppBrand.isPersonalBuild {
+            CoachBriefScheduler.register(generateBrief: { [weak coach = model.coach] in
+                await coach?.generateBrief()
+            }, log: { [weak model] line in
+                model?.live.append(log: AppModel.stamped(line))
+            })
+        }
         // Settings → "Keep screen on while syncing". Wired once here, not as another modifier on `body`.
         SyncKeepAwake.shared.attach(to: model.live)
         // The strap-sync Live Activity (Lock Screen + Dynamic Island). Same placement, same reason — and
         // it must also run in a process the Sync Strap shortcut launched with no scene.
-        SyncLiveActivityController.shared.attach(to: model.live)
+        if !AppBrand.isPersonalBuild {
+            SyncLiveActivityController.shared.attach(to: model.live)
+        }
         // iOS's own daily report of NOOP's CPU, memory, disk writes, hangs and exits, and its crash/hang reports,
         // one strap-log line each. Registering is the whole cost; iOS gathers and delivers them (MetricKitLog).
         MetricKitLog.shared.attach(to: model.live)
@@ -119,7 +126,9 @@ struct StrandiOSApp: App {
         // The live heart rate banner makes room only for the Lift Log banner actually on screen, which carries the
         // heart rate itself — not for a sync (`LiveHRBannerLifecycle`).
         let liveActivity = LiveActivityController()
-        liveActivity.follow(model, standsAside: { [weak liftActivity] in liftActivity?.isShowing == true })
+        if !AppBrand.isPersonalBuild {
+            liveActivity.follow(model, standsAside: { [weak liftActivity] in liftActivity?.isShowing == true })
+        }
         _liveActivity = State(initialValue: liveActivity)
         // A gym session keeps ONE banner on the Lock Screen, its own — as the live-HR banner already
         // stands aside for it. A sync started in the foreground mid-session starts no sync banner.
@@ -130,7 +139,9 @@ struct StrandiOSApp: App {
         }
         // Before any view or publisher exists: the first push to the Lock Screen banner must find the
         // session already running, or it ends the banner iOS kept alive across the restart.
-        liftSession.resumeSaved()
+        if !AppBrand.isPersonalBuild {
+            liftSession.resumeSaved()
+        }
         // #1538: a strap offload completes while the app is BACKGROUNDED — it stays alive as a
         // bluetooth-central to receive it — and the re-score it triggers took nearly eight minutes on the
         // reporter's install, far longer than that wake survives. The pass is all-or-nothing, so being
@@ -147,8 +158,13 @@ struct StrandiOSApp: App {
         // makes false. Registered unconditionally and re-armed from inside its own handler.
         StaleBatteryBackgroundScheduler.register(perform: { [weak model] in
             await model?.checkStrapNotSeen()
+            if let model {
+                await AutoICloudBackup.catchUpIfDue(checkpoint: { await model.repo.checkpointForBackup() })
+            }
         })
-        StaleBatteryBackgroundScheduler.schedule()
+        Task { @MainActor in
+            StaleBatteryBackgroundScheduler.schedule()
+        }
         let bridge = HealthKitBridge(
             repo: model.repo,
             appleDeviceId: model.appleDeviceId,
@@ -174,6 +190,10 @@ struct StrandiOSApp: App {
         // lifetime; the bridge no-ops unless Health was authorized.
         model.healthWriteBack = { [weak bridge] in
             _ = await bridge?.writeBackAfterNewData()
+        }
+        // Apple Health workouts without a stored HR series get one on foreground / observer wakes.
+        model.importAppleWorkoutHeartRate = { [weak bridge] in
+            await bridge?.importMissingAppleWorkoutHeartRate(days: 4)
         }
     }
 
@@ -334,7 +354,7 @@ struct StrandiOSApp: App {
                 // supported, so this is safe on every device/simulator combination.
                 .task {
                     watch.activate()
-                    await watch.pushLatest(from: model)
+                    Task(priority: .utility) { await watch.pushLatest(from: model) }
                 }
         }
         // HealthKit authorization is intentionally NOT requested on launch. The system permission
@@ -347,15 +367,19 @@ struct StrandiOSApp: App {
         // safe no-op until the user opts in.
         .onChange(of: scenePhase, initial: true) { _, phase in
             if phase == .active {
-                CoachBriefScheduler.activateIfEnabled { await model.coach.generateBrief() }
+                if !AppBrand.isPersonalBuild {
+                    CoachBriefScheduler.activateIfEnabled { await model.coach.generateBrief() }
+                }
                 model.drainPendingIntents(router: router)
-                // iOS starts a Lift Log banner only for an app on screen, so a banner lost while NOOP was in
-                // the background comes back now, whether or not the strap is sending anything.
-                pushLiftActivity()
-                // Only the foreground may start the live heart rate banner: offer it now.
-                liveActivity.appBecameActive()
-                // End a "Connecting…" sync island whose sync never came, rather than leave it greyed.
-                SyncLiveActivityController.shared.reconcile(live: model.live)
+                if !AppBrand.isPersonalBuild {
+                    // iOS starts a Lift Log banner only for an app on screen, so a banner lost while NOOP was in
+                    // the background comes back now, whether or not the strap is sending anything.
+                    pushLiftActivity()
+                    // Only the foreground may start the live heart rate banner: offer it now.
+                    liveActivity.appBecameActive()
+                    // End a "Connecting…" sync island whose sync never came, rather than leave it greyed.
+                    SyncLiveActivityController.shared.reconcile(live: model.live)
+                }
                 // Re-arm the strap's smart alarm on foreground: the firmware alarm is a single instant
                 // and iOS can't re-arm it while suspended, so it would otherwise fire once and stop.
                 model.applySmartAlarm()
@@ -374,7 +398,7 @@ struct StrandiOSApp: App {
                 // opened, which is a worse regression than the bug being fixed. `analyzeRecent`
                 // serialises itself, so overlapping with the sync this foreground also kicks off is safe.
                 Task { await model.runDeferredRescoreIfOwed() }
-                Task {
+                Task(priority: .utility) {
                     health.refreshAuthIfPreviouslyGranted()
                     HealthWritebackBackgroundScheduler.updateSchedule(
                         isAuthorized: health.auth == .authorized)
@@ -390,6 +414,7 @@ struct StrandiOSApp: App {
                     // widget and Today never disagree about which day they describe. Without this the
                     // watch only ever holds placeholder data on a real device.
                     await watch.pushLatest(from: model)
+                    await AutoICloudBackup.catchUpIfDue(checkpoint: { await model.repo.checkpointForBackup() })
                 }
             } else if phase == .background {
                 // Re-submit on every transition because iOS may discard an old best-effort request.
@@ -531,16 +556,18 @@ private struct iOSRootView: View {
             // now that the check is on by default: without it a brand-new install would reach the network
             // during first run, before the Terms gate the user has not accepted yet. While the default was
             // off, nothing made that visible.
-            if onboarded && acceptedTerms == Terms.currentVersion {
+            if onboarded && acceptedTerms == Terms.currentVersion && !AppBrand.isPersonalBuild {
                 UpdateWatch.runIfDue(currentVersion: UpdateWatch.installedVersion, sideloadHint: true)
             }
         }
         .onChange(of: acceptedTerms) { _, _ in showWhatsNewIfDue() }
     }
 
-    /// DEBUG: launched with --demo-seed, skip the first-run gates (onboarding / terms / What's New) so the
-    /// FULL shell with the tab bar renders populated for verification + screenshots. No-op in Release.
+    /// Skip first-run gates (onboarding / terms / What's New). DEBUG `--demo-seed` still does this
+    /// for screenshots. A personal iOS build (`NoopPersonalBuild`) does it in every configuration so
+    /// Band opens straight into the app; pairing stays on More → Devices.
     private var demoBypass: Bool {
+        if AppBrand.isPersonalBuild { return true }
         #if DEBUG
         return CommandLine.arguments.contains("--demo-seed")
         #else
@@ -565,49 +592,22 @@ private struct iOSRootView: View {
 }
 
 #if DEBUG
-/// DEBUG-only screenshot harness. Maps `--demo-screen <name>` to a single screen so a seeded
-/// simulator build can be captured deterministically (verification + marketing). Stripped from Release.
+/// DEBUG-only screenshot harness. Maps `--demo-screen <name>` to a live Band screen.
 enum DemoScreens {
-    /// The screen named by `--demo-screen <name>`, or nil if the arg is absent/unknown.
     static var requested: AnyView? {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--demo-screen"), i + 1 < args.count else { return nil }
-        switch args[i + 1].lowercased() {
-        case "today":    return AnyView(TodayView())
-        // The DEFAULT iOS Today (`noop.liquidTodayEnabled` ships true), so it needs its own entry — plain
-        // "today" renders the CLASSIC screen, which is exactly the screen whose behaviour Liquid was found
-        // to have diverged from. Without this, the default Today was the one screen the harness could not
-        // capture.
-        case "liquidtoday": return AnyView(LiquidTodayView())
-        case "trends":   return AnyView(TrendsView())
-        case "sleep":    return AnyView(SleepView())
-        case "live":     return AnyView(LiveView())
-        case "stress":   return AnyView(StressView())
-        case "workouts": return AnyView(WorkoutsView())
-        case "health":   return AnyView(HealthView())
-        case "insights": return AnyView(InsightsView())
-        case "explore":  return AnyView(MetricExplorerView())
-        case "compare":  return AnyView(CompareView())
-        case "settings": return AnyView(SettingsView())
-        case "chargebreakdown": return AnyView(ChargeBreakdownDemoHost())
-        case "devices":  return AnyView(DevicesView())
-        case "devicescatalog": return AnyView(DeviceCardCatalog())
-        case "fitnessage": return AnyView(FitnessAgeDemoScreen())
-        case "vitality": return AnyView(VitalityDemoScreen())
-        case "addwizard": return AnyView(AddWizardDemoHost())
-        // Oura onboarding: the Add-device wizard deep-linked straight to the Oura factory-reset-and-adopt
-        // prep step (the Beta banner + get/lose card + the red irreversible-consent gate), screenshot-able
-        // WITHOUT a ring.
-        case "ouraonboarding": return AnyView(OuraOnboardingDemoHost())
-        // Oura device card: the locally-adopted Oura ring card (Beta chip + per-gen honest capability copy
-        // + battery + local-state note), rendered with mock data, no ring required.
-        case "ouradevice": return AnyView(OuraDeviceDemoScreen())
-        // #221: a WHOOP 5/MG whose encrypted bond was refused (#78) — the "Connected · not paired" pill
-        // + self-service pairing guidance, screenshot-able WITHOUT reproducing the bond refusal on real
-        // hardware.
-        case "bondrefused": return AnyView(BondRefusedDemoScreen())
-        default:         return nil
-        }
+        let name = args[i + 1].lowercased()
+        if name == "today" || name == "nativetoday" { return AnyView(NativeHomeView()) }
+        if name == "live" { return AnyView(LiveView()) }
+        if name == "workouts" { return AnyView(WorkoutsView()) }
+        if name == "insights" { return AnyView(InsightsView()) }
+        if name == "settings" { return AnyView(NativeAppSettingsView()) }
+        if name == "devices" { return AnyView(DevicesView()) }
+        if name == "devicescatalog" { return AnyView(DeviceCardCatalog()) }
+        if name == "addwizard" { return AnyView(AddWizardDemoHost()) }
+        if name == "bondrefused" { return AnyView(BondRefusedDemoScreen()) }
+        return nil
     }
 }
 #endif
@@ -621,16 +621,5 @@ private struct AddWizardDemoHost: View {
     @EnvironmentObject var live: LiveState
     var body: some View { AddDeviceWizard(live: live, onClose: {}) }
 }
-
-/// DEBUG-only host so `--demo-screen ouraonboarding` renders the Add-device wizard deep-linked to the
-/// Oura factory-reset-and-adopt prep step (the Beta banner + what-you-get/what-you-lose card + the red
-/// irreversible-consent gate). A SwiftUI View body is main-actor, so it can pull the injected LiveState
-/// and seed the wizard's `startAt` into the Oura prep step without a ring present.
-private struct OuraOnboardingDemoHost: View {
-    @EnvironmentObject var live: LiveState
-    var body: some View {
-        AddDeviceWizard(live: live, onClose: {}, startAt: (.oura, .prep))
-    }
-
-}
 #endif
+

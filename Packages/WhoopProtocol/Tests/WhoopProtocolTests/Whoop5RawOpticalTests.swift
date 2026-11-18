@@ -3,11 +3,9 @@ import XCTest
 
 /// R20 (layout-v20, 2,140-byte) optical decoder.
 ///
-/// The golden vectors live in `Resources/r20_optical_oracle.json`, a byte-identical copy of
-/// `android/app/src/test/resources/r20_optical_oracle.json`. Both platforms decode the same REAL
-/// captured records and assert the same expected values, which were produced by an independent third
-/// implementation of the published byte layout — so a one-sided offset edit fails on the platform that
-/// moved, not silently on both. Same idiom as `DecoderOracleTests`.
+/// The golden vectors live in `Resources/r20_optical_oracle.json`. The suite decodes REAL captured
+/// records and asserts expected values produced by an independent implementation of the published
+/// byte layout. Same idiom as `DecoderOracleTests`.
 final class Whoop5RawOpticalTests: XCTestCase {
 
     // MARK: - Oracle fixture
@@ -372,26 +370,6 @@ final class Whoop5RawOpticalTests: XCTestCase {
         XCTAssertEqual(parsed["channel_b4_1"]?.intArrayValue?.count, 25)
         XCTAssertNil(parsed["red"])
         XCTAssertNil(parsed["ir"])
-    }
-
-    /// The Swift and Android copies of the oracle MUST be byte-identical, so neither platform can edit
-    /// its fixture without the other. Mirrors `DecoderOracleTests.testOracleCopiesAreIdentical`.
-    func testOracleCopiesAreIdentical() throws {
-        let swiftURL = try XCTUnwrap(Bundle.module.url(forResource: "r20_optical_oracle", withExtension: "json"))
-        let swiftData = try Data(contentsOf: swiftURL)
-
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // WhoopProtocolTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // WhoopProtocol
-            .deletingLastPathComponent()  // Packages
-            .deletingLastPathComponent()  // repo root
-        let androidURL = repoRoot.appendingPathComponent("android/app/src/test/resources/r20_optical_oracle.json")
-        guard FileManager.default.fileExists(atPath: androidURL.path) else {
-            throw XCTSkip("android oracle copy not present at \(androidURL.path)")
-        }
-        XCTAssertEqual(swiftData, try Data(contentsOf: androidURL),
-                       "r20_optical_oracle.json copies differ — keep Swift and Android in lockstep")
     }
 
     // MARK: - Synthetic frame helpers

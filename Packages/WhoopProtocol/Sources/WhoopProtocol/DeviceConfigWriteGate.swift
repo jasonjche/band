@@ -238,7 +238,7 @@ public enum DeviceConfigWriteGate {
 ///
 /// Order-dependent and pure (`noteWriteAck` → `noteReadBack`/`noteReadBackTimeout` → `render`), so
 /// `swift test` covers the whole verdict table without a strap. Kotlin twin:
-/// `EcgRawDataGateReport` in `android/…/protocol/DeviceConfigWriteGate.kt`; the rendered text is
+/// `EcgRawDataGateReport` in ; the rendered text is
 /// byte-identical across platforms so a shared strap log reads the same either side.
 public struct EcgRawDataGateReport: Equatable, Sendable {
 

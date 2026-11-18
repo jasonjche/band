@@ -138,7 +138,7 @@ func registerPostHooks() {
             // Drop 0 ms intervals here too, matching the historical path (Streams.extractStreams);
             // a 0 ms R-R is a placeholder, not a beat-to-beat interval.
             if let v = u16(frame, 14 + i * 2, limit), v > 0 {
-                fb.add(14 + i * 2, 2, "rr[\(i)]", "rr", value: .int(v), note: "ms")
+                fb.add(14 + i * 2, 2, rrFieldName(i), "rr", value: .int(v), note: "ms")
                 rrs.append(v)
             }
         }
@@ -279,7 +279,7 @@ func registerPostHooks() {
             var rrVals: [Int] = []
             for i in 0..<min(rrn, 4) {
                 let off = rrFirstOff + i * 2
-                fb.add(off, 2, "rr[\(i)]", "rr", value: u16(frame, off, limit).map { .int($0) }, note: "ms")
+                fb.add(off, 2, rrFieldName(i), "rr", value: u16(frame, off, limit).map { .int($0) }, note: "ms")
                 if let v = u16(frame, off, limit) { rrVals.append(v) }
             }
             fb.parsed["heart_rate"] = hr.map { .int($0) }
@@ -411,7 +411,7 @@ func registerPostHooks() {
             for i in 0..<min(rrn, 4) {
                 let o = rrFirst + i * 2
                 if let v = u16(frame, o, limit), v != 0 {
-                    fb.add(o, 2, "rr[\(i)]", "rr", value: .int(v), note: "ms")
+                    fb.add(o, 2, rrFieldName(i), "rr", value: .int(v), note: "ms")
                     rrVals.append(v)
                 }
             }

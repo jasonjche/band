@@ -3,21 +3,14 @@ import WhoopProtocol
 
 // HRZones.swift — HR-max + 5 heart-rate zones and time-in-zone from an HR stream.
 //
-// HR-max uses Tanaka et al. (2001): HRmax = 208 − 0.7 × age (gender-independent),
-// with an optional manual override. The five zones are the conventional %HRmax
-// bands used across consumer wearables:
+// HR-max uses the Gellish formula WHOOP falls back to: HRmax = 207 − 0.7 × age
+// (Gellish et al. 2007, linear). Display zones default to Karvonen heart-rate
+// reserve (WHOOP): zone n starts at RHR + {0.40, 0.60, 0.70, 0.80, 0.90} ×
+// (max − RHR), with Zone 0 below zone 1. The conventional %HRmax bands
+// (50/60/70/80/90) remain available via `zones(maxHR:)` / `zones(age:)`.
 //
-//   Zone 1 (50–60% HRmax) — very light / recovery
-//   Zone 2 (60–70% HRmax) — light / fat-burn
-//   Zone 3 (70–80% HRmax) — moderate / aerobic
-//   Zone 4 (80–90% HRmax) — hard / threshold
-//   Zone 5 (90–100% HRmax) — maximum
-//
-// NOTE: the Python source (strain.py) uses Karvonen %HRR zones (Edwards 5-zone,
-// 50/60/70/80/90 %HRR) for TRIMP/strain. Those are reproduced faithfully in
-// StrainScorer.swift. This file provides the simpler, age-only %HRmax zone model
-// the task asks for (zones from age, time-in-zone from [HRSample]); it is the
-// "display" zone model and is independent of the HRR-based strain math.
+// BandStrain keeps its own %HRmax load bands and must not read these display
+// edges. StrainScorer's Edwards %HRR TRIMP is a separate model.
 
 /// A single heart-rate zone defined as a bpm interval [lower, upper).
 public struct HRZone: Equatable, Sendable {
@@ -48,7 +41,8 @@ public struct HRZoneSet: Equatable, Sendable {
     public let zones: [HRZone]
     /// Max HR (bpm) the zones were built from.
     public let maxHR: Double
-    /// "tanaka" (age formula), "manual" (caller override), or "custom" (personalized boundaries).
+    /// "gellish" (age formula), "tanaka" (legacy 208 − 0.7×age), "manual" (caller override),
+    /// "hrr" (Karvonen display zones), or "custom" (personalized boundaries).
     public let source: String
 
     public init(zones: [HRZone], maxHR: Double, source: String) {
@@ -75,7 +69,7 @@ public struct HRZoneSet: Equatable, Sendable {
 public struct TimeInZone: Equatable, Sendable {
     /// Seconds in each of the five zones, indexed z1...z5 (zone[0] == Zone 1).
     public let seconds: [Double]
-    /// Seconds spent below Zone 1 (HR under 50% HRmax).
+    /// Seconds spent below Zone 1.
     public let belowZone1: Double
 
     public init(seconds: [Double], belowZone1: Double) {
@@ -98,16 +92,37 @@ public enum HRZones {
     /// %HRmax band edges for zones 1...5: [0.50, 0.60, 0.70, 0.80, 0.90, 1.00].
     public static let zoneEdges: [Double] = [0.50, 0.60, 0.70, 0.80, 0.90, 1.00]
 
+    /// Heart-rate-reserve fractions for display zone starts (WHOOP / Karvonen).
+    /// Zone 1 is 40% HRR so Zone 0 is everything below that, not 50% HRmax.
+    public static let hrrZoneFractions: [Double] = [0.40, 0.60, 0.70, 0.80, 0.90]
+
+    /// Nights of resting HR folded into the display-zone baseline.
+    public static let restingHRNights = 14
+
     /// Sensible editable BPM range for personalized zone starts. The analytics API accepts any
     /// positive finite values; the app UIs use this range to keep steppers practical.
     public static let customBPMRange: ClosedRange<Int> = 30...250
 
     /// Tanaka (2001) age-predicted max HR: 208 − 0.7 × age (gender-independent).
+    /// Kept as the published formula; Band's age fallback is `gellishMaxHR`.
     public static func tanakaMaxHR(age: Double) -> Double {
         208.0 - 0.7 * age
     }
 
-    /// Build the 5-zone set from age (Tanaka) or a manual `maxHROverride`.
+    /// Gellish et al. (2007) linear: HRmax = 207 − 0.7 × age. WHOOP's published age fallback
+    /// (https://www.whoop.com/us/en/thelocker/calculating-max-heart-rate/). The same paper's
+    /// non-linear variant is 192 − 0.007 × age²; WHOOP's locker names Gellish and uses this
+    /// linear 207 − 0.7 × age form as the starting estimate.
+    public static func gellishMaxHR(age: Double) -> Double {
+        207.0 - 0.7 * age
+    }
+
+    /// Gellish 2007 non-linear: HRmax = 192 − 0.007 × age². Not the Band fallback.
+    public static func gellishNonlinearMaxHR(age: Double) -> Double {
+        192.0 - 0.007 * age * age
+    }
+
+    /// Build the 5-zone set from age (Gellish) or a manual `maxHROverride`.
     ///
     /// - Parameters:
     ///   - age: age in years (used only when `maxHROverride` is nil).
@@ -121,10 +136,47 @@ public enum HRZones {
             maxHR = override
             source = "manual"
         } else {
-            maxHR = tanakaMaxHR(age: age)
-            source = "tanaka"
+            maxHR = gellishMaxHR(age: age)
+            source = "gellish"
         }
         return zones(maxHR: maxHR, source: source, customLowerBounds: customLowerBounds)
+    }
+
+    /// WHOOP display zones from max HR and resting HR. Invalid custom bounds fall back to HRR.
+    ///
+    /// Integer starts match WHOOP's inclusive ranges: zone 1 uses the floored Karvonen value;
+    /// zones 2...5 start at `floor(raw) + 1` so the previous zone keeps that whole BPM.
+    /// RHR 63 / max 198 → 117 / 145 / 158 / 172 / 185.
+    public static func zones(maxHR: Double,
+                             restingHR: Double,
+                             customLowerBounds: [Double]? = nil) -> HRZoneSet {
+        if let custom = customLowerBounds.flatMap(validCustomLowerBounds) {
+            return zones(maxHR: maxHR, source: "custom", customLowerBounds: custom)
+        }
+        let bounds = hrrLowerBounds(restingHR: restingHR, maxHR: maxHR)
+        if let bounds {
+            return zones(maxHR: maxHR, source: "hrr", customLowerBounds: bounds)
+        }
+        return zones(maxHR: maxHR, source: "manual")
+    }
+
+    /// Inclusive integer lower bounds for the five HRR zones, or nil when reserve is not positive.
+    public static func hrrLowerBounds(restingHR: Double, maxHR: Double) -> [Double]? {
+        guard restingHR.isFinite, maxHR.isFinite, maxHR > restingHR, restingHR > 0 else { return nil }
+        let hrr = maxHR - restingHR
+        return hrrZoneFractions.enumerated().map { index, fraction in
+            let raw = restingHR + fraction * hrr
+            let floored = raw.rounded(.down)
+            return index == 0 ? floored : floored + 1
+        }
+    }
+
+    /// Upper median of the last `last` nightly resting-HR values. Nil when none are usable.
+    public static func medianRestingHR(_ values: [Int], last: Int = restingHRNights) -> Double? {
+        let recent = Array(values.filter { $0 > 0 }.suffix(last))
+        guard !recent.isEmpty else { return nil }
+        let sorted = recent.sorted()
+        return Double(sorted[sorted.count / 2])
     }
 
     /// Build the 5-zone set directly from a known max HR, optionally replacing the conventional
@@ -149,7 +201,15 @@ public enum HRZones {
                 upperPct: hiPct
             ))
         }
-        return HRZoneSet(zones: built, maxHR: maxHR, source: custom == nil ? source : "custom")
+        let resolvedSource: String
+        if custom == nil {
+            resolvedSource = source
+        } else if source == "hrr" {
+            resolvedSource = "hrr"
+        } else {
+            resolvedSource = "custom"
+        }
+        return HRZoneSet(zones: built, maxHR: maxHR, source: resolvedSource)
     }
 
     /// The conventional five inclusive lower bounds, rounded up to whole BPM for an editor. Rounding

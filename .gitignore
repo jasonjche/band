@@ -15,15 +15,15 @@ Icon?
 # Git won't descend into an excluded directory, so re-include each ancestor on the path, then
 # re-exclude its contents with a wildcard so ONLY Package.resolved gets tracked (not the
 # generated project.pbxproj / contents.xcworkspacedata / xcuserdata cruft).
-!Strand.xcodeproj/
-Strand.xcodeproj/*
-!Strand.xcodeproj/project.xcworkspace/
-Strand.xcodeproj/project.xcworkspace/*
-!Strand.xcodeproj/project.xcworkspace/xcshareddata/
-Strand.xcodeproj/project.xcworkspace/xcshareddata/*
-!Strand.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
-Strand.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
-!Strand.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+!Band.xcodeproj/
+Band.xcodeproj/*
+!Band.xcodeproj/project.xcworkspace/
+Band.xcodeproj/project.xcworkspace/*
+!Band.xcodeproj/project.xcworkspace/xcshareddata/
+Band.xcodeproj/project.xcworkspace/xcshareddata/*
+!Band.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+Band.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!Band.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 build/
 DerivedData/
 .build/
@@ -47,20 +47,6 @@ playground.xcworkspace
 *.app/
 NOOP.app/
 
-# ── Android (Gradle / Studio) ───────────────────────────────────
-android/.gradle/
-android/build/
-android/app/build/
-android/captures/
-android/local.properties
-android/.idea/
-android/*.iml
-android/app/release/
-*.apk
-*.aab
-*.keystore
-*.jks
-
 # ── IDE / editor ────────────────────────────────────────────────
 .idea/
 .vscode/
@@ -74,9 +60,6 @@ android/app/release/
 deploy.env
 deploy.env.*
 secrets.*
-android/local.properties
-android/keystore.properties
-android/noop-release.jks
 
 # ── Personal data — NEVER publish (real WHOOP/Apple Health exports) ──
 Fixtures/

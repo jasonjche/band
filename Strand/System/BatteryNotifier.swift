@@ -20,6 +20,9 @@ enum BatteryNotifier {
     /// reading rather than a flag so one stale value cannot re-notify on every wake, while a NEWER low
     /// reading still counts as a new fact. Absent means never.
     private static let staleAlertedTsKey = "behavior.batteryStaleAlertedTs"
+    /// Previous reading's charge bit, so "charging ended at ≥ 98" survives the 8-min BATTERY_LEVEL
+    /// gap. Absent means never observed. Not written when the current reading's charging is nil.
+    private static let lastChargingKey = "behavior.batteryLastCharging"
 
     /// Whether a strap NOBODY has heard from is worth warning about (#2556).
     ///
@@ -86,38 +89,55 @@ enum BatteryNotifier {
     /// Pure crossing-with-hysteresis policy, identical on macOS/iOS and Android (#368). The two
     /// `*Alerted` flags are PERSISTED, so they survive process death — and the 25% re-arm band means
     /// a 14↔15% jitter fires the low alert exactly once per discharge cycle (no in-memory prevPct
-    /// crossing that re-fires on every bounce and resets on restart). Full re-arms only below 100.
+    /// crossing that re-fires on every bounce and resets on restart). Full re-arms below the
+    /// unplug-full band (98), not strictly below 100: WHOOP 5.0's live 0x2A19 percent is an integer
+    /// that often tops out at 99, and the charge bit arrives only about every 8 minutes.
     enum BatteryAlertPolicy {
-        static let lowThreshold = 15
+        /// Band: 20% (upstream 15%), so a low strap is flagged with a full evening to charge.
+        static let lowThreshold = 20
         static let lowRearmAbove = 25
         static let fullThreshold = 100
+        /// ≥ this and charging counts as full (straps that never report 100).
+        static let nearFullCharging = 99
+        /// Charging ended at ≥ this counts as full. Re-arm / clearFull sit strictly below it.
+        static let unplugFull = 98
 
         /// `charging == nil` means unknown — the low alert still fires (only a confirmed `true`
         /// suppresses it). Returns the fire decisions plus the next persisted flag state.
         ///
         /// `clearFull` (#514): the strap was showing a "fully charged" notification and has now
-        /// dropped below 100% — the standing note is stale, so cancel it. It's exactly the full
-        /// re-arm transition (previouslyFullAlerted && pct < fullThreshold), surfaced so the
-        /// notifier can pull the delivered + pending full-charge notification by its id.
+        /// dropped below the unplug-full band — the standing note is stale, so cancel it. It's
+        /// exactly the full re-arm transition, surfaced so the notifier can pull the delivered +
+        /// pending full-charge notification by its id.
+        ///
+        /// `wasCharging` is the previous reading's charge bit. Needed because 5.0 reports full
+        /// either as 100, as ≥99 while still charging, or as the charge bit going off at ≥98.
+        /// `charging == nil` is NOT treated as unplug — that is the ~8 min BATTERY_LEVEL gap.
         static func evaluate(pct: Int,
                              charging: Bool?,
                              lowAlerted: Bool,
-                             fullAlerted: Bool)
+                             fullAlerted: Bool,
+                             wasCharging: Bool? = nil)
             -> (fireLow: Bool, fireFull: Bool, clearFull: Bool, newLowAlerted: Bool, newFullAlerted: Bool) {
             var low = lowAlerted
             var full = fullAlerted
-            // The stale 100%-full note must be cleared the moment we re-arm below the full line.
-            let clearFull = fullAlerted && pct < fullThreshold
+            // The stale full note must be cleared the moment we re-arm below the unplug-full band.
+            let clearFull = fullAlerted && pct < unplugFull
             // Re-arm (hysteresis) so jitter near a threshold can't re-fire. #80: re-arm ONLY on genuine
             // recovery (pct >= lowRearmAbove), NOT on charging. The strap reports its charge bit only every
             // ~8 min, so it flickers true→nil; re-arming on `true` then firing on the `nil` gap re-fired the
             // low alert repeatedly WHILE charging. `fireLow`'s `charging != true` still suppresses an explicit
             // charging reading, and a null-charging strap (generic/FTMS) still alerts.
             if pct >= lowRearmAbove { low = false }
-            if pct < fullThreshold { full = false }
-            // Fire at most once per genuine crossing.
+            if pct < unplugFull { full = false }
+            // Fire at most once per genuine crossing. 100 still counts; 5.0 also reaches "full" at
+            // ≥99 while charging, or when charging ends at ≥98. A nil charge bit is the 8-min gap,
+            // not an unplug, so it must not trip the unplug-full path.
             let fireLow = !low && pct <= lowThreshold && charging != true
-            let fireFull = !full && pct >= fullThreshold
+            let atReportedFull = pct >= fullThreshold
+            let atChargingFull = pct >= nearFullCharging && charging == true
+            let atUnplugFull = pct >= unplugFull && wasCharging == true && charging == false
+            let fireFull = !full && (atReportedFull || atChargingFull || atUnplugFull)
             if fireLow { low = true }
             if fireFull { full = true }
             return (fireLow, fireFull, clearFull, low, full)
@@ -142,11 +162,17 @@ enum BatteryNotifier {
             pct: pct,
             charging: charging,
             lowAlerted: d.bool(forKey: lowAlertedKey),
-            fullAlerted: d.bool(forKey: fullAlertedKey))
+            fullAlerted: d.bool(forKey: fullAlertedKey),
+            wasCharging: d.object(forKey: lastChargingKey) as? Bool)
         // Advance the persisted gate up front so the once-per-crossing limit holds regardless of
         // authorization or delivery — the in-app battery surfaces stay the live view either way.
         d.set(result.newLowAlerted, forKey: lowAlertedKey)
         d.set(result.newFullAlerted, forKey: fullAlertedKey)
+        // Only a confirmed true/false updates the previous charge bit. A nil reading is the 8-min
+        // BATTERY_LEVEL gap (or a disconnected strap) and must not look like an unplug.
+        if let charging {
+            d.set(charging, forKey: lastChargingKey)
+        }
         if result.fireLow {
             post(identifier: "battery-low",
                  title: String(localized: "Low battery"),
@@ -157,8 +183,8 @@ enum BatteryNotifier {
                  title: String(localized: "Strap fully charged"),
                  body: String(localized: "Your WHOOP is at 100%."))
         }
-        // #514: the strap has dropped below 100% — pull the stale "fully charged" note (delivered
-        // banner + any still-pending request) so it can't linger after the cell discharges.
+        // #514: the strap has dropped below the full band — pull the stale "fully charged" note
+        // (delivered banner + any still-pending request) so it can't linger after the cell discharges.
         if result.clearFull {
             let center = UNUserNotificationCenter.current()
             center.removeDeliveredNotifications(withIdentifiers: ["battery-full"])
@@ -200,7 +226,7 @@ enum BatteryNotifier {
     /// `BatteryAlertNotifier.onStrapNotSeen`.
     ///
     /// The live crossings need a connection, so a strap that drains out of range is never judged at all.
-    /// This reads the last BANKED reading instead, which is why the copy says "when NOOP last heard from
+    /// This reads the last BANKED reading instead, which is why the copy says "when Band last heard from
     /// it" rather than naming a current percentage: the app has not seen the strap since and does not know
     /// what it is at now.
     static func onStrapNotSeen(lastSocPct: Int?,
@@ -222,7 +248,7 @@ enum BatteryNotifier {
         let age = StaleBatteryAlertPolicy.ageLabel(decision.ageSeconds)
         post(identifier: "battery-stale",
              title: String(localized: "WHOOP last seen low"),
-             body: String(localized: "\(lastSocPct)% when NOOP last heard from it, \(age) ago. Charge it before tonight."),
+             body: String(localized: "\(lastSocPct)% when Band last heard from it, \(age) ago. Charge it before tonight."),
              interruptionLevel: .timeSensitive)
         // Persisted AFTER posting, keyed on the reading, so a failed post retries on the next wake.
         d.set(lastTsSec, forKey: staleAlertedTsKey)

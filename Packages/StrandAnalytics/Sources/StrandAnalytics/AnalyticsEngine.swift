@@ -394,6 +394,10 @@ public enum AnalyticsEngine {
                                   dayHr: [HRSample]? = nil,
                                   daySteps: [StepSample]? = nil,
                                   dayGravity: [GravitySample]? = nil,
+                                  // Seconds of the calendar day that have elapsed, for prorating BMR in the
+                                  // total-energy estimate. Nil = a complete day (86 400 s). Only today's
+                                  // pass supplies it; kept a parameter so the engine stays clock-free.
+                                  dayElapsedSeconds: Double? = nil,
                                   // Wear-gated nightly skin-temp mean is harvested here
                                   // (baseline-independent); IntelligenceEngine seeds a personal
                                   // baseline from these means across nights and re-derives
@@ -428,6 +432,10 @@ public enum AnalyticsEngine {
                                   profile: UserProfile,
                                   baselines: ProfileBaselines = ProfileBaselines(),
                                   maxHROverride: Double? = nil,
+                                  // Nil → derive from `maxHROverride` / age (`override` / `tanaka` / `default`).
+                                  // Pass `"observed"` when the caller is feeding a learned workout-peak HRmax
+                                  // through `maxHROverride`.
+                                  hrmaxSource: String? = nil,
                                   // Wall-clock UTC offset (seconds) for the sleep detector's daytime
                                   // false-sleep guard (#90). Default 0 keeps pure-function callers/tests
                                   // on UTC; IntelligenceEngine passes the device's real offset.
@@ -472,6 +480,12 @@ public enum AnalyticsEngine {
                                   // `PuffinExperiment.experimentalSleepV2Enabled`, which is default ON
                                   // (#277/#351), so the shipped app stages with V2. (7.0.0)
                                   useSleepStagerV2: Bool = false,
+                                  // Learned boosted-tree stager (reNOOP trees). Default false keeps
+                                  // pure-function callers/tests on V1/V2; IntelligenceEngine threads
+                                  // `PuffinExperiment.learnedSleepStagerEnabled`, which is default ON.
+                                  // A night whose HR or motion cover under 80 % of the window falls back
+                                  // to V1/V2 as `useSleepStagerV2` says.
+                                  useSleepStageLearned: Bool = false,
                                   // Opt-in motion-aware wake refinement (#364 "Proposal 2" follow-up; density
                                   // gate precedent #345). When true, `WakeMotionRefinement` re-derives each
                                   // detected session's stages, reclassifying a hot-but-still WAKE segment to
@@ -530,7 +544,16 @@ public enum AnalyticsEngine {
                                   // %HRR with no floor. Threaded rather than read from a global so this
                                   // stays a pure function, and defaulted so every existing caller and
                                   // test is byte-identical.
-                                  effortMethod: StrainScorer.Method = .edwards) -> DayResult {
+                                  effortMethod: StrainScorer.Method = .edwards,
+                                  // Personal Native path: fitted BandStrain (0–21 → stored 0–100) instead
+                                  // of Edwards/Banister. Default false so classic/macOS and existing tests
+                                  // stay on StrainScorer.
+                                  useBandStrain: Bool = false,
+                                  // Workouts of this calendar day (any source). When BandStrain is on,
+                                  // a workout whose window has < 50% strap-HR coverage contributes its
+                                  // load to L_day. Empty (the default) keeps every existing caller
+                                  // byte-identical.
+                                  strainWorkouts: [BandStrain.WorkoutContribution] = []) -> DayResult {
 
         // Precompute the day's UTC bounds ONCE (#996). `dayString(ts, offsetSec:)` formats the UTC
         // calendar day of (ts + offset) with a FIXED offset, so "== day" is exactly membership in
@@ -547,6 +570,7 @@ public enum AnalyticsEngine {
                                                   tzOffsetSeconds: tzOffsetSeconds, wristOff: wristOff,
                                                   bandSleepState: bandSleepState,
                                                   useSleepStagerV2: useSleepStagerV2,
+                                                  useSleepStageLearned: useSleepStageLearned,
                                                   traceSink: traceSink)
         // Motion-aware wake refinement (#364 follow-up) runs AFTER V1/V2 staging, over every detected
         // session (naps included — the same eligibility gates apply). `steps` is the SAME calendar-day/
@@ -696,10 +720,13 @@ public enum AnalyticsEngine {
             // #319: the motion-coverage + staging context behind the Rest number, so a high score on a poor
             // night can be explained from an export (WHOOP 4.0 banks motion coarsely → sparse=true → most
             // epochs default to sleep → over-counted duration → high Rest). `stager` says whether V1/V2 ran.
+            // With the learned model on, `stager` names only the recipe it falls back to.
+            let learned = useSleepStageLearned ? (SleepStageLearned.resolved(useBundled: true)?.version ?? "") : ""
             traceSink(AnalyticsEngine.sleepMotionLine(
                 day: day, grav: gravity.count, hr: hr.count,
                 sparse: gravitySparse,
-                useSleepStagerV2: useSleepStagerV2, family: skinTempFamily))
+                useSleepStagerV2: useSleepStagerV2, family: skinTempFamily)
+                + (learned.isEmpty ? "" : " learned=\(learned) (stages dense nights; stager= is its fallback)"))
             // CAPTURE-C (#799): append the sleep PROVENANCE so an imported row winning the merge is visible
             // (not silently swapped for the measured night). hoursAsleep = the scored night's tst in minutes;
             // sourceRowId = the main-night's start ts for the measured path (stable per night), else the
@@ -957,13 +984,31 @@ public enum AnalyticsEngine {
         // the prior evening's HR (the night window's −30h tail) no longer bleeds in. Falls back to the
         // night `hr` for pure-function callers/tests.
         let effMaxHR: Double? = maxHROverride ?? (profile.age > 0 ? StrainScorer.tanakaHRmax(age: profile.age) : nil)
-        let restForStrain = restingHRDaily.map(Double.init) ?? StrainScorer.defaultRestingHR
+        let restForStrain: Double = {
+            if let rhr = restingHRDaily.map(Double.init) { return rhr }
+            if useBandStrain, let base = baselines.restingHR, base.usable { return base.baseline }
+            return useBandStrain ? BandStrain.defaultRestingHR : StrainScorer.defaultRestingHR
+        }()
         // The Effort ring's own funnel. A nil sink builds nothing at all, so a caller that does not want
         // diagnostics pays nothing; IntelligenceEngine passes its per-day recorder, the same one the
         // `workout detect` and `sleep-detect` lines beside it already use.
-        let strain = StrainScorer.strain(dayHr ?? hr, maxHR: effMaxHR, restingHR: restForStrain,
+        let hrForStrain = dayHr ?? hr
+        let strain: Double?
+        if useBandStrain, let bandParams = BandStrain.bundledParams() {
+            let hrmax = effMaxHR ?? Double(StrainScorer.defaultMaxHR())
+            let s21: Double?
+            if strainWorkouts.isEmpty {
+                s21 = BandStrain.strain(hrForStrain, maxHR: hrmax, restingHR: restForStrain, params: bandParams)
+            } else {
+                s21 = BandStrain.dayStrain(hrForStrain, workouts: strainWorkouts,
+                                           maxHR: hrmax, restingHR: restForStrain, params: bandParams)
+            }
+            strain = BandStrain.effort100(s21)
+        } else {
+            strain = StrainScorer.strain(hrForStrain, maxHR: effMaxHR, restingHR: restForStrain,
                                          method: effortMethod, sex: profile.sex,
                                          diag: strainDiag, day: day)
+        }
         // #2438 step 0 asks two things of a contributed log: whether the day was scored against the
         // user's own setting or against the age formula, and how far the day's own heart rate ran above
         // that. The `effort score` line above answers neither — it collapses override and Tanaka into
@@ -978,7 +1023,7 @@ public enum AnalyticsEngine {
                 // this line in direct contradiction with the `effort score` line above it, which prints
                 // that substituted number, about the same day.
                 day: day, hrmax: effMaxHR ?? Double(StrainScorer.defaultMaxHR()),
-                hrmaxSource: maxHROverride != nil ? "override" : (profile.age > 0 ? "tanaka" : "default"),
+                hrmaxSource: hrmaxSource ?? (maxHROverride != nil ? "override" : (profile.age > 0 ? "tanaka" : "default")),
                 tanaka: profile.age > 0 ? StrainScorer.tanakaHRmax(age: profile.age) : nil,
                 observedPeak: hrForPeak.max(by: { $0.bpm < $1.bpm }).map { Double($0.bpm) },
                 restingHR: restForStrain)
@@ -1017,6 +1062,7 @@ public enum AnalyticsEngine {
             // A day on Banister whose workouts were still on Edwards would show a session scoring
             // less than the day it sits inside, which is a worse inconsistency than either method.
             effortMethod: effortMethod,
+            useBandStrain: useBandStrain,
             funnel: { detectionFunnel = $0 })
 
         // ── Steps (APPROXIMATE) ───────────────────────────────────────────────
@@ -1058,9 +1104,15 @@ public enum AnalyticsEngine {
         // night-window hr for pure-function callers that don't supply dayHr. Strain keeps the full
         // window (bounded log).
         let dayHrFiltered = (dayHr ?? hr).filter { tsInDay($0.ts) }
+        // BMR over the elapsed part of the calendar day plus Keytel extra on in-day HR. Metabolism
+        // does not stop when the strap misses a sample; WHOOP's Energy burned is total daily energy
+        // that accumulates through the day. Past days get the full 86 400 s; for today the caller
+        // passes the seconds since local midnight (`dayElapsedSeconds`), so noon reads half a day.
+        let dayElapsed: Double = min(86_400, max(0, dayElapsedSeconds ?? 86_400))
         let activeKcalEst: Double? = dayHrFiltered.isEmpty ? nil : Calories.estimateDayCalories(
             dayHrFiltered, profile: profile, hrmax: effMaxHR,
-            restingHR: restingHRDaily.map(Double.init))
+            restingHR: restingHRDaily.map(Double.init),
+            elapsedSeconds: dayElapsed)
 
         // ── Assemble DailyMetric ──────────────────────────────────────────────
         let daily = DailyMetric(

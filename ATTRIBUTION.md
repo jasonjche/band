@@ -79,9 +79,8 @@ And the line held from the other side:
 
 ## Oura ring (gen 3/4/5) protocol
 NOOP's Oura code is **original clean-room** work. The local BLE source
-(`Strand/BLE/OuraLiveSource.swift` + `android/.../ble/OuraLiveSource.kt`) and the JVM/Swift-pure
-`OuraProtocol` package (`Packages/OuraProtocol/`, `android/.../com/noop/oura/`) were written from
-**documented protocol facts only**, cited tersely in `docs/OURA_PROTOCOL.md`. The community
+(`Strand/BLE/OuraLiveSource.swift`) and the Swift-pure `OuraProtocol` package
+(`Packages/OuraProtocol/`) were written from **documented protocol facts only**. The community
 reverse-engineering resources below were consulted as **facts-only references** (byte layouts,
 service/characteristic UUIDs, framing and auth shapes); **no RE source code is copied** into NOOP.
 - **`open_ring`**: consulted for protocol facts only. Licensed **GPL-3.0**; NOOP copies none of

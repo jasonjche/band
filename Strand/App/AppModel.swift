@@ -4,7 +4,6 @@ import WhoopProtocol
 import WhoopStore
 import StrandAnalytics
 import StrandImport
-import OuraProtocol
 #if os(iOS)
 import UserNotifications
 #endif
@@ -13,7 +12,6 @@ import UserNotifications
 enum DataSourceImportKind {
     case whoop
     case appleHealth
-    case xiaomi
 }
 
 /// Root app state: owns the live BLE connection state and the CoreBluetooth engine.
@@ -109,6 +107,9 @@ final class AppModel: ObservableObject {
     /// True while the active workout is a GPS-type session (drives the End-time route persist). Mirrors
     /// Android's `ActiveWorkout.gpsEnabled`.
     private var activeWorkoutIsGps = false
+    /// Last UserDefaults rewrite of the in-flight workout. Sample ticks are 15 s-floored;
+    /// start / pause / resume persist immediately.
+    private var lastWorkoutPersistAt: Date?
 
     /// A manual workout in progress. `samples` accumulate from the smoothed live `bpm`; `liveStrain`
     /// is recomputed as the window grows so the active card can show strain building in real time.
@@ -200,18 +201,19 @@ final class AppModel: ObservableObject {
 
     /// Import source currently writing to the local store, if any.
     @Published private var activeImportSource: DataSourceImportKind?
+    /// Short status while an import is running ("Importing…"). Nil when idle.
+    /// The WHOOP importer has no determinate progress callback, so the UI uses
+    /// an indeterminate `ProgressView` plus this line.
+    @Published var importPhase: String?
     /// Last WHOOP export import result surfaced in the WHOOP card.
     @Published var whoopImportSummary: String?
     /// Last Apple Health import result surfaced in the Apple Health card.
     @Published var appleHealthImportSummary: String?
-    /// Last Xiaomi / Mi Band import result surfaced in the Mi Band card.
-    @Published var xiaomiImportSummary: String?
     /// Typed failure flags per source , the summary's warning styling reads these instead of
     /// substring-matching the human-readable message (which misses errors like "Couldn't open
     /// the local store."). Surfaced on both the Data Sources cards and the onboarding import step.
     @Published var whoopImportFailed = false
     @Published var appleHealthImportFailed = false
-    @Published var xiaomiImportFailed = false
     /// A decoded Health Shortcut import waiting for explicit user confirmation before it writes rows.
     @Published var pendingShortcutHealthImport: ShortcutHealthImport.PendingImport?
 
@@ -228,7 +230,6 @@ final class AppModel: ObservableObject {
         switch source {
         case .whoop: return whoopImportFailed
         case .appleHealth: return appleHealthImportFailed
-        case .xiaomi: return xiaomiImportFailed
         }
     }
 
@@ -273,12 +274,14 @@ final class AppModel: ObservableObject {
         // Seed it now and keep it in step with any profile edit (objectWillChange fires just before a
         // @Published setter lands, so read the CURRENT values , they're already committed by the time the
         // next reconcile reads `strainProfile`). Display-only; the score itself is unchanged.
-        self.repo.strainProfile = Repository.StrainProfile(hrMax: Double(profile.hrMax), sex: profile.sex)
+        self.repo.strainProfile = Repository.StrainProfile(
+            hrMax: profile.effortHRmax ?? Double(profile.hrMax), sex: profile.sex)
         profile.objectWillChange.sink { [weak self] in
             guard let self else { return }
             DispatchQueue.main.async {
                 self.repo.strainProfile = Repository.StrainProfile(
-                    hrMax: Double(self.profile.hrMax), sex: self.profile.sex)
+                    hrMax: self.profile.effortHRmax ?? Double(self.profile.hrMax),
+                    sex: self.profile.sex)
             }
         }.store(in: &hrCancellables)
         // Smooth HR centrally so it's solid everywhere it's shown.
@@ -358,8 +361,15 @@ final class AppModel: ObservableObject {
         $bpm.sink { [weak self] hr in self?.coachZone(hr) }.store(in: &hrCancellables)
         // Illness/strain early-warning recomputes when the daily history changes.
         repo.$days.sink { [weak self] days in
-            self?.evaluateIllness(days)
-            self?.evaluateStrainTarget()
+            // Illness / strain-target nudges only fed Automations and the Health hub, both gone
+            // from the iPhone personal shell. Battery night-guard still needs the bedtime cache.
+            if !AppBrand.isPersonalBuild {
+                self?.evaluateIllness(days)
+                self?.evaluateStrainTarget()
+            }
+            // Daily recovery-ready / sleep-recorded notifications: same days republish the Home
+            // rings already wait on. Safe to fire freely; each notifier carries its own day gate.
+            self?.evaluateDailyNotifications()
             // Keep the battery night-guard's learned bedtime warm off the same signal (throttled inside).
             self?.refreshHabitualMidsleep()
         }.store(in: &hrCancellables)
@@ -393,7 +403,12 @@ final class AppModel: ObservableObject {
         // a (re)bond or a settings change. A strap that stays continuously bonded (a Mac in range) would
         // fire once and never re-arm , silent from day two. Re-arm daily so an always-on session keeps
         // waking the user.
-        scheduleDailySmartAlarmRearm()
+        // Timer + power-saving prefs are not needed before first frame. The bond sink
+        // re-applies power-saving on connect; the daily re-arm still starts this run loop.
+        Task { @MainActor [weak self] in
+            self?.scheduleDailySmartAlarmRearm()
+            self?.applyPowerSaving()
+        }
         // Re-apply "Continuous HRV capture" on every (re)bond: if on, the strap should hold the dense
         // realtime stream armed even with no Live screen open, so it banks beat-to-beat R-R 24/7 for
         // better overnight HRV/recovery/sleep. The BLE reconciler arms it on the off→on edge; pushing it
@@ -441,7 +456,6 @@ final class AppModel: ObservableObject {
         // reflects it from launch , the reconciler then arms the dense stream as soon as the strap bonds
         // (and the bond sink above re-applies it on every reconnect).
         ble.setKeepRealtimeForData(PuffinExperiment.keepRealtimeForDataEnabled)
-        applyPowerSaving()
 
         // Turn the strap's offloaded raw data into dashboard scores on launch and every 15
         // minutes, so recovery / strain / sleep populate from the strap itself with no import.
@@ -458,6 +472,10 @@ final class AppModel: ObservableObject {
         // main thread free for SwiftUI during the deep-history pass right after an import / first launch.
         Task(priority: .utility) { [weak self] in
             guard let self else { return }
+            // First frame: yield a display refresh so SwiftUI can commit the window before the
+            // 4000-day store open + dashboard reload contends for the main actor.
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 16_000_000)
             #if DEBUG
             // DEBUG-only: when launched with `--demo-seed`, populate a deterministic synthetic
             // dataset so an empty simulator/dev build can walk every screen (verification + marketing
@@ -472,7 +490,14 @@ final class AppModel: ObservableObject {
             await self.repo.refresh()                          // surface any imported data at once
             await self.wireSourceCoordinator()                 // dormant unless a generic strap is active
             await self.recordAppVersionChangeIfNeeded()        // #1410: stamp an update transition once
-            try? await Task.sleep(nanoseconds: 6_000_000_000)  // give the first offload a moment
+            // One-shot 4000-day heal/rescore: UserDefaults fingerprint. Skip the 6 s offload grace
+            // and the passes themselves when a previous launch already completed them.
+            let historyPending = await MainActor.run {
+                IntelligenceEngine.launchHistoryPassesArePending()
+            }
+            if historyPending {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)  // give the first offload a moment
+            }
             // FIX 2(a): DEFER the heavy one-shot 4000-day heal/rescore while an import is in flight. A
             // large Apple Health import is the worst-case launch overlap , running a 4000-iteration heal
             // + rescore concurrently with the import's parse+writes is what produced the ~1-minute app-wide
@@ -484,20 +509,24 @@ final class AppModel: ObservableObject {
             // non-throwing import HANG would never reach, permanently starving the one-shot passes AND the
             // cadence loop below for the whole session. Bound it so a wedged import can't disable analysis;
             // the merge reads are off-actor now, so proceeding under a still-flagged import is safe.
-            var importWaited = 0
-            while self.hasActiveImport && !Task.isCancelled && importWaited < 180 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 s, re-check; ~3 min cap then proceed
-                importWaited += 1
+            if historyPending {
+                var importWaited = 0
+                while self.hasActiveImport && !Task.isCancelled && importWaited < 180 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 s, re-check; ~3 min cap then proceed
+                    importWaited += 1
+                }
             }
             // One-shot on-upgrade heal (#547): purge rows a bad-clock strap dated to scattered garbage
             // (far-past / bogus-2027 / FUTURE) from an older build, then rescore the real days. Runs
             // BEFORE the Effort rescore + analyzeRecent loop so both operate on a cleaned DB. Persisted
             // flag → no-op on every subsequent launch; idempotent on a clean DB.
-            await self.intelligence.runTimestampHealIfNeeded()
-            // One-shot on-upgrade Effort rescore (#313): recompute strain from source across the FULL
-            // history and repair sleep rejected by unmatched WRIST_OFF in one pass. Both persisted flags
-            // describe that shared pass; either pending flag triggers it.
-            await self.intelligence.runEffortRescoreIfNeeded()
+            if historyPending {
+                await self.intelligence.runTimestampHealIfNeeded()
+                // One-shot on-upgrade Effort rescore (#313): recompute strain from source across the FULL
+                // history and repair sleep rejected by unmatched WRIST_OFF in one pass. Both persisted flags
+                // describe that shared pass; either pending flag triggers it.
+                await self.intelligence.runEffortRescoreIfNeeded()
+            }
             while !Task.isCancelled {
                 // #547 RE-POLLUTION: a sync since the last tick may have armed a re-heal (its ingest gate
                 // dropped bad-clock records). `runTimestampHealIfNeeded` honours the pending flag even after
@@ -528,7 +557,17 @@ final class AppModel: ObservableObject {
                                                      log: { [live = self.live] line in
                                                          live.append(log: line)
                                                      }) {
-                    await self.intelligence.analyzeRecent(force: false)
+                    let pass = AnalysisGating.pass(policyEnabled: BandPowerPolicy.enabled(),
+                                                   kind: .idleTick,
+                                                   storedNewRecords: false)
+                    switch pass {
+                    case .skip:
+                        break
+                    case .todayOnly:
+                        await self.intelligence.analyzeRecent(maxDays: 1, force: false)
+                    case .fullWindow:
+                        await self.intelligence.analyzeRecent(force: false)
+                    }
                 }
                 // v5: recompute the skin-temp suite snapshots (cycle phase + body clock) from the
                 // freshly-scored history so the Health hub cards read a ready result.
@@ -646,8 +685,7 @@ final class AppModel: ObservableObject {
             // path. Timestamp matches BLEManager.log()'s "HH:mm:ss" so the lines read consistently.
             straplog: { [weak self] line in
                 self?.live.append(log: "[\(AppModel.logTimeFormatter.string(from: Date()))] \(line)")
-            },
-            ouraNightBand: { [weak self] in self?.ouraNightBand() })   // item 27
+            })
         coordinator.start()
         self.deviceRegistry = registry
         // #1303: adoption re-points the strap onto its stable `whoop-<serial>` id inside BLEManager (which
@@ -657,7 +695,6 @@ final class AppModel: ObservableObject {
             registry?.setActive(serialId)
         }
         self.sourceCoordinator = coordinator
-        bindOuraFeatureStatusMirror()
         // #814 READ SPINE (HIGH-1): drive the read side off the registry's `activeDeviceId` for the WHOLE
         // session, exactly as SourceCoordinator drives the WRITE side off the SAME publisher. A Devices-
         // screen switch/remove/re-add calls `registry.setActive` DIRECTLY (NOT through `registerDevice`), so
@@ -702,6 +739,10 @@ final class AppModel: ObservableObject {
     /// A closure rather than a direct reference because `HealthKitBridge` owns iOS-only HealthKit state
     /// while this type is shared with macOS, and the bridge is a `@StateObject` the app scene owns.
     var healthWriteBack: (() async -> Void)?
+    /// Fetch Apple Health workout HR that has not been stored yet. Set by `StrandiOSApp` beside
+    /// `healthWriteBack`. The HealthKit bridge also runs this at the start of `sync`, after
+    /// collecting workouts, and on heart-rate / workout observer wakes.
+    var importAppleWorkoutHeartRate: (() async -> Void)?
     #endif
 
     /// Settle a re-score that is owed (#1538) — one an earlier attempt started and was killed partway
@@ -747,6 +788,10 @@ final class AppModel: ObservableObject {
     private func refreshAfterCompletedBackfill() async {
         live.append(log: "Backfill: refreshing dashboard cache from completed sync")
         await repo.refresh(days: 120)
+        if AppBrand.isPersonalBuild {
+            _ = await NativeWeight.sync(repo: repo, profile: profile)
+            await profile.syncObservedHRMax(from: repo)
+        }
         // Score the freshly-offloaded raw data RIGHT NOW rather than waiting for the next 15-minute
         // analyzeRecent tick , otherwise a just-synced night's Charge / Effort / Rest can take up to
         // 15 minutes to appear on a strap-only (no-import) dashboard. analyzeRecent no-ops if a tick is
@@ -763,9 +808,29 @@ final class AppModel: ObservableObject {
         // the #1538 report while never producing a score. Decide first whether this pass can finish here,
         // and hand it to a background-processing task when it cannot. A no-op on macOS, and on iOS a
         // foreground pass is never deferred.
-        await RescoreBackgroundScheduler.run(passInProgress: intelligence.computing,
-                                             log: { [live] line in live.append(log: line) }) {
-            await intelligence.analyzeRecent(skipIfUnchanged: true)
+        let banked = live.lastOffloadBankedRows
+        live.lastOffloadBankedRows = false
+        let pass = AnalysisGating.pass(policyEnabled: BandPowerPolicy.enabled(),
+                                       kind: .offload,
+                                       storedNewRecords: banked)
+        if pass != .skip {
+            await RescoreBackgroundScheduler.run(passInProgress: intelligence.computing,
+                                                 log: { [live] line in live.append(log: line) }) {
+                switch pass {
+                case .skip:
+                    break
+                case .todayOnly:
+                    await intelligence.analyzeRecent(maxDays: 1, skipIfUnchanged: true)
+                case .fullWindow:
+                    await intelligence.analyzeRecent(skipIfUnchanged: true)
+                }
+            }
+        }
+        // Personal build: log finished workouts from the HR that just landed, then rescore so the
+        // new rows get their strain.
+        if banked, await repo.autoSaveDetectedWorkouts() > 0 {
+            await repo.refresh()
+            await intelligence.analyzeRecent(maxDays: 2)
         }
         await refreshV5Signals()
         #if os(iOS)
@@ -775,12 +840,15 @@ final class AppModel: ObservableObject {
         // never rewrite the shared App-Group snapshot or call WidgetCenter.reloadAllTimelines — the
         // widget kept showing yesterday's numbers. Publishing here, on the real "new data landed"
         // signal, pushes the fresh snapshot to the home-screen widget without needing a foreground.
-        await WidgetSnapshot.publish(from: self)
-        // #1021: same reasoning as the widget publish above, for Apple Health. The only automatic
-        // write-back ran on scenePhase == .active, in the same block that KICKS this offload - so it
-        // raced the data it was meant to publish and last night's sleep reached Health an app-open late.
-        // Set by StrandiOSApp; nil on macOS and in tests, where there is no bridge.
-        await healthWriteBack?()
+        if WidgetReloadPolicy.shouldReload(policyEnabled: BandPowerPolicy.enabled(),
+                                           storedNewData: banked) {
+            await WidgetSnapshot.publish(from: self)
+            // #1021: same reasoning as the widget publish above, for Apple Health. The only automatic
+            // write-back ran on scenePhase == .active, in the same block that KICKS this offload - so it
+            // raced the data it was meant to publish and last night's sleep reached Health an app-open late.
+            // Set by StrandiOSApp; nil on macOS and in tests, where there is no bridge.
+            await healthWriteBack?()
+        }
         #endif
     }
 
@@ -841,7 +909,7 @@ final class AppModel: ObservableObject {
         }
         // Make the session durable from the first instant (#529): persist it now so an OS kill right
         // after Start , before any HR sample lands , can still be rehydrated + ended on relaunch.
-        persistActiveWorkout()
+        persistActiveWorkout(force: true)
         // Workouts & GPS test mode (Test Centre): one session-start line tagged `.workouts`. Zero-cost when
         // off (the gate is one UserDefaults bool read), so the lifecycle of a missing workout is visible.
         emitWorkoutsTrace(WorkoutsTrace.sessionLine(
@@ -889,8 +957,14 @@ final class AppModel: ObservableObject {
     /// analogue of Android's `persistNonGpsWorkout`. A distance workout records a route as well, and its
     /// fixes are banked separately by `ActiveRouteStore`: keeping them out of here is what lets this stay
     /// a small per-sample write instead of rewriting a growing route on every beat.
-    private func persistActiveWorkout() {
+    /// Sample ticks are 15 s-floored (`PersistCadence`); start / pause / resume pass `force` so a kill
+    /// still restores the clock and pause state. At most one window of HR is lost.
+    private func persistActiveWorkout(force: Bool = false) {
         guard let w = activeWorkout else { return }
+        let now = Date()
+        guard ActiveWorkoutPersistence.PersistCadence.due(
+            lastPersistedAt: lastWorkoutPersistAt, now: now, force: force) else { return }
+        lastWorkoutPersistAt = now
         ActiveWorkoutPersistence.store(
             ActiveWorkoutPersistence.Snapshot(
                 startSec: Int(w.start.timeIntervalSince1970),
@@ -945,13 +1019,14 @@ final class AppModel: ObservableObject {
             if activeWorkoutIsGps { gpsRecorder.pause() }
         }
         activeWorkout = w
-        persistActiveWorkout()
+        persistActiveWorkout(force: true)
     }
 
     /// Abort the active session without saving a workout.
     func discardWorkout() {
         guard activeWorkout != nil else { return }
         activeWorkout = nil
+        lastWorkoutPersistAt = nil
         if activeWorkoutIsGps { gpsRecorder.stop() }
         activeWorkoutIsGps = false
         ActiveWorkoutPersistence.clear()
@@ -976,6 +1051,7 @@ final class AppModel: ObservableObject {
     func endWorkout() {
         guard let w = activeWorkout else { return }
         activeWorkout = nil
+        lastWorkoutPersistAt = nil
         let wasGps = activeWorkoutIsGps
         activeWorkoutIsGps = false
         // Drop the durable snapshot the instant the session ends , whether it saves below or is discarded
@@ -1031,11 +1107,20 @@ final class AppModel: ObservableObject {
         // Effort and the manual rescore (#972) already thread this, so the stored number used to
         // disagree with its own re-score. Read once here, at save time; the live readout during the
         // session is a transient running estimate and deliberately left alone.
-        let restingHR = repo.today?.restingHr.map(Double.init) ?? StrainScorer.defaultRestingHR
-        let strain = samples.count >= 2
-            ? StrainScorer.strain(samples, maxHR: Double(profile.hrMax),
-                                  restingHR: restingHR,
-                                  method: PuffinExperiment.effortMethod, sex: profile.sex) : nil
+        let restingHR = repo.today?.restingHr.map(Double.init) ?? BandStrain.defaultRestingHR
+        let scoringHRmax = profile.effortHRmax ?? Double(profile.hrMax)
+        let strain: Double?
+        if samples.count >= 2 {
+            if AppBrand.isPersonalBuild {
+                strain = NativeStrain.score(samples, maxHR: scoringHRmax, restingHR: restingHR)
+            } else {
+                strain = StrainScorer.strain(samples, maxHR: scoringHRmax,
+                                      restingHR: restingHR,
+                                      method: PuffinExperiment.effortMethod, sex: profile.sex)
+            }
+        } else {
+            strain = nil
+        }
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         let up = UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,
@@ -1045,7 +1130,7 @@ final class AppModel: ObservableObject {
             // active-vs-resting threshold sits at resting + 30% HRR, so the default silently shifts what
             // counts as active — and #972 already threads it in the rescore path, so leaving it nil here
             // meant a saved workout's kcal disagreed with its own re-score just as its Effort did.
-            ? Calories.estimateBoutCalories(samples, profile: up, hrmax: Double(profile.hrMax),
+            ? Calories.estimateBoutCalories(samples, profile: up, hrmax: scoringHRmax,
                                             restingHR: restingHR).0
             : 0
         let startTs = Int(w.start.timeIntervalSince1970)
@@ -1093,8 +1178,16 @@ final class AppModel: ObservableObject {
         }
         w.peakHr = max(w.peakHr, hr)
         w.avgHr = Int((Double(w.samples.map(\.bpm).reduce(0, +)) / Double(w.samples.count)).rounded())
-        w.liveStrain = StrainScorer.strain(w.samples, maxHR: Double(profile.hrMax),
+        if AppBrand.isPersonalBuild {
+            let rest = repo.today?.restingHr.map(Double.init) ?? BandStrain.defaultRestingHR
+            w.liveStrain = NativeStrain.score(w.samples,
+                                              maxHR: profile.effortHRmax ?? Double(profile.hrMax),
+                                              restingHR: rest) ?? 0
+        } else {
+            w.liveStrain = StrainScorer.strain(w.samples,
+                                              maxHR: profile.effortHRmax ?? Double(profile.hrMax),
                                               method: PuffinExperiment.effortMethod, sex: profile.sex) ?? 0
+        }
         activeWorkout = w
         // Re-snapshot the durable session so a kill keeps the latest accumulated HR window (#529).
         persistActiveWorkout()
@@ -1116,6 +1209,9 @@ final class AppModel: ObservableObject {
     /// baseline + rate limit), persisted via `BiofeedbackPrefs` so a relaunch can't re-fire. Honest /
     /// non-clinical: "stress" is an autonomic proxy vs the user's own baseline, never a diagnosis.
     private func evaluateStress() {
+        // Off (the default) means Breathe / stress-check-in is unused; skip the R-R buffer work.
+        let cfg = BiofeedbackPrefs.stressConfig()
+        guard cfg.enabled else { return }
         // Once per R-R packet. `ingestHR` runs from both the heart-rate and the R-R sink, so a packet reached
         // this once or twice, its intervals entered `rrBuf` as often, and the detector's slow baseline
         // advanced on every call rather than every packet.
@@ -1125,10 +1221,8 @@ final class AppModel: ObservableObject {
         rrBuf.append(contentsOf: fresh)
         if rrBuf.count > 120 { rrBuf.removeFirst(rrBuf.count - 120) }
 
-        // Inert unless the master toggle is on; the engine owns every gate (auto-nudge, exercise gate,
-        // quiet hours, rate limit, edge).
-        let cfg = BiofeedbackPrefs.stressConfig()
-        guard cfg.enabled, live.bonded, live.worn else { return }
+        // Remaining engine gates (auto-nudge, exercise, quiet hours, rate limit) live in `cfg`.
+        guard live.bonded, live.worn else { return }
         let decision = StressOnsetDetector.evaluate(
             rrBuffer: rrBuf,
             currentHR: bpm.map(Double.init),
@@ -1138,8 +1232,10 @@ final class AppModel: ObservableObject {
             config: cfg,
             nowSec: Int(Date().timeIntervalSince1970),
             tzOffsetSec: TimeZone.current.secondsFromGMT())
+        if decision.nextState != stressState {
+            BiofeedbackPrefs.saveStressState(decision.nextState)
+        }
         stressState = decision.nextState
-        BiofeedbackPrefs.saveStressState(decision.nextState)
         guard decision.shouldNudge else { return }
         if canBuzz { buzz(loops: UInt8(clamping: decision.buzzLoops)) }
         stressNudgeCenter.present(fastRMSSD: decision.fastRMSSD, baselineRMSSD: decision.baselineRMSSD)
@@ -1154,10 +1250,8 @@ final class AppModel: ObservableObject {
     /// picked (persisted under "selectedWhoopModel"), so every scan entry point ,
     /// Live, onboarding, the menu bar, Settings , honours the same choice.
     func scan(model: WhoopModel? = nil) {
-        let chosen = model
-            ?? UserDefaults.standard.string(forKey: "selectedWhoopModel").flatMap(WhoopModel.init(rawValue:))
-            ?? .whoop4
-        ble.connect(model: chosen)
+        let chosen = model ?? WhoopModel.persisted
+        ble.connect(model: chosen == .whoop4 ? .whoop5mg : chosen)
     }
     func disconnect() { ble.disconnect() }
     /// Restart the connected strap (user-initiated, confirmation-gated in DevicesView). Non-destructive —
@@ -1266,6 +1360,7 @@ final class AppModel: ObservableObject {
         await wireSourceCoordinator()
         guard let registry = deviceRegistry, let store = await repo.storeHandle() else {
             await repo.refresh()
+            await importAppleWorkoutHeartRate?()
             return
         }
 
@@ -1284,6 +1379,7 @@ final class AppModel: ObservableObject {
             registry: registry, store: store, authorized: authorized, now: now)
         guard registry.devices.contains(where: { $0.id == AppleWatchDevice.deviceId }) else {
             await repo.refresh()
+            await importAppleWorkoutHeartRate?()
             return
         }
 
@@ -1298,101 +1394,9 @@ final class AppModel: ObservableObject {
         } else {
             await repo.refresh()
         }
+        await importAppleWorkoutHeartRate?()
     }
     #endif
-
-    // MARK: - Oura adopt (factory-reset-and-adopt)
-
-    /// The live adopt outcome of the active Oura ring, mirrored off the coordinator's live `OuraLiveSource`
-    /// so the Add-device wizard can drive its "Taking over your ring" step to success or an honest Failed
-    /// WITHOUT reaching into the BLE layer. nil when no Oura source is live or no adopt is in flight. PARITY:
-    /// the Android wizard observes the same coarse outcome to leave its Adopting step.
-    @Published private(set) var ouraAdoptPhase: OuraLiveSource.AdoptPhase = .idle
-    /// The active Oura ring's honest needs-pairing message (mirrored off the live source), surfaced verbatim
-    /// on the wizard's Failed step. nil when the ring is fine or no Oura source is live.
-    @Published private(set) var ouraNeedsPairing: String?
-    /// Combine subscriptions mirroring the live Oura source's `adoptPhase` / `needsPairing` into the two
-    /// published properties above. Re-bound whenever the active Oura source changes.
-    private var ouraAdoptCancellables = Set<AnyCancellable>()
-
-    /// The most recent `feature status` read-back per feature id (0x04 SpO2, 0x0b real-steps, 0x03
-    /// exercise-HR, 0x0d CVA-PPG), mirrored off the live Oura source so Test Centre's enable/disable
-    /// rows can show the ring's own current state instead of being log-only. Bound once, right after
-    /// `sourceCoordinator` is set (below) — unlike `ouraAdoptPhase` above, this isn't scoped to the
-    /// adopt wizard, so it needs to be live for any paired ring, not just one mid-adopt.
-    @Published private(set) var ouraFeatureStatuses: [Int: OuraFeatureStatus] = [:]
-    private var ouraFeatureStatusCancellable: AnyCancellable?
-
-    /// The live ring's link phase (`disconnected` / `connecting` / `authenticating` / `authenticated`),
-    /// mirrored off the live Oura source for the Live console's ring status and reconnect affordance
-    /// (#2305). `.disconnected` when no ring source is live. Bound beside the feature-status mirror.
-    @Published private(set) var ouraLinkPhase: OuraLiveSource.LinkPhase = .disconnected
-    private var ouraLinkPhaseCancellable: AnyCancellable?
-
-    /// (Re)bind the feature-status and link-phase mirrors to whichever `OuraLiveSource` the coordinator
-    /// has live, and every later swap — same `flatMap`-over-`$ouraSource` shape as `bindOuraAdoptMirror`
-    /// below.
-    private func bindOuraFeatureStatusMirror() {
-        guard let coordinator = sourceCoordinator else { return }
-        ouraFeatureStatusCancellable = coordinator.$ouraSource
-            .flatMap { source -> AnyPublisher<[Int: OuraFeatureStatus], Never> in
-                source?.$featureStatuses.eraseToAnyPublisher()
-                    ?? Just([:]).eraseToAnyPublisher()
-            }
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.ouraFeatureStatuses = $0 }
-        ouraLinkPhaseCancellable = coordinator.$ouraSource
-            .flatMap { source -> AnyPublisher<OuraLiveSource.LinkPhase, Never> in
-                source?.$linkPhase.eraseToAnyPublisher()
-                    ?? Just(.disconnected).eraseToAnyPublisher()
-            }
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.ouraLinkPhase = $0 }
-    }
-
-    /// Reconnect the active ring on the user's request from the Live console (#2305). Routed through the
-    /// coordinator so it can only ever reach the ring that is the live source.
-    func reconnectOuraRing() {
-        sourceCoordinator?.reconnectActiveRing()
-    }
-
-    /// Take over a factory-reset Oura ring: grant the coordinator explicit adopt consent for THIS ring (so
-    /// its live session may run the one-time key install, s3.2), register it active (which starts that live
-    /// session), then begin mirroring its adopt outcome for the wizard. The irreversible-consent gate has
-    /// ALREADY been passed in the wizard (the consent tick + the "Take over this ring?" confirm); this is the
-    /// commit. Never prompts to make-active (the takeover IS the user's new active source).
-    func adoptOuraRing(_ device: PairedDevice) {
-        sourceCoordinator?.requestOuraAdopt(deviceId: device.id)
-        // Reset the mirror so a previous attempt's outcome never leaks into this one.
-        ouraAdoptPhase = .idle
-        ouraNeedsPairing = nil
-        registerDevice(device, makeActive: true)
-        bindOuraAdoptMirror()
-    }
-
-    /// (Re)bind the adopt-outcome mirror to whichever `OuraLiveSource` the coordinator has live now and on
-    /// every later swap. `flatMap` switches to the current source's `adoptPhase` (defaulting to `.idle` when
-    /// there is no source), so the published value always tracks the live source without leaking subscriptions.
-    private func bindOuraAdoptMirror() {
-        ouraAdoptCancellables.removeAll()
-        guard let coordinator = sourceCoordinator else { return }
-        coordinator.$ouraSource
-            .flatMap { source -> AnyPublisher<OuraLiveSource.AdoptPhase, Never> in
-                source?.$adoptPhase.eraseToAnyPublisher()
-                    ?? Just(.idle).eraseToAnyPublisher()
-            }
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.ouraAdoptPhase = $0 }
-            .store(in: &ouraAdoptCancellables)
-        coordinator.$ouraSource
-            .flatMap { source -> AnyPublisher<String?, Never> in
-                source?.$needsPairing.eraseToAnyPublisher()
-                    ?? Just(nil).eraseToAnyPublisher()
-            }
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.ouraNeedsPairing = $0 }
-            .store(in: &ouraAdoptCancellables)
-    }
 
     /// How many on-screen surfaces currently want the realtime HR stream (the Live tab and the
     /// in-exercise LiveWorkoutView, which can be open at the same time , the workout sheet sits over
@@ -1984,30 +1988,36 @@ final class AppModel: ObservableObject {
         let previous = healthAlert
         let recent = Array(days.suffix(2))
         let latest = days[days.count - 1]
-        let base = Array(days.suffix(31).dropLast(3))    // ~28 days ending 3 days ago
+        let base = days.filter { IllnessSignalEngine.isLaggedBaselineDay(candidate: $0.day, today: latest.day) }
         func mean(_ vals: [Double]) -> Double? { vals.isEmpty ? nil : vals.reduce(0, +) / Double(vals.count) }
         func rm(_ kp: (DailyMetric) -> Double?) -> Double? { mean(recent.compactMap(kp)) }
 
-        // Build each signal's illness-ward z against the personal baseline (Baselines.deviation). The
-        // baseline is folded over the full pre-recent history; a trusted baseline (≥14 nights) is the
+        // Build each signal's illness-ward z against the lagged median baseline (nights 21…7
+        // before today, Mishra 2020 / PLOS ONE 0243693). A trusted baseline (≥14 nights) is the
         // engine's gate for actually raising. Skin-temp is already a stored DEVIATION (°C), so it's
         // z-scored against a zero-centred personal spread; the others z-score the raw column.
-        func signal(_ kp: (DailyMetric) -> Double?, cfgKey: String, illnessUp: Bool) -> (IllnessSignalEngine.SignalReading, Bool)? {
-            guard let cfg = Baselines.metricCfg[cfgKey], let recentMean = rm(kp),
-                  let latestValue = kp(latest) else { return nil }
-            let state = Baselines.foldHistory(base.map(kp), cfg: cfg)
-            guard state.usable else { return (IllnessSignalEngine.SignalReading(zIllnessward: 0, present: false), false) }
-            let dev = Baselines.deviation(recentMean, state: state)
-            let latestDev = Baselines.deviation(latestValue, state: state)
+        func signal(_ kp: (DailyMetric) -> Double?, floor: Double, illnessUp: Bool) -> (IllnessSignalEngine.SignalReading, Bool)? {
+            guard let recentMean = rm(kp), let latestValue = kp(latest) else { return nil }
+            var byDay: [String: Double] = [:]
+            for d in days { if let v = kp(d) { byDay[d.day] = v } }
+            let hist = IllnessSignalEngine.laggedHistory(today: latest.day, byDay: byDay)
+            let trusted = hist.count >= IllnessSignalEngine.minLaggedBaselineNights
+            guard let zLatest = IllnessSignalEngine.medianBasedZ(value: latestValue, history: hist,
+                                                                  floor: floor, invert: !illnessUp),
+                  let zRecent = IllnessSignalEngine.medianBasedZ(value: recentMean, history: hist,
+                                                                 floor: floor, invert: !illnessUp)
+            else {
+                return (IllnessSignalEngine.SignalReading(zIllnessward: 0, present: false), false)
+            }
             // Keep the two-night smoothing, but only count a signal while the newest night
             // independently clears the same illness-ward threshold (#2533).
-            let z = illnessUp ? min(dev.z, latestDev.z) : min(-dev.z, -latestDev.z)
-            return (IllnessSignalEngine.SignalReading(zIllnessward: z), state.trusted)
+            let z = min(zLatest, zRecent)
+            return (IllnessSignalEngine.SignalReading(zIllnessward: z), trusted)
         }
 
-        let rhr = signal({ $0.restingHr.map(Double.init) }, cfgKey: "resting_hr", illnessUp: true)
-        let hrv = signal({ $0.avgHrv }, cfgKey: "hrv", illnessUp: false)
-        let resp = signal({ $0.respRateBpm }, cfgKey: "resp", illnessUp: true)
+        let rhr = signal({ $0.restingHr.map(Double.init) }, floor: BandIllnessSignal.rhrSigmaFloor, illnessUp: true)
+        let hrv = signal({ $0.avgHrv }, floor: BandIllnessSignal.hrvSigmaFloor, illnessUp: false)
+        let resp = signal({ $0.respRateBpm }, floor: BandIllnessSignal.respSigmaFloor, illnessUp: true)
         // Skin-temp deviation: a stored °C delta. Build a small zero-centred state from its own recent
         // spread so a +0.6 °C reads as a meaningful z without needing a separate baseline column.
         var skin: (IllnessSignalEngine.SignalReading, Bool)? = nil
@@ -2103,8 +2113,85 @@ final class AppModel: ObservableObject {
         StrainTargetNotifier.onDayUpdate(
             day: row.day,
             dayStrain21: row.strain.map { UnitFormatter.effortValue($0, scale: .whoop) },
-            target21: CoupledView.optimalStrainRange(recovery: row.recovery)?.lowerBound,
+            target21: NativeStrainTarget.optimalLowerBound21(recovery: row.recovery),
             enabled: behavior.strainTargetNudge)
+    }
+
+    /// WHOOP-style daily notifications. Recovery percent and sleep performance come from the
+    /// same `NativeBandScores` snapshot the Home rings read, keyed on `NativeDayLogic.logicalToday`
+    /// (not a carried prior-day row), so the notification cannot disagree with the ring.
+    func evaluateDailyNotifications() {
+        Task { [weak self] in
+            guard let self else { return }
+            let todayKey = NativeDayLogic.logicalToday()
+            let workouts = await self.repo.workoutRows(days: 120)
+            let scores = NativeBandScores.resolve(
+                days: self.repo.days,
+                sleeps: self.repo.sleeps,
+                workouts: workouts,
+                importedSleep: self.repo.importedSleep)
+            let scored = scores.byDay[todayKey]
+            let todaySleeps = self.repo.sleeps.filter {
+                NativeDayLogic.sleepSessionDayKey(
+                    Date(timeIntervalSince1970: TimeInterval($0.endTs))) == todayKey
+            }
+            let blocks = todaySleeps.map {
+                SleepStageTotals.NightBlock(start: $0.effectiveStartTs, end: $0.endTs)
+            }
+            let main = SleepStageTotals.mainNightIndex(
+                blocks,
+                offsetSec: TimeZone.current.secondsFromGMT(),
+                habitualMidsleepSec: self.habitualMidsleepCache)
+                .map { todaySleeps[$0] }
+            let nowSec = Int(Date().timeIntervalSince1970)
+            let durationMin = main.map { Double($0.endTs - $0.effectiveStartTs) / 60.0 } ?? 0
+            let isMain = RecoveryReadyNotifier.RecoveryReadyPolicy.isMainSleep(durationMinutes: durationMin)
+            let sleepEnded = (main?.endTs ?? Int.max) <= nowSec
+            let todayRow = self.repo.days.last { $0.day == todayKey }
+            let asleep = NativeDayLogic.asleepMinutes(
+                light: todayRow?.lightMin, deep: todayRow?.deepMin, rem: todayRow?.remMin,
+                totalSleepMin: todayRow?.totalSleepMin)
+            let hrvZ: Double?
+            if let params = NativeBandScores.params() {
+                let inputs = NativeBandScores.dayInputs(
+                    days: self.repo.days, sleeps: self.repo.sleeps,
+                    workouts: workouts, importedSleep: self.repo.importedSleep)
+                hrvZ = BandScores.evaluate(days: inputs, params: params)
+                    .first { $0.day == todayKey }?.zHrv
+            } else {
+                hrvZ = nil
+            }
+            RecoveryReadyNotifier.onDayUpdate(
+                day: todayKey,
+                recovery: scored?.recovery,
+                hrvZ: hrvZ,
+                isMainSleep: isMain,
+                sleepEnded: sleepEnded,
+                enabled: self.behavior.recoveryReadyNotify)
+            SleepRecordedNotifier.onDayUpdate(
+                day: todayKey,
+                asleepMinutes: asleep,
+                sleepPerformance: scored?.sleepPerformance,
+                isMainSleep: isMain,
+                sleepEnded: sleepEnded,
+                enabled: self.behavior.sleepRecordedNotify)
+            let healthReport = NativeHealthRange.report(
+                days: self.repo.days,
+                todayKey: todayKey,
+                temperature: self.displayTemperatureUnit)
+            let nightsWorn = NativeHealthMonitorMath.nightsWorn(
+                days: self.repo.days, todayKey: todayKey)
+            let illnessPosted = IllnessNotifier.didNotify(on: todayKey)
+                || IllnessNotifier.didNotify(on: Repository.localDayKey(Date()))
+            HealthMonitorNotifier.onDayUpdate(
+                day: todayKey,
+                report: healthReport,
+                isMainSleep: isMain,
+                sleepEnded: sleepEnded,
+                nightsWorn: nightsWorn,
+                illnessPostedToday: illnessPosted,
+                enabled: self.behavior.healthMonitorNotify)
+        }
     }
 
     /// Re-run the illness watch over the cached history. Called when the Automations toggle
@@ -2149,55 +2236,11 @@ final class AppModel: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: Self.polarDebugLoggingKey) }
     }
 
-    /// #1284 residual 3 (EXPERIMENTAL, default OFF): generation-side 0x49-onset keying for Oura sleep. When
-    /// on, an Oura hypnogram persist keys its startTs on the rounded 0x49 onset (the stable per-night anchor)
-    /// and a completeness guard suppresses/replaces a duplicate re-serve BEFORE it is banked — closing the
-    /// window where the wrong night shows until the next analyze pass. Off = the shipped end-anchored persist.
-    /// A hardware-validation toggle (Test Centre); no effect for a user with no Oura ring.
-    static let ouraOnsetKeyingKey = "noopOuraOnsetKeying"
-    var ouraOnsetKeying: Bool {
-        get { UserDefaults.standard.bool(forKey: Self.ouraOnsetKeyingKey) }
-        set { UserDefaults.standard.set(newValue, forKey: Self.ouraOnsetKeyingKey) }
-    }
-
-    /// Oura packed-notification A/B (EXPERIMENTAL, default OFF): send the official app's SetNotification
-    /// mask `1c 01 ff` at the next connect instead of NOOP's `3f`. The ring packs ~10 packets per
-    /// notification for the official app (9x the drain throughput) and NOOP's session never gets that
-    /// shape; the mask is the first candidate switch (OURA_PROTOCOL.md s2.3). Read once per connect, so
-    /// turning it off restores `3f` on the next session — nothing persists on the ring. Readout: the
-    /// `-> notify_all(ff)` line and the raw sidecar's notification-size histogram. Test Centre only.
-    static let ouraNotifyMaskFullKey = "noopOuraNotifyMaskFull"
-    var ouraNotifyMaskFull: Bool {
-        get { UserDefaults.standard.bool(forKey: Self.ouraNotifyMaskFullKey) }
-        set { UserDefaults.standard.set(newValue, forKey: Self.ouraNotifyMaskFullKey) }
-    }
-
-    /// Item 27 (EXPERIMENTAL, default OFF): keep the Oura ring in its daytime-HR mode while the phone's screen
-    /// is off during the DAY, standing it down only for the learned night band (`NightStandDown`), instead
-    /// of on every screen-off. The ring emits daytime heart rate — and the beats behind windowed rMSSD —
-    /// only while a client holds that mode, so with the screen-keyed suspend a pocketed phone empties the
-    /// day. ON costs ring battery (its own daytime PPG); OFF is today's behaviour, and the night is
-    /// unchanged either way. No effect without an Oura ring; cold start (no learned schedule) keeps OFF's rule.
-    static let ouraAllDayLiveHRKey = "noopOuraAllDayLiveHR"
-    var ouraAllDayLiveHR: Bool {
-        get { UserDefaults.standard.bool(forKey: Self.ouraAllDayLiveHRKey) }
-        set { UserDefaults.standard.set(newValue, forKey: Self.ouraAllDayLiveHRKey) }
-    }
-
-    /// Item 27: the learned night band for the all-day HR stand-down — the SAME midsleep + typical-night
-    /// inputs the battery night-guard reads (`refreshHabitualMidsleep`, hourly), so the two policies share
-    /// one notion of the user's night. nil at cold start.
-    func ouraNightBand() -> NightStandDown.Band? {
-        NightStandDown.band(
-            habitualMidsleepSec: habitualMidsleepCache,
-            typicalSleepHours: BatteryEstimator.typicalSleepHours(
-                nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }))
-    }
-
     /// Recompute the v5 skin-temp suite snapshots (cycle phase + body clock) from the current history.
     /// Called from the analytics pass and when the cycle opt-in flips. Honest-nil throughout: cycle is
     /// nil unless opted in; circadian is nil unless a usable activity profile exists.
     func refreshV5Signals() async {
+        guard !AppBrand.isPersonalBuild else { return }
         await computeCyclePhase()
         await computeCircadianPhase()
     }
@@ -2450,6 +2493,7 @@ final class AppModel: ObservableObject {
 
     func importWhoop(url: URL) {
         beginImport(.whoop)
+        importPhase = String(localized: "Importing…")
         Task {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -2461,51 +2505,18 @@ final class AppModel: ObservableObject {
                 let local = try await Self.materializeForImport(url)
                 defer { local.cleanup() }
                 emitImportFileMeta(kind: .whoopExport, url: local.url)
+                importPhase = String(localized: "Importing sleeps…")
                 let summary = try await WhoopImporter.importExport(url: local.url, into: store,
                                                                    deviceId: deviceId, trace: importTraceSink())
                 try? await store.checkpointWAL()   // reclaim the WAL a bulk import grew (#590)
                 await repo.refresh()
-                let span: String
-                if let a = summary.earliest, let b = summary.latest {
-                    let f = DateFormatter(); f.dateFormat = "MMM yyyy"
-                    span = " · \(f.string(from: a))-\(f.string(from: b))"
-                } else { span = "" }
-                finishImport(.whoop, summary: "Imported \(summary.recordCount) records\(span)")
+                await profile.syncObservedHRMax(from: repo)
+                let days = summary.countsByCategory["cycles"] ?? 0
+                let sleeps = summary.countsByCategory["sleeps"] ?? 0
+                let workouts = summary.countsByCategory["workouts"] ?? 0
+                finishImport(.whoop, summary: "Imported \(days) days, \(sleeps) sleeps, \(workouts) workouts")
             } catch {
                 finishImport(.whoop, summary: "Import failed: \(error)", failed: true)
-            }
-        }
-    }
-
-    /// Import an Apple Health export (export.zip) , streams + aggregates per-day into the store
-    /// under the `apple-health` source, then refreshes. Large exports take ~1–2 minutes.
-    func importXiaomi(url: URL) {
-        beginImport(.xiaomi)
-        Task {
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                guard let store = await repo.storeHandle() else {
-                    finishImport(.xiaomi, summary: "Couldn't open the local store.", failed: true)
-                    return
-                }
-                let local = try await Self.materializeForImport(url)
-                defer { local.cleanup() }
-                emitImportFileMeta(kind: .xiaomiBand, url: local.url)
-                let summary = try await XiaomiImporter.importExport(url: local.url, into: store,
-                                                                    trace: importTraceSink())
-                try? await store.checkpointWAL()   // reclaim the WAL a bulk import grew (#590)
-                await repo.refresh()
-                let span: String
-                if let a = summary.earliest, let b = summary.latest {
-                    let f = DateFormatter(); f.dateFormat = "MMM yyyy"
-                    span = " · \(f.string(from: a))-\(f.string(from: b))"
-                } else { span = "" }
-                let days = summary.countsByCategory["days"] ?? 0
-                let sleeps = summary.countsByCategory["sleepSessions"] ?? 0
-                finishImport(.xiaomi, summary: "Imported \(days) days · \(sleeps) sleeps\(span)")
-            } catch {
-                finishImport(.xiaomi, summary: "Import failed: \(error)", failed: true)
             }
         }
     }
@@ -2672,6 +2683,7 @@ final class AppModel: ObservableObject {
     /// Marks a source as importing and clears only that source's old status text + failure flag.
     private func beginImport(_ source: DataSourceImportKind) {
         activeImportSource = source
+        importPhase = String(localized: "Importing…")
         switch source {
         case .whoop:
             whoopImportSummary = nil
@@ -2679,9 +2691,6 @@ final class AppModel: ObservableObject {
         case .appleHealth:
             appleHealthImportSummary = nil
             appleHealthImportFailed = false
-        case .xiaomi:
-            xiaomiImportSummary = nil
-            xiaomiImportFailed = false
         }
     }
 
@@ -2694,10 +2703,8 @@ final class AppModel: ObservableObject {
         case .appleHealth:
             appleHealthImportSummary = summary
             appleHealthImportFailed = failed
-        case .xiaomi:
-            xiaomiImportSummary = summary
-            xiaomiImportFailed = failed
         }
+        importPhase = nil
         activeImportSource = nil
     }
 }

@@ -92,6 +92,22 @@ final class WorkoutCatalogTests: XCTestCase {
 
     /// Iconography lockstep: every catalogue sport must resolve to a `KnownWorkoutType` with a unique
     /// runtime glyph on the current OS, matching the live-workout Liquid Glass control.
+    func testRecoverySportsAreOfferedAndDoNotAddStrain() {
+        let names = Set(WorkoutCatalog.all.map(\.name))
+        for expected in ["Breathwork", "Cold Shower", "Contrast Therapy", "Foam Rolling",
+                         "Hot Tub", "Ice Bath", "Massage Therapy", "Meditation",
+                         "Restorative Yoga", "Sauna", "Steam Room", "Stretching", "Tai Chi"] {
+            XCTAssertTrue(names.contains(expected), "missing \(expected)")
+            XCTAssertTrue(WorkoutCatalog.isRecovery(expected), expected)
+            XCTAssertFalse(WorkoutCatalog.sport(named: expected)?.isDistanceSport ?? true)
+        }
+        XCTAssertFalse(WorkoutCatalog.isRecovery("Yoga"))
+        XCTAssertFalse(WorkoutCatalog.isRecovery("Pilates"))
+        XCTAssertTrue(WorkoutCatalog.isRecovery("Dry Sauna"))
+        XCTAssertTrue(WorkoutCatalog.isRecovery("Cold Plunge"))
+        XCTAssertEqual(WorkoutCatalog.all.last?.name, "Other")
+    }
+
     func testCatalogueSportsHaveUniqueWorkoutTypeIcons() {
         let catalogNames = WorkoutCatalog.all.map(\.name)
         let knownNames = KnownWorkoutType.allCases.map(\.rawValue)

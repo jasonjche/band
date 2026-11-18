@@ -32,7 +32,7 @@ final class WatchSessionBridge: NSObject, ObservableObject {
     /// Minimum spacing between pushes (30 minutes). Complication/context transfers ride a system budget
     /// (~50/day for complication updates), so `pushLatest` never sends more often than this, and only
     /// when the headline values actually changed. BOTH checks must pass; see `shouldPush`.
-    static let minPushInterval: TimeInterval = 30 * 60
+    static let minPushInterval: TimeInterval = WatchPushPolicy.minInterval
     /// Whether a watch is currently paired + has the NOOP watch app installed + is reachable enough to
     /// receive context. Application context still queues for delivery when the watch is briefly away, so
     /// this is informational, not a gate on sending.
@@ -73,6 +73,16 @@ final class WatchSessionBridge: NSObject, ObservableObject {
     /// `async` because Rest (sleep_performance) lives in a computed metric series rather than a
     /// `DailyMetric` column, so it needs an `exploreSeries` read (mirrors `WidgetSnapshot.publish`).
     func sendLatest(from model: AppModel) async {
+        // After activation, a phone with no watch app installed still paid for a snapshot
+        // (exploreSeries + widget-anchor scan). Skip that work; before activation the flag is
+        // undefined so we still build and send as before.
+        if let session, session.activationState == .activated, !session.isWatchAppInstalled {
+            return
+        }
+        // Spacing is independent of the snapshot. Building it runs `exploreSeries` over Rest
+        // history; doing that on every refreshSeq bump (then throwing the result away) was the
+        // cost the 30-minute gate exists to avoid.
+        if !WatchPushPolicy.spacingAllowsPush(lastPushedAt: lastPushedAt, now: Date()) { return }
         let snap = await Self.buildSnapshot(from: model)
         // A contentless snapshot (a cold launch races the first repo refresh, so `days` is still empty)
         // must NOT push: it would stomp the watch's last REAL data with the empty state AND burn the
@@ -101,7 +111,7 @@ final class WatchSessionBridge: NSObject, ObservableObject {
     /// pushed this process, passes). (2) Substance: the snapshot's HEADLINE values differ from the last
     /// pushed one, so an unchanged dashboard never burns a transfer re-stating the same scores.
     private func shouldPush(_ snap: WatchScoreSnapshot, now: Date) -> Bool {
-        if let at = lastPushedAt, now.timeIntervalSince(at) < Self.minPushInterval { return false }
+        guard WatchPushPolicy.spacingAllowsPush(lastPushedAt: lastPushedAt, now: now) else { return false }
         return Self.headlineChanged(from: lastSent, to: snap)
     }
 
@@ -150,7 +160,7 @@ final class WatchSessionBridge: NSObject, ObservableObject {
             let restSeries = await model.repo.exploreSeries(key: "sleep_performance", source: model.deviceId)
             let restByDay = Dictionary(restSeries.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
             let anchorIsToday = day.day == Repository.localDayKey(now)
-            restScore = TodayView.freshRestScore(
+            restScore = RestScoreCarry.freshRestScore(
                 todayValue: restByDay[day.day], lastDay: restSeries.last?.day,
                 lastValue: restSeries.last?.value, isTodaySelected: anchorIsToday, todayKey: day.day)
         }
@@ -159,7 +169,7 @@ final class WatchSessionBridge: NSObject, ObservableObject {
         // shows a cal marker, not a dash that looks like an outage. We treat "no number for the anchor
         // day" as calibrating only when there is at least some day data to calibrate FROM. With no day
         // at all (a fresh, never-synced phone) the flags stay false and the watch shows its neutral
-        // "open NOOP on your iPhone" empty state instead of implying calibration is underway.
+        // "open Band on your iPhone" empty state instead of implying calibration is underway.
         let hasAnyDay = day != nil
         let charge = day?.recovery
         let effort = day?.strain

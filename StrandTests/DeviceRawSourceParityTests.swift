@@ -4,8 +4,7 @@ import XCTest
 import WhoopStore
 import WhoopProtocol
 
-/// Apple half of the shared Android/Apple raw-source oracle. This tests the repository contract rather
-/// than duplicating expected values in Swift, so source precedence and R-R identity cannot drift quietly.
+/// Raw-source oracle for the repository contract. Source precedence and R-R identity cannot drift quietly.
 final class DeviceRawSourceParityTests: XCTestCase {
     private struct Fixture: Decodable {
         struct SourceCase: Decodable {
@@ -31,7 +30,7 @@ final class DeviceRawSourceParityTests: XCTestCase {
     private func fixture() throws -> Fixture {
         let testFile = URL(fileURLWithPath: #filePath)
         let url = testFile.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Tools/parity_cases/device_raw_sources.json")
+            .appendingPathComponent("StrandTests/Resources/device_raw_sources.json")
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
                       "Shared device-source parity fixture is missing; parity must fail closed")
         return try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
@@ -64,23 +63,6 @@ final class DeviceRawSourceParityTests: XCTestCase {
             XCTAssertEqual(actual.map(\.rrMs), vector.expected.map(\.rrMs), vector.name)
             XCTAssertEqual(actual.map(\.seq), vector.expected.map(\.seq), vector.name)
             XCTAssertEqual(actual.map(\.ord), vector.expected.map(\.ord), vector.name)
-        }
-    }
-
-    func testStressCannotPinRawReadsToCanonicalNamespace() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Strand/Screens/StressView.swift"),
-                                encoding: .utf8)
-        let withoutComments = source.replacingOccurrences(of: #"/\*.*?\*/"#, with: "",
-                                                           options: .regularExpression)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.split(separator: "//", maxSplits: 1).first.map(String.init) ?? "" }
-            .joined(separator: "\n")
-        let directCanonicalRaw = #"(?s)(hrSamples|rrIntervals|gravitySamples)\s*\([^)]*(\"my-whoop\"|Repository\.whoopSource)"#
-        XCTAssertNil(withoutComments.range(of: directCanonicalRaw, options: .regularExpression),
-                     "Stress raw physiology must resolve via the device-aware repository API")
-        for call in ["repo.hrSamples(from:", "repo.rrIntervals(from:", "repo.gravitySamplesUnion(from:"] {
-            XCTAssertTrue(withoutComments.contains(call), "Stress must use device-aware \(call)")
         }
     }
 

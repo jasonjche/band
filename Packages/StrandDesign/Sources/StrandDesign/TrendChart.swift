@@ -325,73 +325,7 @@ public struct TrendChart: View {
             .foregroundStyle(StrandPalette.textPrimary)
         }
         Chart {
-            if let baselineValue {
-                RuleMark(y: .value("Baseline", baselineValue))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    .foregroundStyle(.secondary.opacity(0.45))
-            }
-            if showsBars {
-                // Bar mode: one value-ramp-filled BarMark per (down-sampled) sample, from the baseline.
-                // The line, area and point marks are all replaced. The same `displayPoints` feed it, so a
-                // dense window is min/max-bucketed to the vertex budget exactly as the line is; hover, the
-                // axes, the domain and accessibility are unchanged (they read the full `points`).
-                ForEach(displayPoints) { p in
-                    BarMark(
-                        x: .value("Date", p.date),
-                        y: .value("Value", p.value)
-                    )
-                    .foregroundStyle(lineStroke)
-                    .cornerRadius(min(2, max(0, CGFloat(p.value / max(1, plotYDomain.upperBound)) * height * 0.2)))
-                    .opacity(holdingBar && currentSelection != nil && currentSelection?.date != p.date ? 0.3 : 1)
-                    .annotation(position: .top, spacing: 3) {
-                        if showsBarValues {
-                            Text(p.value.formatted(.number.precision(.fractionLength(0))))
-                                .font(.system(size: 9, weight: .medium)).monospacedDigit()
-                                .foregroundStyle(StrandPalette.textSecondary)
-                        }
-                    }
-                }
-                if showsHover, let selectedPoint = currentSelection {
-                    RuleMark(x: .value("Date", selectedPoint.date))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                        .foregroundStyle(StrandPalette.textSecondary)
-                }
-            } else {
-                if showsArea {
-                    ForEach(displayPoints) { p in
-                        AreaMark(
-                            x: .value("Date", p.date),
-                            y: .value("Value", p.value),
-                            series: .value("Segment", p.segment)
-                        )
-                        .interpolationMethod(.catmullRom)
-                        .foregroundStyle(areaFill)
-                    }
-                }
-                ForEach(displayPoints) { p in
-                    LineMark(
-                        x: .value("Date", p.date),
-                        y: .value("Value", p.value),
-                        series: .value("Segment", p.segment)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                    .foregroundStyle(lineStroke)
-                }
-                // 18pt dots are invisible on dense series (e.g. a 365-day year) but still cost the
-                // GPU a mark each — hide them past a threshold; the line carries the data there. The gate
-                // stays on the full `points.count` (≤60 is never downsampled, so displayPoints == points).
-                if points.count <= 60 {
-                    ForEach(displayPoints) { p in
-                        PointMark(
-                            x: .value("Date", p.date),
-                            y: .value("Value", p.value)
-                        )
-                        .symbolSize(18)
-                        .foregroundStyle(StrandPalette.sample(stops: stops, at: unit(p.value)))
-                    }
-                }
-            }
+            chartMarks(currentSelection: currentSelection, stops: stops, areaFill: areaFill, lineStroke: lineStroke)
         }
         // Domain drives BOTH the axis extent and the plot clip. A caller that wants a top-of-range
         // peak (and the top axis label) to clear the clip passes a `yDomain` whose upper bound sits a
@@ -546,6 +480,75 @@ public struct TrendChart: View {
             selectedPoint = nil
             holdingBar = false
             hoverX = nil
+        }
+    }
+
+    @ChartContentBuilder
+    private func chartMarks(
+        currentSelection: TrendPoint?,
+        stops: [Gradient.Stop],
+        areaFill: LinearGradient,
+        lineStroke: LinearGradient
+    ) -> some ChartContent {
+        if let baselineValue {
+            RuleMark(y: .value("Baseline", baselineValue))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                .foregroundStyle(.secondary.opacity(0.45))
+        }
+        if showsBars {
+            ForEach(displayPoints) { p in
+                BarMark(
+                    x: .value("Date", p.date),
+                    y: .value("Value", p.value)
+                )
+                .foregroundStyle(lineStroke)
+                .cornerRadius(min(2, max(0, CGFloat(p.value / max(1, plotYDomain.upperBound)) * height * 0.2)))
+                .opacity(holdingBar && currentSelection != nil && currentSelection?.date != p.date ? 0.3 : 1)
+                .annotation(position: .top, spacing: 3) {
+                    if showsBarValues {
+                        Text(p.value.formatted(.number.precision(.fractionLength(0))))
+                            .font(.system(size: 9, weight: .medium)).monospacedDigit()
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    }
+                }
+            }
+            if showsHover, let selectedPoint = currentSelection {
+                RuleMark(x: .value("Date", selectedPoint.date))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .foregroundStyle(StrandPalette.textSecondary)
+            }
+        } else {
+            if showsArea {
+                ForEach(displayPoints) { p in
+                    AreaMark(
+                        x: .value("Date", p.date),
+                        y: .value("Value", p.value),
+                        series: .value("Segment", p.segment)
+                    )
+                    .interpolationMethod(.catmullRom)
+                    .foregroundStyle(areaFill)
+                }
+            }
+            ForEach(displayPoints) { p in
+                LineMark(
+                    x: .value("Date", p.date),
+                    y: .value("Value", p.value),
+                    series: .value("Segment", p.segment)
+                )
+                .interpolationMethod(.catmullRom)
+                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                .foregroundStyle(lineStroke)
+            }
+            if points.count <= 60 {
+                ForEach(displayPoints) { p in
+                    PointMark(
+                        x: .value("Date", p.date),
+                        y: .value("Value", p.value)
+                    )
+                    .symbolSize(18)
+                    .foregroundStyle(StrandPalette.sample(stops: stops, at: unit(p.value)))
+                }
+            }
         }
     }
 }

@@ -258,7 +258,7 @@ extension HuamiHRSource: @preconcurrency CBCentralManagerDelegate {
         let name = advName ?? peripheral.name ?? ""
         // Keep only recognised Amazfit / Zepp / Mi Band devices — a broad scan sees everything nearby.
         guard let brand = ExperimentalBrand.recognise(name: name),
-              brand == .amazfit || brand == .miBand else { return }
+              brand == .amazfit else { return }
         let id = peripheral.identifier
         let firstSight = seenPeripherals[id] == nil
         seenPeripherals[id] = peripheral

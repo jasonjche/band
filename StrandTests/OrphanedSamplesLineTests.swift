@@ -5,7 +5,7 @@ import XCTest
 /// "the samples are under a different device id" (#1193/#740). The old line asserted the first
 /// unconditionally, which is the wrong answer to give an investigation exactly when it matters.
 ///
-/// Kotlin twin: `OrphanedSamplesLineTest` (`android/app/src/test/.../testcentre/`). The two must emit the
+/// Kotlin twin: `OrphanedSamplesLineTest` . The two must emit the
 /// same strings, so these expectations are written out in full rather than pattern-matched — and the
 /// literals below were generated from the verified cross-platform diff, not retyped.
 final class OrphanedSamplesLineTests: XCTestCase {

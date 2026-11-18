@@ -15,8 +15,7 @@ be checked.
 > as the Mind / mood check-in and nutrition import are **informational only** and are
 > **not** a diagnosis, treatment, or dietary/medical advice. Use at your own risk;
 > your data stays on your device unless you explicitly export it or enable an optional network path.
-> See `DISCLAIMER.md`, `TERMS.md`, and
-> `ATTRIBUTION.md` at the repo root.
+> See `DISCLAIMER.md` and `ATTRIBUTION.md` at the repo root.
 
 ---
 
@@ -189,9 +188,9 @@ not a NOOP cloud, account, restore path, or two-way sync:
 - **After offload, at launch, or explicitly now — always outside BLE sync.** Automatic work is queued
   after a complete strap offload and at app launch to catch up; the user may also press **Export now**.
   An unavailable or slow endpoint cannot delay BLE collection, local persistence, analytics, or UI.
-- **What is sent.** The finite, versioned stream registry in
-  [`PUSH_PROTOCOL.md`](PUSH_PROTOCOL.md) includes biometric rows and rolling snapshots of selected
-  recomputed/editable tables, scoped by a locally generated installation ID and local device ID.
+- **What is sent.** A finite, versioned stream registry includes biometric rows and rolling
+  snapshots of selected recomputed/editable tables, scoped by a locally generated installation ID
+  and local device ID.
 - **What comes back.** The receiver may advertise only a subset of NOOP's fixed v1 stream names, and
   acknowledges submitted batches. NOOP never fetches health rows, remote changes, commands, URLs,
   schemas, settings, or conflict decisions. The local database remains authoritative.
@@ -280,7 +279,7 @@ NOOP's own store — but it never leaves your **device**, and never touches the 
   or delete what you exported; that store, its backups (e.g. iCloud Health if *you* enabled it), and
   its sharing settings are governed by Apple and by your choices. **You are responsible for the data
   you push into Apple Health and for anything you or your Shortcuts then do with it.** See
-  `DISCLAIMER.md` §5.3 and `TERMS.md` §5.
+  `DISCLAIMER.md` §5.3.
 
 ---
 
@@ -363,15 +362,12 @@ aid.)
 ### 2.4 Diagnostics: the strap connection log
 
 When a strap won't connect or behaves oddly, the single most useful thing a user can
-send is the connection log. NOOP keeps one so it can be shared **without** needing
-`adb` or a developer setup (this is what made issues #17/#18 reportable), and the same
-log doubles as the primary tool for **debugging and protocol development** (see
-`ANDROID.md` → "Debugging the strap connection").
+send is the connection log. NOOP keeps one so it can be shared without a developer
+setup (this is what made issues #17/#18 reportable), and the same log doubles as the
+primary tool for **debugging and protocol development**.
 
-**What it is.** The BLE client (`android/.../ble/WhoopBleClient.kt`,
-`Strand/BLE/BLEManager.swift` on the Swift side — macOS and iOS) keeps an **in-memory
-ring buffer** — the last
-2000 log lines on Android — of the connection's control flow: scan results (strap
+**What it is.** The BLE client (`Strand/BLE/BLEManager.swift`) keeps an **in-memory
+ring buffer** of the connection's control flow: scan results (strap
 advertised name + RSSI), the bond/handshake state machine, command names with their
 outbound payload **hex**, and offload progress (trim cursors, chunk acks). It is held
 in RAM only; the "Share strap log" button writes it to a private app-cache file at
@@ -412,7 +408,7 @@ about what NOOP does and does not do with it:
   The notification's title, text, sender, and extras are never read, stored, logged, or
   transmitted.
 - **Nothing leaves the device.** There is no server; the only output is a Bluetooth
-  buzz to your own strap. (`android/.../notif/NoopNotificationListener.kt`.)
+  buzz to your own strap.
 
 ---
 
@@ -630,7 +626,7 @@ dedicated source id `nutrition-csv`, alongside your other metrics and entirely o
 | CSV import | Zip bomb / oversized entries | 256 MB per-entry cap (declared + running budget); CRC32 verify | `StrandImport/WhoopExportImporter.swift` |
 | CSV import | Arbitrary archive members | Filename allow-list; tolerant optional-column parsing | `StrandImport/WhoopExportImporter.swift` |
 | Data at rest | Disk theft / offline access | Relies on FileVault + sandbox container; SQLCipher available as an option | `WhoopStore/WhoopStore.swift` |
-| Diagnostics log | Leaking the strap log to the device-wide system log | In-app ring buffer only; logcat mirroring is **opt-in** (Settings → Strap → "Debug logging", default off); no biometric values / tokens logged (§2.4) | `android/.../ble/WhoopBleClient.kt` (`debugLogcat`), `android/.../ui/MainActivity.kt` (`NoopPrefs`) |
+| Diagnostics log | Leaking the strap log to the device-wide system log | In-app ring buffer only; no biometric values / tokens logged (§2.4) | `Strand/BLE/BLEManager.swift` |
 
 ---
 

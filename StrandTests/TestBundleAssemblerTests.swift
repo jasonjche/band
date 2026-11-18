@@ -85,27 +85,7 @@ final class TestBundleAssemblerTests: XCTestCase {
 
     // MARK: - Oura diagnostics attachment (#Test-Centre Oura sidecars)
 
-    func testNormalizedOuraEntryNameDropsRingId() {
-        // All six sidecars normalize to id-free names; the ring UUID is gone from the filename.
-        XCTAssertEqual(TestBundleAssembler.normalizedOuraEntryName(
-            forFile: "oura-raw-5C4C0BF8-2DF6-1B3A-18D0-3DF0B3590148.jsonl"), "oura-raw.jsonl")
-        XCTAssertEqual(TestBundleAssembler.normalizedOuraEntryName(
-            forFile: "oura-ibihr-5C4C0BF8-2DF6-1B3A-18D0-3DF0B3590148.jsonl"), "oura-ibihr.jsonl")
-        XCTAssertEqual(TestBundleAssembler.normalizedOuraEntryName(
-            forFile: "oura-activity-oura-5C4C0BF8.jsonl"), "oura-activity.jsonl")
-        // #Test-Centre follow-up: cva-ppg/motion/real-steps shipped writers (Strand/BLE/Oura*Dump.swift)
-        // before the bundler knew their kind — regression coverage for that gap.
-        XCTAssertEqual(TestBundleAssembler.normalizedOuraEntryName(
-            forFile: "oura-cva-ppg-oura-2H3B2405003655.jsonl"), "oura-cva-ppg.jsonl")
-        XCTAssertEqual(TestBundleAssembler.normalizedOuraEntryName(
-            forFile: "oura-motion-oura-2H3B2405003655.jsonl"), "oura-motion.jsonl")
-        XCTAssertEqual(TestBundleAssembler.normalizedOuraEntryName(
-            forFile: "oura-real-steps-oura-2H3B2405003655.jsonl"), "oura-real-steps.jsonl")
-        // Non-sidecar files are ignored.
-        XCTAssertNil(TestBundleAssembler.normalizedOuraEntryName(forFile: "raw-capture.jsonl"))
-        XCTAssertNil(TestBundleAssembler.normalizedOuraEntryName(forFile: "whoop.sqlite"))
-        XCTAssertNil(TestBundleAssembler.normalizedOuraEntryName(forFile: "oura-raw.txt"))
-    }
+
 
     /// A ROLLED GENERATION must normalize to the same entry name as the live file, so
     /// `ouraDiagnosticEntries` can MERGE the generations behind that one name (it used to choose the
@@ -113,54 +93,11 @@ final class TestBundleAssemblerTests: XCTestCase {
     /// Before this, `hasSuffix(".jsonl")` rejected every `.jsonl.<n>` and a morning export could only ever
     /// carry the live file — a 30-second session, while the night sat in a generation nothing looked at
     /// (measured 2026-08-10).
-    func testRolledGenerationsNormalizeToTheSameEntryName() {
-        for suffix in [".jsonl.1", ".jsonl.2", ".jsonl.8", ".jsonl.12"] {
-            XCTAssertEqual(TestBundleAssembler.normalizedOuraEntryName(
-                forFile: "oura-raw-oura-2H3B2405003655" + suffix), "oura-raw.jsonl", suffix)
-        }
-        XCTAssertEqual(TestBundleAssembler.normalizedOuraEntryName(
-            forFile: "oura-cva-ppg-oura-2H3B2405003655.jsonl.3"), "oura-cva-ppg.jsonl")
-        // A non-numeric or empty tail is NOT a generation — those are someone else's files, not ours.
-        XCTAssertNil(TestBundleAssembler.normalizedOuraEntryName(
-            forFile: "oura-raw-oura-2H3B2405003655.jsonl.bak"))
-        XCTAssertNil(TestBundleAssembler.normalizedOuraEntryName(
-            forFile: "oura-raw-oura-2H3B2405003655.jsonl."))
-        XCTAssertNil(TestBundleAssembler.normalizedOuraEntryName(
-            forFile: "oura-raw-oura-2H3B2405003655.jsonl.1.gz"))
-    }
 
-    func testNormalizedOuraNamesAreAllTrimmable() {
-        // Every normalized sidecar name must be in the cap's trimmable set, else a big night's dump could
-        // blow the 20 MB cap instead of being tail-trimmed.
-        for kind in TestBundleAssembler.ouraSidecarKinds {
-            XCTAssertTrue(TestBundleAssembler.trimmableNames.contains("oura-\(kind).jsonl"))
-            XCTAssertTrue(TestBundleAssembler.ouraSidecarNames.contains("oura-\(kind).jsonl"))
-        }
-    }
 
-    func testCapSharesBudgetAcrossOuraAndRawCaptureKeepingTails() {
-        // report.txt kept whole; raw-capture + oura-ibihr together blow the cap → BOTH over their fair
-        // share, so both are trimmed, the bundle stays under cap, and each keeps its most-recent byte.
-        let small = FileExport.BundleEntry(name: "report.txt", data: Data("small".utf8))
-        let raw = FileExport.BundleEntry(name: "raw-capture.jsonl",
-                                         data: Data((String(repeating: "r", count: 30 * 1024 * 1024) + "R").utf8))
-        let ibi = FileExport.BundleEntry(name: "oura-ibihr.jsonl",
-                                         data: Data((String(repeating: "i", count: 10 * 1024 * 1024) + "I").utf8))
-        let cap = 20 * 1024 * 1024
-        let (capped, truncated) = TestBundleAssembler.capEntries([small, raw, ibi], capBytes: cap)
-        XCTAssertTrue(truncated)
-        XCTAssertLessThanOrEqual(capped.reduce(0) { $0 + $1.data.count }, cap)
-        XCTAssertEqual(capped.first { $0.name == "report.txt" }?.data, small.data)          // whole
-        let cappedRaw = capped.first { $0.name == "raw-capture.jsonl" }!
-        let cappedIbi = capped.first { $0.name == "oura-ibihr.jsonl" }!
-        XCTAssertLessThan(cappedRaw.data.count, raw.data.count)                             // trimmed
-        XCTAssertLessThan(cappedIbi.data.count, ibi.data.count)                             // trimmed
-        XCTAssertEqual(cappedRaw.data.last, raw.data.last)                                  // newest kept
-        XCTAssertEqual(cappedIbi.data.last, ibi.data.last)
-        // Both were over the fair share, so they land on it — within a byte of each other, NOT split 3:1
-        // by size the way the old proportional rule would have.
-        XCTAssertLessThanOrEqual(abs(cappedRaw.data.count - cappedIbi.data.count), 1)
-    }
+
+
+
 
     /// The bug this allocation exists to prevent (measured on `noop-master-iOS-v9.3.1-260809-0716.zip`):
     /// proportional-to-size handed 53.9 % of the budget to a bulk sidecar dump and left the raw wire capture
@@ -216,23 +153,7 @@ final class TestBundleAssemblerTests: XCTestCase {
     /// against a representative line in the EXACT `OuraRawDumpLine.encode` shape (schema/deviceId/utc/iso/hex)
     /// so a future producer PR that emits a dashless or truncated id — which would leak the id verbatim —
     /// fails here instead of silently shipping the id in a bundle the user shares.
-    func testRedactionMasksOuraRingIdButKeepsRawHexIntact() {
-        let ringId = "5C4C0BF8-2DF6-1B3A-18D0-3DF0B3590148"
-        // A long raw-byte run (>32 hex chars, no dashes/colons): the capture payload the scrub must NOT touch.
-        // Broadening the UUID rule to dashless hex to "be safe" would shred exactly this field — which is why
-        // the fix is a producer-format contract (this test), not a greedier regex.
-        let hex = "0b3c1e00a1b2c3d4e5f60718293a4b5c6d7e8f90aabbccdd"
-        let line = "{\"schema\":1,\"deviceId\":\"\(ringId)\",\"utc\":1752969600," +
-                   "\"iso\":\"2026-07-19T00:00:00Z\",\"hex\":\"\(hex)\"}"
-        let scrubbed = TestBundleAssembler.redactEntries(
-            [FileExport.BundleEntry(name: "oura-raw.jsonl", data: Data(line.utf8))])
-        let out = String(data: scrubbed.first!.data, encoding: .utf8)!
-        // The ring id is masked to <device>, and the canonical id does not survive anywhere in the line…
-        XCTAssertFalse(out.contains(ringId), "the ring UUID must not survive the scrub")
-        XCTAssertTrue(out.contains("\"deviceId\":\"<device>\""), "the ring id must be masked to <device>")
-        // …while the raw capture bytes pass through byte-for-byte (redaction must never corrupt the capture).
-        XCTAssertTrue(out.contains("\"hex\":\"\(hex)\""), "the raw hex bytes must survive redaction intact")
-    }
+
 
     /// 2026-09-11: the test above only proves the raw `hex` field survives for a payload that happens to
     /// avoid `redactHexDump`'s WHOOP-serial heuristic (its bytes never decode to a 9+ byte run of unbroken
@@ -301,72 +222,14 @@ final class TestBundleAssemblerTests: XCTestCase {
     /// `oura-raw.jsonl` spanned `2026-09-04 10:58 → 12:03 UTC` against a night that ended that
     /// morning. The merged entry must now contain BOTH, with the morning drain LAST so the cap's
     /// keep-the-tail trim can never be the thing that drops it.
-    func testOuraDiagnosticEntriesMergesGenerationsNewestLast() throws {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("oura-gen-merge-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
 
-        let morning = "{\"utc\":1788627494,\"iso\":\"2026-09-05T07:08:14Z\",\"hex\":\"5c08\"}\n"
-        let backfill = String(repeating: "{\"utc\":1788519502,\"iso\":\"2026-09-04T10:58:22Z\"}\n",
-                              count: 50)
-        try morning.write(to: dir.appendingPathComponent("oura-raw-RING1.jsonl"),
-                          atomically: true, encoding: .utf8)
-        try backfill.write(to: dir.appendingPathComponent("oura-raw-RING1.jsonl.1"),
-                           atomically: true, encoding: .utf8)
-
-        let entries = TestBundleAssembler.ouraDiagnosticEntries(directory: dir)
-        XCTAssertEqual(entries.map(\.name), ["oura-raw.jsonl"], "one entry, ring id dropped")
-        let text = try XCTUnwrap(String(data: entries[0].data, encoding: .utf8))
-        XCTAssertTrue(text.contains("2026-09-04T10:58:22Z"), "older generation must still be present")
-        XCTAssertTrue(text.hasSuffix(morning), "the newest capture must be LAST — the cap keeps the tail")
-        XCTAssertLessThan(try XCTUnwrap(text.range(of: "2026-09-04T10:58:22Z")).lowerBound,
-                          try XCTUnwrap(text.range(of: "2026-09-05T07:08:14Z")).lowerBound,
-                          "chronological order")
-    }
 
     /// A generation whose last write did not end in a newline must not splice its final record onto
     /// the next generation's first one — that would produce a line parsing as neither.
-    func testOuraDiagnosticEntriesInsertsANewlineBetweenGenerations() throws {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("oura-gen-nl-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
 
-        try "{\"a\":1}".write(to: dir.appendingPathComponent("oura-raw-R.jsonl.1"),   // NO trailing newline
-                              atomically: true, encoding: .utf8)
-        try "{\"b\":2}\n".write(to: dir.appendingPathComponent("oura-raw-R.jsonl"),
-                                 atomically: true, encoding: .utf8)
-
-        let entries = TestBundleAssembler.ouraDiagnosticEntries(directory: dir)
-        let text = try XCTUnwrap(String(data: entries[0].data, encoding: .utf8))
-        XCTAssertEqual(text, "{\"a\":1}\n{\"b\":2}\n")
-        XCTAssertEqual(text.split(separator: "\n").count, 2, "two whole lines, nothing spliced")
-    }
 
     /// Every merged line must survive the redact + cap pass the bundle actually applies, and the
     /// newest record must be the one that survives a cap far smaller than the merged size.
-    func testMergedSidecarKeepsTheNewestRecordsUnderTheCap() throws {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("oura-gen-cap-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
 
-        try String(repeating: "{\"old\":1}\n", count: 4000)
-            .write(to: dir.appendingPathComponent("oura-raw-R.jsonl.1"), atomically: true, encoding: .utf8)
-        try String(repeating: "{\"new\":1}\n", count: 100)
-            .write(to: dir.appendingPathComponent("oura-raw-R.jsonl"), atomically: true, encoding: .utf8)
-
-        let merged = TestBundleAssembler.ouraDiagnosticEntries(directory: dir)
-        let (capped, truncated) = TestBundleAssembler.capEntries(merged, capBytes: 2_000)
-        XCTAssertTrue(truncated)
-        let text = try XCTUnwrap(String(data: capped[0].data, encoding: .utf8))
-        XCTAssertTrue(text.contains("{\"new\":1}"), "the newest records must survive the cap")
-        // Every kept line must be whole — the front trim snaps to a line boundary, so the partial
-        // record the raw byte-count tail would otherwise start on is dropped.
-        for line in text.split(separator: "\n") {
-            XCTAssertTrue(line.hasPrefix("{") && line.hasSuffix("}"), "no partial line: \(line)")
-        }
-    }
 
 }

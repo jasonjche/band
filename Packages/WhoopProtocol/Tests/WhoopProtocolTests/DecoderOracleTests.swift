@@ -1,29 +1,19 @@
 import XCTest
 @testable import WhoopProtocol
 
-/// GOLDEN DECODER ORACLE (lane-4 A8) , the Swift half of a shared Swift<->Kotlin drift guard.
+/// GOLDEN DECODER ORACLE (lane-4 A8).
 ///
 /// `Resources/decoder_oracle.json` is a fixture of REAL captured WHOOP type-47 HISTORICAL_DATA frames
-/// plus their expected decode. The IDENTICAL file is committed at
-/// `android/app/src/test/resources/decoder_oracle.json`, and `DecoderOracleTest.kt` runs the same
-/// assertions through the Kotlin `decodeHistorical`. Because both decoders are independent
-/// reimplementations of the same byte layout, decoding the same fixture and asserting the same output
-/// is what catches a one-sided edit (a moved offset / changed scaling on one platform only).
+/// plus their expected decode. Decoding the fixture and asserting the same output catches a moved
+/// offset or changed scaling.
 ///
 /// The fixture was seeded from existing in-repo test vectors (Whoop4HistoricalV24HardwareTests,
-/// Whoop4HistoricalV25Tests, Whoop5HistoricalTests and their Kotlin twins), so every expected value is
-/// already independently grounded , this test only proves the two decoders agree on it.
+/// Whoop4HistoricalV25Tests, Whoop5HistoricalTests), so every expected value is already independently
+/// grounded.
 ///
-/// The oracle pins THREE layers, each with a twin test in `DecoderOracleTest.kt` (#647, #775):
-///  1. `frames`         , decoded VALUES. A per-platform fixture-hex test cannot catch a 32-vs-64-bit
-///                        or signedness divergence: the wire bytes are identical on both platforms and
-///                        each suite asserts its own answer. Comparing the decoded NUMBERS against one
-///                        shared expectation is what catches it (PR #848: a u32 with bit 31 set read
-///                        3232194973 on Swift and -1062772323 on Kotlin).
-///  2. `stream_batches` , the ASSEMBLED shape. Frame decode agreeing does not imply assembly agrees ,
-///                        PR #848 also shipped a Kotlin `StreamBatch.isEmpty` that omitted a stream
-///                        Swift's `Streams.isEmpty` included, and `insert` early-returns on empty, so
-///                        that batch banked nothing on Android alone.
+/// The oracle pins THREE layers (#647, #775):
+///  1. `frames`         , decoded VALUES.
+///  2. `stream_batches` , the ASSEMBLED shape.
 ///  3. `coverage`       , the self-defence manifest, so the oracle cannot silently stop covering
 ///                        something. Deleting an `expect` key, a frame or a batch fails a test.
 final class DecoderOracleTests: XCTestCase {
@@ -342,30 +332,4 @@ final class DecoderOracleTests: XCTestCase {
         return out
     }
 
-    /// The Swift and Android copies of the oracle MUST be byte-identical, so neither platform can edit
-    /// its fixture without the other. Compares the bundled Swift resource against the Android source
-    /// copy (located relative to this test file). Skips gracefully if the Android tree isn't present
-    /// (e.g. a Swift-only checkout) rather than failing for the wrong reason.
-    func testOracleCopiesAreIdentical() throws {
-        let swiftURL = try XCTUnwrap(Bundle.module.url(forResource: "decoder_oracle", withExtension: "json"))
-        let swiftData = try Data(contentsOf: swiftURL)
-
-        // .../Packages/WhoopProtocol/Tests/WhoopProtocolTests/DecoderOracleTests.swift -> repo root
-        let here = URL(fileURLWithPath: #filePath)
-        let repoRoot = here
-            .deletingLastPathComponent()  // WhoopProtocolTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // WhoopProtocol
-            .deletingLastPathComponent()  // Packages
-            .deletingLastPathComponent()  // repo root
-        let androidURL = repoRoot
-            .appendingPathComponent("android/app/src/test/resources/decoder_oracle.json")
-
-        guard FileManager.default.fileExists(atPath: androidURL.path) else {
-            throw XCTSkip("android oracle copy not present at \(androidURL.path)")
-        }
-        let androidData = try Data(contentsOf: androidURL)
-        XCTAssertEqual(swiftData, androidData,
-                       "decoder_oracle.json copies differ , keep the Swift and Android copies in lockstep")
-    }
 }

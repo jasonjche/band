@@ -154,12 +154,13 @@ extension WidgetSnapshot {
         let previous = previous ?? load()
         if renderedContentChanged(from: previous, to: snap) {
             snap.save(previousSeries: previous?.hrSeries ?? [])
-            WidgetCenter.shared.reloadAllTimelines()
-            // Android skips the update entirely when no widget is placed; WidgetKit offers no
-            // synchronous way to know, so the reload still goes out and is instead recorded honestly.
-            // Counting it as a reload would make a widget-removed export read exactly like a
-            // widget-installed one, which is half the comparison the counters exist for.
-            if WidgetTelemetry.widgetsInstalled {
+            // Presence is cached from the last full publish's `getCurrentConfigurations`. Unknown
+            // counts as installed, so a cold process still reloads; a known-empty home screen
+            // skips the WidgetKit XPC. The snapshot is saved either way so a later-placed widget
+            // has current scores.
+            if WidgetTelemetry.shouldReloadTimelines(
+                contentChanged: true, widgetsInstalled: WidgetTelemetry.widgetsInstalled) {
+                WidgetCenter.shared.reloadAllTimelines()
                 WidgetTelemetry.noteReloaded()
             } else {
                 WidgetTelemetry.noteNoWidget()

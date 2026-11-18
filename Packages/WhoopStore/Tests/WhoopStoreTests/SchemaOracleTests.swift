@@ -2,27 +2,15 @@ import XCTest
 import GRDB
 @testable import WhoopStore
 
-/// SHARED Room<->GRDB SCHEMA ORACLE — the Swift half of a cross-platform schema drift guard (#775).
+/// GRDB SCHEMA ORACLE (#775).
 ///
 /// `Resources/schema_oracle.json` pins, for every table, the columns **in order** with their SQLite
-/// type affinity / NOT NULL / DEFAULT, the primary-key composition, and the explicit indices. The
-/// IDENTICAL file is committed at `android/app/src/test/resources/schema_oracle.json`, and
-/// `SchemaOracleTest.kt` asserts Room's generated schema against it. This half runs the real GRDB
-/// migrator into an in-memory database and asserts `PRAGMA table_info` / `index_list` against the
-/// same fixture.
+/// type affinity / NOT NULL / DEFAULT, the primary-key composition, and the explicit indices. This
+/// suite runs the real GRDB migrator into an in-memory database and asserts `PRAGMA table_info` /
+/// `index_list` against the fixture.
 ///
-/// Room and GRDB are independent reimplementations of one schema, so a migration added on one side
-/// can diverge until someone notices by hand — which already happened once (rrInterval's key was
-/// widened on Room v18 and only later on GRDB `v24-rr-seq`). Comparing both **resulting** schemas to
-/// one shared file is what turns CLAUDE.md's parity contract from a comment into a check.
-///
-/// The oracle records the **iOS/GRDB shape as canonical** (macOS is the reference implementation).
-/// Every way Android differs today is spelled out as an `android` / `iosAbsent` / `androidColumnOrder`
-/// override naming a key in `divergenceReasons`, so a divergence is either fixed or written down —
-/// never silently tolerated. An override that stops being true fails the Kotlin half, so the ledger
-/// can only shrink deliberately.
-///
-/// Follows the `decoder_oracle.json` idiom (#869) rather than adding a third mechanism.
+/// The oracle records the **iOS/GRDB shape as canonical**. Follows the `decoder_oracle.json` idiom
+/// (#869) rather than adding a third mechanism.
 final class SchemaOracleTests: XCTestCase {
 
     // MARK: - Fixture
@@ -271,26 +259,6 @@ final class SchemaOracleTests: XCTestCase {
         }
     }
 
-    /// The Swift and Android copies of the oracle MUST be byte-identical, so neither platform can edit
-    /// its fixture without the other. Skips gracefully if the Android tree isn't present.
-    func testOracleCopiesAreIdentical() throws {
-        let swiftURL = try XCTUnwrap(Bundle.module.url(forResource: "schema_oracle", withExtension: "json"))
-        let swiftData = try Data(contentsOf: swiftURL)
-
-        // .../Packages/WhoopStore/Tests/WhoopStoreTests/SchemaOracleTests.swift -> repo root
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // WhoopStoreTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // WhoopStore
-            .deletingLastPathComponent()  // Packages
-            .deletingLastPathComponent()  // repo root
-        let androidURL = repoRoot.appendingPathComponent("android/app/src/test/resources/schema_oracle.json")
-        guard FileManager.default.fileExists(atPath: androidURL.path) else {
-            throw XCTSkip("android oracle copy not present at \(androidURL.path)")
-        }
-        XCTAssertEqual(swiftData, try Data(contentsOf: androidURL),
-                       "schema_oracle.json copies differ — keep the Swift and Android copies in lockstep")
-    }
 }
 
 /// One column as `PRAGMA table_info` reports it, normalised to SQLite's type **affinity** so the

@@ -159,6 +159,7 @@ public struct BevelGauge: View {
                 .font(StrandFont.rounded(diameter * 0.30, weight: .bold))
                 .foregroundStyle(StrandPalette.textPrimary)
                 .contentTransition(.numericText())
+                .dynamicTypeSize(...DynamicTypeSize.xxLarge)
             if let captionText {
                 Text(captionText)
                     .font(StrandFont.rounded(diameter * 0.085, weight: .medium))

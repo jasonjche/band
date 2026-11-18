@@ -10,11 +10,36 @@ import StrandDesign
 /// do exactly that: tip the user on the spoken phrase and deep-link into the Shortcuts app, scoped to
 /// this app automatically.
 struct SiriShortcutsSettingsView: View {
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+
     var body: some View {
-        ScreenScaffold(title: "Siri & Shortcuts",
-                       subtitle: "Run NOOP actions hands-free.") {
-            tips
-            shortcutsCard
+        if nativeTodayEnabled {
+            Form {
+                Section {
+                    SiriTipView(intent: SyncStrapIntent(), isVisible: .constant(true))
+                    SiriTipView(intent: BuzzStrapIntent(), isVisible: .constant(true))
+                    SiriTipView(intent: MarkMomentIntent(), isVisible: .constant(true))
+                } header: {
+                    Text("Ready-Made")
+                } footer: {
+                    Text("Sync, buzz, or mark a moment from Siri, Spotlight, or Shortcuts.")
+                }
+
+                Section {
+                    ShortcutsLink()
+                } header: {
+                    Text("Build Your Own")
+                } footer: {
+                    Text("Add Band actions to a Back-Tap, Focus, or longer Shortcut.")
+                }
+            }
+            .appleSettingsChrome("Siri & Shortcuts")
+        } else {
+            ScreenScaffold(title: "Siri & Shortcuts",
+                           subtitle: "Run Band actions hands-free.") {
+                tips
+                shortcutsCard
+            }
         }
     }
 
@@ -54,7 +79,7 @@ struct SiriShortcutsSettingsView: View {
                         .font(StrandFont.headline)
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
-                Text("Wire NOOP's actions into a Back-Tap, a focus automation, or a longer Shortcut. For example, double-tap the back of your iPhone to buzz the strap.")
+                Text("Wire Band's actions into a Back-Tap, a focus automation, or a longer Shortcut. For example, double-tap the back of your iPhone to buzz the strap.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -195,9 +195,31 @@ public func isEmptyRecordFrame(_ frame: [UInt8]) -> Bool {
 /// EVENT and COMMAND_RESPONSE handling is identical to extractStreams.
 /// CRC-failed and non-ok frames are skipped.
 ///
+/// Parse each frame and fold it into `Streams` without retaining the `[ParsedFrame]` array.
+/// Byte-identical to `frames.map { parseFrame($0, family:) }` then `extractHistoricalStreams`.
+public func extractHistoricalStreams(frames: [[UInt8]],
+                                     deviceClockRef: Int, wallClockRef: Int,
+                                     family: DeviceFamily,
+                                     sessionOldestUnix: Int? = nil,
+                                     sessionNewestUnix: Int? = nil,
+                                     subLagInterp: Bool = false,
+                                     wallNow: Int? = nil) -> Streams {
+    extractHistoricalStreams(
+        frames.lazy.map { parseFrame($0, family: family) },
+        deviceClockRef: deviceClockRef, wallClockRef: wallClockRef,
+        family: family,
+        sessionOldestUnix: sessionOldestUnix,
+        sessionNewestUnix: sessionNewestUnix,
+        subLagInterp: subLagInterp,
+        wallNow: wallNow)
+}
+
 /// Twin of Kotlin `extractHistoricalStreams`. Named here because adding `family` re-identified this
 /// function for the parity inventory, which keys on arity: the pair is unchanged, only its key moved.
-public func extractHistoricalStreams(_ parsed: [ParsedFrame],
+///
+/// Generic over `Sequence` so a caller can stream `lazy.map(parseFrame)` without retaining every
+/// `ParsedFrame` (a day's offload is 86,400 dictionaries). `[ParsedFrame]` still matches.
+public func extractHistoricalStreams<S: Sequence>(_ parsed: S,
                                      deviceClockRef: Int, wallClockRef: Int,
                                      family: DeviceFamily? = nil,
                                      // SESSION-RELATIVE bounds (#547): the strap's own GET_DATA_RANGE
@@ -219,301 +241,22 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
                                      // post-2038 (bit-31-set) unix domain at all. Android's
                                      // `extractHistoricalStreams` already had this parameter; this is Swift
                                      // catching up, so the two oracle harnesses can drive the gate identically.
-                                     wallNow wallNowOverride: Int? = nil) -> Streams {
-    func wall(_ deviceTs: Int?) -> Int? {
-        guard let d = deviceTs else { return nil }
-        return wallClockRef + (d - deviceClockRef)
-    }
-    // FIX #72: type-47 `unix` and EVENT `event_timestamp` are the strap RTC's own real-unix seconds.
-    // When the strap RTC is grossly stale (it sat unused for months, so its clock is months behind),
-    // those land far in the past — live HR works but all offloaded history is misdated. Correct them by
-    // the (wall - device) clock offset, but ONLY when the strap is grossly stale, and SNAPPED to a 5-min
-    // grid so the same record re-syncs to the SAME corrected ts (offloaded rows dedupe by (deviceId, ts);
-    // an un-snapped, slightly-different offset on re-sync would duplicate every row). For a normal or
-    // identity clockRef the offset is ~0 (< threshold) → rawTs is returned unchanged (current behavior).
-    let staleThreshold = histStaleClockThresholdSec
-    let snapGranularity = 300            // 5 min
-    let clockOffset = wallClockRef - deviceClockRef
-    // The wall "now" the plausibility gate's FUTURE bound measures against. A record genuinely can't
-    // post-date its own capture, so the ground truth for "future" is the LIVE wall clock. We take the
-    // LATER of the live clock and `wallClockRef` so neither a synthetic/older ref (RawHistoryArchive's
-    // identity `wallClockRef == 0`, unit fixtures, or a session ref a hair behind a just-captured record)
-    // nor a paused live clock wrongly rejects a real record. The MIN_PLAUSIBLE_UNIX floor is unconditional
-    // and still catches the far-past garbage in every caller. Genuine future garbage (pikapik's records
-    // dated beyond now, the field's year-2081 overshoot) is still > now + FUTURE_MARGIN → dropped. (#547)
-    let wallNow = wallNowOverride ?? max(wallClockRef, Int(Date().timeIntervalSince1970))
-    // PRIMARY FIX (#547): a record's own decoded ts must be near "now". A bad-clock strap emits records
-    // whose unix is scattered garbage (far-past, a bogus 2027, even future dates); trusted verbatim, one
-    // polluted block was re-attributed to every day and a future row surfaced as "last night". Returns
-    // nil for an out-of-bounds ts so EVERY call site can skip the record. Applied to BOTH the raw
-    // pass-through branch and the corrected branch, so a clock-correction can never re-introduce a bad ts.
-    func correctedWall(_ rawTs: Int) -> Int? {
-        let candidate: Int
-        if abs(clockOffset) <= staleThreshold {
-            candidate = rawTs
-        } else {
-            // sign-aware round-half-up snap to the nearest `snapGranularity`
-            let snapped = (clockOffset >= 0
-                ? (clockOffset + snapGranularity / 2)
-                : (clockOffset - snapGranularity / 2)) / snapGranularity * snapGranularity
-            let corrected = rawTs + snapped
-            // A fully-drained strap whose RTC has reset to ~epoch (year ~1971) reports a near-zero
-            // deviceClockRef while its offloaded frames still carry the true-unix rawTs. clockOffset is
-            // then ~decades, and this "correction" hurls every historical sample into the future
-            // (observed in the field: year 2081), which silently breaks sleep & recovery because the
-            // night never lands on the right day. A historical record can never post-date its own
-            // capture, so when corrected overshoots wall time the offset was bogus — keep the raw ts.
-            // The genuine stale case (strap behind real time) has corrected <= wallClockRef, so this
-            // guard is a no-op there. (PR #471, @cataboysbusiness-debug)
-            candidate = corrected <= wallClockRef + snapGranularity ? corrected : rawTs
-        }
-        // Final ingest gate (#547): drop the record if the resolved ts is implausible — either by the
-        // absolute floor OR, when the strap's GET_DATA_RANGE markers are known, by sitting months outside
-        // the strap's OWN banked window (wandering-clock pollution that clears the absolute floor). Counted
-        // once per session via `droppedImplausible` so a bad-clock strap is visible in the diag/strap-log seam.
-        guard isPlausibleHistoricalUnix(candidate, wallNow: wallNow,
-                                        sessionOldestUnix: sessionOldestUnix,
-                                        sessionNewestUnix: sessionNewestUnix) else {
-            droppedImplausible += 1
-            // #324: track the epoch SPAN of the dropped (bad-clock) records — the strap's OWN dated value,
-            // so the Backfiller can log whether the whole poisoned range is future-dated or mixed.
-            droppedOldest = min(droppedOldest ?? candidate, candidate)
-            droppedNewest = max(droppedNewest ?? candidate, candidate)
-            return nil
-        }
-        return candidate
-    }
-    // #547: how many records this chunk dropped for an implausible ts. Surfaced to the Backfiller via
-    // `Streams.droppedImplausible` so the strap log can show a bad-clock strap (observability only).
-    var droppedImplausible = 0
-    // #324: oldest/newest own-timestamp among the dropped records (the poisoned-range epoch span).
-    var droppedOldest: Int? = nil
-    var droppedNewest: Int? = nil
-    var out = Streams()
-    // v26 optical-PPG records (issue #156): no measured HR/motion, just the 24 Hz waveform. Collect
-    // (corrected-wall ts, samples) here and derive a per-second HR after the loop (PpgHr.derivePpgHr),
-    // so the timeline stays continuous through the v26-heavy stretches that have no v18 HR summary.
-    // The SAME (ts, samples) are also appended to `out.ppgWaveform` below (issue #156 follow-up) so the
-    // raw waveform is durable too, not just the derived estimate this local buffer exists to produce.
-    var ppgRecords: [(ts: Int, samples: [Int])] = []
-    // #891: packet types that reach `default:` and are dropped. See `Streams.unhandledPacketTypes`.
-    var unhandledTypes: [String: Int] = [:]
+                                     wallNow wallNowOverride: Int? = nil) -> Streams where S.Element == ParsedFrame {
+    // Shared ingest engine with `HistoricalStreamDecoder` — one Streams writer for the ParsedFrame
+    // path and the fused raw-bytes path, so they cannot drift.
+    var ingest = HistoricalIngest(
+        deviceClockRef: deviceClockRef,
+        wallClockRef: wallClockRef,
+        family: family,
+        sessionOldestUnix: sessionOldestUnix,
+        sessionNewestUnix: sessionNewestUnix,
+        subLagInterp: subLagInterp,
+        wallNowOverride: wallNowOverride,
+        frameHint: parsed.underestimatedCount)
     for r in parsed {
-        // `ok` is now the FULL verdict — header checksum, payload CRC32 and structural length — so it
-        // alone rejects everything the two-part check used to. The `crcOK` half is kept because this
-        // function takes parse results from its CALLER, and a `ParsedFrame` decoded from a capture file
-        // written before the verdict widened carries the old constant `ok: true` beside a false `crcOK`.
-        // Dropping it would start deriving rows from those.
-        if !r.ok || r.crcOK == false { continue }
-        let p = r.parsed
-        switch r.typeName {
-        case "HISTORICAL_DATA":
-            // type-47 carries the strap RTC's real-unix seconds. Correct for a grossly-stale RTC
-            // (FIX #72); a normal strap is unchanged (offset < threshold). The #547 ingest gate inside
-            // `correctedWall` returns nil for an implausible ts (covers the v26 PPG baseTs too, since the
-            // v26 waveform rides this same `unix`) — skip the whole record so no garbage-ts row is banked.
-            guard let rawTs = p["unix"]?.intValue, let ts = correctedWall(rawTs) else { continue }
-            // v26 PPG buffer: stash the waveform for the post-loop HR estimator AND persist the raw
-            // samples themselves (issue #156 follow-up — previously ONLY the derived estimate survived,
-            // the waveform that produced it was discarded here). A v26 record carries no
-            // heart_rate/spo2/gravity, so it adds nothing to the branches below — handled here only.
-            if let samples = p["ppg_waveform"]?.intArrayValue, !samples.isEmpty {
-                ppgRecords.append((ts: ts, samples: samples))
-                out.ppgWaveform.append(PpgWaveformSample(ts: ts, samples: samples,
-                                                         burstIndex: p["burst_index"]?.intValue,
-                                                         baseCode: p["ppg_base_code"]?.intValue))
-            }
-            // v16 flash-banked ECG (#2847): bank the inner record whole on the record's corrected
-            // wall-second. BOTH keys are required rather than defaulted — the decoder emits them from one
-            // `parseR16` result, so a record that carries one without the other did not decode, and a row
-            // with an invented sequence would read as a real index to anything grouping a reading. Like
-            // v26 this record adds nothing to the branches below: it carries no wrist heart rate, no
-            // gravity and no SpO2, which is why its `ecg_avg_hr` is deliberately not called `heart_rate`.
-            if let bytes = p["ecg_record"]?.intArrayValue, let seq = p["ecg_sequence"]?.intValue,
-               bytes.count == Whoop5Ecg.r16InnerLength {
-                // `exactly`, not `truncatingIfNeeded`: the decoder only ever puts real bytes in here, but
-                // a `ParsedFrame` can also arrive decoded from a capture file, and a wrapped value would
-                // be stored as a plausible byte that was never on the wire. A short result means one
-                // value was out of range, and the row is skipped rather than quietly shortened.
-                let record = bytes.compactMap { UInt8(exactly: $0) }
-                if record.count == bytes.count {
-                    out.ecgWaveform.append(EcgWaveformSample(ts: ts, sequence: seq, record: record))
-                }
-            }
-            if let bpm = p["heart_rate"]?.intValue, bpm != 0 {  // skip startup hr=0
-                out.hr.append(HRSample(ts: ts, bpm: bpm))
-            }
-            if let rrs = p["rr_intervals"]?.intArrayValue {
-                let source = p["rr_source_channel"]?.intValue.flatMap(RRSourceChannel.init(rawValue:))
-                    ?? (family == .whoop4 ? .whoop4Historical : nil)
-                for rr in rrs { out.rr.append(RRInterval(ts: ts, rrMs: rr, srcChannel: source)) }
-            }
-            if let red = p["spo2_red"]?.intValue {
-                out.spo2.append(SpO2Sample(ts: ts, red: red, ir: p["spo2_ir"]?.intValue ?? 0))
-            }
-            // The two AUXILIARY thermal channels (`temp_aux_1_raw@69` / `temp_aux_2_raw@71`, i16, °C =
-            // value/10) ride the primary skin-temp row for the same second. Both were decoded and dropped
-            // here until now. They are carried ONLY when the primary channel decoded, because that is the
-            // row's key — a record whose @73 failed the decoder's 5-45 °C gate banks no skinTempSample at
-            // all, and inventing one to hold an aux value would put a fabricated primary reading in the
-            // store. nil for a WHOOP 4.0, whose v24/v25 layouts have no such fields.
-            if let raw = p["skin_temp_raw"]?.intValue {
-                out.skinTemp.append(SkinTempSample(ts: ts, raw: raw,
-                                                   aux1Raw: p["temp_aux_1_raw"]?.intValue,
-                                                   aux2Raw: p["temp_aux_2_raw"]?.intValue))
-            }
-            // step_motion_counter@57 is the WHOOP5 cumulative u16 counter — decoded but, until now,
-            // dropped on macOS (Android persists it). APPROXIMATE; semantics unverified vs the app (#78).
-            if let c = p["step_motion_counter"]?.intValue {
-                // activity_class@63 (0=still/1=walk/2=run) rides on the same record — nil when invalid/absent.
-                out.steps.append(StepSample(ts: ts, counter: c, activityClass: p["activity_class"]?.intValue))
-            }
-            // Band sleep_state (#175): the strap's OWN @81 high-nibble state (0 wake/1 still/2 asleep/3 up),
-            // decoded but DROPPED here until now, so the whole band-state chain (persist → the H7 re-onset
-            // confirm guard → Deep Timeline track) had no source. Carried VERBATIM including 0 (a real wake
-            // reading, not "absent"): only 5/MG v18 records emit the key, so a WHOOP 4.0 simply adds nothing.
-            // `rawByte` carries the WHOLE @81 byte beside the high-nibble `state` this row already stored,
-            // so the bits the mask throws away survive: b0-1 `onwrist` and b2-3 `wake_quality` are both
-            // decoded by the Interpreter and were discarded right here, and b6-7 have no interpretation at
-            // all yet. `state` is unchanged, so #175 / the H7 guard / the Deep Timeline track are
-            // bit-identical.
-            if let st = p["sleep_state"]?.intValue {
-                out.sleepState.append(SleepStateSample(ts: ts, state: st,
-                                                       rawByte: p["sleep_state_byte"]?.intValue))
-            }
-            if let raw = p["resp_rate_raw"]?.intValue {
-                out.resp.append(RespSample(ts: ts, raw: raw))
-            }
-            // `dynAccel` is the strap's OWN gravity-removed motion magnitude (`dynamic_acceleration@41`)
-            // for this same second, riding the gravity row it belongs beside. It was decoded and dropped
-            // here until now, so every second of it was lost once the offload was acked. nil for a WHOOP
-            // 4.0 or a record whose f32 failed the decoder's [0, 8] g gate.
-            if let gx = p["gravity_x"]?.doubleValue {
-                out.gravity.append(GravitySample(ts: ts, x: gx,
-                    y: p["gravity_y"]?.doubleValue ?? 0, z: p["gravity_z"]?.doubleValue ?? 0,
-                    dynAccel: p["dynamic_acceleration"]?.doubleValue))
-            }
-            // #520 diagnostic: fold `dynamic_acceleration@41` into a summary for the strap log. Kept
-            // alongside the per-second column above, not replaced by it: this is a whole-session shape
-            // (count / still-fraction / min / max / mean) the Backfiller logs once, whereas the column is
-            // the durable per-second series. The threshold is the stager's own cut, borrowed as a
-            // reference point (the stager thresholds a per-sample delta, this is an absolute magnitude —
-            // related, not the same measurement); it is passed as a literal because WhoopProtocol must
-            // not depend on StrandAnalytics.
-            if let dyn = p["dynamic_acceleration"]?.doubleValue {
-                out.dynAccel.add(dyn, threshold: dynAccelStillThresholdG)
-            }
-            // Everything ELSE the v18 decoder produced for this second. Each of these was computed and
-            // then dropped one line later; the strap trims its banked history the moment the offload is
-            // acked, so an unbanked field is unrecoverable and can never be censused. Carried verbatim
-            // under the decoder's own names, no scaling and no interpretation.
-            //
-            // Every lookup below is BY DECODER KEY, and every one is optional. That makes a decoder
-            // rename silent: the key stops existing, the slot banks nothing, and neither the compiler
-            // (the type is `Int?`) nor a runtime check (absence is a legal state here) says a word — in a
-            // capture format whose only job is preserving fields before the strap trims them. Each key
-            // below comes from `V18AuxSlot.decoderKey` and is written down nowhere else on this side, so
-            // `testEverySlotDecoderKeyExistsInARealV18Decode` — which asserts every one still decodes off
-            // a real v18 frame — is checking the same string this code reads with, not a copy of it.
-            //
-            // Gated on `hist_version == 18` — the exact layout these offsets were read off. Every other
-            // layout adds NOTHING: a WHOOP 4.0 v24/v25 record and a 5/MG v20/v21/v26 record are untouched.
-            // The gate is explicit rather than implied by which keys happen to be present, because
-            // `rr_count` IS shared with the 4.0 schema and a presence-based test would start banking a
-            // near-empty row for every WHOOP 4.0 second.
-            if p["hist_version"]?.intValue == 18 {
-                // Read through `V18AuxSlot.decoderKey` rather than repeating the key strings here. They
-                // used to be two independent literals per slot — the enum's and this extractor's — and
-                // `testEverySlotIsPopulatedFromARealV18Frame` exists precisely because those two can drift
-                // apart while each looks right on its own. With one source there is nothing to drift: a
-                // slot pointed at a retired key now fails BOTH tripwires instead of only the second.
-                func slot(_ s: V18AuxSlot) -> Int? { p[s.decoderKey]?.intValue }
-                let aux = V18AuxSample(
-                    ts: ts,
-                    recordIndex: slot(.recordIndex),
-                    rrCount: slot(.rrCount),
-                    cardiacFlags: slot(.cardiacFlags),
-                    hrQualityFlags: slot(.hrQualityFlags),
-                    heartRateAlt: slot(.heartRateAlt),
-                    rrPacked: slot(.rrPacked),
-                    cardiacStatus: slot(.cardiacStatus),
-                    stepCadence: slot(.stepCadence),
-                    statusWord: slot(.statusWord),
-                    statusWord1: slot(.statusWord1),
-                    statusWord2: slot(.statusWord2),
-                    auxByte82: slot(.auxByte82),
-                    opticalBaselineA: slot(.opticalBaselineA),
-                    opticalBaselineB: slot(.opticalBaselineB),
-                    opticalAmpA: slot(.opticalAmpA),
-                    opticalAmpB: slot(.opticalAmpB),
-                    // Banked as the float's raw 32-bit pattern, not a decoded value — the decoder gates this
-                    // field to finite floats, which round-trip Double->Float exactly, so no precision is lost.
-                    // Reads `doubleValue`, so it cannot use `slot(_:)` above, but the KEY still comes from
-                    // the enum.
-                    unknownF32Bits: p[V18AuxSlot.unknownF32At113.decoderKey]?.doubleValue.map {
-                        Int(Float($0).bitPattern)
-                    })
-                // A record that decoded none of the slots banks no row at all — absence stays absence.
-                if !aux.isEmpty { out.v18Aux.append(aux) }
-            }
-        case "REALTIME_RAW_DATA":
-            // #547 gate: the device-epoch→wall mapping can also land out of bounds on a bad clock, so
-            // drop the row unless the resulting wall ts is plausible (mirrors the type-47/EVENT gate).
-            var rtTs: Int?
-            if let w = wall(p["timestamp"]?.intValue) {
-                if isPlausibleHistoricalUnix(w, wallNow: wallNow,
-                                             sessionOldestUnix: sessionOldestUnix,
-                                             sessionNewestUnix: sessionNewestUnix) { rtTs = w }
-                else { droppedImplausible += 1 }
-            }
-            if let ts = rtTs, let bpm = p["heart_rate"]?.intValue {
-                out.hr.append(HRSample(ts: ts, bpm: bpm))
-            }
-            if let ts = rtTs, let rrs = p["rr_intervals"]?.intArrayValue {
-                for rr in rrs { out.rr.append(RRInterval(ts: ts, rrMs: rr)) }
-            }
-        case "EVENT":
-            // EVENT carries the strap RTC's real-unix seconds. Correct for a grossly-stale RTC
-            // (FIX #72); a normal strap is unchanged (offset < threshold). #547 gate: skip the event
-            // when `correctedWall` rejects an implausible ts so no future/far-past event is banked.
-            guard let rawTs = p["event_timestamp"]?.intValue else { continue }
-            let kind = p["event"]?.stringValue ?? ""
-            guard let ts = correctedWall(rawTs) else {
-                // #324: the #547 gate just dropped this event for an implausible ts. If it's an RTC-STATE
-                // event (RTC_LOST / BOOT / SET_RTC), that IS the ground truth that the clock reset — capture
-                // (kind, rawTs) for the strap log before discarding, so a future-dated strap's cause isn't
-                // silently swallowed by the very gate the bad clock trips.
-                if DroppedRtcEvent.isRtcStateKind(kind) {
-                    out.droppedRtcEvents.append(DroppedRtcEvent(kind: kind, rawTs: rawTs))
-                }
-                continue
-            }
-            if kind.hasPrefix("BATTERY_LEVEL") { appendBattery(&out, ts: ts, p: p) }  // "BATTERY_LEVEL(3)"
-            var payload = p
-            payload.removeValue(forKey: "event")
-            payload.removeValue(forKey: "event_timestamp")
-            out.events.append(WhoopEvent(ts: ts, kind: kind, payload: payload))
-        case "COMMAND_RESPONSE":
-            // No device timestamp on COMMAND_RESPONSE → stamp battery at wallClockRef.
-            appendBattery(&out, ts: wallClockRef, p: p)
-        default:
-            // #891: this funnel has no rows for this type, so the record is dropped — count it first, or
-            // an offload carrying a type nobody has mapped reports as a clean sync. See
-            // `Streams.unhandledPacketTypes` for why METADATA/CONSOLE_LOGS are excluded.
-            if !expectedUnhandledHistoricalTypes.contains(r.typeName) {
-                unhandledTypes[r.typeName, default: 0] += 1
-            }
-            continue
-        }
+        ingest.ingestParsed(r)
     }
-    // Derive per-second HR from the collected v26 PPG bursts (issue #156). Empty when there were no v26
-    // records (the WHOOP 4 / v18-only common case), so this is a no-op cost there.
-    out.ppgHr = PpgHr.derivePpgHr(records: ppgRecords, subLagInterp: subLagInterp)
-    out.unhandledPacketTypes = unhandledTypes     // #891 diag census (not persisted, not encoded)
-    out.droppedImplausible = droppedImplausible   // #547 diag count (not persisted, not encoded)
-    out.droppedImplausibleOldestTs = droppedOldest   // #324 poisoned-range epoch span (diag only)
-    out.droppedImplausibleNewestTs = droppedNewest
-    return out
+    return ingest.finish()
 }
 
 /// Reconstruct a WHOOP 5/MG v26 optical window from its stored parts. #2019.

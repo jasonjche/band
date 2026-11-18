@@ -38,15 +38,18 @@ extension AutoWorkoutDetector {
     public static func detectTrace(hr: [(ts: Int, bpm: Int)],
                                    restingBpm: Int?,
                                    motion: [MotionPoint]? = nil,
+                                   steps: [StepTick]? = nil,
                                    savedSpans: [SavedWorkoutSpan] = [],
                                    minimumSustainedMinutes: Double = minSustainedMin,
+                                   maxHeartRate: Int = defaultMaxHR,
                                    path: String = "autoDetect")
         -> (results: [DetectedWorkout], trace: [String]) {
 
         // The result the Today card reads, verbatim, so the trace cannot diverge from it.
-        let results = detect(hr: hr, restingBpm: restingBpm, motion: motion,
+        let results = detect(hr: hr, restingBpm: restingBpm, motion: motion, steps: steps,
                              savedSpans: savedSpans,
-                             minimumSustainedMinutes: minimumSustainedMinutes)
+                             minimumSustainedMinutes: minimumSustainedMinutes,
+                             maxHeartRate: maxHeartRate)
 
         var lines: [String] = []
         let floor = (restingBpm ?? defaultRestingHR) + elevatedMarginBPM
@@ -61,7 +64,8 @@ extension AutoWorkoutDetector {
         // calibration the windows were judged against.
         lines.append("autoDetect thresholds elevatedMargin=\(elevatedMarginBPM)bpm "
             + "minSustainedMin=\(minimumSustainedMinutes) maxDipS=\(maxDipS) mergeGapS=\(mergeGapS) "
-            + "motionConfirmMean=\(motionConfirmMean)")
+            + "minNonStillShare=\(minNonStillShare) minMedianMotion=\(minMedianMotion) "
+            + "hrOnlyMinMeanHRR=\(hrOnlyMinMeanHRR) cooldownAfterSavedS=\(cooldownAfterSavedS)")
 
         // Rebuild the SAME merged windows the detector forms (sustained spans tolerating dips, then merge),
         // so we can name why each survived or dropped WITHOUT changing the returned `results`. This mirrors
@@ -119,11 +123,15 @@ extension AutoWorkoutDetector {
         merged.append((curStart, curEnd))
 
         // Per-window verdict (the autoDetectWhy capture), mirroring detect steps 5-6.
-        let motionSeries = hasMotion ? motion : nil
+        let gravity = hasMotion ? motion : nil
+        let stepTicks = (steps?.isEmpty ?? true) ? nil : steps
         for (start, end) in merged {
             let durMin = (end - start) / 60
             let overlapping = savedSpans.filter { overlaps(start, end, $0.startSec, $0.endSec) }
                 .sorted { $0.startSec == $1.startSec ? $0.endSec < $1.endSec : $0.startSec < $1.startSec }
+            let cooldownHit = overlapping.isEmpty && savedSpans.contains {
+                overlaps(start, end, $0.startSec, $0.endSec + cooldownAfterSavedS)
+            }
             if !overlapping.isEmpty {
                 // #2527: measure each suppression before choosing a duration-aware policy. The exact
                 // saved/candidate ratio avoids rounding away short recordings; intersection seconds
@@ -139,14 +147,25 @@ extension AutoWorkoutDetector {
                 lines.append("autoDetect window durMin=\(durMin) verdict=dropped why=overlapsSavedWorkout")
                 continue
             }
-            if let motionSeries {
-                let inWin = motionSeries.filter { $0.ts >= start && $0.ts <= end }.map { $0.intensity }
-                let meanMotion = inWin.isEmpty ? 0.0 : inWin.reduce(0.0, +) / Double(inWin.count)
-                if meanMotion < motionConfirmMean {
-                    lines.append("autoDetect window durMin=\(durMin) verdict=dropped why=motionNotConfirmed "
-                        + "(mean=\((meanMotion * 1000).rounded() / 1000) < \(motionConfirmMean))")
+            if cooldownHit {
+                lines.append("autoDetect window durMin=\(durMin) verdict=dropped why=cooldownAfterSavedWorkout")
+                continue
+            }
+            let window = seg.filter { $0.ts >= start && $0.ts <= end }
+            let avg = window.isEmpty ? 0
+                : Int((Double(window.map(\.bpm).reduce(0, +)) / Double(window.count)).rounded())
+            switch motionVerdict(start: start, end: end, gravity: gravity, steps: stepTicks) {
+            case .rejected:
+                lines.append("autoDetect window durMin=\(durMin) verdict=dropped why=motionNotConfirmed")
+                continue
+            case .missing:
+                if !hrOnlyQualifies(avgBpm: avg, restingBpm: restingBpm, maxHeartRate: maxHeartRate) {
+                    lines.append("autoDetect window durMin=\(durMin) verdict=dropped why=hrOnlyBelowReserve "
+                        + "avgBpm=\(avg)")
                     continue
                 }
+            case .confirmed:
+                break
             }
             lines.append("autoDetect window durMin=\(durMin) verdict=offered")
         }

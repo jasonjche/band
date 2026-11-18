@@ -3,7 +3,11 @@ import Combine
 import StrandAnalytics
 import WhoopProtocol
 import WhoopStore
-import OuraProtocol
+
+/// Residual ring wear slot after Oura removal; always nil at runtime.
+public enum OuraWearState: Equatable, Sendable {
+    case worn, charging, off
+}
 
 /// Observable snapshot of the live connection + biometric state, driven by FrameRouter
 /// (from decoded frames) and BLEManager (from CoreBluetooth callbacks).
@@ -569,6 +573,10 @@ public final class LiveState: ObservableObject {
     /// True while a historical offload session is running, so screens can say "Syncing strap
     /// history…" instead of presenting half-loaded data as final (#77).
     @Published public var backfilling = false
+    /// Last offload session (or burst) banked new sensor rows. Not `@Published` — Home must not
+    /// redraw on it. Sticky true until the dashboard refresh consumes it, so an empty trailing
+    /// HISTORY_COMPLETE slice cannot hide rows an earlier slice in the same debounce window stored.
+    public var lastOffloadBankedRows = false
     /// #1164 — true when the strap reports banked records newer than our local HR frontier (the strap has
     /// data we haven't ingested yet), even when no offload is actively running. Set by BLEManager from the
     /// GET_DATA_RANGE newest vs. the collector's latest HR sample, with the same 5-min `behindGapSeconds`
@@ -940,7 +948,7 @@ public final class LiveState: ObservableObject {
         #else
         let osName = "macOS"
         #endif
-        var header = "NOOP strap log (scheduled export) — \(osName)\nApp: \(Self.appIdentityLine)\n\(osName): "
+        var header = "Band strap log (scheduled export) — \(osName)\nApp: \(Self.appIdentityLine)\n\(osName): "
             + ProcessInfo.processInfo.operatingSystemVersionString + "\n"
         // #453: the BODY is scrubbed as it is appended, but these header lines come from the diagnostics
         // block and never pass through that path - and they carry device ids, which embed a BLE address
@@ -1184,7 +1192,7 @@ public final class LiveState: ObservableObject {
         #else
         let osName = "macOS"
         #endif
-        var header = "NOOP strap log - \(osName)\nApp: \(Self.appIdentityLine)\n\(osName): "
+        var header = "Band strap log - \(osName)\nApp: \(Self.appIdentityLine)\n\(osName): "
             + ProcessInfo.processInfo.operatingSystemVersionString + "\n"
         #if os(iOS)
         let diagLines = IOSDiagnostics.capture().summaryLines()
@@ -1243,7 +1251,7 @@ public enum LiveConsoleReadout {
     /// reaches nothing. A device that is neither (Polar, Garmin, …) is neither — it gets the Devices row.
     public static func activeIsOura(devices: [PairedDevice], activeId: String?) -> Bool {
         guard let activeId, let active = devices.first(where: { $0.id == activeId }) else { return false }
-        return active.brand.caseInsensitiveCompare(ExperimentalBrand.oura.displayBrand) == .orderedSame
+        return active.brand.caseInsensitiveCompare("Oura") == .orderedSame
     }
 
     /// The charge to show for the ACTIVE device, or nil to show nothing.

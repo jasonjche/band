@@ -20,14 +20,58 @@ struct PowerSavingView: View {
     @AppStorage(PuffinExperiment.pauseHrvDisabledKey) private var pauseHrvDisabled = false
     @AppStorage(PuffinExperiment.lowRefreshKey) private var lowRefreshEnabled = false
 
+    @AppStorage("noop.nativeTodayEnabled") private var nativeTodayEnabled = true
+
     var body: some View {
+        #if os(iOS)
+        if nativeTodayEnabled {
+            nativeForm
+        } else {
+            legacyScaffold
+        }
+        #else
+        legacyScaffold
+        #endif
+    }
+
+    #if os(iOS)
+    private var nativeForm: some View {
+        Form {
+            Section {
+                Toggle("Power Saving", isOn: $powerSavingEnabled)
+                    .onChangeCompat(of: powerSavingEnabled) { _ in model.applyPowerSaving() }
+            } footer: {
+                Text("Slows background sync while the strap battery is low. The strap keeps banking data.")
+            }
+            if powerSavingEnabled {
+                Section {
+                    LabeledContent("Kick In At", value: "\(powerSavingPct)%")
+                    Slider(
+                        value: Binding(get: { Double(powerSavingPct) }, set: { powerSavingPct = Int($0) }),
+                        in: 10...35, step: 5,
+                        onEditingChanged: { editing in if !editing { model.applyPowerSaving() } }
+                    )
+                    Toggle("Pause HRV Capture", isOn: Binding(get: { !pauseHrvDisabled }, set: { pauseHrvDisabled = !$0 }))
+                        .onChangeCompat(of: pauseHrvDisabled) { _ in model.applyPowerSaving() }
+                    Toggle("Low Refresh", isOn: $lowRefreshEnabled)
+                        .onChangeCompat(of: lowRefreshEnabled) { _ in model.applyPowerSaving() }
+                } footer: {
+                    Text("Low refresh syncs about once an hour at any charge. Pull to sync still runs immediately.")
+                }
+            }
+        }
+        .appleSettingsChrome("Power Saving")
+    }
+    #endif
+
+    private var legacyScaffold: some View {
         ScreenScaffold(title: "Power saving",
                        subtitle: "Ease the load on your strap when its battery is running low.") {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 NoopCard {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Power saving").strandOverline()
-                        Text("The strap keeps banking data on its own, so nothing is lost — NOOP just talks to it less often to help it last until you can charge it.")
+                        Text("The strap keeps banking data on its own, so nothing is lost — Band just talks to it less often to help it last until you can charge it.")
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)

@@ -264,4 +264,57 @@ public enum IllnessSignalEngine {
             return "\(head) and \(reasons.last!)"
         }
     }
+
+    // MARK: - Lagged median baseline (Mishra 2020 / PLOS ONE 0243693)
+
+    /// Inclusive far end of the baseline window, in calendar nights before today.
+    public static let baselineLookbackDays = 21
+    /// Inclusive near end of the baseline window. Nights 6…1 before today are excluded so an
+    /// incubation rise cannot contaminate the baseline (WHOOP illness patent; Mishra 2020).
+    public static let baselineLagDays = 7
+    /// 1.4826 scales MAD to match the SD of a Gaussian sample.
+    public static let madToSd = 1.4826
+    /// Minimum nights in the lagged window before a z is returned.
+    public static let minLaggedBaselineNights = 14
+
+    /// Calendar nights `baselineLagDays`…`baselineLookbackDays` before `today` that have a value.
+    public static func laggedHistory(today: String, byDay: [String: Double]) -> [Double] {
+        var out: [Double] = []
+        for offset in baselineLagDays...baselineLookbackDays {
+            guard let key = addDays(today, -offset), let v = byDay[key], v.isFinite else { continue }
+            out.append(v)
+        }
+        return out
+    }
+
+    public static func isLaggedBaselineDay(candidate: String, today: String) -> Bool {
+        guard let lo = addDays(today, -baselineLookbackDays),
+              let hi = addDays(today, -baselineLagDays) else { return false }
+        return candidate >= lo && candidate <= hi
+    }
+
+    /// Robust illness-ward z: (value − median) / max(1.4826·MAD, floor). `invert` flips the sign
+    /// so a drop (HRV) is positive. Nil when history is thinner than `minN`.
+    public static func medianBasedZ(value: Double?, history: [Double], floor: Double,
+                                    invert: Bool = false,
+                                    minN: Int = minLaggedBaselineNights) -> Double? {
+        guard let value, value.isFinite, history.count >= minN else { return nil }
+        let med = median(history)
+        let mad = median(history.map { abs($0 - med) })
+        let scale = max(madToSd * mad, floor)
+        guard scale > 0 else { return nil }
+        let z = (value - med) / scale
+        return invert ? -z : z
+    }
+
+    public static func median(_ values: [Double]) -> Double {
+        let s = values.sorted()
+        let n = s.count
+        guard n > 0 else { return 0 }
+        return n % 2 == 1 ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2.0
+    }
+
+    public static func addDays(_ ymd: String, _ delta: Int) -> String? {
+        CivilDay.addDays(ymd, delta)
+    }
 }

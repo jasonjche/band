@@ -15,4 +15,11 @@ BUNDLE_ID_PREFIX = com.noopapp
 // no team at all. Set DEVELOPMENT_TEAM in BundleIdSecrets.xcconfig to run on a physical iPhone or
 // to stop Xcode from asking you to reselect a team after every `xcodegen generate`.
 DEVELOPMENT_TEAM =
+// iOS home-screen name and icon set. Defaults reproduce the upstream app; a personal build that
+// installs beside NOOP overrides both (and BUNDLE_ID_PREFIX) in BundleIdSecrets.xcconfig.
+IOS_APP_DISPLAY_NAME = Band
+IOS_APP_ICON_NAME = AppIcon
+// Personal iOS builds skip first-run gates and NOOP-release update nags. Override to YES in
+// BundleIdSecrets.xcconfig. Stock checkouts stay NO.
+NOOP_PERSONAL_BUILD = NO
 #include? "BundleIdSecrets.xcconfig"

@@ -27,7 +27,7 @@ public struct JournalEntry: Equatable, Codable {
 /// One workout. Natural key (deviceId, startTs, sport). All metric columns nullable.
 /// `zonesJSON` is verbatim JSON of HR-zone percentages, stored as a string so the cache stays
 /// schema-agnostic about the zone shape.
-public struct WorkoutRow: Equatable, Codable {
+public struct WorkoutRow: Equatable, Codable, Sendable {
     public let startTs: Int          // unix seconds
     public let endTs: Int            // unix seconds
     public let sport: String
@@ -196,7 +196,7 @@ extension WhoopStore {
     /// Upsert Apple-Health daily aggregates. Natural key (deviceId, day). Returns rows changed.
     @discardableResult
     public func upsertAppleDaily(_ rows: [AppleDaily], deviceId: String) async throws -> Int {
-        try syncWrite { db in
+        let n = try syncWrite { db in
             var n = 0
             for r in rows {
                 try db.execute(sql: """
@@ -219,6 +219,8 @@ extension WhoopStore {
             }
             return n
         }
+        noteDashboardDaysIfChanged(n, days: rows.map(\.day))
+        return n
     }
 
     // MARK: - Reads
@@ -244,18 +246,17 @@ extension WhoopStore {
     /// Workouts overlapping [from, to] (by startTs), oldest first.
     public func workouts(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [WorkoutRow] {
         try syncRead { db in
-            try Row.fetchAll(db, sql: """
+            try ReadFetch.mapAll(db: db, sql: """
                 SELECT startTs, endTs, sport, source, durationS, energyKcal, avgHr, maxHr,
                        strain, distanceM, zonesJSON, notes, steps FROM workout
                 WHERE deviceId = ? AND startTs >= ? AND startTs <= ?
                 ORDER BY startTs ASC LIMIT ?
-                """, arguments: [deviceId, from, to, limit])
-                .map {
-                    WorkoutRow(startTs: $0["startTs"], endTs: $0["endTs"], sport: $0["sport"],
-                               source: $0["source"], durationS: $0["durationS"],
-                               energyKcal: $0["energyKcal"], avgHr: $0["avgHr"], maxHr: $0["maxHr"],
-                               strain: $0["strain"], distanceM: $0["distanceM"],
-                               zonesJSON: $0["zonesJSON"], notes: $0["notes"], steps: $0["steps"])
+                """, arguments: [deviceId, from, to, limit], reserve: limit) {
+                    WorkoutRow(startTs: $0[0], endTs: $0[1], sport: $0[2],
+                               source: $0[3], durationS: $0[4],
+                               energyKcal: $0[5], avgHr: $0[6], maxHr: $0[7],
+                               strain: $0[8], distanceM: $0[9],
+                               zonesJSON: $0[10], notes: $0[11], steps: $0[12])
                 }
         }
     }

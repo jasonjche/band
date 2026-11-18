@@ -48,7 +48,7 @@ final class StaleBatteryAlertPolicyTests: XCTestCase {
     }
 
     func testAHealthyLastReadingSaysNothingHoweverLongAgo() {
-        XCTAssertFalse(ev(soc: 16).fire)
+        XCTAssertFalse(ev(soc: BatteryNotifier.BatteryAlertPolicy.lowThreshold + 1).fire)
     }
 
     /// Same threshold as the live low alert, inclusive, so the two cannot disagree about what "low" is.

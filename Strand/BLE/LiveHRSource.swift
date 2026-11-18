@@ -30,4 +30,3 @@ protocol LiveHRSource: AnyObject {
 extension StandardHRSource: LiveHRSource {}
 extension HuamiHRSource: LiveHRSource {}
 extension FTMSSource: LiveHRSource {}
-extension OuraLiveSource: LiveHRSource {}

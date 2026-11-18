@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
@@ -16,9 +17,262 @@ public enum StrandFont {
 
     // MARK: Family
 
-    private static func roundedSystem(_ size: CGFloat, weight: Font.Weight) -> Font {
-        .system(size: size, weight: weight, design: .rounded)
+    /// Maps a point size onto the Dynamic Type style whose scaling curve it should follow.
+    /// At the default (Large) size the scaled face matches `size` exactly.
+    public static func scalingTextStyle(for size: CGFloat) -> Font.TextStyle {
+        switch size {
+        case ...11: return .caption2
+        case ...13: return .caption
+        case ...15: return .subheadline
+        case ...17: return .body
+        case ...20: return .title3
+        case ...22: return .title2
+        case ...28: return .title2
+        case ...34: return .title
+        default: return .largeTitle
+        }
     }
+
+    /// System face at a custom size that still tracks Dynamic Type via `UIFontMetrics`.
+    /// macOS has no equivalent scaler, so the face stays at `size` there.
+    public static func scaledSystem(
+        size: CGFloat,
+        weight: Font.Weight,
+        design: Font.Design,
+        relativeTo textStyle: Font.TextStyle? = nil
+    ) -> Font {
+        let style = textStyle ?? scalingTextStyle(for: size)
+        return cachedFont(size: size, weight: weight, design: design, textStyle: style, tabular: false)
+    }
+
+    private static func roundedSystem(_ size: CGFloat, weight: Font.Weight) -> Font {
+        cachedFont(
+            size: size,
+            weight: weight,
+            design: .rounded,
+            textStyle: scalingTextStyle(for: size),
+            tabular: true
+        )
+    }
+
+    private struct FontCacheKey: Hashable {
+        var size: CGFloat
+        var weight: Int
+        var design: Int
+        var textStyle: Int
+        var tabular: Bool
+    }
+
+    private static let fontCacheLock = NSLock()
+    private static var fontCache: [FontCacheKey: Font] = [:]
+    private static var fontCacheObserver: NSObjectProtocol?
+
+    private static func cachedFont(
+        size: CGFloat,
+        weight: Font.Weight,
+        design: Font.Design,
+        textStyle: Font.TextStyle,
+        tabular: Bool
+    ) -> Font {
+        observeContentSizeCategory()
+        let key = FontCacheKey(
+            size: size,
+            weight: weightID(weight),
+            design: designID(design),
+            textStyle: textStyleID(textStyle),
+            tabular: tabular
+        )
+        fontCacheLock.lock()
+        if let hit = fontCache[key] {
+            fontCacheLock.unlock()
+            return hit
+        }
+        fontCacheLock.unlock()
+        var font = makeSystemFont(size: size, weight: weight, design: design, textStyle: textStyle)
+        if tabular {
+            font = font.monospacedDigit()
+        }
+        fontCacheLock.lock()
+        fontCache[key] = font
+        fontCacheLock.unlock()
+        return font
+    }
+
+    private static func makeSystemFont(
+        size: CGFloat,
+        weight: Font.Weight,
+        design: Font.Design,
+        textStyle: Font.TextStyle
+    ) -> Font {
+        #if canImport(UIKit)
+        let base = UIFont.systemFont(ofSize: size, weight: uiWeight(weight))
+        let descriptor: UIFontDescriptor
+        if design == .default {
+            descriptor = base.fontDescriptor
+        } else {
+            descriptor = base.fontDescriptor.withDesign(uiDesign(design)) ?? base.fontDescriptor
+        }
+        let font = UIFont(descriptor: descriptor, size: size)
+        return Font(UIFontMetrics(forTextStyle: uiTextStyle(textStyle)).scaledFont(for: font))
+        #elseif canImport(AppKit)
+        let base = NSFont.systemFont(ofSize: size, weight: nsWeight(weight))
+        guard design != .default,
+              let descriptor = base.fontDescriptor.withDesign(nsDesign(design)),
+              let designed = NSFont(descriptor: descriptor, size: size) else {
+            return Font(base)
+        }
+        return Font(designed)
+        #else
+        return .system(size: size, weight: weight, design: design)
+        #endif
+    }
+
+    private static func observeContentSizeCategory() {
+        fontCacheLock.lock()
+        let needed = fontCacheObserver == nil
+        fontCacheLock.unlock()
+        guard needed else { return }
+        #if os(iOS) || os(tvOS)
+        let observer = NotificationCenter.default.addObserver(
+            forName: UIContentSizeCategory.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            fontCacheLock.lock()
+            fontCache.removeAll(keepingCapacity: true)
+            fontCacheLock.unlock()
+        }
+        fontCacheLock.lock()
+        if fontCacheObserver == nil {
+            fontCacheObserver = observer
+        } else {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        fontCacheLock.unlock()
+        #endif
+    }
+
+    private static func weightID(_ weight: Font.Weight) -> Int {
+        switch weight {
+        case .ultraLight: return 0
+        case .thin: return 1
+        case .light: return 2
+        case .regular: return 3
+        case .medium: return 4
+        case .semibold: return 5
+        case .bold: return 6
+        case .heavy: return 7
+        case .black: return 8
+        default: return 3
+        }
+    }
+
+    private static func designID(_ design: Font.Design) -> Int {
+        switch design {
+        case .serif: return 1
+        case .rounded: return 2
+        case .monospaced: return 3
+        default: return 0
+        }
+    }
+
+    private static func textStyleID(_ style: Font.TextStyle) -> Int {
+        switch style {
+        case .largeTitle: return 0
+        case .title: return 1
+        case .title2: return 2
+        case .title3: return 3
+        case .headline: return 4
+        case .body: return 5
+        case .callout: return 6
+        case .subheadline: return 7
+        case .footnote: return 8
+        case .caption: return 9
+        case .caption2: return 10
+        default: return 5
+        }
+    }
+
+    #if DEBUG
+    public static func resetFontCacheForTests() {
+        fontCacheLock.lock()
+        fontCache.removeAll()
+        fontCacheLock.unlock()
+    }
+
+    public static func fontCacheCountForTests() -> Int {
+        fontCacheLock.lock()
+        defer { fontCacheLock.unlock() }
+        return fontCache.count
+    }
+    #endif
+
+    #if canImport(UIKit)
+    private static func uiWeight(_ weight: Font.Weight) -> UIFont.Weight {
+        switch weight {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .regular: return .regular
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        default: return .regular
+        }
+    }
+
+    private static func uiDesign(_ design: Font.Design) -> UIFontDescriptor.SystemDesign {
+        switch design {
+        case .serif: return .serif
+        case .rounded: return .rounded
+        case .monospaced: return .monospaced
+        default: return .default
+        }
+    }
+
+    private static func uiTextStyle(_ style: Font.TextStyle) -> UIFont.TextStyle {
+        switch style {
+        case .largeTitle: return .largeTitle
+        case .title: return .title1
+        case .title2: return .title2
+        case .title3: return .title3
+        case .headline: return .headline
+        case .body: return .body
+        case .callout: return .callout
+        case .subheadline: return .subheadline
+        case .footnote: return .footnote
+        case .caption: return .caption1
+        case .caption2: return .caption2
+        default: return .body
+        }
+    }
+    #elseif canImport(AppKit)
+    private static func nsWeight(_ weight: Font.Weight) -> NSFont.Weight {
+        switch weight {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .regular: return .regular
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        default: return .regular
+        }
+    }
+
+    private static func nsDesign(_ design: Font.Design) -> NSFontDescriptor.SystemDesign {
+        switch design {
+        case .serif: return .serif
+        case .rounded: return .rounded
+        case .monospaced: return .monospaced
+        default: return .default
+        }
+    }
+    #endif
 
     // MARK: Scale (§9.2)
 
@@ -37,7 +291,7 @@ public enum StrandFont {
     /// A Helvetica-Neue numeric style at an arbitrary size/weight — the house
     /// numeral. Tabular so live values align. Use anywhere a score/number is shown.
     public static func rounded(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        roundedSystem(size, weight: weight).monospacedDigit()
+        roundedSystem(size, weight: weight)
     }
 
     /// Title1 28 / Bold. Scales with Dynamic Type.
@@ -98,7 +352,7 @@ public enum StrandFont {
     /// A numeric style at an arbitrary size/weight, for live values — Helvetica
     /// Neue, tabular digits. This is the tile/value numeral.
     public static func number(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
-        roundedSystem(size, weight: weight).monospacedDigit()
+        roundedSystem(size, weight: weight)
     }
 
     /// Helvetica-Neue body number — for inline live values that should align. Scales with Dynamic

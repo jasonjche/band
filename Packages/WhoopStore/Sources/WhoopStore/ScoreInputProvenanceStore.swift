@@ -82,6 +82,7 @@ extension WhoopStore {
                     """, arguments: [deviceId, row.day, row.key, row.sourceId])
             }
         }
+        noteDashboardDays(dailyMetrics.map(\.day))
     }
 
     /// Persist a metric-series batch and its specialized provenance in one SQLite transaction. Used by

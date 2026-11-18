@@ -216,12 +216,30 @@ enum PuffinExperiment {
     /// Read at the staging call site (Repository). Mirrors the Android `PuffinExperiment.KEY_EXPERIMENTAL_SLEEP_V2`.
     static let experimentalSleepV2Key = "noopExperimentalSleepV2"
 
+    /// Opt-in Native-shell "High Sleep Stress" row (default off). Runs `SleepStressShare` over
+    /// overnight 5-minute windows on the Stress Monitor's 0–3 scale. Display only: never stored,
+    /// never a recovery / rest / strain input.
+    static let experimentalSleepStressKey = "noopExperimentalSleepStress"
+    static var experimentalSleepStressEnabled: Bool {
+        UserDefaults.standard.bool(forKey: experimentalSleepStressKey)
+    }
+
     /// Default ON when the key is unset (mirrors the Android `getBoolean(KEY, true)`): a `bool(forKey:)` alone
     /// reads a missing key as false, so an absent preference must resolve to the promoted V2 default explicitly.
     static var experimentalSleepV2Enabled: Bool {
         UserDefaults.standard.object(forKey: experimentalSleepV2Key) == nil
             ? true
             : UserDefaults.standard.bool(forKey: experimentalSleepV2Key)
+    }
+
+    /// Learned sleep stager (reNOOP boosted-tree pair). Stages a detected window when HR and motion
+    /// cover at least 80 % of it; otherwise falls back to V1/V2. **Default ON**. The library parameter
+    /// defaults false so tests stay on the recipe; this preference is what the live call site threads.
+    static let learnedSleepStagerKey = "noopLearnedSleepStager"
+    static var learnedSleepStagerEnabled: Bool {
+        UserDefaults.standard.object(forKey: learnedSleepStagerKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: learnedSleepStagerKey)
     }
 
     /// Opt-in "HR-from-PPG sub-lag interpolation" (default off): the v26 optical-PPG gap-fill HR estimator

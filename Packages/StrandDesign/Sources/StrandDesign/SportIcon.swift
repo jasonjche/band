@@ -113,6 +113,17 @@ public enum KnownWorkoutType: String, CaseIterable, Sendable {
     // WHOOP-parity batch: activities in WHOOP's catalogue NOOP lacked (raw values byte-identical to
     // WorkoutCatalog / Android WorkoutSport). Icons are distinct SF Symbols available on iOS 17 / macOS 13.
     case meditation = "Meditation"
+    case breathwork = "Breathwork"
+    case coldShower = "Cold Shower"
+    case contrastTherapy = "Contrast Therapy"
+    case foamRolling = "Foam Rolling"
+    case hotTub = "Hot Tub"
+    case iceBath = "Ice Bath"
+    case massageTherapy = "Massage Therapy"
+    case restorativeYoga = "Restorative Yoga"
+    case sauna = "Sauna"
+    case steamRoom = "Steam Room"
+    case taiChi = "Tai Chi"
     case horsebackRiding = "Horseback riding"
     case wheelchair = "Wheelchair"
     case gaming = "Gaming"
@@ -163,8 +174,20 @@ public enum KnownWorkoutType: String, CaseIterable, Sendable {
         case s.contains("strength") || s.contains("weight") || s.contains("lift"):
                                                             return .strength
         case s.contains("hiit") || s.contains("interval"):  return .hiit
+        case s.contains("restorative"):                     return .restorativeYoga
         case s.contains("yoga"):                            return .yoga
         case s.contains("pilates"):                         return .pilates
+        case s.contains("breath"):                          return .breathwork
+        case s.contains("cold plunge") || s.contains("ice bath"):
+                                                            return .iceBath
+        case s.contains("cold shower"):                     return .coldShower
+        case s.contains("sauna"):                           return .sauna
+        case s.contains("massage"):                         return .massageTherapy
+        case s.contains("foam roll"):                       return .foamRolling
+        case s.contains("hot tub"):                         return .hotTub
+        case s.contains("tai chi") || s.contains("taichi"): return .taiChi
+        case s.contains("steam"):                           return .steamRoom
+        case s.contains("contrast"):                        return .contrastTherapy
         case s.contains("box"):                             return .boxing
         case s.contains("basket"):                          return .basketball
         case s.contains("soccer") || s.contains("football"): return .soccer
@@ -385,6 +408,17 @@ public enum WorkoutTypeIconography {
         case .gaelicFootball:       return .system("soccerball")
         case .spikeball:            return .system("volleyball")
         case .meditation:           return .system("figure.mind.and.body")
+        case .breathwork:           return .system("lungs.fill")
+        case .coldShower:           return .system("shower.fill")
+        case .contrastTherapy:      return .system("thermometer.medium")
+        case .foamRolling:          return .system("oval.fill")
+        case .hotTub:               return .system("drop.fill")
+        case .iceBath:              return .system("snowflake")
+        case .massageTherapy:       return .system("hands.clap.fill")
+        case .restorativeYoga:      return .system("figure.cooldown")
+        case .sauna:                return .system("flame.fill")
+        case .steamRoom:            return .system("humidity.fill")
+        case .taiChi:               return .system("leaf.fill")
         case .horsebackRiding:      return .system("figure.equestrian.sports")
         case .wheelchair:           return .system("figure.roll")
         case .gaming:               return .system("gamecontroller.fill")

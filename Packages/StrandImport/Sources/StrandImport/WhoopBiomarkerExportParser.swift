@@ -3,7 +3,7 @@ import Foundation
 // MARK: - WHOOP biomarker CSV export parser (source "whoop-biomarkers")
 //
 // WhoopBiomarkerExportParser.swift — Kotlin twin of
-// android/app/src/main/java/com/noop/ingest/WhoopBiomarkerExportParser.kt. Keep the two
+// Keep the two
 // byte-identical.
 //
 // WHOOP's own biomarker export ("Biomarker Name","Value","Status","Recorded On Date") matches

@@ -2,10 +2,9 @@
 
 NOOP exists to give you **your own strap data, offline and on-device**. That mission sets hard limits
 on what belongs in the app. This page names the WHOOP-app features that stay **out of scope** — and the
-local equivalents that stay **in scope** — so a parity proposal has a standing answer before a PR is
-opened. It does not change the constraints stated in [AGENTS.md](../AGENTS.md), the
-[Contributing guide](CONTRIBUTING.md), or the [Disclaimer](../DISCLAIMER.md); it maps them onto specific
-features so the boundary is discoverable.
+local equivalents that stay **in scope**. It does not change the constraints stated in
+[AGENTS.md](../AGENTS.md) or the [Disclaimer](../DISCLAIMER.md); it maps them onto specific features
+so the boundary is discoverable.
 
 ## The constraints this follows from
 
@@ -58,7 +57,7 @@ and configures. It remains in scope only while all of these boundaries hold:
   not read or sent.
 - Identity is local to the installation and device. There is no NOOP account, hosted service,
   third-party destination, or telemetry channel. Endpoint and bearer credential are user supplied.
-- This repository ships the client and the versioned [push format](PUSH_PROTOCOL.md), not a server.
+- This repository ships the client and a versioned push format, not a server.
   A receiver, dashboard, vault, or agent belongs to the user and lives outside this repository.
 
 This is automated export, not restore or two-way sync. A NOOP-operated receiver, accounts, server

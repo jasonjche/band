@@ -32,7 +32,7 @@ enum TemperatureUnit: String, CaseIterable, Identifiable {
 
 /// How the Effort score is displayed (#268). NOOP's Effort is stored 0–100 (StrainScorer.maxStrain = 100);
 /// people coming from WHOOP often think in its 0–21 Day Strain axis, so this purely cosmetic toggle lets
-/// the SAME stored value be shown on either scale. Default is NOOP's own 0–100 — the data never changes.
+/// the SAME stored value be shown on either scale. An unset preference displays 0–21. The data never changes.
 enum EffortScale: String, CaseIterable, Identifiable {
     /// NOOP's native 0–100 axis (the stored value, one decimal).
     case hundred
@@ -93,8 +93,9 @@ enum UnitPrefs {
     /// `SkinTempDisplay.Kind.deviation.rawValue` to lead with the ±baseline move. Display-only; nothing
     /// stored ever changes. Same key string as the Android `units.skinTempDisplay` pref.
     static let skinTempDisplayKey = "units.skinTempDisplay"
-    /// Effort display scale (#268). Stored raw is an `EffortScale` rawValue; an unset/unknown value
-    /// resolves to `.hundred` (NOOP's native axis). Mirrored on Android by NoopPrefs("effort.scale").
+    /// Effort display scale (#268). Stored raw is an `EffortScale` rawValue. An unset or unknown
+    /// value resolves to `.whoop` (0–21), the scale this fork shows until the user picks one.
+    /// An explicit stored `.hundred` still resolves to 0–100. Mirrored on Android by NoopPrefs("effort.scale").
     static let effortScaleKey = "effort.scale"
 
     /// Trend chart style (line vs bar). Stored raw is a `TrendChartStyle` rawValue; an unset/unknown
@@ -112,7 +113,7 @@ enum UnitPrefs {
     /// mirrors Android's effortDisplayFactor helper so digest sentences match the charts on both.
     static func currentEffortDisplayFactor() -> Double {
         let raw = UserDefaults.standard.string(forKey: effortScaleKey) ?? ""
-        return raw == EffortScale.whoop.rawValue ? 0.21 : 1.0
+        return resolveEffortScale(raw) == .whoop ? 0.21 : 1.0
     }
 
     /// Whether the live-HR Live Activity (Lock Screen + Dynamic Island) may show, iOS only (#336).
@@ -154,9 +155,10 @@ enum UnitPrefs {
         UnitSystem(rawValue: raw) ?? system
     }
 
-    /// Resolve the stored Effort-scale raw value, defaulting to NOOP's native 0–100 axis.
+    /// Resolve the stored Effort-scale raw value. Empty or unknown means the user has not chosen,
+    /// so the display is the WHOOP 0–21 axis. A stored `hundred` stays on 0–100.
     static func resolveEffortScale(_ raw: String) -> EffortScale {
-        EffortScale(rawValue: raw) ?? .hundred
+        EffortScale(rawValue: raw) ?? .whoop
     }
 }
 
