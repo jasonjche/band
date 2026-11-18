@@ -10,6 +10,9 @@ final class NativePerformanceAssessmentTests: XCTestCase {
         XCTAssertFalse(NativeMoreItem.titles.contains("Assessments"))
         XCTAssertTrue(NativeHealthItem.titles.contains("Reports"))
         XCTAssertEqual(NativeHealthItem.reports.icon, "calendar")
+        XCTAssertEqual(NativeReportsLayout.rowMinHeight, 48, accuracy: 0.5)
+        XCTAssertEqual(NativeReportsLayout.dividerLeading, 42, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(NativeReportsLayout.pickerBottom, 12)
     }
 
     func testSleepHoursMatchSleepPageAsleepMinutes() {

@@ -21,6 +21,7 @@ struct NativeHealthMonitorPage: View {
     @State private var storedSpark: [NativeHourPoint] = []
     @State private var liveBpm: Int?
     @State private var liveSamples: [NativeHourPoint] = []
+    @State private var showingCalendar = false
 
     private var temperature: TemperatureUnit {
         UnitPrefs.resolveTemperature(
@@ -57,7 +58,8 @@ struct NativeHealthMonitorPage: View {
                 onBack: { shiftDay(-1) },
                 onForward: { shiftDay(1) },
                 onSelect: { path.wrappedValue.append($0) },
-                onOpenHeartRate: { path.wrappedValue.append(NativeHeartRateRoute()) }
+                onOpenHeartRate: { path.wrappedValue.append(NativeHeartRateRoute()) },
+                onTitleTap: { showingCalendar = true }
             )
         }
         .navigationTitle("Health Monitor")
@@ -86,6 +88,26 @@ struct NativeHealthMonitorPage: View {
                 liveSamples = []
             }
         }
+        .sheet(isPresented: $showingCalendar) {
+            HomeCalendarSheet(
+                selected: selectedDay,
+                range: calendarRange,
+                recoveryByDay: HomeCalendarRecovery.values(
+                    days: repoHandle?.days ?? [],
+                    sleeps: repoHandle?.sleeps ?? [],
+                    importedSleep: repoHandle?.importedSleep ?? [:]
+                )
+            ) { picked in
+                selectedDay = Calendar.current.startOfDay(for: picked)
+            }
+        }
+    }
+
+    private var calendarRange: ClosedRange<Date> {
+        let today = NativeDayLogic.startOfLocalDay(NativeDayLogic.logicalToday(now: Date()))
+            ?? Calendar.current.startOfDay(for: Date())
+        let first = firstDay.flatMap { NativeDayLogic.startOfLocalDay($0) } ?? today
+        return min(first, today)...today
     }
 
     private var sparkPoints: [NativeHourPoint] {
@@ -153,6 +175,7 @@ struct NativeHealthMonitorBody: View {
     var onForward: () -> Void
     var onSelect: (TabRoute) -> Void
     var onOpenHeartRate: () -> Void = {}
+    var onTitleTap: (() -> Void)? = nil
 
     private var dayKey: String { Repository.localDayKey(selectedDay) }
     private var slots: [NativeHealthMonitorMath.Slot] {
@@ -166,7 +189,8 @@ struct NativeHealthMonitorBody: View {
                 canGoBack: HomeDayNav.canGoBack(selectedKey: dayKey, firstDay: firstDay),
                 canGoForward: HomeDayNav.canGoForward(selectedKey: dayKey),
                 onBack: onBack,
-                onForward: onForward
+                onForward: onForward,
+                onTitleTap: onTitleTap
             )
             .frame(maxWidth: .infinity)
             .padding(.top, NoopMetrics.space4)
@@ -197,8 +221,10 @@ struct NativeHealthMonitorBody: View {
                 ForEach(slots) { slot in
                     Button { onSelect(slot.route) } label: {
                         NativeHealthMonitorTile(slot: slot)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .gridCellColumns(slot.columnSpan)
                 }
             }
@@ -334,12 +360,17 @@ private struct NativeHealthMonitorCalibrationBanner: View {
     }
 }
 
+enum NativeHealthMonitorTileLayout {
+    /// Two-line titles (`Blood Oxygen (SpO₂)`) and one-line titles share this header so paired cards match.
+    static let headerMinHeight: CGFloat = 34
+}
+
 private struct NativeHealthMonitorTile: View {
     var slot: NativeHealthMonitorMath.Slot
     @Environment(\.nativeStyle) private var style
 
     var body: some View {
-        NativeChrome.panel {
+        NativeChrome.panel(expands: true) {
             HStack(spacing: 6) {
                 Image(systemName: slot.symbol)
                     .font(.footnote.weight(.semibold))
@@ -353,6 +384,7 @@ private struct NativeHealthMonitorTile: View {
                     .minimumScaleFactor(0.7)
                 Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, minHeight: NativeHealthMonitorTileLayout.headerMinHeight, alignment: .topLeading)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(slot.valueText)
                     .font(NativePaint.number(style == .whoop ? 28 : 24, style: style))
@@ -364,7 +396,9 @@ private struct NativeHealthMonitorTile: View {
                 }
             }
             NativeHealthMonitorChip(text: slot.chip, tint: slot.chipTint)
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(slot.accessibility)
     }

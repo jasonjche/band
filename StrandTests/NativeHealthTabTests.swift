@@ -46,6 +46,12 @@ final class NativeHealthTabTests: XCTestCase {
         XCTAssertTrue(src.contains("NativeSettingsRow(title: item.title, icon: item.icon, color: item.color)"))
     }
 
+    func testHealthLinksMatchSettingsRowHeight() {
+        XCTAssertEqual(NativeHealthLinksLayout.rowMinHeight, 48, accuracy: 0.5)
+        XCTAssertEqual(NativeHealthLinksLayout.dividerLeading, 42, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(NativeHealthLinksLayout.rowVerticalPadding, 4)
+    }
+
     private static var healthTabPath: String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

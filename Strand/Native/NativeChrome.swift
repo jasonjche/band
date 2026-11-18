@@ -503,6 +503,9 @@ enum NativeRingMotion {
     static let spring = Animation.spring(response: 0.42, dampingFraction: 0.86)
     /// Arc length of the strain-target tick on the 0...1 track.
     static let targetTickSpan: Double = 0.018
+    static let targetMarkerWidth: CGFloat = 2.5
+    /// Extra length the start/end ticks extend past the ring stroke, each side combined.
+    static let targetMarkerOverhang: CGFloat = 5
 
     static func clamped(_ fraction: Double?) -> Double {
         fraction.map { min(1, max(0, $0)) } ?? 0
@@ -510,6 +513,12 @@ enum NativeRingMotion {
 
     static func targetTick(from range: ClosedRange<Double>) -> Double {
         clamped((range.lowerBound + range.upperBound) / 2)
+    }
+
+    static func targetBounds(from range: ClosedRange<Double>) -> ClosedRange<Double> {
+        let lo = clamped(range.lowerBound)
+        let hi = clamped(range.upperBound)
+        return min(lo, hi)...max(lo, hi)
     }
 }
 
@@ -549,15 +558,16 @@ struct NativeRing: View {
                     .trim(from: 0, to: drawn)
                     .stroke(tint, style: StrokeStyle(lineWidth: line, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                if let tick = targetTick {
-                    let span = NativeRingMotion.targetTickSpan
+                if let target = trimmedTarget {
                     Circle()
-                        .trim(from: max(0, tick - span / 2), to: min(1, tick + span / 2))
+                        .trim(from: target.lowerBound, to: target.upperBound)
                         .stroke(
-                            NativeTokens.sleepAwake,
-                            style: StrokeStyle(lineWidth: line * 0.55, lineCap: .butt)
+                            NativeTokens.sleepAwake.opacity(0.55),
+                            style: StrokeStyle(lineWidth: line * 0.45, lineCap: .butt)
                         )
                         .rotationEffect(.degrees(-90))
+                    targetBoundMark(at: target.lowerBound, line: line, diameter: diameter)
+                    targetBoundMark(at: target.upperBound, line: line, diameter: diameter)
                 }
                 VStack(spacing: whoop ? 6 : 0) {
                     HStack(alignment: .firstTextBaseline, spacing: whoop ? 1 : 0) {
@@ -598,14 +608,16 @@ struct NativeRing: View {
     }
 
     private var trimmedTarget: ClosedRange<Double>? {
-        guard let target = targetFraction else { return nil }
-        let lo = min(max(target.lowerBound, 0), 1)
-        let hi = min(max(target.upperBound, 0), 1)
-        return min(lo, hi)...max(lo, hi)
+        targetFraction.map { NativeRingMotion.targetBounds(from: $0) }
     }
 
-    private var targetTick: Double? {
-        trimmedTarget.map { NativeRingMotion.targetTick(from: $0) }
+    private func targetBoundMark(at fraction: Double, line: CGFloat, diameter: CGFloat) -> some View {
+        Capsule()
+            .fill(Color.primary)
+            .frame(width: NativeRingMotion.targetMarkerWidth, height: line + NativeRingMotion.targetMarkerOverhang)
+            .offset(y: -(diameter - line) / 2)
+            .rotationEffect(.degrees(fraction * 360))
+            .accessibilityHidden(true)
     }
 
     private var ringAccessibilityLabel: String {
