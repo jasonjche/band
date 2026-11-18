@@ -1211,6 +1211,7 @@ private struct NativeStressRangePlot: View {
     var calendar: Calendar
     @ObservedObject var scrub: NativeScopeScrub
     @Environment(\.nativeStyle) private var style
+    @State private var selectedTime: Date?
 
     private var barUnit: Calendar.Component { NativeScopePlotMath.barUnit(scope: series.scope) }
 
@@ -1219,21 +1220,6 @@ private struct NativeStressRangePlot: View {
     }
 
     private var columnKey: String { scrub.key ?? highlightKey }
-
-    private var timeBinding: Binding<Date?> {
-        Binding(
-            get: { scrub.time },
-            set: { time in
-                if let snapped = NativeChartScrubMath.snapBucket(date: time, buckets: window, bars: true) {
-                    scrub.time = snapped.time
-                    scrub.key = snapped.key
-                } else {
-                    scrub.time = nil
-                    scrub.key = nil
-                }
-            }
-        )
-    }
 
     private var dayHighlight: Color {
         style == .whoop ? NativeTokens.whoopHighlight : NativeTokens.highlight
@@ -1272,6 +1258,14 @@ private struct NativeStressRangePlot: View {
                         isSelected: bucket.key == scrub.key,
                         hasSelection: scrub.key != nil
                     ))
+                    .nativeValueLabel(trailing: bucket.key == window.last?.key) {
+                        if bucket.key == scrub.key {
+                            Text(String(format: "%.1f", value))
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.primary)
+                                .monospacedDigit()
+                        }
+                    }
                     .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
                     .accessibilityValue(String(format: "%.1f", value))
                 }
@@ -1306,12 +1300,21 @@ private struct NativeStressRangePlot: View {
                 }
             }
         }
-        .nativeClippedChartPlot()
+        .nativeClippedChartPlot(top: 22)
         .modifier(NativeTimeSelect(
-            selected: timeBinding,
+            selected: $selectedTime,
             snap: { NativeChartScrubMath.snapBucket(date: $0, buckets: window, bars: true)?.time },
-            onChange: { _ in }
+            onChange: { time in
+                if let snapped = NativeChartScrubMath.snapBucket(date: time, buckets: window, bars: true) {
+                    scrub.time = snapped.time
+                    scrub.key = snapped.key
+                } else {
+                    scrub.time = nil
+                    scrub.key = nil
+                }
+            }
         ))
+        .onChangeCompat(of: series.scope) { _ in selectedTime = nil }
         .accessibilityLabel("Stress")
     }
 

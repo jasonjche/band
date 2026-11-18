@@ -143,12 +143,26 @@ private struct NativeSleepConsistencyHost: View, Equatable {
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
-                title: "Sleep Consistency",
-                symbol: "calendar",
-                tint: NativePaint.sleep(style),
-                chevron: onOpen != nil
-            )
+            Group {
+                if let onOpen {
+                    Button(action: onOpen) {
+                        NativeCardHeader(
+                            title: "Sleep Consistency",
+                            symbol: "calendar",
+                            tint: NativePaint.sleep(style),
+                            chevron: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    NativeCardHeader(
+                        title: "Sleep Consistency",
+                        symbol: "calendar",
+                        tint: NativePaint.sleep(style),
+                        chevron: false
+                    )
+                }
+            }
             hero
             NativeSleepConsistencyChart(
                 nights: nights,
@@ -157,8 +171,6 @@ private struct NativeSleepConsistencyHost: View, Equatable {
             )
             .frame(height: 220)
         }
-        .contentShape(Rectangle())
-        .nativeChartButton(action: onOpen)
         .modifier(NativeSelectionFeedback(trigger: selectedKey ?? ""))
     }
 
@@ -170,6 +182,11 @@ private struct NativeSleepConsistencyHost: View, Equatable {
                 value: "\(Int(percent.rounded()))",
                 unit: "%"
             )
+        } else if let selected {
+            Text(NativeChartDay.longLabel(selected.key))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
         }
         if let night {
             HStack(spacing: 16) {
@@ -426,12 +443,26 @@ private struct NativeSleepStressHost: View, Equatable {
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
-                title: "Sleep Stress",
-                symbol: "waveform.path",
-                tint: NativePaint.stressBand(average, style: style),
-                chevron: onOpen != nil
-            )
+            Group {
+                if let onOpen {
+                    Button(action: onOpen) {
+                        NativeCardHeader(
+                            title: "Sleep Stress",
+                            symbol: "waveform.path",
+                            tint: NativePaint.stressBand(average, style: style),
+                            chevron: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    NativeCardHeader(
+                        title: "Sleep Stress",
+                        symbol: "waveform.path",
+                        tint: NativePaint.stressBand(average, style: style),
+                        chevron: false
+                    )
+                }
+            }
             NativeSleepStressHero(scrub: scrub, points: model.points, average: average)
                 .frame(height: 76, alignment: .topLeading)
             NativeSleepStressPlot(
@@ -448,9 +479,6 @@ private struct NativeSleepStressHost: View, Equatable {
                 bandRow(model.low, symbol: "arrow.down.circle.fill")
             }
         }
-        .contentShape(Rectangle())
-        .nativeChartButton(action: onOpen)
-        .modifier(NativeSelectionFeedback(trigger: scrub.time ?? .distantPast))
     }
 
     private func bandRow(_ band: NativeSleepStress.Band, symbol: String) -> some View {
@@ -469,23 +497,26 @@ private struct NativeSleepStressHero: View {
     var average: Double
 
     var body: some View {
-        if let time = scrub.time,
-           let point = NativeChartScrubMath.nearestHour(
-            to: time,
-            in: points,
-            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
-           ) {
-            NativeHeroValue(
-                caption: "Stress",
-                value: String(format: "%.1f", point.value),
-                date: NativeScopeFormat.time(point.time)
-            )
-        } else {
-            NativeHeroValue(
-                caption: "Average",
-                value: String(format: "%.1f", average)
-            )
+        Group {
+            if let time = scrub.time,
+               let point = NativeChartScrubMath.nearestHour(
+                to: time,
+                in: points,
+                maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+               ) {
+                NativeHeroValue(
+                    caption: "Stress",
+                    value: String(format: "%.1f", point.value),
+                    date: NativeScopeFormat.time(point.time)
+                )
+            } else {
+                NativeHeroValue(
+                    caption: "Average",
+                    value: String(format: "%.1f", average)
+                )
+            }
         }
+        .modifier(NativeSelectionFeedback(trigger: scrub.time ?? .distantPast))
     }
 }
 
@@ -494,13 +525,7 @@ struct NativeSleepStressPlot: View {
     var plot: NativeSleepStressPlotModel? = nil
     @ObservedObject var scrub: NativeScopeScrub
     @Environment(\.nativeStyle) private var style
-
-    private var timeBinding: Binding<Date?> {
-        Binding(
-            get: { scrub.time },
-            set: { scrub.time = $0 }
-        )
-    }
+    @State private var selectedTime: Date?
 
     private var resolved: NativeSleepStressPlotModel {
         plot ?? NativeSleepStressPlotModel.make(points: points)
@@ -558,9 +583,9 @@ struct NativeSleepStressPlot: View {
                     .clipped()
             }
             .modifier(NativeTimeSelect(
-                selected: timeBinding,
+                selected: $selectedTime,
                 snap: { NativeChartScrubMath.snapTime($0, in: points) },
-                onChange: { _ in }
+                onChange: { scrub.time = $0 }
             ))
     }
 }
@@ -641,19 +666,29 @@ private struct NativeSleepDualLineHost: View, Equatable {
             hero
             plot.frame(height: 200)
         }
-        .contentShape(Rectangle())
-        .nativeChartButton(action: onOpen)
         .modifier(NativeSelectionFeedback(trigger: selectedKey ?? ""))
     }
 
     @ViewBuilder private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            NativeCardHeader(
-                title: title,
-                symbol: "clock.fill",
-                tint: NativePaint.sleep(style),
-                chevron: onOpen != nil
-            )
+            if let onOpen {
+                Button(action: onOpen) {
+                    NativeCardHeader(
+                        title: title,
+                        symbol: "clock.fill",
+                        tint: NativePaint.sleep(style),
+                        chevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+            } else {
+                NativeCardHeader(
+                    title: title,
+                    symbol: "clock.fill",
+                    tint: NativePaint.sleep(style),
+                    chevron: false
+                )
+            }
             HStack(spacing: 10) {
                 NativeSleepSeriesKey(color: NativeTokens.sleep, name: "Hours of Sleep")
                 NativeSleepSeriesKey(color: Color.secondary, name: "Sleep Needed")
@@ -851,17 +886,27 @@ private struct NativeSleepTimeInBedWeekHost: View, Equatable {
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
-                title: "Time in Bed",
-                symbol: "bed.double.fill",
-                tint: NativePaint.sleep(style),
-                chevron: onOpen != nil
-            )
+            if let onOpen {
+                Button(action: onOpen) {
+                    NativeCardHeader(
+                        title: "Time in Bed",
+                        symbol: "bed.double.fill",
+                        tint: NativePaint.sleep(style),
+                        chevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+            } else {
+                NativeCardHeader(
+                    title: "Time in Bed",
+                    symbol: "bed.double.fill",
+                    tint: NativePaint.sleep(style),
+                    chevron: false
+                )
+            }
             hero
             plot.frame(height: 200)
         }
-        .contentShape(Rectangle())
-        .nativeChartButton(action: onOpen)
         .modifier(NativeSelectionFeedback(trigger: selectedKey ?? ""))
     }
 
@@ -998,12 +1043,24 @@ private struct NativeSleepRestorativeWeekHost: View, Equatable {
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
-                title: "Restorative Sleep",
-                symbol: "sparkles",
-                tint: NativePaint.sleep(style),
-                chevron: onOpen != nil
-            )
+            if let onOpen {
+                Button(action: onOpen) {
+                    NativeCardHeader(
+                        title: "Restorative Sleep",
+                        symbol: "sparkles",
+                        tint: NativePaint.sleep(style),
+                        chevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+            } else {
+                NativeCardHeader(
+                    title: "Restorative Sleep",
+                    symbol: "sparkles",
+                    tint: NativePaint.sleep(style),
+                    chevron: false
+                )
+            }
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
                 NativeSleepSeriesKey(
@@ -1023,8 +1080,6 @@ private struct NativeSleepRestorativeWeekHost: View, Equatable {
                 plot: plot
             )
         }
-        .contentShape(Rectangle())
-        .nativeChartButton(action: onOpen)
         .accessibilityLabel("Restorative Sleep")
     }
 }
@@ -1140,7 +1195,7 @@ struct NativeSleepRestorativeChart: View {
         .chartLegend(.hidden)
         .chartXScale(domain: keys)
         .chartYScale(domain: 0...max(ceiling, 1))
-        .chartPlotStyle { $0.clipped() }
+        .nativeClippedChartPlot(top: 20)
         .chartYAxis {
             AxisMarks(position: .trailing, values: axisTicks) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)

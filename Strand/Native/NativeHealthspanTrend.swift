@@ -13,15 +13,23 @@ struct NativeHealthspanTrendCard: View {
     var body: some View {
         NativeChrome.panel {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text(kind.title.uppercased())
-                        .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                Button {
+                    continuityID.select(.healthspanTrend(kind))
+                    navigationPath.wrappedValue.append(kind)
+                } label: {
+                    HStack {
+                        Text(kind.title.uppercased())
+                            .font(style == .whoop ? NativeTokens.whoopCaps(11) : .caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens \(kind.title)")
                 if kind == .bandAge {
                     NativeHealthspanBandAgeLegend()
                 }
@@ -29,13 +37,7 @@ struct NativeHealthspanTrendCard: View {
                     .equatable()
             }
         }
-        .contentShape(Rectangle())
-        .nativeChartButton(action: {
-            continuityID.select(.healthspanTrend(kind))
-            navigationPath.wrappedValue.append(kind)
-        })
         .nativeZoomSource(.healthspanTrend(kind))
-        .accessibilityHint("Opens \(kind.title)")
     }
 }
 

@@ -1551,10 +1551,10 @@ struct NativeScoreWeekBars: View {
                             })
                         ))
                         .nativeValueLabel(trailing: point.key == known.last?.key) {
-                            if showsValueLabels && whoop {
+                            if showsValueLabels && (whoop || point.key == selectedDay?.wrappedValue) {
                                 Text(format(point.value))
-                                    .font(NativeTokens.whoopNumber(11, weight: .semibold))
-                                    .foregroundStyle(point.key == highlightKey ? Color.primary : NativeTokens.whoopLabel)
+                                    .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
+                                    .foregroundStyle(point.key == selectedDay?.wrappedValue || point.key == highlightKey ? Color.primary : (whoop ? NativeTokens.whoopLabel : Color.secondary))
                                     .monospacedDigit()
                             }
                         }
@@ -1730,6 +1730,12 @@ struct NativeStackedWeekBars: View {
         max(axisTicks.last ?? ceiling, 1)
     }
 
+    private var totals: [String: Double] {
+        var out: [String: Double] = [:]
+        for slice in slices { out[slice.key, default: 0] += slice.value }
+        return out
+    }
+
     var body: some View {
         if slices.isEmpty {
             NativeEmptyState(text: "No data")
@@ -1766,6 +1772,17 @@ struct NativeStackedWeekBars: View {
                         isSelected: slice.key == selectedDay?.wrappedValue,
                         hasSelection: slices.contains(where: { $0.key == selectedDay?.wrappedValue })
                     ))
+                    .nativeValueLabel(trailing: slice.key == keys.last) {
+                        if showsValueLabels,
+                           slice.key == selectedDay?.wrappedValue,
+                           slice.id == slices.last(where: { $0.key == slice.key })?.id,
+                           let total = totals[slice.key] {
+                            Text(format(total))
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.primary)
+                                .monospacedDigit()
+                        }
+                    }
                 }
             }
             .chartForegroundStyleScale([
@@ -1914,13 +1931,14 @@ private struct NativeChartChrome: ViewModifier {
     var yFormat: (Double) -> String
     var hideYAxis: Bool = false
     var yTicks: [Double]? = nil
+    var topPadding: CGFloat = 20
     @Environment(\.nativeStyle) private var style
 
     @ViewBuilder
     func body(content: Content) -> some View {
         let plotted = content
             .chartXScale(domain: keys)
-            .chartPlotStyle { $0.clipped() }
+            .nativeClippedChartPlot(top: topPadding)
             .chartXAxis {
                 AxisMarks(values: keys) { value in
                     AxisGridLine(stroke: style == .whoop ? StrokeStyle(lineWidth: 0) : NativeChrome.gridStroke)

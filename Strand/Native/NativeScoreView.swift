@@ -880,12 +880,15 @@ private struct NativeScoreWeekChartCard: View {
     var body: some View {
         let tint = NativeScoreWeekFormat.tint(card, style: style)
         NativeChrome.panel {
-            NativeCardHeader(
-                title: card.title,
-                symbol: NativeScoreWeekFormat.symbol(card),
-                tint: tint,
-                chevron: true
-            )
+            Button(action: onOpen) {
+                NativeCardHeader(
+                    title: card.title,
+                    symbol: NativeScoreWeekFormat.symbol(card),
+                    tint: tint,
+                    chevron: true
+                )
+            }
+            .buttonStyle(.plain)
             NativeChartBlock(
                 points: card.points,
                 bars: card.bars,
@@ -903,8 +906,6 @@ private struct NativeScoreWeekChartCard: View {
                 stacks: card.stacks
             )
         }
-        .contentShape(Rectangle())
-        .nativeChartButton(action: onOpen)
     }
 }
 
@@ -1516,21 +1517,36 @@ private struct NativeOvernightHeartHost: View, Equatable {
 
     private var selectedPoint: NativeHourPoint? {
         guard let selectedTime else { return nil }
+        let drawn = plot?.plotPoints ?? points
         return NativeChartScrubMath.nearestHour(
             to: selectedTime,
-            in: points,
-            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+            in: drawn,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: drawn)
         )
     }
 
     var body: some View {
         NativeChrome.panel {
-            NativeCardHeader(
-                title: "Heart Rate",
-                symbol: "heart.fill",
-                tint: NativePaint.heart(style),
-                chevron: onOpen != nil
-            )
+            Group {
+                if let onOpen {
+                    Button(action: onOpen) {
+                        NativeCardHeader(
+                            title: "Heart Rate",
+                            symbol: "heart.fill",
+                            tint: NativePaint.heart(style),
+                            chevron: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    NativeCardHeader(
+                        title: "Heart Rate",
+                        symbol: "heart.fill",
+                        tint: NativePaint.heart(style),
+                        chevron: false
+                    )
+                }
+            }
             if let point = selectedPoint {
                 NativeHeroValue(
                     caption: "Heart Rate",
@@ -1550,8 +1566,7 @@ private struct NativeOvernightHeartHost: View, Equatable {
                 plot: plot
             )
         }
-        .contentShape(Rectangle())
-        .nativeChartButton(action: onOpen)
+        .modifier(NativeSelectionFeedback(trigger: selectedTime ?? .distantPast))
     }
 }
 

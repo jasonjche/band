@@ -341,6 +341,7 @@ private struct NativeScopePlotHost: View {
                 scopedChart
             }
         }
+        .onChangeCompat(of: series.scope) { _ in selectedTime = nil }
         .frame(height: plotHeight)
         .nativeChartDescriptor(scopeDescriptor)
     }
@@ -379,19 +380,24 @@ private struct NativeScopePlotHost: View {
         )
     }
 
+    @State private var selectedTime: Date?
+
     private var timeBinding: Binding<Date?> {
         Binding(
-            get: { scrub.time },
+            get: { selectedTime },
             set: { time in
                 if usesHours {
+                    selectedTime = time
                     scrub.time = time
                     scrub.key = nil
                 } else if let snapped = NativeChartScrubMath.snapBucket(
                     date: time, buckets: visible, bars: bars
                 ) {
+                    selectedTime = snapped.time
                     scrub.time = snapped.time
                     scrub.key = snapped.key
                 } else {
+                    selectedTime = nil
                     scrub.time = nil
                     scrub.key = nil
                 }
@@ -435,7 +441,7 @@ private struct NativeScopePlotHost: View {
                 .chartXSelection(value: timeBinding)
                 .chartOverlay { proxy in
                     NativeScopeHairline(
-                        proxy: proxy, visible: visible, scrub: scrub, tint: tint, color: color
+                        proxy: proxy, visible: visible, scrub: scrub, tint: tint, format: format, color: color
                     )
                 }
         } else if #available(iOS 17.0, macOS 14.0, *) {
@@ -443,7 +449,7 @@ private struct NativeScopePlotHost: View {
                 .chartXSelection(value: timeBinding)
                 .chartOverlay { proxy in
                     NativeScopeHairline(
-                        proxy: proxy, visible: visible, scrub: scrub, tint: tint, color: color
+                        proxy: proxy, visible: visible, scrub: scrub, tint: tint, format: format, color: color
                     )
                 }
         } else {
@@ -522,19 +528,36 @@ private struct NativeScopeHairline: View {
     var visible: [NativeScopeBucket]
     @ObservedObject var scrub: NativeScopeScrub
     var tint: Color
+    var format: (Double) -> String
     var color: ((Double) -> Color)?
 
     var body: some View {
-        if let key = scrub.key,
-           let bucket = NativeScopeVisible.selected(key: key, in: visible),
-           let value = bucket.value {
-            NativeChartTimeScrubGuide(
-                proxy: proxy,
-                time: bucket.start,
-                y: value,
-                tint: color?(value) ?? tint
-            )
+        GeometryReader { geo in
+            if let key = scrub.key,
+               let bucket = NativeScopeVisible.selected(key: key, in: visible),
+               let value = bucket.value {
+                let frame = NativeChartScrubMath.plotFrame(proxy: proxy, geo: geo)
+                let activeTint = color?(value) ?? tint
+                ZStack(alignment: .topLeading) {
+                    NativeChartTimeScrubGuide(
+                        proxy: proxy,
+                        time: bucket.start,
+                        y: value,
+                        tint: activeTint
+                    )
+                    if let xRel = proxy.position(forX: bucket.start) {
+                        let rawX = frame.origin.x + xRel
+                        let clampedX = min(max(rawX, frame.minX + 20), frame.maxX - 20)
+                        Text(format(value))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Color.primary)
+                            .monospacedDigit()
+                            .position(x: clampedX, y: max(10, frame.minY - 11))
+                    }
+                }
+            }
         }
+        .allowsHitTesting(false)
     }
 }
 
@@ -661,7 +684,7 @@ private struct NativeScopeStaticChart: View {
                 }
             }
         }
-        .nativeClippedChartPlot()
+        .nativeClippedChartPlot(top: 22)
     }
 
     @ChartContentBuilder
@@ -706,6 +729,14 @@ private struct NativeScopeStaticChart: View {
                         isSelected: bucket.key == selectedKey,
                         hasSelection: selectedKey != nil
                     ))
+                    .nativeValueLabel(trailing: bucket.key == visible.last?.key) {
+                        if bucket.key == selectedKey {
+                            Text(format(value))
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.primary)
+                                .monospacedDigit()
+                        }
+                    }
                     .accessibilityLabel(series.selectionDateText(for: bucket, calendar: calendar))
                     .accessibilityValue(format(value))
                 }
@@ -846,6 +877,14 @@ private struct NativeHourBarChart: View {
                     isSelected: point.time == selectedTime,
                     hasSelection: selectedTime != nil
                 ))
+                .nativeValueLabel(trailing: point.time == drawn.last?.time) {
+                    if point.time == selectedTime {
+                        Text(format(point.value))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Color.primary)
+                            .monospacedDigit()
+                    }
+                }
                 .accessibilityLabel(NativeScopeFormat.hourClock(point.time, calendar: calendar))
                 .accessibilityValue(format(point.value))
             }
@@ -879,7 +918,7 @@ private struct NativeHourBarChart: View {
                 }
             }
         }
-        .nativeClippedChartPlot()
+        .nativeClippedChartPlot(top: 22)
         .modifier(NativeTimeSelect(
             selected: timeBinding,
             snap: { NativeChartScrubMath.snapHour(date: $0, points: points, calendar: calendar) },
@@ -1221,13 +1260,13 @@ extension ChartContent {
             position: .top,
             alignment: trailing ? .trailing : .center,
             spacing: 4,
-            overflowResolution: .init(x: .fit(to: .plot), y: .fit(to: .plot))
+            overflowResolution: .init(x: .fit(to: .plot), y: .disabled)
         ) {
-            label().offset(x: trailing ? -6 : 0)
+            label().offset(x: trailing ? -4 : 0)
         }
         #else
         annotation(position: .top, alignment: trailing ? .trailing : .center, spacing: 4) {
-            label().offset(x: trailing ? -6 : 0)
+            label().offset(x: trailing ? -4 : 0)
         }
         #endif
     }

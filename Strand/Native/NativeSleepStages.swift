@@ -270,19 +270,22 @@ private struct NativeSleepHypnogramPlot: View {
                 }
             }
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 8)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 4)
                     .onChanged { value in
-                        guard NativeChartScrubMath.isHorizontalScrub(translation: value.translation) else { return }
+                        guard NativeChartScrubMath.isHorizontalScrub(translation: value.translation, minimum: 4) else { return }
                         let x = Double(min(max(value.location.x - 48, 0), plotWidth))
                         let ts = NativeSleepHypnogramMath.timestamp(
                             x: x, width: plotWidth, nightStart: layout.startTs, nightEnd: layout.endTs
                         )
                         scrub.time = Date(timeIntervalSince1970: TimeInterval(ts))
                     }
-                    .onEnded { _ in scrub.time = nil }
+                    .onEnded { value in
+                        let wasTap = scrub.time == nil && NativeChartScrubMath.isTap(translation: value.translation)
+                        scrub.time = nil
+                        if wasTap { onOpen?() }
+                    }
             )
-            .nativeChartButton(action: onOpen)
             .modifier(NativeSelectionFeedback(trigger: hapticSpan))
         }
     }
