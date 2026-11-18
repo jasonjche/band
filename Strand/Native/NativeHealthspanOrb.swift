@@ -67,7 +67,10 @@ struct NativeHealthspanOrb: View {
     private var size: CGFloat { compact ? NativeHealthspanOrbLayout.compactSize : NativeHealthspanOrbLayout.heroSize }
     private var tone: NativeHealthspanOrbTone { NativeHealthspanOrbMap.tone(delta: delta, isLoading: isLoading) }
     private var targetFill: Double {
-        isLoading ? 0 : NativeHealthspanOrbMap.fillFraction(delta: delta)
+        if isLoading { return 0 }
+        // The ring closes once loaded: a partial arc implied a scale the number doesn't have.
+        // Colour carries younger/older; the draw-in on load is the only motion.
+        return orbStyle == .ring ? 1 : NativeHealthspanOrbMap.fillFraction(delta: delta)
     }
     /// Ring only ticks while loading so the pulse can run; bloom/glass tick whenever live.
     private var clockPaused: Bool {
@@ -363,8 +366,9 @@ private struct NativeHealthspanRingOrb: View {
     }
 
     private func arc(fill: Double) -> some Shape {
+        // A full ring is a plain circle, so no round-cap seam shows at the top.
         Circle()
-            .trim(from: 0, to: CGFloat(min(max(fill, 0.001), 1)))
+            .trim(from: 0, to: fill >= 0.999 ? 1 : CGFloat(min(max(fill, 0.001), 1)))
             .rotation(.degrees(-90))
     }
 }

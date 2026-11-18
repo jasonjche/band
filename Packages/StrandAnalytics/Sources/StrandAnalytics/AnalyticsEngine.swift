@@ -548,7 +548,12 @@ public enum AnalyticsEngine {
                                   // Personal Native path: fitted BandStrain (0–21 → stored 0–100) instead
                                   // of Edwards/Banister. Default false so classic/macOS and existing tests
                                   // stay on StrainScorer.
-                                  useBandStrain: Bool = false) -> DayResult {
+                                  useBandStrain: Bool = false,
+                                  // Workouts of this calendar day (any source). When BandStrain is on,
+                                  // a workout whose window has < 50% strap-HR coverage contributes its
+                                  // load to L_day. Empty (the default) keeps every existing caller
+                                  // byte-identical.
+                                  strainWorkouts: [BandStrain.WorkoutContribution] = []) -> DayResult {
 
         // Precompute the day's UTC bounds ONCE (#996). `dayString(ts, offsetSec:)` formats the UTC
         // calendar day of (ts + offset) with a FIXED offset, so "== day" is exactly membership in
@@ -991,9 +996,14 @@ public enum AnalyticsEngine {
         let strain: Double?
         if useBandStrain, let bandParams = BandStrain.bundledParams() {
             let hrmax = effMaxHR ?? Double(StrainScorer.defaultMaxHR())
-            strain = BandStrain.effort100(
-                BandStrain.strain(hrForStrain, maxHR: hrmax, restingHR: restForStrain, params: bandParams)
-            )
+            let s21: Double?
+            if strainWorkouts.isEmpty {
+                s21 = BandStrain.strain(hrForStrain, maxHR: hrmax, restingHR: restForStrain, params: bandParams)
+            } else {
+                s21 = BandStrain.dayStrain(hrForStrain, workouts: strainWorkouts,
+                                           maxHR: hrmax, restingHR: restForStrain, params: bandParams)
+            }
+            strain = BandStrain.effort100(s21)
         } else {
             strain = StrainScorer.strain(hrForStrain, maxHR: effMaxHR, restingHR: restForStrain,
                                          method: effortMethod, sex: profile.sex,

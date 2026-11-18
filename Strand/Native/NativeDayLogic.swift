@@ -122,16 +122,69 @@ enum NativeDayLogic {
         value.count == 10 && value.utf8.allSatisfy { ($0 >= 48 && $0 <= 57) || $0 == 45 }
     }
 
-    private static let localDayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = .current
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
+    /// Civil `yyyy-MM-dd` parts. Nil when the key is not three integer fields.
+    static func civilDate(_ key: String) -> (year: Int, month: Int, day: Int)? {
+        guard key.utf8.count == 10 else { return nil }
+        let bytes = key.utf8
+        func digit(_ offset: Int) -> Int? {
+            let byte = bytes[bytes.index(bytes.startIndex, offsetBy: offset)]
+            guard byte >= 48, byte <= 57 else { return nil }
+            return Int(byte - 48)
+        }
+        guard let y0 = digit(0), let y1 = digit(1), let y2 = digit(2), let y3 = digit(3),
+              bytes[bytes.index(bytes.startIndex, offsetBy: 4)] == 45,
+              let m0 = digit(5), let m1 = digit(6),
+              bytes[bytes.index(bytes.startIndex, offsetBy: 7)] == 45,
+              let d0 = digit(8), let d1 = digit(9)
+        else { return nil }
+        let month = m0 * 10 + m1
+        let day = d0 * 10 + d1
+        guard month >= 1, month <= 12, day >= 1, day <= 31 else { return nil }
+        return (y0 * 1000 + y1 * 100 + y2 * 10 + y3, month, day)
+    }
+
+    /// Proleptic Gregorian day number for a `yyyy-MM-dd` key (Howard Hinnant civil days).
+    /// Same order as local calendar dates; no `DateFormatter` / `Calendar` per point.
+    static func epochDay(_ key: String) -> Int? {
+        guard let civil = civilDate(key) else { return nil }
+        return epochDay(year: civil.year, month: civil.month, day: civil.day)
+    }
+
+    /// Days since 1970-01-01 in the proleptic Gregorian calendar.
+    static func epochDay(year: Int, month: Int, day: Int) -> Int {
+        var year = year
+        year -= month <= 2 ? 1 : 0
+        let era = (year >= 0 ? year : year - 399) / 400
+        let yoe = year - era * 400
+        let doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+        return era * 146097 + doe - 719468
+    }
 
     static func startOfLocalDay(_ key: String) -> Date? {
-        guard let date = localDayFormatter.date(from: key) else { return nil }
-        return Calendar.current.startOfDay(for: date)
+        if let cached = startOfDayCache.lock({ $0[key] }) { return cached }
+        guard let civil = civilDate(key) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        guard let date = calendar.date(from: DateComponents(year: civil.year, month: civil.month, day: civil.day))
+        else { return nil }
+        let start = calendar.startOfDay(for: date)
+        startOfDayCache.lock { $0[key] = start }
+        return start
+    }
+
+    private static let startOfDayCache = NativeDayStartCache()
+}
+
+/// Tiny lock around a day-key → start-of-day map. Charts and Home both hit the same keys.
+private final class NativeDayStartCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String: Date] = [:]
+
+    func lock<T>(_ body: (inout [String: Date]) -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&storage)
     }
 }

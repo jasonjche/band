@@ -701,12 +701,39 @@ private struct NativeSelectedDayKey: EnvironmentKey {
 enum NativeDaySelection {
     static let storageKey = "noop.nativeSelectedDayKey"
 
+    private static var cachedStored: String?
+    private static var cachedToday: String?
+    private static var cachedLaunch: String?
+    private static var cachedDate: Date?
+    private static var cachedResolved: String?
+
     static func key(from date: Date) -> String {
         NativeDayLogic.persistSteppedDay(date)
     }
 
+    /// Parse the stored stepper string once per change (and once per logical day).
     static func date(from key: String) -> Date {
-        NativeDayLogic.date(forStored: key)
+        refresh(key)
+        return cachedDate ?? NativeDayLogic.date(forStored: key)
+    }
+
+    static func resolvedKey(from key: String) -> String {
+        refresh(key)
+        return cachedResolved ?? NativeDayLogic.resolvedDayKey(stored: key)
+    }
+
+    private static func refresh(_ key: String) {
+        let today = NativeDayLogic.logicalToday()
+        let launch = NativeDayLogic.launchId
+        if key == cachedStored, today == cachedToday, launch == cachedLaunch,
+           cachedDate != nil, cachedResolved != nil {
+            return
+        }
+        cachedStored = key
+        cachedToday = today
+        cachedLaunch = launch
+        cachedResolved = NativeDayLogic.resolvedDayKey(stored: key, now: Date(), launchId: launch)
+        cachedDate = NativeDayLogic.date(forStored: key, now: Date(), launchId: launch)
     }
 }
 
@@ -752,10 +779,14 @@ struct NativeDayPoint: Identifiable, Equatable {
 
 /// Weekday "Thu". The page's selected day is primary semibold.
 /// WHOOP style stacks weekday over the date ("Fri" / "6").
-struct NativeChartAxisLabel: View {
+struct NativeChartAxisLabel: View, Equatable {
     var key: String
     var highlighted: Bool
     @Environment(\.nativeStyle) private var style
+
+    static func == (lhs: NativeChartAxisLabel, rhs: NativeChartAxisLabel) -> Bool {
+        lhs.key == rhs.key && lhs.highlighted == rhs.highlighted
+    }
 
     var body: some View {
         VStack(spacing: 1) {
@@ -770,6 +801,12 @@ struct NativeChartAxisLabel: View {
 enum NativeChartDay {
     private static let posix = Locale(identifier: "en_US_POSIX")
     private static let gmt = TimeZone(secondsFromGMT: 0)!
+    private static let labelLock = NSLock()
+    private static var parsedDates: [String: Date] = [:]
+    private static var weekdayCache: [String: String] = [:]
+    private static var dayOfMonthCache: [String: String] = [:]
+    private static var longLabelCache: [String: String] = [:]
+    private static var mediumDateCache: [String: String] = [:]
 
     private static let keyParser: DateFormatter = {
         let formatter = DateFormatter()
@@ -822,7 +859,10 @@ enum NativeChartDay {
     }()
 
     static func date(from key: String) -> Date? {
-        keyParser.date(from: key)
+        if let cached = locked({ parsedDates[key] }) { return cached }
+        guard let date = keyParser.date(from: key) else { return nil }
+        locked { parsedDates[key] = date }
+        return date
     }
 
     static func key(from date: Date) -> String {
@@ -830,28 +870,48 @@ enum NativeChartDay {
     }
 
     static func weekday(_ key: String) -> String {
+        if let cached = locked({ weekdayCache[key] }) { return cached }
         guard let date = date(from: key) else { return key }
-        return weekdayFormatter.string(from: date)
+        let text = weekdayFormatter.string(from: date)
+        locked { weekdayCache[key] = text }
+        return text
     }
 
     static func dayOfMonth(_ key: String) -> String {
-        guard let date = date(from: key) else {
+        if let cached = locked({ dayOfMonthCache[key] }) { return cached }
+        let text: String
+        if let date = date(from: key) {
+            text = dayFormatter.string(from: date)
+        } else {
             let tail = String(key.suffix(2)).drop { $0 == "0" }
-            return tail.isEmpty ? key : String(tail)
+            text = tail.isEmpty ? key : String(tail)
         }
-        return dayFormatter.string(from: date)
+        locked { dayOfMonthCache[key] = text }
+        return text
     }
 
     /// "Thu, Nov 12"
     static func longLabel(_ key: String) -> String {
+        if let cached = locked({ longLabelCache[key] }) { return cached }
         guard let date = date(from: key) else { return key }
-        return longFormatter.string(from: date)
+        let text = longFormatter.string(from: date)
+        locked { longLabelCache[key] = text }
+        return text
     }
 
     /// "Nov 12, 2026"
     static func mediumDate(_ key: String) -> String {
+        if let cached = locked({ mediumDateCache[key] }) { return cached }
         guard let date = date(from: key) else { return key }
-        return mediumFormatter.string(from: date)
+        let text = mediumFormatter.string(from: date)
+        locked { mediumDateCache[key] = text }
+        return text
+    }
+
+    private static func locked<T>(_ body: () -> T) -> T {
+        labelLock.lock()
+        defer { labelLock.unlock() }
+        return body()
     }
 
     /// "Nov 10–16, 2026"
@@ -1302,6 +1362,7 @@ struct NativeStrainRecoveryChart: View {
                 AxisValueLabel {
                     if let key = value.as(String.self) {
                         NativeChartAxisLabel(key: key, highlighted: key == highlightKey)
+                            .equatable()
                     }
                 }
             }
@@ -1402,13 +1463,12 @@ struct NativeScoreWeekBars: View {
     @Environment(\.nativeStyle) private var style
 
     private var known: [NativeDayPoint] { points.filter { $0.value.isFinite } }
-    private var ceiling: Double { max(maxY, 1) }
     private var whoop: Bool { style == .whoop }
     private var axisTicks: [Double] {
-        yTicks ?? NativeChartTicks.nice(min: 0, max: ceiling, targetCount: compactYAxis ? 2 : 4)
+        NativeScoreWeekBarsMath.axisTicks(maxY: maxY, yTicks: yTicks, compactYAxis: compactYAxis)
     }
     private var plotCeiling: Double {
-        max(axisTicks.last ?? ceiling, known.map(\.value).max() ?? 0, 1)
+        NativeScoreWeekBarsMath.plotCeiling(ticks: axisTicks, known: known.map(\.value), maxY: maxY)
     }
 
     var body: some View {
@@ -1476,6 +1536,16 @@ struct NativeScoreWeekBars: View {
 
     private func barColor(_ value: Double) -> Color {
         color?(value) ?? tint
+    }
+}
+
+enum NativeScoreWeekBarsMath {
+    static func axisTicks(maxY: Double, yTicks: [Double]?, compactYAxis: Bool) -> [Double] {
+        yTicks ?? NativeChartTicks.nice(min: 0, max: max(maxY, 1), targetCount: compactYAxis ? 2 : 4)
+    }
+
+    static func plotCeiling(ticks: [Double], known: [Double], maxY: Double) -> Double {
+        max(ticks.last ?? max(maxY, 1), known.max() ?? 0, 1)
     }
 }
 
@@ -1809,6 +1879,7 @@ private struct NativeChartChrome: ViewModifier {
                     AxisValueLabel {
                         if let key = value.as(String.self) {
                             NativeChartAxisLabel(key: key, highlighted: key == highlightKey)
+                            .equatable()
                         }
                     }
                 }
@@ -1864,6 +1935,87 @@ private struct NativeOptionalDaySelect: ViewModifier {
     }
 }
 
+/// Display polyline, domains, and ticks for the overnight HR chart. Built once per series.
+struct NativeOvernightPlotModel: Equatable {
+    var plotPoints: [NativeHourPoint]
+    var domainPoints: [NativeHourPoint]
+    var xDomain: ClosedRange<Date>?
+    var yDomain: ClosedRange<Double>
+    var axisTicks: [Double]
+    var hourLabels: [Date]
+    var hourLabelText: [TimeInterval: String]
+    var pointTimeText: [TimeInterval: String]
+    var maxGap: TimeInterval?
+
+    static let empty = NativeOvernightPlotModel(
+        plotPoints: [],
+        domainPoints: [],
+        xDomain: nil,
+        yDomain: 40...90,
+        axisTicks: NativeChartTicks.nice(min: 40, max: 90, targetCount: 4),
+        hourLabels: [],
+        hourLabelText: [:],
+        pointTimeText: [:],
+        maxGap: nil
+    )
+
+    static func make(points: [NativeHourPoint], calendar: Calendar = .current) -> NativeOvernightPlotModel {
+        let plotPoints = NativeHRDisplay.line(points)
+        let xDomain: ClosedRange<Date>? = {
+            guard let first = plotPoints.map(\.time).min(),
+                  let last = plotPoints.map(\.time).max(),
+                  last > first
+            else { return nil }
+            return first...last
+        }()
+        let vals = plotPoints.map(\.value).filter(\.isFinite)
+        let axisTicks = NativeChartTicks.nice(min: vals.min() ?? 40, max: vals.max() ?? 90, targetCount: 4)
+        let yDomain = NativeChartTicks.domain(from: axisTicks, fallback: 40...90)
+        let domainPoints: [NativeHourPoint] = {
+            guard let xDomain else { return plotPoints }
+            return plotPoints.filter {
+                $0.time >= xDomain.lowerBound && $0.time <= xDomain.upperBound
+                    && $0.value >= yDomain.lowerBound && $0.value <= yDomain.upperBound
+            }
+        }()
+        let hourLabels = xDomain.map { NativeChartTicks.hourDates(from: $0.lowerBound, to: $0.upperBound, calendar: calendar) } ?? []
+        var hourLabelText: [TimeInterval: String] = [:]
+        hourLabelText.reserveCapacity(hourLabels.count)
+        for date in hourLabels {
+            hourLabelText[date.timeIntervalSince1970] = NativeScopeFormat.hourClock(date, calendar: calendar)
+        }
+        var pointTimeText: [TimeInterval: String] = [:]
+        pointTimeText.reserveCapacity(domainPoints.count)
+        for point in domainPoints {
+            pointTimeText[point.time.timeIntervalSince1970] = NativeScopeFormat.time(point.time, calendar: calendar)
+        }
+        return NativeOvernightPlotModel(
+            plotPoints: plotPoints,
+            domainPoints: domainPoints,
+            xDomain: xDomain,
+            yDomain: yDomain,
+            axisTicks: axisTicks,
+            hourLabels: hourLabels,
+            hourLabelText: hourLabelText,
+            pointTimeText: pointTimeText,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+        )
+    }
+}
+
+enum NativeOvernightMemo {
+    private static var lastPoints: [NativeHourPoint] = []
+    private static var lastModel = NativeOvernightPlotModel.empty
+
+    static func model(for points: [NativeHourPoint]) -> NativeOvernightPlotModel {
+        if points == lastPoints { return lastModel }
+        let next = NativeOvernightPlotModel.make(points: points)
+        lastPoints = points
+        lastModel = next
+        return next
+    }
+}
+
 /// Overnight heart-rate polyline. Dense samples: line only, y-axis on the right.
 /// Plot height is reserved empty or full so the Sleep page does not jump when samples land.
 struct NativeOvernightLine: View {
@@ -1876,84 +2028,49 @@ struct NativeOvernightLine: View {
 
     @State private var localSelected: Date?
 
-    /// Display polyline. Stats and scrub stay on `points`.
-    private var plotPoints: [NativeHourPoint] {
-        NativeHRDisplay.line(points)
-    }
-
-    private var xDomain: ClosedRange<Date>? {
-        guard let first = plotPoints.map(\.time).min(), let last = plotPoints.map(\.time).max(), last > first else {
-            return nil
-        }
-        return first...last
-    }
-
-    private var axisTicks: [Double] {
-        let vals = plotPoints.map(\.value).filter(\.isFinite)
-        let lo = vals.min() ?? 40
-        let hi = vals.max() ?? 90
-        return NativeChartTicks.nice(min: lo, max: hi, targetCount: 4)
-    }
-
-    private var yDomain: ClosedRange<Double> {
-        NativeChartTicks.domain(from: axisTicks, fallback: 40...90)
-    }
-
-    private var domainPoints: [NativeHourPoint] {
-        guard let xDomain else { return plotPoints }
-        return plotPoints.filter {
-            $0.time >= xDomain.lowerBound && $0.time <= xDomain.upperBound
-                && $0.value >= yDomain.lowerBound && $0.value <= yDomain.upperBound
-        }
-    }
-
-    private var hourLabels: [Date] {
-        guard let xDomain else { return [] }
-        return NativeChartTicks.hourDates(from: xDomain.lowerBound, to: xDomain.upperBound)
-    }
-
     private var selection: Binding<Date?> {
         selectedTime ?? $localSelected
     }
 
-    private var scrubPoint: NativeHourPoint? {
+    private func scrubPoint(in model: NativeOvernightPlotModel) -> NativeHourPoint? {
         guard let selected = selection.wrappedValue,
               let raw = NativeChartScrubMath.nearestHour(
                 to: selected,
                 in: points,
-                maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+                maxGap: model.maxGap
               ) else { return nil }
-        return NativeChartScrubMath.nearestHour(to: raw.time, in: plotPoints) ?? raw
+        return NativeChartScrubMath.nearestHour(to: raw.time, in: model.plotPoints) ?? raw
     }
 
     var body: some View {
+        let model = NativeOvernightMemo.model(for: points)
         Group {
             if points.isEmpty {
                 NativeEmptyState(text: "No data")
             } else {
                 Chart {
-                    ForEach(domainPoints) { point in
+                    ForEach(model.domainPoints) { point in
                         LineMark(x: .value("Time", point.time), y: .value("HR", point.value))
                             .foregroundStyle(tint)
                             .interpolationMethod(.linear)
                             .lineStyle(StrokeStyle(lineWidth: 2))
-                            .accessibilityLabel(NativeScopeFormat.time(point.time))
+                            .accessibilityLabel(model.pointTimeText[point.time.timeIntervalSince1970] ?? NativeScopeFormat.time(point.time))
                             .accessibilityValue("\(Int(point.value.rounded()))")
                     }
-                    if let point = scrubPoint,
-                       point.value >= yDomain.lowerBound, point.value <= yDomain.upperBound,
-                       xDomain.map({ point.time >= $0.lowerBound && point.time <= $0.upperBound }) ?? true {
+                    if let point = scrubPoint(in: model),
+                       point.value >= model.yDomain.lowerBound, point.value <= model.yDomain.upperBound,
+                       model.xDomain.map({ point.time >= $0.lowerBound && point.time <= $0.upperBound }) ?? true {
                         PointMark(x: .value("Scrub", point.time), y: .value("HR", point.value))
                             .foregroundStyle(tint)
                             .symbol { NativeSelectedVertex(tint: tint) }
                             .accessibilityHidden(true)
                     }
                 }
-                .chartYScale(domain: yDomain)
-                .chartXScale(domain: xDomain ?? Date()...Date())
+                .chartYScale(domain: model.yDomain)
+                .chartXScale(domain: model.xDomain ?? Date()...Date())
                 .chartPlotStyle { $0.clipped() }
                 .chartYAxis {
-                    AxisMarks(position: .trailing, values: axisTicks) { value in
+                    AxisMarks(position: .trailing, values: model.axisTicks) { value in
                         AxisGridLine(stroke: NativeChrome.gridStroke)
                             .foregroundStyle(NativeChrome.hairline)
                         AxisValueLabel {
@@ -1967,12 +2084,12 @@ struct NativeOvernightLine: View {
                     }
                 }
                 .chartXAxis {
-                    AxisMarks(values: hourLabels) { value in
+                    AxisMarks(values: model.hourLabels) { value in
                         AxisGridLine(stroke: NativeChrome.gridStroke)
                             .foregroundStyle(NativeChrome.hairline)
                         AxisValueLabel {
                             if let date = value.as(Date.self) {
-                                Text(NativeScopeFormat.hourClock(date, calendar: .current))
+                                Text(model.hourLabelText[date.timeIntervalSince1970] ?? NativeScopeFormat.hourClock(date, calendar: .current))
                                     .font(.caption2)
                                     .foregroundStyle(Color.secondary)
                             }
@@ -1986,7 +2103,7 @@ struct NativeOvernightLine: View {
                         return NativeChartScrubMath.nearestHour(
                             to: time,
                             in: points,
-                            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+                            maxGap: model.maxGap
                         )?.time
                     },
                     onChange: { _ in }

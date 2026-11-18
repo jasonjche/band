@@ -5,14 +5,35 @@ import WhoopProtocol
 ///
 /// Per-sample load `w` on %HRmax, integrated with a median-gap cap, then
 /// `21 · (1 − exp(−k · L^p))`. Sleep at or below resting HR contributes 0.
-/// Day strain is `strain(L_day)` over the calendar day's HR, never a sum of
+/// Day strain is `strain(L_day)` over the calendar day's strap HR, never a sum of
 /// activity strains. Activity strain is the same map over the workout window.
+/// When a workout's window has under 50% strap-HR coverage, that workout's load is
+/// added to `L_day` (strap samples inside the window are dropped so they are not
+/// counted twice) and the 0–21 map saturates. Day strain is then at least the day's
+/// highest activity strain.
 ///
 /// Storage elsewhere keeps Effort 0–100 = strain21 × 100/21; this type returns 0–21.
 public enum BandStrain {
 
     public static let expectedSchemaVersion = 1
     public static let defaultRestingHR = 60.0
+    /// Strap-HR seconds / window seconds below which a workout's load is added to `L_day`.
+    public static let strapCoverageThreshold = 0.5
+
+    /// A logged workout that may fill a hole in the day's strap HR.
+    public struct WorkoutContribution: Equatable {
+        public var startTs: Int
+        public var endTs: Int
+        public var samples: [HRSample]
+        public var storedStrain21: Double?
+
+        public init(startTs: Int, endTs: Int, samples: [HRSample] = [], storedStrain21: Double? = nil) {
+            self.startTs = startTs
+            self.endTs = endTs
+            self.samples = samples
+            self.storedStrain21 = storedStrain21
+        }
+    }
 
     public static func bundledParams() -> Params? { cachedParams }
     private static let cachedParams: Params? = try? BandScores.Params.bundled().strain
@@ -147,6 +168,102 @@ public enum BandStrain {
         let p = min(max(params.p, 0.15), 3.0)
         let s = params.maxStrain * (1.0 - exp(-k * pow(L, p)))
         return min(max(s, 0), params.maxStrain)
+    }
+
+    /// Inverse of `strain(load:)`: `L = (−ln(1 − S/maxStrain)/k)^(1/p)`.
+    public static func load(fromStrain s: Double, params: Params) -> Double? {
+        guard s > 0, s < params.maxStrain, params.k > 0, params.p > 0 else { return nil }
+        return pow(-log(1 - s / params.maxStrain) / params.k, 1 / params.p)
+    }
+
+    /// Unique strap-HR seconds in `[start, end)` divided by the window length.
+    public static func strapCoverage(samples: [HRSample], start: Int, end: Int) -> Double {
+        let duration = end - start
+        guard duration > 0 else { return 0 }
+        var seen = Set<Int>()
+        seen.reserveCapacity(min(samples.count, duration))
+        for s in samples where s.ts >= start && s.ts < end {
+            seen.insert(s.ts)
+        }
+        return Double(seen.count) / Double(duration)
+    }
+
+    /// Day strain with additive load from workouts whose strap-HR coverage is below 50%.
+    /// When every workout is covered (or `workouts` is empty), identical to `strain(samples, ...)`.
+    public static func dayStrain(_ samples: [HRSample],
+                                 workouts: [WorkoutContribution],
+                                 maxHR: Double, restingHR: Double,
+                                 params: Params) -> Double? {
+        let workouts = collapseOverlapping(workouts)
+        let prepared = workouts.map { w -> (w: WorkoutContribution, coverage: Double, load: Double?, strain21: Double?) in
+            let coverage = strapCoverage(samples: samples, start: w.startTs, end: w.endTs)
+            let pair = workoutLoadAndStrain21(w, maxHR: maxHR, restingHR: restingHR, params: params)
+            return (w, coverage, pair.load, pair.strain21)
+        }
+        let gaps = prepared.filter { $0.coverage < strapCoverageThreshold }
+        if gaps.isEmpty {
+            return strain(samples, maxHR: maxHR, restingHR: restingHR, params: params)
+        }
+        let excluded = samples.filter { s in
+            !gaps.contains { $0.w.startTs <= s.ts && s.ts < $0.w.endTs }
+        }
+        var L = load(excluded, maxHR: maxHR, restingHR: restingHR, params: params)
+        var maxActivity = 0.0
+        for item in prepared {
+            if let s = item.strain21 { maxActivity = max(maxActivity, s) }
+            if item.coverage < strapCoverageThreshold, let extra = item.load {
+                L += extra
+            }
+        }
+        return max(strain(load: L, params: params), maxActivity)
+    }
+
+    /// Keep one row per overlapping session so an Apple import and a strap/manual copy
+    /// of the same window cannot add load twice. Prefer the row that has HR samples.
+    static func collapseOverlapping(_ workouts: [WorkoutContribution]) -> [WorkoutContribution] {
+        let sorted = workouts.sorted {
+            $0.startTs < $1.startTs || ($0.startTs == $1.startTs && $0.endTs < $1.endTs)
+        }
+        var kept: [WorkoutContribution] = []
+        for w in sorted {
+            if let i = kept.firstIndex(where: { overlapFraction($0, w) >= 0.5 }) {
+                kept[i] = prefer(kept[i], w)
+            } else {
+                kept.append(w)
+            }
+        }
+        return kept
+    }
+
+    private static func overlapFraction(_ a: WorkoutContribution, _ b: WorkoutContribution) -> Double {
+        let start = max(a.startTs, b.startTs)
+        let end = min(a.endTs, b.endTs)
+        let span = min(max(0, a.endTs - a.startTs), max(0, b.endTs - b.startTs))
+        guard span > 0, end > start else { return 0 }
+        return Double(end - start) / Double(span)
+    }
+
+    private static func prefer(_ a: WorkoutContribution, _ b: WorkoutContribution) -> WorkoutContribution {
+        if a.samples.isEmpty != b.samples.isEmpty { return a.samples.isEmpty ? b : a }
+        if (a.storedStrain21 ?? 0) != (b.storedStrain21 ?? 0) {
+            return (a.storedStrain21 ?? 0) >= (b.storedStrain21 ?? 0) ? a : b
+        }
+        return a
+    }
+
+    private static func workoutLoadAndStrain21(_ w: WorkoutContribution,
+                                               maxHR: Double, restingHR: Double,
+                                               params: Params) -> (load: Double?, strain21: Double?) {
+        if !w.samples.isEmpty {
+            let L = load(w.samples, maxHR: maxHR, restingHR: restingHR, params: params)
+            return (L, strain(load: L, params: params))
+        }
+        if let s = w.storedStrain21, s > 0 {
+            let clipped = min(s, params.maxStrain)
+            let L = clipped < params.maxStrain ? load(fromStrain: clipped, params: params) : nil
+            return (L, clipped)
+        }
+        return (nil, nil)
     }
 
     /// Stored Effort 0–100 = strain21 × 100/21. Nil stays nil.

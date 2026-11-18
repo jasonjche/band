@@ -286,6 +286,7 @@ struct NativeSleepConsistencyChart: View {
                 AxisValueLabel {
                     if let key = value.as(String.self) {
                         NativeChartAxisLabel(key: key, highlighted: key == nights.first(where: \.isToday)?.key)
+                            .equatable()
                     }
                 }
             }
@@ -720,6 +721,7 @@ struct NativeSleepDualLineCard: View {
                 AxisValueLabel {
                     if let key = value.as(String.self) {
                         NativeChartAxisLabel(key: key, highlighted: key == highlightKey)
+                            .equatable()
                     }
                 }
             }
@@ -884,6 +886,7 @@ struct NativeSleepTimeInBedWeekCard: View {
                 AxisValueLabel {
                     if let key = value.as(String.self) {
                         NativeChartAxisLabel(key: key, highlighted: key == highlightKey)
+                            .equatable()
                     }
                 }
             }
@@ -1095,6 +1098,7 @@ struct NativeSleepRestorativeChart: View {
                 AxisValueLabel {
                     if let key = value.as(String.self) {
                         NativeChartAxisLabel(key: key, highlighted: key == highlightKey)
+                            .equatable()
                     }
                 }
             }

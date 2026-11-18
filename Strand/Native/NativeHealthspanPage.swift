@@ -18,7 +18,7 @@ struct NativeHealthspanPage: View {
     @State private var result: HealthspanEngine.Result?
 
     private var selectedDay: Date { NativeDaySelection.date(from: selectedDayKey) }
-    private var dayKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
+    private var dayKey: String { NativeDaySelection.resolvedKey(from: selectedDayKey) }
     private var taskID: String { handlesReady ? "\(dayKey)|\(refreshSeq)" : "boot" }
 
     var body: some View {
@@ -99,18 +99,48 @@ struct NativeHealthspanPage: View {
 struct NativeHealthspanBody: View {
     var result: HealthspanEngine.Result?
     var links: [NativeHealthItem] = []
-    @Environment(\.nativeStyle) private var style
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var compactProgress: CGFloat = 0
 
-    private var forming: Bool { result == nil }
+    var body: some View {
+        NativeHealthspanScrollChrome(
+            bandAge: result?.bandAge,
+            deltaYears: result?.deltaYears,
+            forming: result == nil,
+            reduceMotion: reduceMotion,
+            overlay: {
+                if let result {
+                    NativeHealthspanCompactHeader(
+                        bandAge: result.bandAge,
+                        deltaYears: result.deltaYears,
+                        pace: result.pace,
+                        forming: false
+                    )
+                }
+            }
+        ) {
+            NativeHealthspanMainStack(result: result, links: links)
+                .equatable()
+        }
+    }
+}
+
+/// Scroll-driven compact progress lives here so trend charts and contributors stay Equatable.
+private struct NativeHealthspanScrollChrome<Overlay: View, Content: View>: View {
+    var bandAge: Double?
+    var deltaYears: Double?
+    var forming: Bool
+    var reduceMotion: Bool
+    @ViewBuilder var overlay: () -> Overlay
+    @ViewBuilder var content: () -> Content
+    @Environment(\.nativeStyle) private var style
+    @State private var compactProgress: CGFloat = 0
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: style == .whoop ? 12 : 10) {
                 NativeHealthspanOrb(
-                    value: result?.bandAge,
-                    delta: result?.deltaYears,
+                    value: bandAge,
+                    delta: deltaYears,
                     isLoading: forming,
                     compact: false,
                     reduceMotion: reduceMotion
@@ -121,40 +151,7 @@ struct NativeHealthspanBody: View {
                 .opacity(1 - compactProgress)
                 .modifier(NativeHealthspanHeroPhaseFade())
                 .background(NativeHealthspanHeroAnchor())
-                if let result {
-                    NativeHealthspanPaceCard(
-                        pace: result.pace,
-                        weekDelta: NativeHealthspanPaceChip.weekDelta(points: result.trend)
-                    )
-                }
-                if !links.isEmpty {
-                    NativeHealthLinks(items: links)
-                }
-                if let result {
-                    if result.readiness != .ready {
-                        calibration(result)
-                    }
-                    NativeHealthspanSectionBlock(
-                        title: "Sleep",
-                        rows: result.contributors.filter { $0.section == .sleep }
-                    )
-                    NativeHealthspanSectionBlock(
-                        title: "Strain",
-                        rows: result.contributors.filter { $0.section == .strain }
-                    )
-                    NativeHealthspanSectionBlock(
-                        title: "Fitness",
-                        rows: result.contributors.filter { $0.section == .fitness }
-                    )
-                    if !result.trend.isEmpty {
-                        NativeChrome.section("Trend")
-                        NativeHealthspanTrendCard(points: result.trend, kind: .bandAge)
-                        NativeHealthspanTrendCard(points: result.trend, kind: .pace)
-                    }
-                    NativeChrome.footnote(
-                        "Band Age is a wellness comparison from published mortality research, not a medical or biological age. Lean mass is omitted when the device has none. HRV is not used."
-                    )
-                }
+                content()
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 160)
@@ -170,15 +167,64 @@ struct NativeHealthspanBody: View {
             }
         }
         .overlay(alignment: .top) {
-            if let result {
-                NativeHealthspanCompactHeader(
-                    bandAge: result.bandAge,
-                    deltaYears: result.deltaYears,
-                    pace: result.pace,
-                    forming: false
-                )
+            overlay()
                 .opacity(compactProgress)
                 .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct NativeHealthspanMainStack: View, Equatable {
+    var result: HealthspanEngine.Result?
+    var links: [NativeHealthItem]
+    @Environment(\.nativeStyle) private var style
+
+    static func == (lhs: NativeHealthspanMainStack, rhs: NativeHealthspanMainStack) -> Bool {
+        lhs.result == rhs.result && lhs.links == rhs.links
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if result != nil || !links.isEmpty {
+            stack
+        }
+    }
+
+    private var stack: some View {
+        VStack(alignment: .leading, spacing: style == .whoop ? 12 : 10) {
+            if let result {
+                NativeHealthspanPaceCard(
+                    pace: result.pace,
+                    weekDelta: NativeHealthspanPaceChip.weekDelta(points: result.trend)
+                )
+            }
+            if !links.isEmpty {
+                NativeHealthLinks(items: links)
+            }
+            if let result {
+                if result.readiness != .ready {
+                    calibration(result)
+                }
+                NativeHealthspanSectionBlock(
+                    title: "Sleep",
+                    rows: result.contributors.filter { $0.section == .sleep }
+                )
+                NativeHealthspanSectionBlock(
+                    title: "Strain",
+                    rows: result.contributors.filter { $0.section == .strain }
+                )
+                NativeHealthspanSectionBlock(
+                    title: "Fitness",
+                    rows: result.contributors.filter { $0.section == .fitness }
+                )
+                if !result.trend.isEmpty {
+                    NativeChrome.section("Trend")
+                    NativeHealthspanTrendCard(points: result.trend, kind: .bandAge)
+                    NativeHealthspanTrendCard(points: result.trend, kind: .pace)
+                }
+                NativeChrome.footnote(
+                    "Band Age is a wellness comparison from published mortality research, not a medical or biological age. Lean mass is omitted when the device has none. HRV is not used."
+                )
             }
         }
     }
@@ -341,10 +387,14 @@ enum NativeHealthspanBuild {
             byDay[day] = row
         }
 
+        // VO₂ max: one source for the whole window, never a mix. WHOOP scores its own estimate, so Band
+        // prefers its own (vo2max_est) when it has one; Apple Watch VO₂ max reads well below WHOOP's for
+        // the same person and moved Band Age by ~2 years. Apple Health is the fallback.
+        let preferOwnVO2 = vo2EstByDay.values.contains { $0 > 0 }
         for a in apple {
             var row = slot(a.day)
             if let s = a.steps, s > 0 { row.steps = Double(s) }
-            if let v = a.vo2max, v > 0 { row.vo2max = v }
+            if !preferOwnVO2, let v = a.vo2max, v > 0 { row.vo2max = v }
             byDay[a.day] = row
         }
 
@@ -363,7 +413,7 @@ enum NativeHealthspanBuild {
             if row.steps == nil { row.steps = s }
             byDay[day] = row
         }
-        for (day, v) in vo2ByDay where v > 0 {
+        for (day, v) in vo2ByDay where v > 0 && !preferOwnVO2 {
             var row = slot(day)
             if row.vo2max == nil { row.vo2max = v }
             byDay[day] = row

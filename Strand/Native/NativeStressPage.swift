@@ -32,7 +32,7 @@ struct NativeStressPage: View {
     @State private var typicalDurations: NativeStressBandDurations?
     @State private var typicalSameWeekday = false
 
-    private var dayKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
+    private var dayKey: String { NativeDaySelection.resolvedKey(from: selectedDayKey) }
 
     private var taskID: String {
         handlesReady ? "\(scope.rawValue)|\(dayKey)|\(refreshSeq)" : "boot"
@@ -292,19 +292,20 @@ struct NativeStressDayChart: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack {
-                NativeStressDayPlot(
+                NativeStressDayPlotHost(
                     score: level ?? hours.last?.value ?? 0,
+                    hours: hours,
                     sleepStart: sleepStart,
                     sleepEnd: sleepEnd,
                     workouts: workouts,
                     workoutSymbols: workoutSymbols,
                     dayStart: dayStart,
                     now: now,
-                    sampleHours: hours,
                     previewSelected: previewSelected,
                     scrubValue: $scrubValue,
                     scrubTime: $scrubTime
                 )
+                .equatable()
                 if hours.isEmpty {
                     Text("No data")
                         .font(.subheadline.weight(.semibold))
@@ -314,6 +315,54 @@ struct NativeStressDayChart: View {
             .frame(height: height)
         }
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// Rebuilds the stress plot model only when the series or day window changes.
+private struct NativeStressDayPlotHost: View, Equatable {
+    var score: Double
+    var hours: [NativeHourPoint]
+    var sleepStart: Date?
+    var sleepEnd: Date?
+    var workouts: [(start: Date, end: Date)]
+    var workoutSymbols: [String]
+    var dayStart: Date
+    var now: Date
+    var previewSelected: Date?
+    @Binding var scrubValue: Double
+    @Binding var scrubTime: Date?
+
+    static func == (lhs: NativeStressDayPlotHost, rhs: NativeStressDayPlotHost) -> Bool {
+        lhs.score == rhs.score
+            && lhs.hours == rhs.hours
+            && lhs.sleepStart == rhs.sleepStart
+            && lhs.sleepEnd == rhs.sleepEnd
+            && lhs.dayStart == rhs.dayStart
+            && lhs.now == rhs.now
+            && lhs.previewSelected == rhs.previewSelected
+            && lhs.workoutSymbols == rhs.workoutSymbols
+            && lhs.workouts.count == rhs.workouts.count
+            && zip(lhs.workouts, rhs.workouts).allSatisfy {
+                $0.start == $1.start && $0.end == $1.end
+            }
+    }
+
+    var body: some View {
+        NativeStressDayPlot(
+            model: NativeStressDayPlotModel.make(
+                score: score,
+                hours: hours,
+                sleepStart: sleepStart,
+                sleepEnd: sleepEnd,
+                workouts: workouts,
+                workoutSymbols: workoutSymbols,
+                dayStart: dayStart,
+                now: now
+            ),
+            previewSelected: previewSelected,
+            scrubValue: $scrubValue,
+            scrubTime: $scrubTime
+        )
     }
 }
 
@@ -1097,54 +1146,53 @@ private struct NativeStressRangePlot: View {
 
 // MARK: - Day plot (full-height activity columns + plot-frame icons)
 
-/// 0–3 day plot. Sleep/workout columns fill the plot; icons sit on the pixel
-/// midpoint of each visible span so they cannot drift from the highlight.
-struct NativeStressDayPlot: View {
+struct NativeStressDayPlotModel: Equatable {
+    struct Activity: Equatable {
+        var start: Date
+        var end: Date
+        var symbol: String
+    }
+
+    struct VisibleSpan: Equatable {
+        var start: Date
+        var end: Date
+    }
+
     var score: Double
-    var sleepStart: Date?
-    var sleepEnd: Date?
-    var workouts: [(start: Date, end: Date)]
-    var workoutSymbols: [String] = []
+    var hours: [NativeHourPoint]
+    var hourSegments: [[NativeHourPoint]]
     var dayStart: Date
     var now: Date
-    var sampleHours: [NativeHourPoint] = []
-    var previewSelected: Date? = nil
-    @Environment(\.nativeStyle) private var style
-    @Binding var scrubValue: Double
-    @Binding var scrubTime: Date?
-    @State private var selectedTime: Date?
+    var plotEnd: Date
+    var xDomain: ClosedRange<Date>
+    var showsNow: Bool
+    var sleepVisible: VisibleSpan?
+    var workoutVisible: [VisibleSpan]
+    var activities: [Activity]
+    var laneItems: [NativeStressLaneIcon.Item]
+    var hourLabels: [Date]
+    var hourLabelText: [TimeInterval: String]
+    var pointTimeText: [TimeInterval: String]
+    var maxGap: TimeInterval?
 
-    private var hours: [NativeHourPoint] {
-        NativeScopePlotMath.clippedHours(sampleHours, start: dayStart, end: plotEnd)
-    }
-
-    private var hourSegments: [[NativeHourPoint]] {
-        NativeStressMonitorMath.segments(hours).map { NativeStressMonitorMath.drawPoints($0) }
-    }
-
-    private var lineGradient: LinearGradient {
-        let stops = NativeStressMonitorMath.lineStops(style: style).map {
-            Gradient.Stop(color: $0.color, location: $0.value / 3)
-        }
-        return LinearGradient(stops: stops, startPoint: .bottom, endPoint: .top)
-    }
-
-    private var plotEnd: Date {
-        NativeStressMonitorMath.plotEnd(dayStart: dayStart, now: now)
-    }
-
-    private var showsNow: Bool {
-        NativeStressMonitorMath.showsNow(dayStart: dayStart, now: now)
-    }
-
-    private var activities: [(start: Date, end: Date, symbol: String)] {
-        NativeStressMonitorMath.activities(workouts: workouts, symbols: workoutSymbols)
-    }
-
-    private var laneItems: [NativeStressLaneIcon.Item] {
-        var items: [NativeStressLaneIcon.Item] = []
+    static func make(
+        score: Double,
+        hours sampleHours: [NativeHourPoint],
+        sleepStart: Date?,
+        sleepEnd: Date?,
+        workouts: [(start: Date, end: Date)],
+        workoutSymbols: [String],
+        dayStart: Date,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> NativeStressDayPlotModel {
+        let plotEnd = NativeStressMonitorMath.plotEnd(dayStart: dayStart, now: now)
+        let hours = NativeScopePlotMath.clippedHours(sampleHours, start: dayStart, end: plotEnd)
+        let hourSegments = NativeStressMonitorMath.segments(hours).map { NativeStressMonitorMath.drawPoints($0) }
+        let activities = NativeStressMonitorMath.activities(workouts: workouts, symbols: workoutSymbols)
+        var laneItems: [NativeStressLaneIcon.Item] = []
         if let sleepStart, let sleepEnd, sleepEnd > sleepStart {
-            items.append(
+            laneItems.append(
                 NativeStressLaneIcon.Item(
                     id: "sleep",
                     start: sleepStart,
@@ -1155,7 +1203,7 @@ struct NativeStressDayPlot: View {
             )
         }
         for (index, bout) in activities.enumerated() {
-            items.append(
+            laneItems.append(
                 NativeStressLaneIcon.Item(
                     id: "activity-\(index)",
                     start: bout.start,
@@ -1165,7 +1213,63 @@ struct NativeStressDayPlot: View {
                 )
             )
         }
-        return items
+        let sleepVisible = sleepStart.flatMap { start in
+            sleepEnd.flatMap { end in
+                NativeStressLaneIcon.clip(start, end, plotStart: dayStart, plotEnd: plotEnd)
+                    .map { VisibleSpan(start: $0.start, end: $0.end) }
+            }
+        }
+        let workoutVisible: [VisibleSpan] = activities.compactMap { bout in
+            NativeStressLaneIcon.clip(bout.start, bout.end, plotStart: dayStart, plotEnd: plotEnd)
+                .map { VisibleSpan(start: $0.start, end: $0.end) }
+        }
+        let hourLabels = NativeCountTicks.roundHourLabels(dayStart: dayStart, plotEnd: plotEnd, calendar: calendar)
+        var hourLabelText: [TimeInterval: String] = [:]
+        for date in hourLabels {
+            hourLabelText[date.timeIntervalSince1970] = NativeScopeFormat.hourClock(date, calendar: calendar)
+        }
+        var pointTimeText: [TimeInterval: String] = [:]
+        for segment in hourSegments {
+            for point in segment {
+                pointTimeText[point.time.timeIntervalSince1970] = NativeScopeFormat.time(point.time, calendar: calendar)
+            }
+        }
+        return NativeStressDayPlotModel(
+            score: score,
+            hours: hours,
+            hourSegments: hourSegments,
+            dayStart: dayStart,
+            now: now,
+            plotEnd: plotEnd,
+            xDomain: NativeScopePlotMath.paddedXDomain(start: dayStart, end: plotEnd),
+            showsNow: NativeStressMonitorMath.showsNow(dayStart: dayStart, now: now),
+            sleepVisible: sleepVisible,
+            workoutVisible: workoutVisible,
+            activities: activities.map { Activity(start: $0.start, end: $0.end, symbol: $0.symbol) },
+            laneItems: laneItems,
+            hourLabels: hourLabels,
+            hourLabelText: hourLabelText,
+            pointTimeText: pointTimeText,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: hours)
+        )
+    }
+}
+
+/// 0–3 day plot. Sleep/workout columns fill the plot; icons sit on the pixel
+/// midpoint of each visible span so they cannot drift from the highlight.
+struct NativeStressDayPlot: View {
+    var model: NativeStressDayPlotModel
+    var previewSelected: Date? = nil
+    @Environment(\.nativeStyle) private var style
+    @Binding var scrubValue: Double
+    @Binding var scrubTime: Date?
+    @State private var selectedTime: Date?
+
+    private var lineGradient: LinearGradient {
+        let stops = NativeStressMonitorMath.lineStops(style: style).map {
+            Gradient.Stop(color: $0.color, location: $0.value / 3)
+        }
+        return LinearGradient(stops: stops, startPoint: .bottom, endPoint: .top)
     }
 
     private var sleepFill: Color { NativePaint.separator(style).opacity(0.22) }
@@ -1175,10 +1279,7 @@ struct NativeStressDayPlot: View {
 
     var body: some View {
         Chart {
-            if let sleepStart, let sleepEnd,
-               let visible = NativeStressLaneIcon.clip(
-                sleepStart, sleepEnd, plotStart: dayStart, plotEnd: plotEnd
-               ) {
+            if let visible = model.sleepVisible {
                 RectangleMark(
                     xStart: .value("Sleep shade start", visible.start),
                     xEnd: .value("Sleep shade end", visible.end),
@@ -1196,29 +1297,25 @@ struct NativeStressDayPlot: View {
                 .foregroundStyle(sleepAccent)
                 .accessibilityLabel("Sleep")
             }
-            ForEach(Array(activities.enumerated()), id: \.offset) { _, bout in
-                if let visible = NativeStressLaneIcon.clip(
-                    bout.start, bout.end, plotStart: dayStart, plotEnd: plotEnd
-                ) {
-                    RectangleMark(
-                        xStart: .value("Activity shade start", visible.start),
-                        xEnd: .value("Activity shade end", visible.end),
-                        yStart: .value("Plot", 0),
-                        yEnd: .value("Top", 3)
-                    )
-                    .foregroundStyle(workoutFill)
-                    .accessibilityHidden(true)
-                    RectangleMark(
-                        xStart: .value("Activity accent start", visible.start),
-                        xEnd: .value("Activity accent end", visible.end),
-                        yStart: .value("Accent", NativeStressLaneIcon.accentLow),
-                        yEnd: .value("Accent top", NativeStressLaneIcon.accentHigh)
-                    )
-                    .foregroundStyle(workoutAccent)
-                    .accessibilityLabel("Activity")
-                }
+            ForEach(Array(model.workoutVisible.enumerated()), id: \.offset) { _, visible in
+                RectangleMark(
+                    xStart: .value("Activity shade start", visible.start),
+                    xEnd: .value("Activity shade end", visible.end),
+                    yStart: .value("Plot", 0),
+                    yEnd: .value("Top", 3)
+                )
+                .foregroundStyle(workoutFill)
+                .accessibilityHidden(true)
+                RectangleMark(
+                    xStart: .value("Activity accent start", visible.start),
+                    xEnd: .value("Activity accent end", visible.end),
+                    yStart: .value("Accent", NativeStressLaneIcon.accentLow),
+                    yEnd: .value("Accent top", NativeStressLaneIcon.accentHigh)
+                )
+                .foregroundStyle(workoutAccent)
+                .accessibilityLabel("Activity")
             }
-            ForEach(Array(hourSegments.enumerated()), id: \.offset) { index, segment in
+            ForEach(Array(model.hourSegments.enumerated()), id: \.offset) { index, segment in
                 ForEach(segment) { point in
                     LineMark(
                         x: .value("Time", point.time),
@@ -1228,16 +1325,16 @@ struct NativeStressDayPlot: View {
                     .foregroundStyle(lineGradient)
                     .interpolationMethod(.monotone)
                     .lineStyle(StrokeStyle(lineWidth: 2.5, lineJoin: .round))
-                    .accessibilityLabel(NativeScopeFormat.time(point.time))
+                    .accessibilityLabel(model.pointTimeText[point.time.timeIntervalSince1970] ?? NativeScopeFormat.time(point.time))
                     .accessibilityValue(String(format: "%.1f", point.value))
                 }
             }
-            if showsNow {
-                RuleMark(x: .value("Now", now))
+            if model.showsNow {
+                RuleMark(x: .value("Now", model.now))
                     .foregroundStyle(NativePaint.separator(style))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     .accessibilityHidden(true)
-                PointMark(x: .value("Now dot", now), y: .value("Base", 0))
+                PointMark(x: .value("Now dot", model.now), y: .value("Base", 0))
                     .foregroundStyle(Color.primary)
                     .symbolSize(28)
                     .accessibilityHidden(true)
@@ -1245,8 +1342,8 @@ struct NativeStressDayPlot: View {
             if let selectedTime,
                let point = NativeChartScrubMath.nearestHour(
                 to: selectedTime,
-                in: hours,
-                maxGap: NativeChartScrubMath.inferredMaxGap(in: hours)
+                in: model.hours,
+                maxGap: model.maxGap
                ) {
                 PointMark(x: .value("Scrub", point.time), y: .value("Stress", point.value))
                     .foregroundStyle(NativePaint.stressBand(point.value, style: style))
@@ -1255,7 +1352,7 @@ struct NativeStressDayPlot: View {
             }
         }
         .chartYScale(domain: 0...3)
-        .chartXScale(domain: NativeScopePlotMath.paddedXDomain(start: dayStart, end: plotEnd))
+        .chartXScale(domain: model.xDomain)
         .chartYAxis {
             AxisMarks(preset: .aligned, position: .trailing, values: NativeStressMonitorMath.yAxisValues) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
@@ -1271,15 +1368,12 @@ struct NativeStressDayPlot: View {
             }
         }
         .chartXAxis {
-            let labels = NativeCountTicks.roundHourLabels(
-                dayStart: dayStart, plotEnd: plotEnd, calendar: .current
-            )
-            AxisMarks(preset: .aligned, values: labels) { value in
+            AxisMarks(preset: .aligned, values: model.hourLabels) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativePaint.separator(style))
-                AxisValueLabel(anchor: NativeDayAxisLabel.anchor(for: value.as(Date.self) ?? .distantPast, in: labels)) {
+                AxisValueLabel(anchor: NativeDayAxisLabel.anchor(for: value.as(Date.self) ?? .distantPast, in: model.hourLabels)) {
                     if let date = value.as(Date.self) {
-                        Text(NativeScopeFormat.hourClock(date, calendar: .current))
+                        Text(model.hourLabelText[date.timeIntervalSince1970] ?? NativeScopeFormat.hourClock(date, calendar: .current))
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                             .monospacedDigit()
@@ -1291,16 +1385,16 @@ struct NativeStressDayPlot: View {
         .chartOverlay { proxy in
             NativeStressLaneOverlay(
                 proxy: proxy,
-                items: laneItems,
-                dayStart: dayStart,
-                plotEnd: plotEnd
+                items: model.laneItems,
+                dayStart: model.dayStart,
+                plotEnd: model.plotEnd
             )
         }
         .modifier(NativeTimeSelect(selected: $selectedTime, onChange: { time in
             if let time, let point = NativeChartScrubMath.nearestHour(
                 to: time,
-                in: hours,
-                maxGap: NativeChartScrubMath.inferredMaxGap(in: hours)
+                in: model.hours,
+                maxGap: model.maxGap
             ) {
                 scrubTime = point.time
                 scrubValue = point.value
@@ -1310,15 +1404,15 @@ struct NativeStressDayPlot: View {
         }))
         .onAppear { if selectedTime == nil { selectedTime = previewSelected } }
         .modifier(NativeSelectionFeedback(trigger: selectedTime ?? .distantPast))
-        .accessibilityLabel("Stress monitor \(String(format: "%.1f", score))")
+        .accessibilityLabel("Stress monitor \(String(format: "%.1f", model.score))")
         .nativeChartDescriptor(
             NativeChartDescriptor(
                 title: "Stress",
                 unit: "",
                 xKind: .date,
-                points: hours.map {
+                points: model.hours.map {
                     NativeChartDescriptor.Point(
-                        xLabel: NativeScopeFormat.time($0.time),
+                        xLabel: model.pointTimeText[$0.time.timeIntervalSince1970] ?? NativeScopeFormat.time($0.time),
                         xValue: $0.time.timeIntervalSince1970,
                         y: $0.value
                     )

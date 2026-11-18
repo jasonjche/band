@@ -316,6 +316,7 @@ public struct WhoopExportImporter {
             var r = WhoopSleepRow()
             r.tzOffsetMin = tz
             r.cycleStart = WhoopTime.parse(row.cell("cycle_start_time"), offsetMinutes: tz)
+            r.cycleEnd   = WhoopTime.parse(row.cell("cycle_end_time"), offsetMinutes: tz)
             r.sleepOnset = WhoopTime.parse(row.cell("sleep_onset"), offsetMinutes: tz)
             r.wakeOnset  = WhoopTime.parse(row.cell("wake_onset"), offsetMinutes: tz)
 
@@ -352,12 +353,15 @@ public struct WhoopExportImporter {
             var r = WhoopWorkoutRow()
             r.tzOffsetMin = tz
             r.cycleStart   = WhoopTime.parse(row.cell("cycle_start_time"), offsetMinutes: tz)
+            r.cycleEnd     = WhoopTime.parse(row.cell("cycle_end_time"), offsetMinutes: tz)
             r.workoutStart = WhoopTime.parse(row.cell("workout_start_time"), offsetMinutes: tz)
             r.workoutEnd   = WhoopTime.parse(row.cell("workout_end_time"), offsetMinutes: tz)
 
             if r.workoutStart == nil && r.workoutEnd == nil && r.cycleStart == nil { continue }
 
+            r.durationMin    = row.double("duration_min")
             r.activityName   = row.cell("activity_name")
+            r.gpsEnabled     = row.bool("gps_enabled")
             // Parsed VERBATIM (WHOOP's 0–21 scale) to preserve the CSV round-trip contract; the
             // 0–21→0–100 Effort rescale is applied at the store-write (WhoopImporter), like day_strain.
             r.activityStrain = row.double("activity_strain")
@@ -392,6 +396,7 @@ public struct WhoopExportImporter {
             var r = WhoopJournalRow()
             r.tzOffsetMin = tz
             r.cycleStart = WhoopTime.parse(row.cell("cycle_start_time"), offsetMinutes: tz)
+            r.cycleEnd   = WhoopTime.parse(row.cell("cycle_end_time"), offsetMinutes: tz)
             r.question = row.cell("question_text", "question")
             // #631: the REAL WHOOP export header is "Answered yes" (-> answered_yes), not the
             // "Answered yes/no" NOOP's own exporter writes (-> answered_yes_no). Every real WHOOP

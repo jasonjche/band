@@ -12,7 +12,9 @@ enum NativeHealthspanFormat {
     }
 
     static func paceText(_ value: Double) -> String {
-        String(format: "%.1fx", value)
+        // Round first so -0.04 reads "0.0x", never "-0.0x".
+        let rounded = (value * 10).rounded() / 10
+        return String(format: "%.1fx", rounded == 0 ? 0 : rounded)
     }
 
     static func yearsImpact(_ years: Double?, available: Bool) -> String {
@@ -188,13 +190,11 @@ enum NativeHealthspanTrendScope: String, CaseIterable, Identifiable {
         _ points: [HealthspanEngine.TrendPoint],
         scope: NativeHealthspanTrendScope
     ) -> [HealthspanEngine.TrendPoint] {
-        guard let last = points.last,
-              let end = NativeDayLogic.startOfLocalDay(last.day)
-        else { return points }
-        let start = Calendar.current.date(byAdding: .day, value: -scope.days, to: end) ?? end
+        guard let last = points.last, let endDay = NativeDayLogic.epochDay(last.day) else { return points }
+        let startDay = endDay - scope.days
         return points.filter { point in
-            guard let day = NativeDayLogic.startOfLocalDay(point.day) else { return false }
-            return day >= start
+            guard let day = NativeDayLogic.epochDay(point.day) else { return false }
+            return day >= startDay
         }
     }
 }

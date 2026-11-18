@@ -697,6 +697,62 @@ enum NativeSleepHypnogramMath {
     }
 }
 
+/// Pixel-independent hypnogram geometry. Built once per night; the plot only multiplies by width.
+struct NativeSleepHypnogramLayout: Equatable {
+    struct SpanDraw: Identifiable, Equatable {
+        var id: Int
+        var kind: NativeSleepStageKind
+        var unitLo: Double
+        var unitHi: Double
+        var lane: Int
+        var startTs: Int
+        var endTs: Int
+    }
+
+    var startTs: Int
+    var endTs: Int
+    var spans: [SpanDraw]
+    var sourceSpans: [NativeSleepStageSpan]
+    var axisTimes: [Date]
+    var axisLabels: [String]
+    var nightStartLabel: String
+    var nightEndLabel: String
+
+    static func make(
+        spans: [NativeSleepStageSpan],
+        nightStart: Date,
+        nightEnd: Date
+    ) -> NativeSleepHypnogramLayout {
+        let startTs = Int(nightStart.timeIntervalSince1970)
+        let endTs = Int(nightEnd.timeIntervalSince1970)
+        let draws: [SpanDraw] = spans.compactMap { span in
+            guard let unit = NativeSleepHypnogramMath.unitRange(
+                start: span.startTs, end: span.endTs, nightStart: startTs, nightEnd: endTs
+            ) else { return nil }
+            return SpanDraw(
+                id: span.startTs,
+                kind: span.kind,
+                unitLo: unit.lo,
+                unitHi: unit.hi,
+                lane: NativeSleepStageKind.hypnogramLanes.firstIndex(of: span.kind) ?? 2,
+                startTs: span.startTs,
+                endTs: span.endTs
+            )
+        }
+        let axisTimes = NativeSleepHypnogramMath.axisTimes(start: nightStart, end: nightEnd)
+        return NativeSleepHypnogramLayout(
+            startTs: startTs,
+            endTs: endTs,
+            spans: draws,
+            sourceSpans: spans,
+            axisTimes: axisTimes,
+            axisLabels: axisTimes.map(NativeSleepClock.clock),
+            nightStartLabel: NativeSleepClock.clock(nightStart),
+            nightEndLabel: NativeSleepClock.clock(nightEnd)
+        )
+    }
+}
+
 /// Poor / Sufficient / Optimal cut-offs for sleep percents.
 /// WHOOP published Sleep Performance: ≥85 optimal, 70–84 sufficient, <70 poor.
 /// Hours vs. Needed, Consistency, and Efficiency use the same published bands.

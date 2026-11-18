@@ -119,6 +119,16 @@ func agreementChecks(whoopDays: [WhoopDay], whoopWorkouts: [WhoopWorkout],
     add("replay.sleep_performance", whoop: wPerf, band: perf, tol: 8)
 
     // Replay BandStrain over 1 Hz HR on days that exist in both the phone DB and the export.
+    // Uncovered workouts (strap-HR coverage < 50%) add their load; fully covered days stay
+    // identical to `strain(samples)`.
+    var workoutsByDay: [String: [BandStrain.WorkoutContribution]] = [:]
+    for w in workouts {
+        guard w.endTs > w.startTs else { continue }
+        let day = DayKey.logical(w.startTs, calendar: cfg.calendar)
+        workoutsByDay[day, default: []].append(
+            BandStrain.WorkoutContribution(startTs: w.startTs, endTs: w.endTs,
+                                           storedStrain21: strain21(fromStoredEffort100: w.strain)))
+    }
     var hrStrain: [String: Double] = [:]
     let rhrByDay = whoopMap(whoopDays, \.rhr)
     let storedRhr = byDay(daily, device: cfg.computedDevice) { $0.restingHr }
@@ -126,7 +136,8 @@ func agreementChecks(whoopDays: [WhoopDay], whoopWorkouts: [WhoopWorkout],
     for (day, samples) in hrByDay {
         let rhr = rhrByDay[day] ?? storedRhr[day] ?? BandStrain.defaultRestingHR
         Perf.measureDay("BandStrain.strain", day: day) {
-            if let s = BandStrain.strain(samples, maxHR: cfg.hrMax, restingHR: rhr, params: cfg.strainParams) {
+            if let s = BandStrain.dayStrain(samples, workouts: workoutsByDay[day] ?? [],
+                                            maxHR: cfg.hrMax, restingHR: rhr, params: cfg.strainParams) {
                 hrStrain[day] = s
             }
         }

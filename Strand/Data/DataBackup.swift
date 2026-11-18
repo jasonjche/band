@@ -327,6 +327,43 @@ enum DataBackup {
         }
     }
 
+    /// Same payload as `writeBackup`, written through `NSFileCoordinator` so iCloud Drive (and other
+    /// file presenters) see a coherent replace. Caller owns security-scoped access to `dest`.
+    static func writeBackupCoordinated(checkpoint: @escaping () async -> Bool,
+                                       to dest: URL) async -> BackupResult {
+        let dbPath: String
+        do { dbPath = try StorePaths.defaultDatabasePath() }
+        catch { return .failure(String(localized: "Couldn't locate the Band database. \(error.localizedDescription)")) }
+
+        let dbURL = URL(fileURLWithPath: dbPath)
+        guard FileManager.default.fileExists(atPath: dbPath) else {
+            return .failure(String(localized: "There's no Band data to export yet."))
+        }
+        guard await checkpoint() else {
+            return .failure(String(localized: "Couldn't safely back up right now. Recent changes are still in the write-ahead log."))
+        }
+        var coordError: NSError?
+        var writeError: Error?
+        var outcome: BackupResult?
+        NSFileCoordinator().coordinate(writingItemAt: dest, options: .forReplacing, error: &coordError) { url in
+            do {
+                let fm = FileManager.default
+                if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
+                try writeVerifiedBackupZip(dbURL: dbURL, to: url, settingsJSON: currentSettingsJSON())
+                outcome = exportOutcome(url, dbURL: dbURL)
+            } catch {
+                writeError = error
+            }
+        }
+        if let coordError {
+            return .failure(String(localized: "Backup failed: \(coordError.localizedDescription)"))
+        }
+        if let writeError {
+            return .failure(String(localized: "Backup failed: \(writeError.localizedDescription)"))
+        }
+        return outcome ?? .failure(String(localized: "Backup failed."))
+    }
+
     /// Test seam: write a `.noopbak` for an EXPLICIT source database (no checkpoint, no `StorePaths`),
     /// so a unit test can round-trip a throwaway SQLite through the exact ZIP container the app writes.
     /// `settings` (canonical `BackupSettings` keys) adds the `settings.json` entry; nil writes the

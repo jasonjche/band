@@ -153,7 +153,7 @@ struct NativeHomeView: View {
         nonmutating set { selectedDayKey = NativeDaySelection.key(from: newValue) }
     }
 
-    private var selectedKey: String { NativeDayLogic.resolvedDayKey(stored: selectedDayKey) }
+    private var selectedKey: String { NativeDaySelection.resolvedKey(from: selectedDayKey) }
 
     var body: some View {
         ScrollView {
@@ -882,11 +882,9 @@ private extension View {
     @ViewBuilder func homeCalendarGlassButton(prominent: Bool) -> some View {
         #if os(iOS)
         if #available(iOS 26.0, *) {
-            if prominent {
-                self.buttonStyle(.glassProminent)
-            } else {
-                self.buttonStyle(.glass)
-            }
+            // Prominent glass fills with the app tint, which is white here, so its white label vanished.
+            // Plain glass for both; Done stays emphasised by its semibold label.
+            self.buttonStyle(.glass)
         } else if prominent {
             self.buttonStyle(.borderedProminent)
         } else {

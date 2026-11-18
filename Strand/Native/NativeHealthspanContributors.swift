@@ -99,6 +99,7 @@ struct NativeHealthspanContributorRow: View {
                         minLabel: NativeHealthspanFormat.scaleLabel(row.scaleMin, key: row.key),
                         maxLabel: NativeHealthspanFormat.scaleLabel(row.scaleMax, key: row.key)
                     )
+                    .equatable()
                     Text(NativeHealthspanFormat.yearsImpact(row.years, available: row.available))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(yearsColor)
@@ -149,7 +150,7 @@ struct NativeHealthspanContributorRow: View {
     }
 }
 
-struct NativeHealthspanRangeBar: View {
+struct NativeHealthspanRangeBar: View, Equatable {
     var value: Double
     var value30: Double?
     var scaleMin: Double
@@ -160,13 +161,34 @@ struct NativeHealthspanRangeBar: View {
     var maxLabel: String = ""
     @Environment(\.nativeStyle) private var style
 
+    static func == (lhs: NativeHealthspanRangeBar, rhs: NativeHealthspanRangeBar) -> Bool {
+        lhs.value == rhs.value
+            && lhs.value30 == rhs.value30
+            && lhs.scaleMin == rhs.scaleMin
+            && lhs.scaleMax == rhs.scaleMax
+            && lhs.higherIsBetter == rhs.higherIsBetter
+            && lhs.valueLabel == rhs.valueLabel
+            && lhs.minLabel == rhs.minLabel
+            && lhs.maxLabel == rhs.maxLabel
+    }
+
     private let segmentCount = 8
+
+    private var progress6: Double {
+        NativeHealthspanFormat.markerProgress(value: value, scaleMin: scaleMin, scaleMax: scaleMax)
+    }
+
+    private var progress30: Double? {
+        value30.map {
+            NativeHealthspanFormat.markerProgress(value: $0, scaleMin: scaleMin, scaleMax: scaleMax)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             GeometryReader { geo in
-                let x6 = x(value, width: geo.size.width)
-                let x30 = value30.map { x($0, width: geo.size.width) }
+                let x6 = CGFloat(progress6) * geo.size.width
+                let x30 = progress30.map { CGFloat($0) * geo.size.width }
                 VStack(spacing: 0) {
                     Text(valueLabel)
                         .font(.subheadline.weight(.semibold))
@@ -205,12 +227,6 @@ struct NativeHealthspanRangeBar: View {
             .foregroundStyle(.secondary)
         }
         .accessibilityHidden(true)
-    }
-
-    private func x(_ value: Double, width: CGFloat) -> CGFloat {
-        CGFloat(NativeHealthspanFormat.markerProgress(
-            value: value, scaleMin: scaleMin, scaleMax: scaleMax
-        )) * width
     }
 
     private func labelOffset(_ markerX: CGFloat, width: CGFloat) -> CGFloat {

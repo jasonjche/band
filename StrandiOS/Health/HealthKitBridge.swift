@@ -682,7 +682,8 @@ final class HealthKitBridge: ObservableObject {
         // reads them live on-device too, so the platforms reach parity. ON-DEVICE ONLY: this is a plain
         // HealthKit read of workouts NOOP did NOT author, never any cloud/3rd-party API. (#835)
         let workoutRows = await collectWorkouts(start: start, end: end)
-        await importAppleWorkoutHeartRate(rows: workoutRows)
+        let (keepWorkouts, dropWorkouts) = AppleWorkoutImport.partition(workoutRows)
+        await importAppleWorkoutHeartRate(rows: keepWorkouts)
 
         // Persist all the apple-health rows AND write back, advancing lastSync only when the WHOLE
         // round-trip succeeds. The three read-side upserts used to be swallowed by `try?`, so a failed
@@ -693,7 +694,11 @@ final class HealthKitBridge: ObservableObject {
             try await store.upsertAppleDaily(appleRows, deviceId: appleDeviceId)
             try await store.upsertDailyMetrics(dmRows, deviceId: appleDeviceId)
             try await store.upsertMetricSeries(points, deviceId: appleDeviceId)
-            if !workoutRows.isEmpty { try await store.upsertWorkouts(workoutRows, deviceId: appleDeviceId) }
+            if !keepWorkouts.isEmpty { try await store.upsertWorkouts(keepWorkouts, deviceId: appleDeviceId) }
+            for dropped in dropWorkouts {
+                _ = try await store.deleteWorkouts(deviceId: appleDeviceId, sport: dropped.sport,
+                                                   from: dropped.startTs, to: dropped.startTs)
+            }
             // Imported water (#949) goes to the hydration source, not apple-health, because the hydration
             // screen is what reads it. Every day in the window is written — including the ones with no
             // water at all, as 0 — so deleting a drink in the source app takes it away here on the next
@@ -1742,82 +1747,36 @@ final class HealthKitBridge: ObservableObject {
             let endTs = max(Int(workout.endDate.timeIntervalSince1970), startTs)
             let appleSamples = await Self.fetchWorkoutHeartRate(for: workout, store: store)
             let steps = await Self.fetchWorkoutSteps(for: workout, store: store)
-            // Prefer the HR stream HealthKit associates with this workout (for example, Apple Watch).
-            // If that stream is absent or too sparse to score, fall back to the locally stored strap
-            // trace for this exact workout window — the same trace that backs the detail chart.
-            //
-            // ONE stream answers the whole row. The streams are never merged, which would double-count
-            // overlapping beats, and they are never split across fields either: a mean from the watch
-            // beside an Effort integrated from the strap are two readings of one session that a wearer
-            // cannot reconcile, and with no watch beats at all it would print an Effort with no heart
-            // rate to account for it. So when the fallback is what scores the session, it reports that
-            // session's mean and peak too.
+            // Prefer HR HealthKit associates with this workout, then any Health beats in the
+            // window, then the strap trace. One stream scores avg, peak, and BandStrain.
             var samples = appleSamples
-            var effort = profile.flatMap { Self.scoredEffort(appleSamples, profile: $0) }
-            if effort == nil, let profile {
+            if samples.isEmpty {
+                let start = Date(timeIntervalSince1970: TimeInterval(startTs))
+                let end = Date(timeIntervalSince1970: TimeInterval(endTs))
+                samples = await Self.fetchHeartRateSamples(from: start, to: end, store: store) ?? []
+            }
+            if samples.isEmpty {
                 let hrDeviceIds = Repository.workoutHrDeviceIds(
                     source: Self.appleWorkoutSource,
                     activeStrapId: repo.deviceId,
                     importedIds: repo.importedReadIds)
-                let strapSamples = await repo.hrSamples(deviceIds: hrDeviceIds,
-                                                        from: startTs, to: endTs,
-                                                        limit: 20_000)
-                if let strapEffort = Self.scoredEffort(strapSamples, profile: profile) {
-                    effort = strapEffort
-                    samples = strapSamples
-                }
+                samples = await repo.hrSamples(deviceIds: hrDeviceIds,
+                                               from: startTs, to: endTs,
+                                               limit: 20_000)
             }
-            // Two gates, not one. A mean and a peak are readable from any beat the answering stream
-            // carries, so they are reported whenever there are samples, which is what `WorkoutSource`
-            // already does for a merged workout (`hrWeight > 0 ? … : nil`, no sample floor) rather than a
-            // threshold invented here. EFFORT is the number that needs coverage: it integrates time in
-            // zones, and a handful of beats over a few minutes would score a session never measured.
-            //
-            // Sharing one threshold meant a 15-sample, 8-minute workout with perfectly good heart rate
-            // showed blank Avg and Max as well as blank Effort. It also meant a wearer with NO strain
-            // profile got no heart rate at all from an import, because the old guard opened on
-            // `guard let profile`: avg and max never needed one. Both still hold: when neither stream can
-            // score an Effort, the watch's beats still answer the mean and peak.
-            let heartRate: (avg: Int, peak: Int)? = {
-                guard !samples.isEmpty else { return nil }
-                let mean = Int((Double(samples.reduce(0) { $0 + $1.bpm }) / Double(samples.count)).rounded())
-                return (mean, samples.map(\.bpm).max() ?? mean)
-            }()
+            let hrmax = profile?.hrMax ?? Double(StrainScorer.defaultMaxHR())
+            let scored = AppleWorkoutImport.scored(samples: samples, maxHR: hrmax)
             rows.append(WorkoutRow(
                 startTs: startTs, endTs: endTs,
                 sport: Self.sportName(workout.workoutActivityType),
                 source: HealthKitBridge.appleWorkoutSource,
                 durationS: workout.duration > 0 ? workout.duration : Double(endTs - startTs),
                 energyKcal: workout.totalEnergyBurned?.doubleValue(for: .kilocalorie()),
-                avgHr: heartRate?.avg, maxHr: heartRate?.peak, strain: effort,
+                avgHr: scored?.avgHr, maxHr: scored?.maxHr, strain: scored?.strain100,
                 distanceM: workout.totalDistance?.doubleValue(for: .meter()),
                 zonesJSON: nil, notes: nil, steps: steps))
         }
         return rows
-    }
-
-    /// Beats an imported workout must carry before its EFFORT is scored.
-    ///
-    /// Effort integrates time in heart-rate zones, so it needs a session actually measured rather than a
-    /// few beats sampled from one. Avg and Max deliberately do NOT sit behind this: they are honest at
-    /// any sample count, and gating them here left workouts blank that HealthKit could answer.
-    private static let effortMinimumSamples = 20
-
-    /// Seconds an imported workout's beats must span before its EFFORT is scored. See
-    /// [effortMinimumSamples]; twenty beats crowded into a minute is not ten minutes of measurement.
-    private static let effortMinimumSpanSeconds = 600
-
-    /// Score a workout only when its source stream has enough independent coverage to represent the
-    /// session. Used first for HealthKit-associated HR and then for the WHOOP fallback; source samples
-    /// are intentionally never combined.
-    private static func scoredEffort(_ samples: [HRSample],
-                                     profile: Repository.StrainProfile) -> Double? {
-        guard let first = samples.first, let last = samples.last,
-              samples.count >= effortMinimumSamples,
-              last.ts - first.ts >= effortMinimumSpanSeconds else { return nil }
-        return StrainScorer.strain(samples, maxHR: profile.hrMax,
-                                   method: PuffinExperiment.effortMethod,
-                                   sex: profile.sex)
     }
 
     /// HealthKit has no direct step-count property on HKWorkout; query step samples for its time window.

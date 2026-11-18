@@ -742,6 +742,7 @@ private struct RootTabRepoSink: View {
                 let backupRepo = repo
                 Task.detached(priority: .utility) {
                     await FolderBackup.catchUpIfDue(checkpoint: { await backupRepo.checkpointForBackup() })
+                    await AutoICloudBackup.catchUpIfDue(checkpoint: { await backupRepo.checkpointForBackup() })
                 }
             }
     }

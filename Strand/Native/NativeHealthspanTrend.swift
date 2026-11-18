@@ -28,6 +28,7 @@ struct NativeHealthspanTrendCard: View {
                         NativeHealthspanBandAgeLegend()
                     }
                     NativeHealthspanTrendPlot(points: points, kind: kind, scope: .sixMonths)
+                        .equatable()
                 }
             }
             .contentShape(Rectangle())
@@ -57,6 +58,7 @@ struct NativeHealthspanTrendPage: View {
                         NativeHealthspanBandAgeLegend()
                     }
                     NativeHealthspanTrendPlot(points: points, kind: kind, scope: scope)
+                        .equatable()
                 }
             }
         }
@@ -90,13 +92,25 @@ struct NativeHealthspanBandAgeLegend: View {
     }
 }
 
-struct NativeHealthspanTrendPlot: View {
+struct NativeHealthspanTrendPlot: View, Equatable {
     var points: [HealthspanEngine.TrendPoint]
     var kind: NativeHealthspanTrendKind
     var scope: NativeHealthspanTrendScope
-    @Environment(\.nativeStyle) private var style
 
-    private struct PlotPoint: Identifiable {
+    static func == (lhs: NativeHealthspanTrendPlot, rhs: NativeHealthspanTrendPlot) -> Bool {
+        lhs.points == rhs.points && lhs.kind == rhs.kind && lhs.scope == rhs.scope
+    }
+
+    var body: some View {
+        NativeHealthspanTrendChart(
+            model: NativeHealthspanTrendModel.make(points: points, kind: kind, scope: scope)
+        )
+    }
+}
+
+/// Immutable chart payload. Built once per (points, kind, scope), never inside a scroll-driven body.
+struct NativeHealthspanTrendModel: Equatable {
+    struct PlotPoint: Identifiable, Equatable {
         var id: String
         var day: Date
         var bandAge: Double
@@ -104,21 +118,103 @@ struct NativeHealthspanTrendPlot: View {
         var pace: Double?
     }
 
-    private var plot: [PlotPoint] {
-        NativeHealthspanTrendScope.windowed(points, scope: scope).enumerated().compactMap { index, point in
-            guard let day = NativeDayLogic.startOfLocalDay(point.day) else { return nil }
-            return PlotPoint(
-                id: "\(point.day)-\(index)",
-                day: day,
-                bandAge: point.bandAge,
-                chronoAge: point.chronoAge,
-                pace: point.pace
-            )
+    struct Tick: Equatable {
+        var value: Double
+        var label: String
+    }
+
+    struct DateTick: Equatable {
+        var date: Date
+        var label: String
+    }
+
+    var kind: NativeHealthspanTrendKind
+    var inWindow: [PlotPoint]
+    var steppedBandAge: [PlotPoint]
+    var xDomain: ClosedRange<Date>
+    var ageDomain: ClosedRange<Double>
+    var paceDomain: ClosedRange<Double>
+    var ageYTicks: [Tick]
+    var paceYTicks: [Tick]
+    var monthTicks: [DateTick]
+    var lastChronoLabel: String?
+    var lastBandAgeLabel: String?
+    var lastPaceLabel: String?
+    var lastChrono: PlotPoint?
+    var lastBand: PlotPoint?
+    var lastPace: PlotPoint?
+    var showPaceRule: Bool
+
+    static func make(
+        points: [HealthspanEngine.TrendPoint],
+        kind: NativeHealthspanTrendKind,
+        scope: NativeHealthspanTrendScope,
+        calendar: Calendar = .current
+    ) -> NativeHealthspanTrendModel {
+        let plot: [PlotPoint] = NativeHealthspanTrendScope.windowed(points, scope: scope)
+            .enumerated()
+            .compactMap { index, point in
+                guard let day = NativeDayLogic.startOfLocalDay(point.day) else { return nil }
+                return PlotPoint(
+                    id: "\(point.day)-\(index)",
+                    day: day,
+                    bandAge: point.bandAge,
+                    chronoAge: point.chronoAge,
+                    pace: point.pace
+                )
+            }
+        let stepped = steppedBandAge(plot)
+        let xDomain: ClosedRange<Date> = {
+            guard let first = plot.first, let last = plot.last, last.day >= first.day else {
+                let now = Date()
+                return now...now.addingTimeInterval(86_400)
+            }
+            return first.day...last.day
+        }()
+        let ageDomain = NativePlotAxis.yDomain(
+            plot.flatMap { [$0.bandAge, $0.chronoAge] },
+            fallback: 20...40
+        )
+        let paceDomain = NativePlotAxis.yDomain(
+            plot.compactMap(\.pace) + [1],
+            fallback: 0...2
+        )
+        let inWindow = plot.filter { NativePlotAxis.inTimeDomain($0.day, xDomain) }
+        let last = inWindow.last
+        let lastChrono = last.flatMap { NativePlotAxis.inValueDomain($0.chronoAge, ageDomain) ? $0 : nil }
+        let lastBand = last.flatMap { NativePlotAxis.inValueDomain($0.bandAge, ageDomain) ? $0 : nil }
+        let lastPace = last.flatMap { point -> PlotPoint? in
+            guard let pace = point.pace, NativePlotAxis.inValueDomain(pace, paceDomain) else { return nil }
+            return point
         }
+        return NativeHealthspanTrendModel(
+            kind: kind,
+            inWindow: inWindow,
+            steppedBandAge: stepped,
+            xDomain: xDomain,
+            ageDomain: ageDomain,
+            paceDomain: paceDomain,
+            ageYTicks: NativePlotAxis.yTicks(in: ageDomain).map {
+                Tick(value: $0, label: NativeHealthspanFormat.ageText($0))
+            },
+            paceYTicks: NativePlotAxis.yTicks(in: paceDomain).map {
+                Tick(value: $0, label: NativeHealthspanFormat.paceText($0))
+            },
+            monthTicks: NativePlotAxis.monthTicks(start: xDomain.lowerBound, end: xDomain.upperBound, calendar: calendar).map {
+                DateTick(date: $0, label: NativeScopeFormat.month($0, calendar: calendar))
+            },
+            lastChronoLabel: lastChrono.map { NativeHealthspanFormat.ageText($0.chronoAge) },
+            lastBandAgeLabel: lastBand.map { NativeHealthspanFormat.ageText($0.bandAge) },
+            lastPaceLabel: lastPace.flatMap(\.pace).map(NativeHealthspanFormat.paceText),
+            lastChrono: lastChrono,
+            lastBand: lastBand,
+            lastPace: lastPace,
+            showPaceRule: NativePlotAxis.inValueDomain(1, paceDomain)
+        )
     }
 
     /// Hold-then-jump Band Age, matching WHOOP's weekly steps.
-    private var steppedBandAge: [PlotPoint] {
+    static func steppedBandAge(_ plot: [PlotPoint]) -> [PlotPoint] {
         guard plot.count >= 2 else { return plot }
         var out: [PlotPoint] = []
         out.reserveCapacity(plot.count * 2)
@@ -137,45 +233,28 @@ struct NativeHealthspanTrendPlot: View {
         if let last = plot.last { out.append(last) }
         return out
     }
+}
 
-    private var xDomain: ClosedRange<Date> {
-        guard let first = plot.first, let last = plot.last, last.day >= first.day else {
-            let now = Date()
-            return now...now.addingTimeInterval(86_400)
-        }
-        return first.day...last.day
-    }
-
-    private var ageDomain: ClosedRange<Double> {
-        let values = plot.flatMap { [$0.bandAge, $0.chronoAge] }
-        return NativePlotAxis.yDomain(values, fallback: 20...40)
-    }
-
-    private var paceDomain: ClosedRange<Double> {
-        let values = plot.compactMap(\.pace) + [1]
-        return NativePlotAxis.yDomain(values, fallback: 0...2)
-    }
-
-    private var inWindow: [PlotPoint] {
-        plot.filter { NativePlotAxis.inTimeDomain($0.day, xDomain) }
-    }
+private struct NativeHealthspanTrendChart: View {
+    var model: NativeHealthspanTrendModel
+    @Environment(\.nativeStyle) private var style
 
     var body: some View {
         Group {
-            if kind == .bandAge {
+            if model.kind == .bandAge {
                 ageChart
             } else {
                 paceChart
             }
         }
         .nativeClippedChartPlot()
-        .frame(height: kind == .bandAge ? 180 : 160)
+        .frame(height: model.kind == .bandAge ? 180 : 160)
     }
 
     private var ageChart: some View {
         Chart {
-            ForEach(inWindow) { point in
-                if NativePlotAxis.inValueDomain(point.chronoAge, ageDomain) {
+            ForEach(model.inWindow) { point in
+                if NativePlotAxis.inValueDomain(point.chronoAge, model.ageDomain) {
                     LineMark(
                         x: .value("Day", point.day),
                         y: .value("Age", point.chronoAge),
@@ -186,8 +265,8 @@ struct NativeHealthspanTrendPlot: View {
                     .lineStyle(StrokeStyle(lineWidth: 1.5))
                 }
             }
-            ForEach(steppedBandAge) { point in
-                if NativePlotAxis.inValueDomain(point.bandAge, ageDomain) {
+            ForEach(model.steppedBandAge) { point in
+                if NativePlotAxis.inValueDomain(point.bandAge, model.ageDomain) {
                     LineMark(
                         x: .value("Day", point.day),
                         y: .value("Age", point.bandAge),
@@ -198,7 +277,7 @@ struct NativeHealthspanTrendPlot: View {
                     .lineStyle(StrokeStyle(lineWidth: 2))
                 }
             }
-            if let last = inWindow.last, NativePlotAxis.inValueDomain(last.chronoAge, ageDomain) {
+            if let last = model.lastChrono, let label = model.lastChronoLabel {
                 PointMark(
                     x: .value("Day", last.day),
                     y: .value("Age", last.chronoAge)
@@ -206,13 +285,13 @@ struct NativeHealthspanTrendPlot: View {
                 .foregroundStyle(Color.primary)
                 .symbolSize(36)
                 .annotation(position: .trailing, spacing: 4) {
-                    Text(NativeHealthspanFormat.ageText(last.chronoAge))
+                    Text(label)
                         .font(.caption2.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(Color.primary)
                 }
             }
-            if let last = inWindow.last, NativePlotAxis.inValueDomain(last.bandAge, ageDomain) {
+            if let last = model.lastBand, let label = model.lastBandAgeLabel {
                 PointMark(
                     x: .value("Day", last.day),
                     y: .value("Age", last.bandAge)
@@ -220,22 +299,23 @@ struct NativeHealthspanTrendPlot: View {
                 .foregroundStyle(NativePaint.recovery(style))
                 .symbolSize(36)
                 .annotation(position: .trailing, spacing: 4) {
-                    Text(NativeHealthspanFormat.ageText(last.bandAge))
+                    Text(label)
                         .font(.caption2.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(NativePaint.recovery(style))
                 }
             }
         }
-        .chartXScale(domain: xDomain)
-        .chartYScale(domain: ageDomain)
+        .chartXScale(domain: model.xDomain)
+        .chartYScale(domain: model.ageDomain)
         .chartYAxis {
-            AxisMarks(position: .leading, values: NativePlotAxis.yTicks(in: ageDomain)) { value in
+            AxisMarks(position: .leading, values: model.ageYTicks.map(\.value)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
-                    if let age = value.as(Double.self) {
-                        Text(NativeHealthspanFormat.ageText(age))
+                    if let age = value.as(Double.self),
+                       let tick = model.ageYTicks.first(where: { $0.value == age }) {
+                        Text(tick.label)
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                             .monospacedDigit()
@@ -244,12 +324,13 @@ struct NativeHealthspanTrendPlot: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: NativePlotAxis.monthTicks(start: xDomain.lowerBound, end: xDomain.upperBound)) { value in
+            AxisMarks(values: model.monthTicks.map(\.date)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
-                    if let date = value.as(Date.self) {
-                        Text(NativeScopeFormat.month(date, calendar: .current))
+                    if let date = value.as(Date.self),
+                       let tick = model.monthTicks.first(where: { $0.date == date }) {
+                        Text(tick.label)
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                     }
@@ -260,8 +341,8 @@ struct NativeHealthspanTrendPlot: View {
 
     private var paceChart: some View {
         Chart {
-            ForEach(inWindow) { point in
-                if let pace = point.pace, NativePlotAxis.inValueDomain(pace, paceDomain) {
+            ForEach(model.inWindow) { point in
+                if let pace = point.pace, NativePlotAxis.inValueDomain(pace, model.paceDomain) {
                     LineMark(
                         x: .value("Day", point.day),
                         y: .value("Pace", pace)
@@ -271,12 +352,12 @@ struct NativeHealthspanTrendPlot: View {
                     .lineStyle(StrokeStyle(lineWidth: 2))
                 }
             }
-            if NativePlotAxis.inValueDomain(1, paceDomain) {
+            if model.showPaceRule {
                 RuleMark(y: .value("1x", 1.0))
                     .foregroundStyle(Color.primary.opacity(0.45))
                     .lineStyle(StrokeStyle(lineWidth: 1.5))
             }
-            if let last = inWindow.last, let pace = last.pace, NativePlotAxis.inValueDomain(pace, paceDomain) {
+            if let last = model.lastPace, let pace = last.pace, let label = model.lastPaceLabel {
                 PointMark(
                     x: .value("Day", last.day),
                     y: .value("Pace", pace)
@@ -284,22 +365,23 @@ struct NativeHealthspanTrendPlot: View {
                 .foregroundStyle(NativePaint.strain(style))
                 .symbolSize(36)
                 .annotation(position: .trailing, spacing: 4) {
-                    Text(NativeHealthspanFormat.paceText(pace))
+                    Text(label)
                         .font(.caption2.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(NativePaint.strain(style))
                 }
             }
         }
-        .chartXScale(domain: xDomain)
-        .chartYScale(domain: paceDomain)
+        .chartXScale(domain: model.xDomain)
+        .chartYScale(domain: model.paceDomain)
         .chartYAxis {
-            AxisMarks(position: .leading, values: NativePlotAxis.yTicks(in: paceDomain)) { value in
+            AxisMarks(position: .leading, values: model.paceYTicks.map(\.value)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
-                    if let pace = value.as(Double.self) {
-                        Text(NativeHealthspanFormat.paceText(pace))
+                    if let pace = value.as(Double.self),
+                       let tick = model.paceYTicks.first(where: { $0.value == pace }) {
+                        Text(tick.label)
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                             .monospacedDigit()
@@ -308,12 +390,13 @@ struct NativeHealthspanTrendPlot: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: NativePlotAxis.monthTicks(start: xDomain.lowerBound, end: xDomain.upperBound)) { value in
+            AxisMarks(values: model.monthTicks.map(\.date)) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
-                    if let date = value.as(Date.self) {
-                        Text(NativeScopeFormat.month(date, calendar: .current))
+                    if let date = value.as(Date.self),
+                       let tick = model.monthTicks.first(where: { $0.date == date }) {
+                        Text(tick.label)
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                     }

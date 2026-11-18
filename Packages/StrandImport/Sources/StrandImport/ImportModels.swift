@@ -241,6 +241,7 @@ public struct WhoopCycleRow: Sendable, Equatable {
 /// daily cycle summary.
 public struct WhoopSleepRow: Sendable, Equatable {
     public var cycleStart: Date?
+    public var cycleEnd: Date?
     public var sleepOnset: Date?
     public var wakeOnset: Date?
     public var tzOffsetMin: Int
@@ -261,6 +262,7 @@ public struct WhoopSleepRow: Sendable, Equatable {
 
     public init() {
         self.cycleStart = nil
+        self.cycleEnd = nil
         self.sleepOnset = nil
         self.wakeOnset = nil
         self.tzOffsetMin = 0
@@ -273,15 +275,18 @@ public struct WhoopSleepRow: Sendable, Equatable {
 /// One row of `workouts.csv`. GPS / distance / altitude columns are optional.
 public struct WhoopWorkoutRow: Sendable, Equatable {
     public var cycleStart: Date?
+    public var cycleEnd: Date?
     public var workoutStart: Date?
     public var workoutEnd: Date?
     public var tzOffsetMin: Int
 
+    public var durationMin: Double?
     public var activityName: String?
     public var activityStrain: Double?
     public var energyKcal: Double?
     public var avgHeartRate: Double?
     public var maxHeartRate: Double?
+    public var gpsEnabled: Bool?
 
     public var hrZone1Pct: Double?
     public var hrZone2Pct: Double?
@@ -296,6 +301,7 @@ public struct WhoopWorkoutRow: Sendable, Equatable {
 
     public init() {
         self.cycleStart = nil
+        self.cycleEnd = nil
         self.workoutStart = nil
         self.workoutEnd = nil
         self.tzOffsetMin = 0
@@ -308,6 +314,7 @@ public struct WhoopWorkoutRow: Sendable, Equatable {
 /// (with optional notes) per cycle.
 public struct WhoopJournalRow: Sendable, Equatable {
     public var cycleStart: Date?
+    public var cycleEnd: Date?
     public var tzOffsetMin: Int
     public var question: String?
     public var answer: String?
@@ -315,6 +322,7 @@ public struct WhoopJournalRow: Sendable, Equatable {
 
     public init() {
         self.cycleStart = nil
+        self.cycleEnd = nil
         self.tzOffsetMin = 0
     }
 }

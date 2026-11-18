@@ -809,6 +809,7 @@ final class IntelligenceEngine: ObservableObject {
             }
         }
         guard let store = await repo.storeHandle() else { note = String(localized: "No on-device store yet."); return }
+        await backfillAppleImportedWorkouts(store: store)
         guard let hrvCfg = Baselines.metricCfg["hrv"],
               let rhrCfg = Baselines.metricCfg["resting_hr"],
               let respCfg = Baselines.metricCfg["resp"],
@@ -829,7 +830,10 @@ final class IntelligenceEngine: ObservableObject {
         // Oura / Apple Watch / re-added-WHOOP install the per-device read returned 0, so this gate never
         // fired and a night finishing after launch stayed unscored until relaunch. Scoring below still reads
         // the registry's ACTIVE device (`owner`); only this change-detector needed to be cross-device.
-        let wmKey = (try? await store.analysisFingerprint()) ?? ""
+        let wmRaw = (try? await store.analysisFingerprint()) ?? ""
+        // `|strainGap=1` invalidates watermarks written before uncovered-workout load was
+        // added to day strain, so already-stored days rescore on the next pass.
+        let wmKey = wmRaw.isEmpty ? "" : wmRaw + "|strainGap=1"
         // #1538: read the stored watermark ONCE for both gates and the attribution line below. There is no
         // suspension point between them, so the three reads this replaces could not disagree — but the log
         // line asserting `newData` and the gate deciding whether to run must be the SAME comparison by
@@ -1120,7 +1124,7 @@ final class IntelligenceEngine: ObservableObject {
             // #1545: MUST be here. The Effort recipe changes every day's strain, so a cached scan
             // produced under one method is stale the moment the user switches — serving it would show a
             // window of days scored by a recipe the user just turned off, with nothing to explain it.
-            "\(effortMethodGlobal)|bandStrain=\(useBandStrain)",
+            "\(effortMethodGlobal)|bandStrain=gapv1-\(useBandStrain)",
             dayCycleMode.rawValue,
         ].joined(separator: "|")
         // Drop the whole cache on a config change, then snapshot it into a Sendable `let` for the detached
@@ -1203,6 +1207,29 @@ final class IntelligenceEngine: ObservableObject {
             let rrWindow = SlidingStreamWindow<RRInterval>(tsOf: { $0.ts }, limit: StreamReadCap.rr) { o, f, t in
                 try? await store.rrIntervals(deviceId: o, from: f, to: t, limit: StreamReadCap.rr,
                                             unlabelledAliasOfWhoop5: activeWhoop5RR && o == Repository.whoopSource)
+            }
+            let strainFrom = now - maxDays * 86_400 - StreamReadCap.lookbackSeconds
+            var strainRows: [WorkoutRow] = []
+            strainRows += (try? await store.workouts(deviceId: ownerFallbackId, from: strainFrom,
+                                                     to: now, limit: 100_000)) ?? []
+            strainRows += (try? await store.workouts(deviceId: WorkoutSource.appleHealthSource,
+                                                     from: strainFrom, to: now, limit: 100_000)) ?? []
+            strainRows += (try? await store.workouts(deviceId: computedId, from: strainFrom,
+                                                     to: now, limit: 100_000)) ?? []
+            let appleHRAll = (try? await store.hrSamples(deviceId: WorkoutSource.appleHealthSource,
+                                                         from: strainFrom, to: now, limit: 200_000)) ?? []
+            var strainWorkoutsByDay: [String: [BandStrain.WorkoutContribution]] = [:]
+            for w in strainRows {
+                guard w.endTs > w.startTs else { continue }
+                let dayKey = AnalyticsEngine.dayString(w.startTs, offsetSec: tzOffset)
+                var samples = AppleWorkoutHRStore.load(startTs: w.startTs, sport: w.sport) ?? []
+                if samples.isEmpty, !appleHRAll.isEmpty {
+                    samples = appleHRAll.filter { $0.ts >= w.startTs && $0.ts < w.endTs }
+                }
+                strainWorkoutsByDay[dayKey, default: []].append(
+                    BandStrain.WorkoutContribution(
+                        startTs: w.startTs, endTs: w.endTs, samples: samples,
+                        storedStrain21: w.strain.map { $0 * 21.0 / 100.0 }))
             }
             var paceMark = DispatchTime.now().uptimeNanoseconds
             for offset in 0..<maxDays {
@@ -1575,7 +1602,8 @@ final class IntelligenceEngine: ObservableObject {
                                                      hrvWindowDetail: dayStart == nowLocalMidnight,
                                                      deepHrvWindow: deepHrvWindow,
                                                      effortMethod: effortMethodGlobal,
-                                                     useBandStrain: useBandStrain)
+                                                     useBandStrain: useBandStrain,
+                                                     strainWorkouts: strainWorkoutsByDay[day] ?? [])
                 dayScoreSeconds += Date().timeIntervalSince(tScore0)
                 // #195: whole-night HRV cleaning-pipeline summary for the always-on strap log, so a "reads ~2x
                 // too high" report is triageable without the HRV test mode: RMSSD vs SDNN (rmssd >> sdnn =
@@ -3095,6 +3123,47 @@ final class IntelligenceEngine: ObservableObject {
     /// `analyzeRecent` scored against. A non-forced tick whose current fingerprint equals this skips the
     /// 21-day rescore; cleared implicitly by any scoring-stream insert (the fingerprint moves), so it self-heals.
     private static let analyzeWatermarkKey = "noop.analyzeWatermark"
+
+    /// Version-gated one-shot: drop generic Apple `Workout` duplicates and fill missing strain.
+    private static let appleWorkoutStrainBackfillKey = "noop.appleWorkoutStrainBackfill"
+
+    /// Collapse same-window generic Apple Health rows and score any remaining row that still
+    /// has no HR/strain. Runs at most once per `AppleWorkoutImport.backfillVersion`.
+    private func backfillAppleImportedWorkouts(store: WhoopStore) async {
+        let stored = UserDefaults.standard.integer(forKey: Self.appleWorkoutStrainBackfillKey)
+        guard stored < AppleWorkoutImport.backfillVersion else { return }
+        let apple = WorkoutSource.appleHealthSource
+        let now = Int(Date().timeIntervalSince1970) + 86_400
+        let rows = (try? await store.workouts(deviceId: apple, from: 0, to: now, limit: 100_000)) ?? []
+        let (keep, drop) = AppleWorkoutImport.partition(rows)
+        for d in drop {
+            _ = try? await store.deleteWorkouts(deviceId: apple, sport: d.sport,
+                                                from: d.startTs, to: d.startTs)
+        }
+        let hrmax = repo.strainProfile?.hrMax ?? Double(StrainScorer.defaultMaxHR())
+        let rest = BandStrain.defaultRestingHR
+        let hrIds = Repository.workoutHrDeviceIds(source: apple, activeStrapId: deviceId,
+                                                  importedIds: repo.importedReadIds)
+        var filled: [WorkoutRow] = []
+        for w in keep where w.strain == nil || w.avgHr == nil {
+            var samples = AppleWorkoutHRStore.load(startTs: w.startTs, sport: w.sport) ?? []
+            if samples.isEmpty {
+                samples = (try? await store.hrSamples(deviceId: apple, from: w.startTs, to: w.endTs,
+                                                      limit: 20_000)) ?? []
+            }
+            if samples.isEmpty {
+                samples = await repo.hrSamples(deviceIds: hrIds, from: w.startTs, to: w.endTs,
+                                               limit: 20_000)
+            }
+            if let next = AppleWorkoutImport.filled(w, samples: samples, maxHR: hrmax, restingHR: rest) {
+                filled.append(next)
+            }
+        }
+        if !filled.isEmpty {
+            _ = try? await store.upsertWorkouts(filled, deviceId: apple)
+        }
+        UserDefaults.standard.set(AppleWorkoutImport.backfillVersion, forKey: Self.appleWorkoutStrainBackfillKey)
+    }
 
     /// CAPTURE-B (#814/#799): build the universal `dayOwner …` self-diagnostic line VERBATIM (the Test
     /// Centre export parser depends on this exact shape). `readId` is the owner this day was read+scored

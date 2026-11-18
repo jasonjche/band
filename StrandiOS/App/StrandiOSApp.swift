@@ -158,6 +158,9 @@ struct StrandiOSApp: App {
         // makes false. Registered unconditionally and re-armed from inside its own handler.
         StaleBatteryBackgroundScheduler.register(perform: { [weak model] in
             await model?.checkStrapNotSeen()
+            if let model {
+                await AutoICloudBackup.catchUpIfDue(checkpoint: { await model.repo.checkpointForBackup() })
+            }
         })
         Task { @MainActor in
             StaleBatteryBackgroundScheduler.schedule()
@@ -411,6 +414,7 @@ struct StrandiOSApp: App {
                     // widget and Today never disagree about which day they describe. Without this the
                     // watch only ever holds placeholder data on a real device.
                     await watch.pushLatest(from: model)
+                    await AutoICloudBackup.catchUpIfDue(checkpoint: { await model.repo.checkpointForBackup() })
                 }
             } else if phase == .background {
                 // Re-submit on every transition because iOS may discard an old best-effort request.

@@ -38,20 +38,72 @@ struct NativeSleepHypnogram: View {
     var plotHeight: CGFloat = 132
     var estimated: Bool = false
     var onOpen: (() -> Void)? = nil
+
+    var body: some View {
+        NativeSleepHypnogramHost(
+            spans: spans,
+            nightStart: nightStart,
+            nightEnd: nightEnd,
+            highlight: highlight,
+            plotHeight: plotHeight,
+            estimated: estimated,
+            onOpen: onOpen
+        )
+        .equatable()
+    }
+}
+
+private struct NativeSleepHypnogramHost: View, Equatable {
+    var spans: [NativeSleepStageSpan]
+    var nightStart: Date
+    var nightEnd: Date
+    var highlight: NativeSleepStageKind?
+    var plotHeight: CGFloat
+    var estimated: Bool
+    var onOpen: (() -> Void)?
+
+    static func == (lhs: NativeSleepHypnogramHost, rhs: NativeSleepHypnogramHost) -> Bool {
+        lhs.spans == rhs.spans
+            && lhs.nightStart == rhs.nightStart
+            && lhs.nightEnd == rhs.nightEnd
+            && lhs.highlight == rhs.highlight
+            && lhs.plotHeight == rhs.plotHeight
+            && lhs.estimated == rhs.estimated
+    }
+
+    var body: some View {
+        NativeSleepHypnogramBody(
+            layout: NativeSleepHypnogramLayout.make(spans: spans, nightStart: nightStart, nightEnd: nightEnd),
+            highlight: highlight,
+            plotHeight: plotHeight,
+            estimated: estimated,
+            onOpen: onOpen
+        )
+    }
+}
+
+private struct NativeSleepHypnogramBody: View, Equatable {
+    var layout: NativeSleepHypnogramLayout
+    var highlight: NativeSleepStageKind?
+    var plotHeight: CGFloat
+    var estimated: Bool
+    var onOpen: (() -> Void)?
     @Environment(\.nativeStyle) private var style
     @State private var scrub = NativeScopeScrub()
 
-    private var startTs: Int { Int(nightStart.timeIntervalSince1970) }
-    private var endTs: Int { Int(nightEnd.timeIntervalSince1970) }
+    static func == (lhs: NativeSleepHypnogramBody, rhs: NativeSleepHypnogramBody) -> Bool {
+        lhs.layout == rhs.layout
+            && lhs.highlight == rhs.highlight
+            && lhs.plotHeight == rhs.plotHeight
+            && lhs.estimated == rhs.estimated
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            NativeSleepHypnogramReadout(scrub: scrub, spans: spans, style: style)
+            NativeSleepHypnogramReadout(scrub: scrub, spans: layout.sourceSpans, style: style)
                 .frame(height: 36, alignment: .topLeading)
             NativeSleepHypnogramPlot(
-                spans: spans,
-                startTs: startTs,
-                endTs: endTs,
+                layout: layout,
                 highlight: highlight,
                 scrub: scrub,
                 onOpen: onOpen
@@ -67,8 +119,8 @@ struct NativeSleepHypnogram: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(estimated
-            ? "\(NativeSleepEstimatedHypnogram.caption). Sleep stages from \(NativeSleepClock.clock(nightStart)) to \(NativeSleepClock.clock(nightEnd))"
-            : "Sleep stages from \(NativeSleepClock.clock(nightStart)) to \(NativeSleepClock.clock(nightEnd))")
+            ? "\(NativeSleepEstimatedHypnogram.caption). Sleep stages from \(layout.nightStartLabel) to \(layout.nightEndLabel)"
+            : "Sleep stages from \(layout.nightStartLabel) to \(layout.nightEndLabel)")
         .accessibilityAddTraits(onOpen == nil ? [] : .isButton)
         .nativeChartDescriptor(hypnogramDescriptor)
     }
@@ -79,11 +131,11 @@ struct NativeSleepHypnogram: View {
             title: "Sleep stages",
             unit: "Stage",
             xKind: .date,
-            points: spans.map { span in
+            points: layout.spans.map { span in
                 NativeChartDescriptor.Point(
                     xLabel: NativeSleepClock.clock(Date(timeIntervalSince1970: TimeInterval(span.startTs))),
                     xValue: Double(span.startTs),
-                    y: Double(lanes.firstIndex(of: span.kind) ?? 2)
+                    y: Double(span.lane)
                 )
             },
             yRange: 0...3,
@@ -98,9 +150,9 @@ struct NativeSleepHypnogram: View {
     private var axis: some View {
         HStack {
             Spacer().frame(width: 48)
-            ForEach(Array(NativeSleepHypnogramMath.axisTimes(start: nightStart, end: nightEnd).enumerated()), id: \.offset) { index, time in
+            ForEach(Array(layout.axisTimes.enumerated()), id: \.offset) { index, _ in
                 if index > 0 { Spacer(minLength: 0) }
-                Text(NativeSleepClock.clock(time))
+                Text(layout.axisLabels[index])
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -136,9 +188,7 @@ private struct NativeSleepHypnogramReadout: View {
 }
 
 private struct NativeSleepHypnogramPlot: View {
-    var spans: [NativeSleepStageSpan]
-    var startTs: Int
-    var endTs: Int
+    var layout: NativeSleepHypnogramLayout
     var highlight: NativeSleepStageKind?
     @ObservedObject var scrub: NativeScopeScrub
     var onOpen: (() -> Void)?
@@ -149,7 +199,7 @@ private struct NativeSleepHypnogramPlot: View {
             let plotWidth = max(geo.size.width - 48, 1)
             let laneH = geo.size.height / 4
             let selected = scrub.time.flatMap {
-                NativeSleepHypnogramMath.span(at: Int($0.timeIntervalSince1970), spans: spans)
+                NativeSleepHypnogramMath.span(at: Int($0.timeIntervalSince1970), spans: layout.sourceSpans)
             }
             ZStack(alignment: .topLeading) {
                 ForEach(Array(NativeSleepStageKind.hypnogramLanes.enumerated()), id: \.element) { index, lane in
@@ -159,23 +209,16 @@ private struct NativeSleepHypnogramPlot: View {
                         .frame(width: 44, height: laneH, alignment: .leading)
                         .offset(y: CGFloat(index) * laneH)
                 }
-                ForEach(spans) { span in
-                    if let range = NativeSleepHypnogramMath.xRange(
-                        start: span.startTs, end: span.endTs,
-                        nightStart: startTs, nightEnd: endTs,
-                        width: plotWidth
-                    ) {
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(NativePaint.sleepStage(named: span.kind.title, style: style)
-                                .opacity(NativeSleepHypnogramMath.spanOpacity(
-                                    span: span, selected: selected, highlight: highlight
-                                )))
-                            .frame(width: max(range.width, 1), height: max(laneH * 0.55, 6))
-                            .offset(
-                                x: 48 + range.x,
-                                y: CGFloat(laneIndex(span.kind)) * laneH + laneH * 0.22
-                            )
-                    }
+                ForEach(layout.spans) { span in
+                    let width = max((span.unitHi - span.unitLo) * plotWidth, 1)
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(NativePaint.sleepStage(named: span.kind.title, style: style)
+                            .opacity(spanOpacity(span, selected: selected)))
+                        .frame(width: width, height: max(laneH * 0.55, 6))
+                        .offset(
+                            x: 48 + span.unitLo * plotWidth,
+                            y: CGFloat(span.lane) * laneH + laneH * 0.22
+                        )
                 }
             }
             .contentShape(Rectangle())
@@ -185,7 +228,7 @@ private struct NativeSleepHypnogramPlot: View {
                         guard NativeChartScrubMath.isHorizontalScrub(translation: value.translation) else { return }
                         let x = Double(min(max(value.location.x - 48, 0), plotWidth))
                         let ts = NativeSleepHypnogramMath.timestamp(
-                            x: x, width: plotWidth, nightStart: startTs, nightEnd: endTs
+                            x: x, width: plotWidth, nightStart: layout.startTs, nightEnd: layout.endTs
                         )
                         scrub.time = Date(timeIntervalSince1970: TimeInterval(ts))
                     }
@@ -196,8 +239,12 @@ private struct NativeSleepHypnogramPlot: View {
         }
     }
 
-    private func laneIndex(_ kind: NativeSleepStageKind) -> Int {
-        NativeSleepStageKind.hypnogramLanes.firstIndex(of: kind) ?? 2
+    private func spanOpacity(
+        _ span: NativeSleepHypnogramLayout.SpanDraw,
+        selected: NativeSleepStageSpan?
+    ) -> Double {
+        let proxy = NativeSleepStageSpan(startTs: span.startTs, endTs: span.endTs, name: span.kind.title)
+        return NativeSleepHypnogramMath.spanOpacity(span: proxy, selected: selected, highlight: highlight)
     }
 }
 
