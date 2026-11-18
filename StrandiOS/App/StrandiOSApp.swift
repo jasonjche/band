@@ -475,14 +475,13 @@ struct StrandiOSApp: App {
 ///
 /// This mirrors the macOS `ContentView` (same `@AppStorage` keys, same gate ordering) but swaps the
 /// excluded `RootView()` sidebar for `RootTabView()`. The shared `OnboardingWizard`, `TermsGateView`,
-/// `WhatsNewView`, `AppChangelog`, and `Terms` symbols all compile into the iOS target unchanged.
+/// `AppChangelog`, and `Terms` symbols all compile into the iOS target unchanged.
 private struct iOSRootView: View {
     @AppStorage("noop.onboarded") private var onboarded = false
     @AppStorage("noop.lastSeenChangelogVersion") private var lastSeenChangelog = ""
     @AppStorage("noop.acceptedTermsVersion") private var acceptedTerms = ""
-    @State private var showWhatsNew = false
     /// Starts false so a cold-launch external action can't race this view's onAppear decision about the
-    /// automatic What's New sheet. It becomes true only when no sheet is due or its dismissal completes.
+    /// first-run gates. It becomes true once those gates have resolved.
     @State private var automaticLaunchSheetResolved = false
 
     var body: some View {
@@ -535,24 +534,13 @@ private struct iOSRootView: View {
         }
         .animation(.easeInOut(duration: 0.35), value: onboarded)
         .animation(.easeInOut(duration: 0.35), value: acceptedTerms)
-        .sheet(isPresented: $showWhatsNew, onDismiss: { automaticLaunchSheetResolved = true }) {
-            WhatsNewView(onClose: {
-                lastSeenChangelog = AppChangelog.currentVersion
-                showWhatsNew = false
-            })
-        }
-        // The Terms gate must stay "over everything" — don't pop What's New on top of it after a
-        // combined terms+version update. Gate on terms being current, and re-check when they're
-        // accepted (onAppear already fired before acceptance), so What's New shows right after.
         .onAppear {
-            showWhatsNewIfDue()
-            // Seed the current What's New into the Updates inbox (idempotent per version) so the bell
-            // collects it even if the user dismisses the auto sheet.
+            markLaunchSheetResolved()
             UpdateStore.shared.seedWhatsNewIfNeeded()
             // #1659: iOS cannot auto-update a sideloaded build - no API lets an app install or re-sign an
             // .ipa - so the most NOOP can do is NOTICE a release and say so.
             //
-            // Gated on the SAME condition as showWhatsNewIfDue above, and the Android hook. This matters
+            // Gated on terms being current, matching the Android hook. This matters
             // now that the check is on by default: without it a brand-new install would reach the network
             // during first run, before the Terms gate the user has not accepted yet. While the default was
             // off, nothing made that visible.
@@ -560,7 +548,7 @@ private struct iOSRootView: View {
                 UpdateWatch.runIfDue(currentVersion: UpdateWatch.installedVersion, sideloadHint: true)
             }
         }
-        .onChange(of: acceptedTerms) { _, _ in showWhatsNewIfDue() }
+        .onChange(of: acceptedTerms) { _, _ in markLaunchSheetResolved() }
     }
 
     /// Skip first-run gates (onboarding / terms / What's New). DEBUG `--demo-seed` still does this
@@ -575,18 +563,10 @@ private struct iOSRootView: View {
         #endif
     }
 
-    private func showWhatsNewIfDue() {
-        if demoBypass {
-            automaticLaunchSheetResolved = true
-            return
-        }
-        // Existing users who updated: their last-seen version is behind the current one.
-        if onboarded && acceptedTerms == Terms.currentVersion
-            && lastSeenChangelog != AppChangelog.currentVersion {
-            automaticLaunchSheetResolved = false
-            showWhatsNew = true
-        } else {
-            automaticLaunchSheetResolved = true
+    private func markLaunchSheetResolved() {
+        automaticLaunchSheetResolved = true
+        if onboarded && acceptedTerms == Terms.currentVersion {
+            lastSeenChangelog = AppChangelog.currentVersion
         }
     }
 }
@@ -601,7 +581,7 @@ enum DemoScreens {
         if name == "today" || name == "nativetoday" { return AnyView(NativeHomeView()) }
         if name == "live" { return AnyView(LiveView()) }
         if name == "workouts" { return AnyView(WorkoutsView()) }
-        if name == "insights" { return AnyView(InsightsView()) }
+        if name == "insights" { return AnyView(NativeJournalView()) }
         if name == "settings" { return AnyView(NativeAppSettingsView()) }
         if name == "devices" { return AnyView(DevicesView()) }
         if name == "devicescatalog" { return AnyView(DeviceCardCatalog()) }

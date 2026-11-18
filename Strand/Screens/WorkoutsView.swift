@@ -407,7 +407,7 @@ struct WorkoutsView: View {
     /// auto-clears. Copy is "usually"/"personal pattern" framed (the engine's own wording) — never a
     /// law. Computes off the freshly reloaded sessions + the merged daily Charge.
     private func showPostLogNote(forSport sport: String) async {
-        let costs = InsightsView.computeActivityCosts(workouts: allRows, days: repo.days)
+        let costs = Self.computeActivityCosts(workouts: allRows, days: repo.days)
         guard let match = costs.first(where: { $0.sport == sport }) else {
             await MainActor.run { postLogNote = nil }
             return
@@ -1862,6 +1862,23 @@ struct WorkoutsView: View {
         static let effort: CGFloat = 64   // #796 per-session Effort column
         static let source: CGFloat = 80
         static let action: CGFloat = 36   // trailing "•••" per-row actions menu
+    }
+
+    static func computeActivityCosts(workouts: [WorkoutRow], days: [DailyMetric]) -> [ActivityCost] {
+        let tzOffset = TimeZone.current.secondsFromGMT()
+        var activityDaysBySport: [String: Set<String>] = [:]
+        for w in workouts {
+            let sport = WorkoutSource.displaySport(w.sport)
+            guard !sport.isEmpty else { continue }
+            let day = AnalyticsEngine.dayString(w.startTs, offsetSec: tzOffset)
+            activityDaysBySport[sport, default: []].insert(day)
+        }
+        var recoveryByDay: [String: Double] = [:]
+        for d in days {
+            if let r = d.recovery { recoveryByDay[d.day] = r }
+        }
+        return ActivityCostEngine.evaluate(activityDaysBySport: activityDaysBySport,
+                                           recoveryByDay: recoveryByDay)
     }
 }
 

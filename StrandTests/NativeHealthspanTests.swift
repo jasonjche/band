@@ -110,10 +110,6 @@ final class NativeHealthspanTests: XCTestCase {
         XCTAssertEqual(NativeHealthspanOrbMap.tone(delta: 0, isLoading: false), .neutral)
         XCTAssertEqual(NativeHealthspanOrbMap.tone(delta: 0.02, isLoading: false), .neutral)
         XCTAssertEqual(NativeHealthspanOrbMap.tone(delta: 4, isLoading: true), .loading)
-        XCTAssertEqual(NativeHealthspanOrbStyle.storageKey, "band.orbStyle")
-        XCTAssertEqual(NativeHealthspanOrbStyle.ring.rawValue, "ring")
-        XCTAssertEqual(NativeHealthspanOrbStyle.bloom.rawValue, "bloom")
-        XCTAssertEqual(NativeHealthspanOrbStyle.glass.rawValue, "glass")
     }
 
     func testMarkerProgressClampsToTheScale() {

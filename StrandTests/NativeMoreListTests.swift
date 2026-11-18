@@ -40,7 +40,6 @@ final class NativeMoreListTests: XCTestCase {
                 UnitPrefs.temperatureKey,
                 UnitPrefs.skinTempDisplayKey,
                 UnitPrefs.effortScaleKey,
-                NativeStyle.storageKey,
                 ScreenIdle.strapSyncKeepAwakeKey,
             ]
         )
@@ -49,7 +48,6 @@ final class NativeMoreListTests: XCTestCase {
         XCTAssertEqual(UnitPrefs.temperatureKey, "units.temperature")
         XCTAssertEqual(UnitPrefs.skinTempDisplayKey, "units.skinTempDisplay")
         XCTAssertEqual(UnitPrefs.effortScaleKey, "effort.scale")
-        XCTAssertEqual(NativeStyle.storageKey, "noop.nativeStyle")
         XCTAssertEqual(ScreenIdle.strapSyncKeepAwakeKey, "syncKeepScreenOn")
     }
 }
