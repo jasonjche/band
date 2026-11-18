@@ -374,10 +374,6 @@ struct NativeScoreView: View {
     var strainTarget: BandStrainTarget.Result? = nil
     var hrvTrend: HRVTrend.DayResult? = nil
     var overnightLoad: BandIllnessSignal.DayResult? = nil
-    @Environment(\.nativeNavigationPath) private var path
-    @AppStorage("native.sleepPlanner.wakeMinutes") private var plannerWakeMinutes = 7 * 60
-    @AppStorage("native.sleepPlanner.goal") private var plannerGoalRaw = SleepPlanner.Goal.peak.rawValue
-
     private var visibleRows: [NativeScore.Row] {
         var rows = score.rows.filter { NativeScoreMath.hasValue($0.value) }
         if kind == .sleep, let restorative = NativeSleepContributors.restorative(from: stages),
@@ -410,12 +406,12 @@ struct NativeScoreView: View {
                 NativeScoreTrendPage(
                     card: card,
                     dayKey: dayKey,
-                    format: { weekLabel(card, $0) },
-                    axisFormat: { weekAxisLabel(card, $0) },
-                    unit: weekUnit(card),
-                    symbol: weekSymbol(card),
-                    tint: weekTint(card),
-                    color: card.band ? weekBand : nil
+                    format: { NativeScoreWeekFormat.label(card, $0) },
+                    axisFormat: { NativeScoreWeekFormat.axisLabel(card, $0) },
+                    unit: NativeScoreWeekFormat.unit(card),
+                    symbol: NativeScoreWeekFormat.symbol(card),
+                    tint: NativeScoreWeekFormat.tint(card, style: style),
+                    color: card.band ? NativeScoreWeekFormat.band(kind: kind, style: style) : nil
                 )
             }
         }
@@ -443,14 +439,97 @@ struct NativeScoreView: View {
 
     @Environment(\.nativeStyle) private var style
 
+    // Each block below is its own non-generic view. The page's body type stays a short tuple of
+    // nominal types, so SwiftUI only instantiates a block's (deeply generic) body type when that
+    // block is actually built — the Sleep page never pays for the Recovery or Strain cards.
     @ViewBuilder private var scoreBody: some View {
+        NativeScoreHero(score: score, kind: kind, dayKey: dayKey, strainTarget: strainTarget)
+        if !visibleRows.isEmpty {
+            NativeScoreContributors(rows: visibleRows, kind: kind, score: score, dayKey: dayKey)
+        }
+        switch kind {
+        case .sleep:
+            NativeSleepScoreSection(
+                score: score,
+                sleepHours: sleepHours,
+                asleepMinutes: asleepMinutes,
+                stages: stages,
+                sleepStart: sleepStart,
+                sleepEnd: sleepEnd,
+                overnightHr: overnightHr,
+                overnightHrAverage: overnightHrAverage,
+                overnightPlot: overnightPlot,
+                awakeTypical: awakeTypical,
+                needMinutes: needMinutes,
+                debtMinutes: debtMinutes,
+                sleepDetail: sleepDetail,
+                onEditSleep: onEditSleep
+            )
+        case .recovery:
+            NativeHRVTrendCard(result: hrvTrend)
+            NativeIllnessSignalCard(result: overnightLoad)
+        case .strain:
+            NativeStrainActivitiesCard(activities: activities)
+        }
+        if !weekCards.isEmpty {
+            NativeChrome.section("Weekly Trends")
+            ForEach(weekCards) { card in
+                NativeScoreWeekCard(card: card, kind: kind, dayKey: dayKey, sleepDetail: sleepDetail)
+            }
+        }
+    }
+
+    static func ringCaption(_ kind: NativeScoreKind) -> String {
+        switch kind {
+        case .sleep: return "Sleep Performance"
+        case .recovery: return "Recovery"
+        case .strain: return "Strain"
+        }
+    }
+
+    static func ringTint(kind: NativeScoreKind, score: NativeScore, style: NativeStyle) -> Color {
+        switch kind {
+        case .sleep: return NativePaint.sleep(style)
+        case .strain: return NativePaint.strain(style)
+        case .recovery:
+            if let percent = NativeScoreMath.percentValue(score.value) {
+                return NativePaint.recoveryBand(percent, style: style)
+            }
+            return NativePaint.recovery(style)
+        }
+    }
+
+    static func shortTitle(_ title: String) -> String {
+        switch title {
+        case "Hours vs. Needed": return "Hours"
+        case "Heart Rate Variability": return "HRV"
+        case "Resting Heart Rate": return "Resting HR"
+        case "Respiratory Rate": return "Respiratory"
+        default: return title
+        }
+    }
+
+    static func stageTint(_ stage: NativeStage, style: NativeStyle = .apple) -> Color {
+        NativePaint.sleepStage(named: stage.name, style: style)
+    }
+}
+
+/// Ring (or "No data") plus the Strain target caption.
+private struct NativeScoreHero: View {
+    var score: NativeScore
+    var kind: NativeScoreKind
+    var dayKey: String?
+    var strainTarget: BandStrainTarget.Result?
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
         Group {
             if score.known {
                 NativeRing(
                     fraction: score.fraction,
-                    tint: ringTint,
+                    tint: NativeScoreView.ringTint(kind: kind, score: score, style: style),
                     value: score.value,
-                    caption: ringCaption,
+                    caption: NativeScoreView.ringCaption(kind),
                     diameter: 184,
                     targetFraction: kind == .strain ? strainTarget.map { NativeStrainTarget.ringFraction($0.range) } : nil
                 )
@@ -473,53 +552,97 @@ struct NativeScoreView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.bottom, 8)
         }
+    }
+}
 
-        if !visibleRows.isEmpty {
-            NativeChrome.panel {
-                VStack(spacing: 0) {
-                    let firstRowID = visibleRows.first?.id
-                    ForEach(visibleRows) { row in
-                        if row.id != firstRowID {
-                            Divider().padding(.leading, 34)
-                        }
-                        Button {
-                            openRow(row)
-                        } label: {
-                            HStack(spacing: 8) {
-                                NativeContributorRow(
-                                    symbol: row.symbol,
-                                    title: row.title,
-                                    value: row.value,
-                                    prior: NativeScoreMath.hasValue(row.prior) ? row.prior : nil,
-                                    delta: row.delta,
-                                    tint: contributorTint(row),
-                                    valueTint: valueTint(row)
-                                )
-                                Image(systemName: "chevron.forward")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+/// Contributor rows panel and the "vs. last 30 days" footnote.
+private struct NativeScoreContributors: View {
+    var rows: [NativeScore.Row]
+    var kind: NativeScoreKind
+    var score: NativeScore
+    var dayKey: String?
+    @Environment(\.nativeStyle) private var style
+    @Environment(\.nativeNavigationPath) private var path
+
+    var body: some View {
+        NativeChrome.panel {
+            VStack(spacing: 0) {
+                let firstRowID = rows.first?.id
+                ForEach(rows) { row in
+                    if row.id != firstRowID {
+                        Divider().padding(.leading, 34)
                     }
+                    Button {
+                        NativeScoreRoutes.openRow(row, path: path)
+                    } label: {
+                        HStack(spacing: 8) {
+                            NativeContributorRow(
+                                symbol: row.symbol,
+                                title: row.title,
+                                value: row.value,
+                                prior: NativeScoreMath.hasValue(row.prior) ? row.prior : nil,
+                                delta: row.delta,
+                                tint: tint(row),
+                                // Contributor values are all drawn the same; the arrow carries the comparison.
+                                valueTint: .primary
+                            )
+                            Image(systemName: "chevron.forward")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            if style == .whoop {
-                NativeWhoopCompareChip(kind: kind, dayKey: dayKey)
-            } else {
-                NativeChrome.footnote("Compared with your last 30 days")
-            }
         }
-
-        if kind == .recovery {
-            NativeHRVTrendCard(result: hrvTrend)
-            NativeIllnessSignalCard(result: overnightLoad)
+        if style == .whoop {
+            NativeWhoopCompareChip(kind: kind, dayKey: dayKey)
+        } else {
+            NativeChrome.footnote("Compared with your last 30 days")
         }
+    }
 
-        if kind == .sleep, hasLastNight {
+    private func tint(_ row: NativeScore.Row) -> Color {
+        switch row.title {
+        case "Heart Rate Variability", "Resting Heart Rate": return NativePaint.heart(style)
+        case "Respiratory Rate": return NativePaint.respiratory(style)
+        case "Sleep Performance", "Sleep Efficiency", "Hours vs. Needed", "Sleep Consistency",
+             "Restorative Sleep", "High Sleep Stress": return NativePaint.sleep(style)
+        case "Steps", "Calories": return NativePaint.activity(style)
+        case "Heart Rate Zones 1–3", "Heart Rate Zones 4–5": return NativePaint.heart(style)
+        case "Strength Activity Time": return NativePaint.strain(style)
+        default: return NativeScoreView.ringTint(kind: kind, score: score, style: style)
+        }
+    }
+}
+
+/// Sleep-only cards between the contributors and the weekly trends.
+private struct NativeSleepScoreSection: View {
+    var score: NativeScore
+    var sleepHours: String?
+    var asleepMinutes: Double?
+    var stages: [NativeStage]
+    var sleepStart: Date?
+    var sleepEnd: Date?
+    var overnightHr: [NativeHourPoint]
+    var overnightHrAverage: Double?
+    var overnightPlot: NativeOvernightPlotModel?
+    var awakeTypical: Double?
+    var needMinutes: Double?
+    var debtMinutes: Double?
+    var sleepDetail: NativeSleepPageDetail?
+    var onEditSleep: (() -> Void)?
+    @Environment(\.nativeNavigationPath) private var path
+
+    private var hasLastNight: Bool {
+        asleepMinutes != nil || sleepHours != nil || !stages.isEmpty || sleepStart != nil
+    }
+
+    var body: some View {
+        if hasLastNight {
             NativeLastNightCard(
-                asleepMinutes: asleepValue,
+                asleepMinutes: asleepMinutes,
                 sleepHours: sleepHours,
                 stages: stages,
                 sleepStart: sleepStart,
@@ -533,320 +656,14 @@ struct NativeScoreView: View {
                 hypnogramEstimated: sleepDetail?.hypnogramEstimated ?? false,
                 onHypnogram: { path.wrappedValue.append(NativeSleepHypnogramRoute()) }
             )
-            sleepPlannerLink
-        } else if kind == .sleep {
-            sleepPlannerLink
         }
-        if kind == .sleep {
-            NativeOvernightHeartCard(
-                points: overnightHr,
-                average: overnightHrAverage,
-                plot: overnightPlot,
-                onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "avg_hr")) }
-            )
-        }
-        if kind == .sleep {
-            sleepDetailCards
-        }
-        if kind == .strain {
-            activitiesCard
-        }
-        if !weekCards.isEmpty {
-            NativeChrome.section("Weekly Trends")
-            ForEach(weekCards) { card in
-                weekCard(card)
-            }
-        }
-    }
-
-    private var ringCaption: String {
-        switch kind {
-        case .sleep: return "Sleep Performance"
-        case .recovery: return "Recovery"
-        case .strain: return "Strain"
-        }
-    }
-
-    private var ringTint: Color {
-        switch kind {
-        case .sleep: return NativePaint.sleep(style)
-        case .strain: return NativePaint.strain(style)
-        case .recovery:
-            if let percent = NativeScoreMath.percentValue(score.value) {
-                return NativePaint.recoveryBand(percent, style: style)
-            }
-            return NativePaint.recovery(style)
-        }
-    }
-
-    static func shortTitle(_ title: String) -> String {
-        switch title {
-        case "Hours vs. Needed": return "Hours"
-        case "Heart Rate Variability": return "HRV"
-        case "Resting Heart Rate": return "Resting HR"
-        case "Respiratory Rate": return "Respiratory"
-        default: return title
-        }
-    }
-
-    private func contributorTint(_ row: NativeScore.Row) -> Color {
-        switch row.title {
-        case "Heart Rate Variability", "Resting Heart Rate": return NativePaint.heart(style)
-        case "Respiratory Rate": return NativePaint.respiratory(style)
-        case "Sleep Performance", "Sleep Efficiency", "Hours vs. Needed", "Sleep Consistency",
-             "Restorative Sleep", "High Sleep Stress": return NativePaint.sleep(style)
-        case "Steps", "Calories": return NativePaint.activity(style)
-        case "Heart Rate Zones 1–3", "Heart Rate Zones 4–5": return NativePaint.heart(style)
-        case "Strength Activity Time": return NativePaint.strain(style)
-        default: return ringTint
-        }
-    }
-
-    /// Contributor values are all drawn the same; the arrow carries the comparison.
-    private func valueTint(_ row: NativeScore.Row) -> Color {
-        .primary
-    }
-
-    private func weekLabel(_ card: NativeWeek.Card, _ value: Double) -> String {
-        guard value.isFinite else { return "—" }
-        switch card.format {
-        case .percent: return "\(Int(value.rounded()))"
-        case .strain: return String(format: "%.1f", value)
-        case .duration: return NativeScoreMath.duration(value)
-        case .number:
-            if card.title == "Steps" || card.title == "Calories" {
-                return NativeDayLogic.countText(value)
-            }
-            return "\(Int(value.rounded()))"
-        case .oneDecimal: return String(format: "%.1f", value)
-        }
-    }
-
-    private func weekAxisLabel(_ card: NativeWeek.Card, _ value: Double) -> String {
-        guard value.isFinite else { return "" }
-        switch card.format {
-        case .percent: return "\(Int(value.rounded()))"
-        case .strain: return String(format: "%.0f", value)
-        case .duration: return NativeScoreMath.duration(value)
-        case .number:
-            if abs(value) >= 1000 { return "\(Int((value / 1000).rounded()))k" }
-            return "\(Int(value.rounded()))"
-        case .oneDecimal: return String(format: "%.1f", value)
-        }
-    }
-
-    private func weekUnit(_ card: NativeWeek.Card) -> String? {
-        switch card.format {
-        case .percent: return "%"
-        case .strain: return nil
-        case .duration: return nil
-        case .number:
-            switch card.title {
-            case "Heart Rate Variability": return "ms"
-            case "Resting Heart Rate": return "BPM"
-            case "Steps": return "steps"
-            case "Calories": return "cal"
-            default: return nil
-            }
-        case .oneDecimal:
-            return card.title == "Respiratory Rate" ? "breaths/min" : nil
-        }
-    }
-
-    private func weekTint(_ card: NativeWeek.Card) -> Color {
-        switch card.title {
-        case "Heart Rate Variability", "Resting Heart Rate": return NativePaint.heart(style)
-        case "Respiratory Rate": return NativePaint.respiratory(style)
-        case "Steps", "Calories": return NativePaint.activity(style)
-        case "Heart Rate Zones 1–3", "Heart Rate Zones 4–5": return NativePaint.heart(style)
-        case "Strength Activity Time": return NativePaint.strain(style)
-        case "Strain": return NativePaint.strain(style)
-        case "Recovery": return NativePaint.recovery(style)
-        case "Sleep Performance", "Hours of Sleep", "Sleep Efficiency", "Hours vs. Needed",
-             "Hours vs. Needed %", "Restorative Sleep", "Sleep Consistency", "Time in Bed",
-             "Sleep Debt", "Sleep Stress": return NativePaint.sleep(style)
-        default: return card.tint
-        }
-    }
-
-    private func weekSymbol(_ card: NativeWeek.Card) -> String {
-        switch card.title {
-        case "Sleep Performance", "Sleep Efficiency", "Time in Bed": return "bed.double.fill"
-        case "Hours of Sleep", "Hours vs. Needed", "Hours vs. Needed %": return "clock.fill"
-        case "Restorative Sleep": return "sparkles"
-        case "Sleep Consistency": return "calendar"
-        case "Sleep Debt": return "moon.fill"
-        case "Sleep Stress": return "waveform.path"
-        case "Recovery": return "heart.fill"
-        case "Heart Rate Variability": return "waveform.path.ecg"
-        case "Resting Heart Rate": return "heart.fill"
-        case "Respiratory Rate": return "lungs.fill"
-        case "Strain": return "bolt.fill"
-        case "Steps": return "figure.walk"
-        case "Calories": return "flame.fill"
-        case "Heart Rate Zones 1–3": return "heart"
-        case "Heart Rate Zones 4–5": return "heart.fill"
-        case "Strength Activity Time": return "dumbbell.fill"
-        default: return "chart.bar.fill"
-        }
-    }
-
-    @ViewBuilder private func weekCard(_ card: NativeWeek.Card) -> some View {
-        if kind == .sleep, card.title == "Hours vs. Needed", let detail = sleepDetail {
-            NativeSleepDualLineCard(
-                title: card.title,
-                slept: card.points,
-                needed: detail.hoursNeededWeek,
-                highlightKey: dayKey,
-                typical: detail.hoursTypical,
-                plot: detail.dualLine,
-                onOpen: { openCard(card) }
-            )
-        } else if kind == .sleep, card.title == "Time in Bed" {
-            NativeSleepTimeInBedWeekCard(
-                points: card.points,
-                highlightKey: dayKey,
-                plot: sleepDetail?.timeInBedPlot,
-                onOpen: { openCard(card) }
-            )
-        } else if kind == .sleep, card.title == "Restorative Sleep" {
-            NativeSleepRestorativeWeekCard(
-                deep: card.stacks.first { $0.title == "Deep" }?.points ?? [],
-                rem: card.stacks.first { $0.title == "REM" }?.points ?? [],
-                highlightKey: dayKey,
-                plot: sleepDetail?.restorativePlot,
-                onOpen: { openCard(card) }
-            )
-        } else {
-            weekChartCard(card)
-        }
-    }
-
-    @ViewBuilder private func weekChartCard(_ card: NativeWeek.Card) -> some View {
-        let tint = weekTint(card)
-        NativeChrome.panel {
-            Button { openCard(card) } label: {
-                NativeCardHeader(
-                    title: card.title,
-                    symbol: weekSymbol(card),
-                    tint: tint,
-                    chevron: true
-                )
-            }
-            .buttonStyle(.plain)
-            NativeChartBlock(
-                points: card.points,
-                bars: card.bars,
-                tint: tint,
-                format: { weekLabel(card, $0) },
-                axisFormat: { weekAxisLabel(card, $0) },
-                unit: weekUnit(card),
-                maxY: card.maxY,
-                color: card.band ? weekBand : nil,
-                highlightKey: dayKey,
-                plotHeight: 200,
-                accessibilityName: card.title,
-                clockHero: card.format == .duration,
-                yTicks: weekYTicks(card),
-                stacks: card.stacks
-            )
-            .nativeChartButton(action: { openCard(card) })
-            .onTapGesture { openCard(card) }
-        }
-    }
-
-    private func openRow(_ row: NativeScore.Row) {
-        if row.title == "Sleep Consistency" {
-            path.wrappedValue.append(NativeSleepConsistencyRoute())
-            return
-        }
-        if case .metric(let key) = row.route {
-            path.wrappedValue.append(NativeScoreMetricRoute(key: key))
-            return
-        }
-        path.wrappedValue.append(row.route)
-    }
-
-    private func openCard(_ card: NativeWeek.Card) {
-        switch card.title {
-        case "Hours of Sleep", "Time in Bed", "Heart Rate Zones 1–3", "Heart Rate Zones 4–5",
-             "Strength Activity Time", "Restorative Sleep":
-            path.wrappedValue.append(NativeScoreTrendRoute(title: card.title))
-        case "Sleep Stress":
-            path.wrappedValue.append(TabRoute.stress)
-        case "Sleep Consistency":
-            path.wrappedValue.append(NativeSleepConsistencyRoute())
-        case "Sleep Debt":
-            path.wrappedValue.append(NativeScoreMetricRoute(key: "sleep_debt_min"))
-        default:
-            if let route = card.route, case .metric(let key) = route {
-                path.wrappedValue.append(NativeScoreMetricRoute(key: key))
-            } else if let key = metricKey(for: card.title) {
-                path.wrappedValue.append(NativeScoreMetricRoute(key: key))
-            } else if let route = card.route {
-                path.wrappedValue.append(route)
-            } else {
-                path.wrappedValue.append(NativeScoreTrendRoute(title: card.title))
-            }
-        }
-    }
-
-    private func metricKey(for title: String) -> String? {
-        switch title {
-        case "Sleep Performance": return "sleep_performance"
-        case "Sleep Efficiency": return "sleep_efficiency"
-        case "Hours vs. Needed", "Hours vs. Needed %": return "hours_vs_needed_pct"
-        case "Sleep Consistency": return "sleep_consistency"
-        case "Heart Rate Variability": return "hrv"
-        case "Resting Heart Rate": return "resting_hr"
-        case "Respiratory Rate": return "resp_rate"
-        case "Recovery": return "recovery"
-        case "Strain": return "strain"
-        case "Steps": return "steps"
-        case "Calories": return "energy_kcal"
-        case "Blood Oxygen": return "spo2"
-        case "Skin Temperature": return "skin_temp"
-        default: return nil
-        }
-    }
-
-    private func weekYTicks(_ card: NativeWeek.Card) -> [Double]? {
-        switch card.format {
-        case .percent: return NativeChartTicks.percent
-        case .strain: return NativeDayLogic.strainYTicks(maxY: card.maxY)
-        default: return nil
-        }
-    }
-
-    @ViewBuilder private var sleepPlannerLink: some View {
-        NavigationLink {
-            NativeSleepPlanner()
-        } label: {
-            NativeChrome.panel {
-                NativeCardHeader(
-                    title: "Sleep Planner",
-                    symbol: "bed.double.fill",
-                    tint: NativePaint.sleep(style),
-                    chevron: true
-                )
-                Text(plannerSubtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Sleep Planner, \(plannerSubtitle)")
-    }
-
-    private var plannerSubtitle: String {
-        NativeSleepPlannerLogic.cardSubtitle(
-            needMin: needMinutes ?? sleepDetail?.need?.needMin,
-            wakeMinutes: plannerWakeMinutes,
-            goal: SleepPlanner.Goal(rawValue: plannerGoalRaw) ?? .peak
+        NativeSleepPlannerLink(needMinutes: needMinutes ?? sleepDetail?.need?.needMin)
+        NativeOvernightHeartCard(
+            points: overnightHr,
+            average: overnightHrAverage,
+            plot: overnightPlot,
+            onOpen: { path.wrappedValue.append(NativeScoreMetricRoute(key: "avg_hr")) }
         )
-    }
-
-    @ViewBuilder private var sleepDetailCards: some View {
         if let need = sleepDetail?.need ?? hoursNeededFromPage,
            need.percent != nil || need.hoursSleptMin != nil {
             NativeSleepHoursVsNeededCard(
@@ -890,25 +707,48 @@ struct NativeScoreView: View {
             debtMin: nil
         )
     }
+}
 
-    private var asleepValue: Double? { asleepMinutes }
+private struct NativeSleepPlannerLink: View {
+    var needMinutes: Double?
+    @Environment(\.nativeStyle) private var style
+    @AppStorage("native.sleepPlanner.wakeMinutes") private var plannerWakeMinutes = 7 * 60
+    @AppStorage("native.sleepPlanner.goal") private var plannerGoalRaw = SleepPlanner.Goal.peak.rawValue
 
-    private var hasLastNight: Bool {
-        asleepValue != nil || sleepHours != nil || !stages.isEmpty || sleepStart != nil
-    }
-
-    private var weekBand: ((Double) -> Color)? {
-        if kind == .recovery {
-            return { NativePaint.recoveryBand($0, style: style) }
+    var body: some View {
+        NavigationLink {
+            NativeSleepPlanner()
+        } label: {
+            NativeChrome.panel {
+                NativeCardHeader(
+                    title: "Sleep Planner",
+                    symbol: "bed.double.fill",
+                    tint: NativePaint.sleep(style),
+                    chevron: true
+                )
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         }
-        return nil
+        .buttonStyle(.plain)
+        .accessibilityLabel("Sleep Planner, \(subtitle)")
     }
 
-    static func stageTint(_ stage: NativeStage, style: NativeStyle = .apple) -> Color {
-        NativePaint.sleepStage(named: stage.name, style: style)
+    private var subtitle: String {
+        NativeSleepPlannerLogic.cardSubtitle(
+            needMin: needMinutes,
+            wakeMinutes: plannerWakeMinutes,
+            goal: SleepPlanner.Goal(rawValue: plannerGoalRaw) ?? .peak
+        )
     }
+}
 
-    @ViewBuilder private var activitiesCard: some View {
+private struct NativeStrainActivitiesCard: View {
+    var activities: [NativeDay.Activity]
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
         NativeChrome.panel {
             NativeCardHeader(title: "Activities", symbol: "figure.run", tint: NativeChrome.strain)
             if activities.isEmpty {
@@ -938,6 +778,250 @@ struct NativeScoreView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// One "Weekly Trends" card. Sleep's three bespoke charts, else the shared chart block.
+private struct NativeScoreWeekCard: View {
+    var card: NativeWeek.Card
+    var kind: NativeScoreKind
+    var dayKey: String?
+    var sleepDetail: NativeSleepPageDetail?
+    @Environment(\.nativeNavigationPath) private var path
+
+    var body: some View {
+        if kind == .sleep, card.title == "Hours vs. Needed", let detail = sleepDetail {
+            NativeSleepDualLineCard(
+                title: card.title,
+                slept: card.points,
+                needed: detail.hoursNeededWeek,
+                highlightKey: dayKey,
+                typical: detail.hoursTypical,
+                plot: detail.dualLine,
+                onOpen: open
+            )
+        } else if kind == .sleep, card.title == "Time in Bed" {
+            NativeSleepTimeInBedWeekCard(
+                points: card.points,
+                highlightKey: dayKey,
+                plot: sleepDetail?.timeInBedPlot,
+                onOpen: open
+            )
+        } else if kind == .sleep, card.title == "Restorative Sleep" {
+            NativeSleepRestorativeWeekCard(
+                deep: card.stacks.first { $0.title == "Deep" }?.points ?? [],
+                rem: card.stacks.first { $0.title == "REM" }?.points ?? [],
+                highlightKey: dayKey,
+                plot: sleepDetail?.restorativePlot,
+                onOpen: open
+            )
+        } else {
+            NativeScoreWeekChartCard(card: card, kind: kind, dayKey: dayKey, onOpen: open)
+        }
+    }
+
+    private func open() {
+        NativeScoreRoutes.openCard(card, path: path)
+    }
+}
+
+private struct NativeScoreWeekChartCard: View {
+    var card: NativeWeek.Card
+    var kind: NativeScoreKind
+    var dayKey: String?
+    var onOpen: () -> Void
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
+        let tint = NativeScoreWeekFormat.tint(card, style: style)
+        NativeChrome.panel {
+            Button(action: onOpen) {
+                NativeCardHeader(
+                    title: card.title,
+                    symbol: NativeScoreWeekFormat.symbol(card),
+                    tint: tint,
+                    chevron: true
+                )
+            }
+            .buttonStyle(.plain)
+            NativeChartBlock(
+                points: card.points,
+                bars: card.bars,
+                tint: tint,
+                format: { [card] in NativeScoreWeekFormat.label(card, $0) },
+                axisFormat: { [card] in NativeScoreWeekFormat.axisLabel(card, $0) },
+                unit: NativeScoreWeekFormat.unit(card),
+                maxY: card.maxY,
+                color: card.band ? NativeScoreWeekFormat.band(kind: kind, style: style) : nil,
+                highlightKey: dayKey,
+                plotHeight: 200,
+                accessibilityName: card.title,
+                clockHero: card.format == .duration,
+                yTicks: NativeScoreWeekFormat.yTicks(card),
+                stacks: card.stacks
+            )
+            .nativeChartButton(action: onOpen)
+            .onTapGesture(perform: onOpen)
+        }
+    }
+}
+
+/// Labels, units, tints, and symbols for a week card. Shared by the card and its trend page.
+enum NativeScoreWeekFormat {
+    static func label(_ card: NativeWeek.Card, _ value: Double) -> String {
+        guard value.isFinite else { return "—" }
+        switch card.format {
+        case .percent: return "\(Int(value.rounded()))"
+        case .strain: return String(format: "%.1f", value)
+        case .duration: return NativeScoreMath.duration(value)
+        case .number:
+            if card.title == "Steps" || card.title == "Calories" {
+                return NativeDayLogic.countText(value)
+            }
+            return "\(Int(value.rounded()))"
+        case .oneDecimal: return String(format: "%.1f", value)
+        }
+    }
+
+    static func axisLabel(_ card: NativeWeek.Card, _ value: Double) -> String {
+        guard value.isFinite else { return "" }
+        switch card.format {
+        case .percent: return "\(Int(value.rounded()))"
+        case .strain: return String(format: "%.0f", value)
+        case .duration: return NativeScoreMath.duration(value)
+        case .number:
+            if abs(value) >= 1000 { return "\(Int((value / 1000).rounded()))k" }
+            return "\(Int(value.rounded()))"
+        case .oneDecimal: return String(format: "%.1f", value)
+        }
+    }
+
+    static func unit(_ card: NativeWeek.Card) -> String? {
+        switch card.format {
+        case .percent: return "%"
+        case .strain: return nil
+        case .duration: return nil
+        case .number:
+            switch card.title {
+            case "Heart Rate Variability": return "ms"
+            case "Resting Heart Rate": return "BPM"
+            case "Steps": return "steps"
+            case "Calories": return "cal"
+            default: return nil
+            }
+        case .oneDecimal:
+            return card.title == "Respiratory Rate" ? "breaths/min" : nil
+        }
+    }
+
+    static func tint(_ card: NativeWeek.Card, style: NativeStyle) -> Color {
+        switch card.title {
+        case "Heart Rate Variability", "Resting Heart Rate": return NativePaint.heart(style)
+        case "Respiratory Rate": return NativePaint.respiratory(style)
+        case "Steps", "Calories": return NativePaint.activity(style)
+        case "Heart Rate Zones 1–3", "Heart Rate Zones 4–5": return NativePaint.heart(style)
+        case "Strength Activity Time": return NativePaint.strain(style)
+        case "Strain": return NativePaint.strain(style)
+        case "Recovery": return NativePaint.recovery(style)
+        case "Sleep Performance", "Hours of Sleep", "Sleep Efficiency", "Hours vs. Needed",
+             "Hours vs. Needed %", "Restorative Sleep", "Sleep Consistency", "Time in Bed",
+             "Sleep Debt", "Sleep Stress": return NativePaint.sleep(style)
+        default: return card.tint
+        }
+    }
+
+    static func symbol(_ card: NativeWeek.Card) -> String {
+        switch card.title {
+        case "Sleep Performance", "Sleep Efficiency", "Time in Bed": return "bed.double.fill"
+        case "Hours of Sleep", "Hours vs. Needed", "Hours vs. Needed %": return "clock.fill"
+        case "Restorative Sleep": return "sparkles"
+        case "Sleep Consistency": return "calendar"
+        case "Sleep Debt": return "moon.fill"
+        case "Sleep Stress": return "waveform.path"
+        case "Recovery": return "heart.fill"
+        case "Heart Rate Variability": return "waveform.path.ecg"
+        case "Resting Heart Rate": return "heart.fill"
+        case "Respiratory Rate": return "lungs.fill"
+        case "Strain": return "bolt.fill"
+        case "Steps": return "figure.walk"
+        case "Calories": return "flame.fill"
+        case "Heart Rate Zones 1–3": return "heart"
+        case "Heart Rate Zones 4–5": return "heart.fill"
+        case "Strength Activity Time": return "dumbbell.fill"
+        default: return "chart.bar.fill"
+        }
+    }
+
+    static func yTicks(_ card: NativeWeek.Card) -> [Double]? {
+        switch card.format {
+        case .percent: return NativeChartTicks.percent
+        case .strain: return NativeDayLogic.strainYTicks(maxY: card.maxY)
+        default: return nil
+        }
+    }
+
+    /// Recovery week bars take the red/yellow/green band; other kinds use the card tint.
+    static func band(kind: NativeScoreKind, style: NativeStyle) -> ((Double) -> Color)? {
+        guard kind == .recovery else { return nil }
+        return { NativePaint.recoveryBand($0, style: style) }
+    }
+}
+
+/// Where a contributor row or week card pushes.
+enum NativeScoreRoutes {
+    static func openRow(_ row: NativeScore.Row, path: Binding<NavigationPath>) {
+        if row.title == "Sleep Consistency" {
+            path.wrappedValue.append(NativeSleepConsistencyRoute())
+            return
+        }
+        if case .metric(let key) = row.route {
+            path.wrappedValue.append(NativeScoreMetricRoute(key: key))
+            return
+        }
+        path.wrappedValue.append(row.route)
+    }
+
+    static func openCard(_ card: NativeWeek.Card, path: Binding<NavigationPath>) {
+        switch card.title {
+        case "Hours of Sleep", "Time in Bed", "Heart Rate Zones 1–3", "Heart Rate Zones 4–5",
+             "Strength Activity Time", "Restorative Sleep":
+            path.wrappedValue.append(NativeScoreTrendRoute(title: card.title))
+        case "Sleep Stress":
+            path.wrappedValue.append(TabRoute.stress)
+        case "Sleep Consistency":
+            path.wrappedValue.append(NativeSleepConsistencyRoute())
+        case "Sleep Debt":
+            path.wrappedValue.append(NativeScoreMetricRoute(key: "sleep_debt_min"))
+        default:
+            if let route = card.route, case .metric(let key) = route {
+                path.wrappedValue.append(NativeScoreMetricRoute(key: key))
+            } else if let key = metricKey(for: card.title) {
+                path.wrappedValue.append(NativeScoreMetricRoute(key: key))
+            } else if let route = card.route {
+                path.wrappedValue.append(route)
+            } else {
+                path.wrappedValue.append(NativeScoreTrendRoute(title: card.title))
+            }
+        }
+    }
+
+    static func metricKey(for title: String) -> String? {
+        switch title {
+        case "Sleep Performance": return "sleep_performance"
+        case "Sleep Efficiency": return "sleep_efficiency"
+        case "Hours vs. Needed", "Hours vs. Needed %": return "hours_vs_needed_pct"
+        case "Sleep Consistency": return "sleep_consistency"
+        case "Heart Rate Variability": return "hrv"
+        case "Resting Heart Rate": return "resting_hr"
+        case "Respiratory Rate": return "resp_rate"
+        case "Recovery": return "recovery"
+        case "Strain": return "strain"
+        case "Steps": return "steps"
+        case "Calories": return "energy_kcal"
+        case "Blood Oxygen": return "spo2"
+        case "Skin Temperature": return "skin_temp"
+        default: return nil
         }
     }
 }
@@ -975,15 +1059,16 @@ struct NativeLastNightCard: View {
         }
     }
 
+    // Each style is its own nominal view so only the active layout's body type is instantiated.
     var body: some View {
         if style == .whoop {
-            whoop
+            NativeLastNightWhoopLayout(card: self)
         } else {
-            apple
+            NativeLastNightAppleLayout(card: self)
         }
     }
 
-    private var apple: some View {
+    fileprivate var apple: some View {
         NativeChrome.panel {
             lastNightHeader(title: "Last Night")
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1018,7 +1103,7 @@ struct NativeLastNightCard: View {
         .modifier(NativeSleepLightHaptic(trigger: hapticTick))
     }
 
-    private var whoop: some View {
+    fileprivate var whoop: some View {
         NativeChrome.panel {
             lastNightHeader(title: "Last Night's Sleep")
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1156,6 +1241,16 @@ struct NativeLastNightCard: View {
         selectedStage = NativeSleepHypnogramMath.toggleHighlight(selectedStage, tapped: kind)
         hapticTick += 1
     }
+}
+
+private struct NativeLastNightAppleLayout: View {
+    var card: NativeLastNightCard
+    var body: some View { card.apple }
+}
+
+private struct NativeLastNightWhoopLayout: View {
+    var card: NativeLastNightCard
+    var body: some View { card.whoop }
 }
 
 enum NativeOvernightHeart {
