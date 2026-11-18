@@ -129,6 +129,18 @@ enum NativeChartScrubMath {
         points.first { $0.key == key || $0.day == key }.flatMap { $0.value.isFinite ? $0 : nil }
     }
 
+    /// Scrubbed day while dragging; otherwise the page's `highlightKey`.
+    /// Ignores a selection that is not a plotted key (Swift Charts can emit the axis label).
+    static func emphasizedKey(selected: String?, highlight: String?, keys: [String]) -> String? {
+        if let selected, keys.contains(selected) { return selected }
+        return highlight
+    }
+
+    static func highlightIndex(keys: [String], emphasized: String?) -> Int? {
+        guard let emphasized else { return nil }
+        return keys.firstIndex(of: emphasized)
+    }
+
     static func night(key: String, in nights: [NativeSleepNight]) -> NativeSleepNight? {
         nights.first { $0.key == key }
     }

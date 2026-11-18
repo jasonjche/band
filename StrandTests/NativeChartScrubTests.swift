@@ -160,6 +160,36 @@ final class NativeChartScrubTests: XCTestCase {
         XCTAssertFalse(NativeChartScrubMath.isTap(translation: CGSize(width: 20, height: 0)))
     }
 
+    func testEmphasizedKeyPrefersScrubThenPageDayAndIgnoresAxisLabels() {
+        let keys = NativeWeek.lastSevenKeys(ending: "2026-11-12")
+        XCTAssertEqual(keys, [
+            "2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09",
+            "2026-11-10", "2026-11-11", "2026-11-12",
+        ])
+        XCTAssertEqual(NativeChartDay.weekday("2026-11-12"), "Thu")
+        XCTAssertEqual(NativeChartDay.weekday("2026-11-07"), "Sat")
+        XCTAssertEqual(
+            NativeChartScrubMath.emphasizedKey(selected: nil, highlight: "2026-11-12", keys: keys),
+            "2026-11-12"
+        )
+        XCTAssertEqual(
+            NativeChartScrubMath.highlightIndex(keys: keys, emphasized: "2026-11-12"),
+            6
+        )
+        XCTAssertEqual(
+            NativeChartScrubMath.highlightIndex(keys: keys, emphasized: "2026-11-07"),
+            1
+        )
+        XCTAssertEqual(
+            NativeChartScrubMath.emphasizedKey(selected: "7", highlight: "2026-11-12", keys: keys),
+            "2026-11-12"
+        )
+        XCTAssertEqual(
+            NativeChartScrubMath.emphasizedKey(selected: "2026-11-07", highlight: "2026-11-12", keys: keys),
+            "2026-11-07"
+        )
+    }
+
     func testHRDisplaySmoothsTheLineAndLeavesRawStats() {
         let raw = (0..<24).map { index in
             NativeHourPoint(

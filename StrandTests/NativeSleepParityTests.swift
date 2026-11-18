@@ -155,6 +155,46 @@ final class NativeSleepParityTests: XCTestCase {
         XCTAssertTrue(NativeSleepClock.label(180).contains(" "))
     }
 
+    func testTimeInBedDomainFitsOvernightInsteadOfAfternoonFallback() throws {
+        let points = NativeSleepWeek.timeInBedPoints(
+            todayKey: NativeSleepSnapshot.highlightKey,
+            sleeps: NativeSleepSnapshot.snapshotSleeps
+        )
+        let window = NativeSleepClock.fittedPlot(points: points)
+        XCTAssertNotEqual(window.marks, NativeSleepClock.axisMarks)
+        let first = try XCTUnwrap(window.marks.first)
+        let last = try XCTUnwrap(window.marks.last)
+        XCTAssertGreaterThan(last, first)
+        XCTAssertGreaterThanOrEqual(first, 120)
+        XCTAssertLessThanOrEqual(first, 360)
+        XCTAssertGreaterThanOrEqual(last, 720)
+        XCTAssertLessThanOrEqual(last, 1_080)
+        XCTAssertEqual(
+            NativeChartScrubMath.emphasizedKey(
+                selected: nil,
+                highlight: NativeSleepSnapshot.highlightKey,
+                keys: points.map(\.key)
+            ),
+            NativeSleepSnapshot.highlightKey
+        )
+        XCTAssertEqual(
+            NativeChartScrubMath.highlightIndex(keys: points.map(\.key), emphasized: NativeSleepSnapshot.highlightKey),
+            6
+        )
+    }
+
+    func testFittedPlotWrapsWakeBeforeBedInsteadOfFallbackAxis() {
+        let pair = NativeSleepClock.alignedOvernight(bed: 300, wake: 120)
+        XCTAssertEqual(pair.bed, 300, accuracy: 1e-9)
+        XCTAssertEqual(pair.wake, 120 + 24 * 60, accuracy: 1e-9)
+        let window = NativeSleepClock.fittedPlot(points: [
+            NativeDayPoint(key: "2026-11-10", value: 600, low: 300, high: 120)
+        ])
+        XCTAssertNotEqual(window.marks, NativeSleepClock.axisMarks)
+        XCTAssertGreaterThan(window.marks.last ?? 0, window.marks.first ?? 9_999)
+        XCTAssertEqual(NativeSleepClock.clockFromEvening(300), "11:00 PM")
+    }
+
     func testEfficiencyWakeEventsCountStageTransitionsIntoAwake() throws {
         let segments = AnalyticsEngine.decodeStages(NativeSleepSnapshot.stagesJSON)
         XCTAssertFalse(segments.isEmpty)

@@ -156,6 +156,25 @@ enum NativeSleepClock {
         -minutesFromEvening
     }
 
+    /// Wake is later on the evening axis. A span that crosses the 6 PM wrap gets +24 h on wake.
+    static func alignedOvernight(bed: Double, wake: Double) -> (bed: Double, wake: Double) {
+        wake < bed ? (bed, wake + 24 * 60) : (bed, wake)
+    }
+
+    static func fittedPlot(points: [NativeDayPoint]) -> PlotWindow {
+        var beds: [Double] = []
+        var wakes: [Double] = []
+        beds.reserveCapacity(points.count)
+        wakes.reserveCapacity(points.count)
+        for point in points {
+            guard let bed = point.low, let wake = point.high, bed.isFinite, wake.isFinite else { continue }
+            let pair = alignedOvernight(bed: bed, wake: wake)
+            beds.append(pair.bed)
+            wakes.append(pair.wake)
+        }
+        return fittedPlot(beds: beds, wakes: wakes)
+    }
+
     /// Earliest bedtime − 1 h … latest wake + 1 h, rounded to the hour, with 3–4 hour labels.
     static func fittedPlot(beds: [Double], wakes: [Double]) -> PlotWindow {
         guard let earliest = beds.filter(\.isFinite).min(),
@@ -212,6 +231,18 @@ enum NativeSleepClock {
     }()
 
     static func label(_ minutesFromEvening: Double) -> String {
+        hourOnly.string(from: date(fromEvening: minutesFromEvening))
+    }
+
+    static func clockFromEvening(_ minutesFromEvening: Double) -> String {
+        hourMinute.string(from: date(fromEvening: minutesFromEvening))
+    }
+
+    static func clock(_ date: Date) -> String {
+        hourMinute.string(from: date)
+    }
+
+    private static func date(fromEvening minutesFromEvening: Double) -> Date {
         var total = (eveningHour * 60 + Int(minutesFromEvening.rounded())) % (24 * 60)
         if total < 0 { total += 24 * 60 }
         var comps = DateComponents()
@@ -220,12 +251,7 @@ enum NativeSleepClock {
         comps.day = 1
         comps.hour = total / 60
         comps.minute = total % 60
-        let date = Calendar(identifier: .gregorian).date(from: comps) ?? Date()
-        return hourOnly.string(from: date)
-    }
-
-    static func clock(_ date: Date) -> String {
-        hourMinute.string(from: date)
+        return Calendar(identifier: .gregorian).date(from: comps) ?? Date()
     }
 }
 
@@ -1256,10 +1282,7 @@ struct NativeSleepTimeInBedPlotModel: Equatable {
         }()
         return NativeSleepTimeInBedPlotModel(
             points: points,
-            window: NativeSleepClock.fittedPlot(
-                beds: points.compactMap(\.low),
-                wakes: points.compactMap(\.high)
-            ),
+            window: NativeSleepClock.fittedPlot(points: points),
             average: NativeScoreMath.mean(known.compactMap { $0.value.isFinite ? $0.value : nil }),
             rangeLabel: rangeLabel
         )

@@ -249,7 +249,6 @@ private struct NativeSleepHypnogramPlot: View {
                     .onEnded { _ in scrub.time = nil }
             )
             .nativeChartButton(action: onOpen)
-            .onTapGesture { onOpen?() }
         }
     }
 

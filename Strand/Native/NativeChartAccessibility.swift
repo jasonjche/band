@@ -113,12 +113,17 @@ extension View {
         }
     }
 
-    /// VoiceOver button on a chart that also scrubs. Does not wrap in `Button`.
+    /// VoiceOver plus a simultaneous tap so `chartXSelection` can still drag-to-scrub.
+    /// Does not wrap in `Button` — a Button steals the chart's drag.
+    @ViewBuilder
     func nativeChartButton(action: (() -> Void)?) -> some View {
-        self
-            .accessibilityAddTraits(action == nil ? [] : .isButton)
-            .accessibilityAction {
-                action?()
-            }
+        if let action {
+            self
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { action() }
+                .simultaneousGesture(TapGesture().onEnded(action))
+        } else {
+            self
+        }
     }
 }

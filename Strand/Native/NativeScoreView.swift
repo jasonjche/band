@@ -836,15 +836,12 @@ private struct NativeScoreWeekChartCard: View {
     var body: some View {
         let tint = NativeScoreWeekFormat.tint(card, style: style)
         NativeChrome.panel {
-            Button(action: onOpen) {
-                NativeCardHeader(
-                    title: card.title,
-                    symbol: NativeScoreWeekFormat.symbol(card),
-                    tint: tint,
-                    chevron: true
-                )
-            }
-            .buttonStyle(.plain)
+            NativeCardHeader(
+                title: card.title,
+                symbol: NativeScoreWeekFormat.symbol(card),
+                tint: tint,
+                chevron: true
+            )
             NativeChartBlock(
                 points: card.points,
                 bars: card.bars,
@@ -861,9 +858,9 @@ private struct NativeScoreWeekChartCard: View {
                 yTicks: NativeScoreWeekFormat.yTicks(card),
                 stacks: card.stacks
             )
-            .nativeChartButton(action: onOpen)
-            .onTapGesture(perform: onOpen)
         }
+        .contentShape(Rectangle())
+        .nativeChartButton(action: onOpen)
     }
 }
 
@@ -1357,18 +1354,12 @@ private struct NativeOvernightHeartHost: View, Equatable {
 
     var body: some View {
         NativeChrome.panel {
-            let header = NativeCardHeader(
+            NativeCardHeader(
                 title: "Heart Rate",
                 symbol: "heart.fill",
                 tint: NativePaint.heart(style),
                 chevron: onOpen != nil
             )
-            if let onOpen {
-                Button(action: onOpen) { header }
-                    .buttonStyle(.plain)
-            } else {
-                header
-            }
             if let point = selectedPoint {
                 NativeHeroValue(
                     caption: "Heart Rate",
@@ -1387,9 +1378,9 @@ private struct NativeOvernightHeartHost: View, Equatable {
                 selectedTime: $selectedTime,
                 plot: plot
             )
-            .nativeChartButton(action: onOpen)
-            .onTapGesture { onOpen?() }
         }
+        .contentShape(Rectangle())
+        .nativeChartButton(action: onOpen)
     }
 }
 

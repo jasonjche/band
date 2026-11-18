@@ -1012,7 +1012,6 @@ private struct NativeActivityHRPlot: View {
             NativeActivityHRMarker(proxy: proxy, points: points, zoneSet: zoneSet, scrub: scrub)
         }
         .nativeChartButton(action: selectedZone == nil ? nil : onClearZone)
-        .onTapGesture { if selectedZone != nil { onClearZone() } }
         .accessibilityLabel("Heart rate")
         .accessibilityValue(selectedZone.map { "Showing zone \($0)" } ?? "Full workout")
         .accessibilityHint(selectedZone == nil ? "" : "Clears the zone highlight")

@@ -404,7 +404,7 @@ final class NativeChartPerfModelTests: XCTestCase {
         let model = NativeSleepTimeInBedPlotModel.make(points: points)
         XCTAssertEqual(
             model.window,
-            NativeSleepClock.fittedPlot(beds: points.compactMap(\.low), wakes: points.compactMap(\.high))
+            NativeSleepClock.fittedPlot(points: points)
         )
         XCTAssertEqual(model.average, NativeScoreMath.mean(points.map(\.value)))
     }
