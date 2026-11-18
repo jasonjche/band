@@ -6,6 +6,7 @@ import WhoopStore
 /// Journal: inset grouped list of the day's real answers, plus an Apple Form to log them.
 struct NativeJournalView: View {
     var startsLogging: Bool = false
+    var onFinish: (() -> Void)? = nil
     @Environment(\.nativeNavigationPath) private var path
     @StateObject private var catalog = JournalCatalogStore()
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
@@ -26,8 +27,9 @@ struct NativeJournalView: View {
     @State private var logging: Bool
     @State private var formItems: [JournalCatalogItem] = []
 
-    init(startsLogging: Bool = false) {
+    init(startsLogging: Bool = false, onFinish: (() -> Void)? = nil) {
         self.startsLogging = startsLogging
+        self.onFinish = onFinish
         _logging = State(initialValue: startsLogging)
     }
 
@@ -60,7 +62,13 @@ struct NativeJournalView: View {
                     onSave: { yes, numeric, times in
                         await saveDraft(yes: yes, numeric: numeric, times: times)
                     },
-                    onCancel: { logging = false }
+                    onCancel: {
+                        if let onFinish {
+                            onFinish()
+                        } else {
+                            logging = false
+                        }
+                    }
                 )
             } else {
                 journalBody
@@ -191,6 +199,7 @@ struct NativeJournalView: View {
         }
         logging = false
         await reload()
+        onFinish?()
     }
 
     private func reload() async {

@@ -128,6 +128,7 @@ struct NativeHomeView: View {
     @State private var showingMorningJournal = false
     @AppStorage(NativeMorningJournal.storageKey) private var promptedJournalDay = ""
     @Environment(\.scenePhase) private var scenePhase
+    @State private var morningJournalPath = NavigationPath()
     @State private var calendarRecovery: [String: Double] = [:]
     @State private var weekRecovery: [NativeDayPoint] = []
     @State private var weekStrain: [NativeDayPoint] = []
@@ -206,13 +207,20 @@ struct NativeHomeView: View {
                     dashboardJSON = encoded
                 }
             }
-            .sheet(isPresented: $showingMorningJournal) {
-                NavigationStack {
-                    NativeJournalView(startsLogging: true)
+            .sheet(isPresented: $showingMorningJournal, onDismiss: {
+                morningJournalPath = NavigationPath()
+                Task { await reload() }
+            }) {
+                NavigationStack(path: $morningJournalPath) {
+                    NativeJournalView(startsLogging: true, onFinish: { showingMorningJournal = false })
+                        .environment(\.nativeNavigationPath, $morningJournalPath)
+                        .nativeStyleBridge()
                 }
             }
             .onChangeCompat(of: scenePhase) { phase in
-                if phase == .active { presentMorningJournalIfNeeded() }
+                if phase == .active {
+                    Task { await reload() }
+                }
             }
             .toolbar {
                 #if os(macOS)
@@ -420,6 +428,7 @@ struct NativeHomeView: View {
     }
 
     private func presentMorningJournalIfNeeded() {
+        guard scenePhase == .active, !showingMorningJournal else { return }
         let sleepPresent = repoHandle?.sleeps.contains {
             NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs)))
                 == selectedKey

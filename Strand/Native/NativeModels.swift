@@ -274,7 +274,8 @@ enum NativeDay {
                 known: sleepScore != nil,
                 fraction: sleepScore.map { $0 / 100 },
                 tint: NativeChrome.sleep,
-                rows: sleepRows(day: sleepDay, prior: prior, scores: scores,
+                rows: sleepRows(day: sleepDay, dayKey: todayKey, night: night,
+                                prior: prior, scores: scores,
                                 highSleepStress: highSleepStress),
                 insight: sleepInsight(sleepScore),
                 route: .sleep
@@ -402,14 +403,18 @@ enum NativeDay {
         ]
     }
 
-    private static func sleepRows(day: DailyMetric?, prior: [DailyMetric],
+    private static func sleepRows(day: DailyMetric?, dayKey: String,
+                                  night: NativeBandScores.NightSleep,
+                                  prior: [DailyMetric],
                                   scores: NativeBandScores.Snapshot,
                                   highSleepStress: Double?) -> [NativeScore.Row] {
-        let efficiency = day?.efficiency.map { $0 <= 1 ? $0 * 100 : $0 }
+        let rawEfficiency = night.efficiency ?? day?.efficiency
+        let efficiency = rawEfficiency.map { $0 <= 1 ? $0 * 100 : $0 }
         let priorEfficiency = prior.compactMap { $0.efficiency.map { $0 <= 1 ? $0 * 100 : $0 } }
-        let hours = day.flatMap { scores.byDay[$0.day]?.hoursVsNeeded }
+        let key = day?.day ?? dayKey
+        let hours = scores.byDay[key]?.hoursVsNeeded
         let hoursPrior = prior.compactMap { scores.byDay[$0.day]?.hoursVsNeeded }
-        let consValue = day.flatMap { scores.byDay[$0.day]?.sleepConsistency }
+        let consValue = scores.byDay[key]?.sleepConsistency
         let consPrior = prior.compactMap { scores.byDay[$0.day]?.sleepConsistency }
         return [
             NativeScore.Row(
