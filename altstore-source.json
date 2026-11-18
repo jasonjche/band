@@ -36,9 +36,9 @@
       "version": "12.1.0",
       "buildVersion": "439",
       "versionDate": "2026-11-18",
-      "versionDescription": "Band 12.1.0. Sideload IPA for SideStore / AltStore.",
-      "downloadURL": "https://github.com/jasonjche/band/releases/latest/download/Band-ios-latest.ipa",
-      "size": 19955860,
+      "versionDescription": "Band 12.1.0. See the release notes for what changed.",
+      "downloadURL": "https://github.com/jasonjche/band/releases/download/v12.1.0/Band-ios-v12.1.0.ipa",
+      "size": 18459993,
       "minOSVersion": "17.0",
       "appPermissions": {
         "entitlements": [
@@ -87,9 +87,9 @@
           "version": "12.1.0",
           "buildVersion": "439",
           "date": "2026-11-18",
-          "localizedDescription": "Band 12.1.0. Sideload IPA for SideStore / AltStore.",
-          "downloadURL": "https://github.com/jasonjche/band/releases/latest/download/Band-ios-latest.ipa",
-          "size": 19955860,
+          "localizedDescription": "Band 12.1.0. See the release notes for what changed.",
+          "downloadURL": "https://github.com/jasonjche/band/releases/download/v12.1.0/Band-ios-v12.1.0.ipa",
+          "size": 18459993,
           "minOSVersion": "17.0"
         }
       ]
