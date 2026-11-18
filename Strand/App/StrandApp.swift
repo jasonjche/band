@@ -92,7 +92,11 @@ private struct NativeMacAppScene: View {
     @MainActor
     private func startModel() async {
         model.applySmartAlarm()
-        model.ble.requestSync(.foreground)
+        if MacICloudSync.isEnabled {
+            _ = await MacICloudSync.syncIfNeeded(repo: model.repo)
+        } else {
+            model.ble.requestSync(.foreground)
+        }
         await model.repo.refresh()
         await model.runDeferredRescoreIfOwed()
         let repo = model.repo

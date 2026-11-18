@@ -772,6 +772,22 @@ final class Repository: ObservableObject {
     /// In-flight open, so concurrent first-callers share ONE open instead of each opening their own.
     private var storeOpenTask: Task<WhoopStore?, Never>?
 
+    /// Close the live store handle and reload from disk after an in-process backup restore
+    /// (e.g. macOS iCloud Drive auto-sync) so every screen updates without an app restart.
+    func reopenStoreAfterRestore() async {
+        storeOpenTask = nil
+        store = nil
+        rawDashboard = nil
+        lastDashboardRevision = -1
+        lastFullRefreshAt = .distantPast
+        loaded = false
+        if let s = await ensureStore(),
+           let active = try? DeviceRegistryStore(dbQueue: s.registryWriter).activeDeviceId() {
+            adoptActiveDeviceId(active)
+        }
+        await refresh()
+    }
+
     private func ensureStore() async -> WhoopStore? {
         if let store { return store }
         // SINGLE-FLIGHT (measured 2026-07-01 on a 5M-row DB): several screens ask for the store at once

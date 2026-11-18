@@ -15,12 +15,20 @@ struct BandBackupView: View {
     @State private var autoBackupEnabled = AutoICloudBackup.isEnabled
     @State private var autoBackupLastDay = AutoICloudBackup.lastBackupDay
     @State private var autoBackupError = AutoICloudBackup.lastError
+    #elseif os(macOS)
+    @State private var macSyncEnabled = MacICloudSync.isEnabled
+    @State private var macSyncFolder = MacICloudSync.folderDisplayLabel
+    @State private var macSyncLastFile = MacICloudSync.lastFileName
+    @State private var macSyncLastAt = MacICloudSync.lastSyncedAt
+    @State private var macSyncError = MacICloudSync.lastError
+    @State private var macSyncStatus: String?
     #endif
 
     private enum BackupWork {
         case whoopExport
         case fullBackup
         case restore
+        case macSync
     }
 
     var body: some View {
@@ -98,6 +106,54 @@ struct BandBackupView: View {
             } footer: {
                 Text("Writes a dated full backup to a folder you pick in Files or iCloud Drive, at most once a day when Band is opened. Keeps the newest 7 Band-backup files and leaves everything else in the folder alone.")
             }
+            #elseif os(macOS)
+            Section {
+                Toggle("Auto-sync from iCloud Drive", isOn: $macSyncEnabled)
+                    .disabled(work != nil)
+                    .onChangeCompat(of: macSyncEnabled) { on in
+                        Task { await setMacSync(on) }
+                    }
+                if macSyncEnabled {
+                    Button {
+                        Task { await pickMacSyncFolder() }
+                    } label: {
+                        HStack {
+                            Text("Folder")
+                            Spacer()
+                            Text(macSyncFolder ?? "Choose…")
+                                .foregroundStyle(StrandPalette.textSecondary)
+                        }
+                    }
+                    .disabled(work != nil)
+                    Button {
+                        Task { await runMacSyncNow() }
+                    } label: {
+                        HStack {
+                            Text("Sync Now")
+                            Spacer()
+                            if work == .macSync {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+                    .disabled(work != nil || !MacICloudSync.hasFolder)
+                }
+                if let syncedLine = formattedMacLastSync {
+                    Text(syncedLine)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                }
+                if let status = macSyncStatus, !status.isEmpty {
+                    Text(status)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                }
+                if let err = macSyncError, !err.isEmpty {
+                    Text(err)
+                        .foregroundStyle(StrandPalette.statusWarning)
+                }
+            } footer: {
+                Text("Pick the same iCloud Drive folder your iPhone backs up to. On launch, Band automatically imports the newest iPhone backup without needing a Bluetooth connection on your Mac.")
+            }
             #endif
         }
         #if os(iOS)
@@ -111,6 +167,8 @@ struct BandBackupView: View {
             actionsReady = true
             #if os(iOS)
             refreshAutoBackupState()
+            #elseif os(macOS)
+            refreshMacSyncState()
             #endif
         }
         .alert(backupAlertTitle, isPresented: $showBackupAlert) {
@@ -167,6 +225,68 @@ struct BandBackupView: View {
     private func pickAutoBackupFolder() async {
         _ = await AutoICloudBackup.enablePickingFolder()
         refreshAutoBackupState()
+    }
+    #elseif os(macOS)
+    private var formattedMacLastSync: String? {
+        guard let at = macSyncLastAt else { return nil }
+        let df = DateFormatter()
+        df.dateStyle = .medium
+        df.timeStyle = .short
+        if let file = macSyncLastFile, !file.isEmpty {
+            return "Last synced: \(df.string(from: at)) (\(file))"
+        }
+        return "Last synced: \(df.string(from: at))"
+    }
+
+    private func refreshMacSyncState() {
+        macSyncEnabled = MacICloudSync.isEnabled
+        macSyncFolder = MacICloudSync.folderDisplayLabel
+        macSyncLastFile = MacICloudSync.lastFileName
+        macSyncLastAt = MacICloudSync.lastSyncedAt
+        macSyncError = MacICloudSync.lastError
+    }
+
+    private func setMacSync(_ on: Bool) async {
+        macSyncStatus = nil
+        if on {
+            if MacICloudSync.hasFolder, MacICloudSync.resolveFolder() != nil {
+                MacICloudSync.isEnabled = true
+                MacICloudSync.lastError = nil
+                await runMacSyncNow(force: false)
+            } else if MacICloudSync.enablePickingFolder() {
+                await runMacSyncNow(force: true)
+            } else {
+                MacICloudSync.isEnabled = false
+            }
+        } else {
+            MacICloudSync.disable()
+        }
+        refreshMacSyncState()
+    }
+
+    private func pickMacSyncFolder() async {
+        macSyncStatus = nil
+        if MacICloudSync.enablePickingFolder() {
+            await runMacSyncNow(force: true)
+        }
+        refreshMacSyncState()
+    }
+
+    private func runMacSyncNow(force: Bool = true) async {
+        guard work == nil else { return }
+        work = .macSync
+        macSyncStatus = nil
+        let outcome = await MacICloudSync.syncIfNeeded(repo: model.repo, force: force)
+        work = nil
+        refreshMacSyncState()
+        switch outcome {
+        case .synced(let name):
+            macSyncStatus = "Synced \(name)"
+        case .upToDate(let name) where !name.isEmpty:
+            macSyncStatus = "Already up to date (\(name))"
+        default:
+            break
+        }
     }
     #endif
 
