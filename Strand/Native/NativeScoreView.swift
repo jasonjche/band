@@ -998,6 +998,9 @@ enum NativeScoreWeekFormat {
         switch card.format {
         case .percent: return NativeChartTicks.percent
         case .strain: return NativeDayLogic.strainYTicks(maxY: card.maxY)
+        case .duration:
+            let peak = max(card.points.filter(\.value.isFinite).map(\.value).max() ?? 0, card.maxY)
+            return NativeMetricFormat.durationAxisTicks(maxMinutes: peak)
         default: return nil
         }
     }

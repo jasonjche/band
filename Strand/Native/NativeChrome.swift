@@ -1080,7 +1080,7 @@ struct NativeChartBlock: View {
             clockHeroBlock
         } else if let selectedPoint {
             NativeHeroValue(
-                caption: caption,
+                caption: nil,
                 value: format(selectedPoint.value),
                 unit: unit,
                 date: selectionUsesLongDate
@@ -1551,10 +1551,10 @@ struct NativeScoreWeekBars: View {
                             })
                         ))
                         .nativeValueLabel(trailing: point.key == known.last?.key) {
-                            if showsValueLabels && (whoop || point.key == selectedDay?.wrappedValue) {
+                            if showsValueLabels && whoop {
                                 Text(format(point.value))
-                                    .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
-                                    .foregroundStyle(point.key == highlightKey ? Color.primary : (whoop ? NativeTokens.whoopLabel : Color.secondary))
+                                    .font(NativeTokens.whoopNumber(11, weight: .semibold))
+                                    .foregroundStyle(point.key == highlightKey ? Color.primary : NativeTokens.whoopLabel)
                                     .monospacedDigit()
                             }
                         }
@@ -2366,10 +2366,6 @@ struct NativeStressMonitor: View {
             RuleMark(x: .value("Now", now))
                 .foregroundStyle(NativePaint.separator(style))
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                .accessibilityHidden(true)
-            PointMark(x: .value("Now dot", now), y: .value("Base", 0))
-                .foregroundStyle(Color.primary)
-                .symbolSize(28)
                 .accessibilityHidden(true)
         }
     }

@@ -889,12 +889,17 @@ struct NativeActivityHRChart: View {
         }
     }
 
+    private var drawnPoints: [NativeHourPoint] {
+        NativeHRDisplay.line(plotPoints)
+    }
+
     var body: some View {
+        let drawn = drawnPoints
         VStack(alignment: .leading, spacing: 4) {
-            NativeActivityHRHero(scrub: scrub, points: points)
+            NativeActivityHRHero(scrub: scrub, rawPoints: points, drawnPoints: drawn)
                 .frame(height: 76, alignment: .topLeading)
             NativeActivityHRPlot(
-                points: plotPoints,
+                points: drawn,
                 xDomain: xDomain,
                 yDomain: yDomain,
                 lineTint: lineTint,
@@ -915,14 +920,15 @@ struct NativeActivityHRChart: View {
 
 private struct NativeActivityHRHero: View {
     @ObservedObject var scrub: NativeScopeScrub
-    var points: [NativeHourPoint]
+    var rawPoints: [NativeHourPoint]
+    var drawnPoints: [NativeHourPoint]
 
     var body: some View {
         if let time = scrub.time,
            let point = NativeChartScrubMath.nearestHour(
             to: time,
-            in: points,
-            maxGap: NativeChartScrubMath.inferredMaxGap(in: points)
+            in: drawnPoints,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: drawnPoints)
            ) {
             NativeHeroValue(
                 caption: "Heart Rate",
@@ -930,7 +936,7 @@ private struct NativeActivityHRHero: View {
                 unit: "BPM",
                 date: NativeScopeFormat.time(point.time)
             )
-        } else if let average = NativeScoreMath.mean(points.map(\.value)) {
+        } else if let average = NativeScoreMath.mean(rawPoints.map(\.value)) {
             NativeHeroValue(
                 caption: "Average",
                 value: "\(Int(average.rounded()))",
@@ -964,7 +970,7 @@ private struct NativeActivityHRPlot: View {
     }
 
     private var plotPoints: [NativeHourPoint] {
-        NativeHRDisplay.line(points)
+        points
     }
 
     private var zoneRuns: [[NativeHourPoint]] {

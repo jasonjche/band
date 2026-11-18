@@ -1666,10 +1666,6 @@ struct NativeStressDayPlot: View {
                 .foregroundStyle(NativePaint.separator(style))
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                 .accessibilityHidden(true)
-            PointMark(x: .value("Now dot", model.now), y: .value("Base", 0))
-                .foregroundStyle(Color.primary)
-                .symbolSize(28)
-                .accessibilityHidden(true)
         }
     }
 
