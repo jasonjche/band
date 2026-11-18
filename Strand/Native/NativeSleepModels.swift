@@ -187,9 +187,11 @@ enum NativeSleepClock {
         }
         let lo = floor((earliest - 60) / 60) * 60
         let hi = ceil((latest + 60) / 60) * 60
-        let marks = hourMarks(from: min(lo, hi - 60), to: max(hi, lo + 60))
-        let top = marks.first ?? lo
-        let bottom = marks.last ?? hi
+        let top = min(lo, hi - 60)
+        let bottom = max(hi, lo + 60)
+        // The domain is the fitted window itself. Labels sit inside it; rounding the domain out to
+        // the next label stretched an 8-hour night across 16 hours of axis.
+        let marks = hourMarks(from: top, to: bottom).filter { $0 >= top - 0.5 && $0 <= bottom + 0.5 }
         return PlotWindow(domain: plotY(bottom)...plotY(top), marks: marks)
     }
 

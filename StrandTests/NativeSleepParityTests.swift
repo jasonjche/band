@@ -147,8 +147,14 @@ final class NativeSleepParityTests: XCTestCase {
         let window = NativeSleepClock.fittedPlot(beds: [bed], wakes: [wake])
         XCTAssertGreaterThanOrEqual(window.marks.count, 3)
         XCTAssertLessThanOrEqual(window.marks.count, 5)
-        XCTAssertLessThanOrEqual(window.marks.first ?? 9_999, bed - 60 + 1)
-        XCTAssertGreaterThanOrEqual(window.marks.last ?? 0, wake + 60 - 1)
+        // The domain is the night ±1 h (whole hours); labels sit inside it, never stretching it.
+        let top = NativeSleepClock.plotY(floor((bed - 60) / 60) * 60)
+        let bottom = NativeSleepClock.plotY(ceil((wake + 60) / 60) * 60)
+        XCTAssertEqual(window.domain.upperBound, top, accuracy: 1e-9)
+        XCTAssertEqual(window.domain.lowerBound, bottom, accuracy: 1e-9)
+        for mark in window.marks {
+            XCTAssertTrue(window.domain.contains(NativeSleepClock.plotY(mark)))
+        }
         for mark in window.marks {
             XCTAssertEqual(mark.truncatingRemainder(dividingBy: 60), 0, accuracy: 1e-9)
         }
