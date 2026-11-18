@@ -8,8 +8,10 @@ import StrandAnalytics
 struct NativeStressPage: View {
     @AppStorage(NativeDaySelection.storageKey) private var selectedDayKey = ""
     @State private var repoHandle: Repository?
+    @State private var intelligenceHandle: IntelligenceEngine?
     @State private var refreshSeq = 0
     @State private var handlesReady = false
+    @State private var editor: NativeStressEditTarget?
 
     private var selectedDay: Date {
         get { NativeDaySelection.date(from: selectedDayKey) }
@@ -26,8 +28,10 @@ struct NativeStressPage: View {
     @State private var level: Double?
     @State private var sleepStart: Date?
     @State private var sleepEnd: Date?
+    @State private var sleepSession: CachedSleepSession?
     @State private var bouts: [(start: Date, end: Date)] = []
     @State private var boutSymbols: [String] = []
+    @State private var dayWorkoutRows: [WorkoutRow] = []
     @State private var todayDurations = NativeStressBandDurations.zero
     @State private var typicalDurations: NativeStressBandDurations?
     @State private var typicalSameWeekday = false
@@ -64,13 +68,70 @@ struct NativeStressPage: View {
             todayDurations: todayDurations,
             typicalDurations: typicalDurations,
             typicalSameWeekday: typicalSameWeekday,
-            dayPlot: dayPlot
+            dayPlot: dayPlot,
+            activityTitles: dayWorkoutRows.map { WorkoutSource.displaySport($0.sport) },
+            onLaneTap: handleLaneTap,
+            onEditSleep: sleepSession == nil ? nil : { editor = sleepSession.map { .sleep($0) } },
+            onEditActivity: { index in
+                guard dayWorkoutRows.indices.contains(index) else { return }
+                editor = .activity(dayWorkoutRows[index])
+            }
         )
         .navigationTitle("Stress Monitor")
         .modifier(NativeInlineTitle())
         .nativeDateSubtitle(selectedDay)
         .background {
             NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
+            NativeIntelligenceSink { intelligenceHandle = $0 }
+        }
+        .sheet(item: $editor) { target in
+            switch target {
+            case .sleep(let session):
+                let coverageLo = min(session.startTs, session.effectiveStartTs)
+                NativeTimeWindowEditorSheet(
+                    kind: .sleep,
+                    seedStart: Date(timeIntervalSince1970: TimeInterval(session.effectiveStartTs)),
+                    seedEnd: Date(timeIntervalSince1970: TimeInterval(session.endTs)),
+                    coverage: coverageLo...max(session.endTs, coverageLo + 1),
+                    suppressesReDetection: !session.userEdited,
+                    repo: repoHandle,
+                    onSave: { newBedTs, newWakeTs in
+                        await persistAndReload {
+                            await repoHandle?.editSleepTimes(
+                                detectedStartTs: session.startTs, oldEndTs: session.endTs,
+                                storedStagesJSON: session.stagesJSON,
+                                newStartTs: newBedTs, newEndTs: newWakeTs
+                            )
+                        }
+                    },
+                    onDelete: {
+                        await persistAndReload {
+                            _ = await repoHandle?.deleteSleepSession(
+                                detectedStartTs: session.startTs, endTs: session.endTs
+                            )
+                        }
+                    }
+                )
+            case .activity(let row):
+                NativeAddPastActivityForm(
+                    editing: row,
+                    workouts: workouts,
+                    onSave: { newRow, replacing in
+                        Task {
+                            await persistAndReload {
+                                await repoHandle?.saveManualWorkout(newRow, replacing: replacing)
+                            }
+                        }
+                    },
+                    onDelete: {
+                        Task {
+                            await persistAndReload {
+                                await repoHandle?.deleteWorkout(row)
+                            }
+                        }
+                    }
+                )
+            }
         }
         .task(id: taskID) {
             guard handlesReady else { return }
@@ -78,7 +139,28 @@ struct NativeStressPage: View {
         }
     }
 
-    private func reload() async {
+    private func handleLaneTap(_ item: NativeStressLaneIcon.Item) {
+        switch item.kind {
+        case .sleep:
+            if let sleepSession { editor = .sleep(sleepSession) }
+        case .workout:
+            if let row = dayWorkoutRows.first(where: {
+                $0.startTs == Int(item.start.timeIntervalSince1970)
+            }) {
+                editor = .activity(row)
+            }
+        }
+    }
+
+    @MainActor
+    private func persistAndReload(_ work: () async -> Void) async {
+        await work()
+        await intelligenceHandle?.analyzeRecent()
+        await repoHandle?.refresh()
+        await reload(forceStress: true)
+    }
+
+    private func reload(forceStress: Bool = false) async {
         guard let repo = repoHandle else { return }
         let key = dayKey
         let nextWorkouts = await repo.workoutRows(days: 28)
@@ -92,11 +174,12 @@ struct NativeStressPage: View {
         }
         let nextSleepStart = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) }
         let nextSleepEnd = sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
-        let nextActivities: [(start: Date, end: Date, symbol: String)] = nextWorkouts.compactMap { row in
-            let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
-            guard NativeDayLogic.sleepSessionDayKey(boutStart) == key else { return nil }
-            return (
-                boutStart,
+        let nextDayRows = nextWorkouts.filter { row in
+            NativeDayLogic.sleepSessionDayKey(Date(timeIntervalSince1970: TimeInterval(row.startTs))) == key
+        }
+        let nextActivities: [(start: Date, end: Date, symbol: String)] = nextDayRows.map { row in
+            (
+                Date(timeIntervalSince1970: TimeInterval(row.startTs)),
                 Date(timeIntervalSince1970: TimeInterval(row.endTs)),
                 NativeDay.symbol(for: row.sport)
             )
@@ -106,7 +189,8 @@ struct NativeStressPage: View {
         let days = repo.days
         let timeline = await NativeDerivedSeries.stressDay(
             repo: repo, dayKey: key, dayStart: start, days: days,
-            sleeps: repo.sleeps, workouts: nextWorkouts, calendar: calendar
+            sleeps: repo.sleeps, workouts: nextWorkouts, calendar: calendar,
+            force: forceStress
         )
         if Task.isCancelled { return }
         let nextHours = timeline.hours
@@ -153,8 +237,10 @@ struct NativeStressPage: View {
         workouts = nextWorkouts
         sleepStart = nextSleepStart
         sleepEnd = nextSleepEnd
+        sleepSession = sleep
         bouts = nextBouts
         boutSymbols = nextSymbols
+        dayWorkoutRows = nextDayRows
         sampleHours = nextHours
         level = nextLevel
         dayPlot = plot
@@ -187,6 +273,18 @@ struct NativeStressPage: View {
     }
 }
 
+private enum NativeStressEditTarget: Identifiable {
+    case sleep(CachedSleepSession)
+    case activity(WorkoutRow)
+
+    var id: String {
+        switch self {
+        case .sleep(let session): return "sleep-\(session.startTs)-\(session.endTs)"
+        case .activity(let row): return "activity-\(row.startTs)-\(row.endTs)"
+        }
+    }
+}
+
 /// Presentational stress page for the live screen and snapshots.
 struct NativeStressChartPage: View {
     var scope: NativeMetricScope
@@ -210,6 +308,10 @@ struct NativeStressChartPage: View {
     var typicalDurations: NativeStressBandDurations? = nil
     var typicalSameWeekday: Bool = false
     var dayPlot: NativeStressDayPlotModel = .placeholder
+    var activityTitles: [String] = []
+    var onLaneTap: ((NativeStressLaneIcon.Item) -> Void)? = nil
+    var onEditSleep: (() -> Void)? = nil
+    var onEditActivity: ((Int) -> Void)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -248,7 +350,20 @@ struct NativeStressChartPage: View {
                 height: NativeStressDayChart.heightPage,
                 previewSelected: previewTime,
                 scrubValue: $scrubValue,
-                scrubTime: $scrubTime
+                scrubTime: $scrubTime,
+                onLaneTap: onLaneTap
+            )
+        }
+
+        if sleepStart != nil || !workouts.isEmpty {
+            NativeStressWindowList(
+                sleepStart: sleepStart,
+                sleepEnd: sleepEnd,
+                workouts: workouts,
+                workoutSymbols: workoutSymbols,
+                activityTitles: activityTitles,
+                onEditSleep: onEditSleep,
+                onEditActivity: onEditActivity
             )
         }
 
@@ -274,6 +389,93 @@ struct NativeStressChartPage: View {
     }
 }
 
+private struct NativeStressWindowList: View {
+    var sleepStart: Date?
+    var sleepEnd: Date?
+    var workouts: [(start: Date, end: Date)]
+    var workoutSymbols: [String]
+    var activityTitles: [String]
+    var onEditSleep: (() -> Void)?
+    var onEditActivity: ((Int) -> Void)?
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
+        NativeChrome.card(
+            header: NativeCardHeader(
+                title: "Sleep & Activities",
+                symbol: "moon.fill",
+                tint: NativePaint.sleep(style)
+            )
+        ) {
+            VStack(spacing: 0) {
+                if let sleepStart, let sleepEnd {
+                    row(
+                        symbol: "moon.fill",
+                        tint: NativePaint.sleep(style),
+                        title: "Sleep",
+                        range: NativeTimeWindowEditorLogic.rangeLabel(start: sleepStart, end: sleepEnd),
+                        action: onEditSleep
+                    )
+                }
+                ForEach(Array(workouts.enumerated()), id: \.offset) { index, bout in
+                    if sleepStart != nil || index > 0 {
+                        Divider().padding(.leading, 34)
+                    }
+                    row(
+                        symbol: workoutSymbols.indices.contains(index) ? workoutSymbols[index] : "figure.mixed.cardio",
+                        tint: NativePaint.strain(style),
+                        title: activityTitles.indices.contains(index) ? activityTitles[index] : "Activity",
+                        range: NativeTimeWindowEditorLogic.rangeLabel(start: bout.start, end: bout.end),
+                        action: { onEditActivity?(index) }
+                    )
+                }
+            }
+        }
+    }
+
+    private func row(
+        symbol: String,
+        tint: Color,
+        title: String,
+        range: String,
+        action: (() -> Void)?
+    ) -> some View {
+        Button {
+            action?()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.body)
+                    .foregroundStyle(tint)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(style == .whoop ? NativeTokens.whoopCaps(13) : .body)
+                        .tracking(style == .whoop ? NativeTokens.whoopCapsTracking : 0)
+                        .foregroundStyle(.primary)
+                    Text(range)
+                        .font(style == .whoop ? NativeTokens.whoopNumber(13, weight: .regular) : .subheadline)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Spacer(minLength: 6)
+                Text("Edit")
+                    .font(.footnote)
+                    .foregroundStyle(Color.accentColor)
+                Image(systemName: "chevron.forward")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(action == nil)
+        .accessibilityLabel("\(title), \(range)")
+        .accessibilityHint("Edit beginning and end times")
+    }
+}
+
 enum NativeStressHero {
     /// Idle hero is AVERAGE; a held point is STRESS (Apple Health uppercases the caption).
     static func caption(scrubbing: Bool) -> String {
@@ -295,6 +497,7 @@ struct NativeStressDayChart: View {
     var previewSelected: Date? = nil
     @Binding var scrubValue: Double
     @Binding var scrubTime: Date?
+    var onLaneTap: ((NativeStressLaneIcon.Item) -> Void)? = nil
 
     static let heightPage: CGFloat = 260
     static let heightHome: CGFloat = 168
@@ -306,7 +509,8 @@ struct NativeStressDayChart: View {
                     model: model,
                     previewSelected: previewSelected,
                     scrubValue: $scrubValue,
-                    scrubTime: $scrubTime
+                    scrubTime: $scrubTime,
+                    onLaneTap: onLaneTap
                 )
                 .equatable()
                 if model.hours.isEmpty {
@@ -327,6 +531,7 @@ private struct NativeStressDayPlotHost: View, Equatable {
     var previewSelected: Date?
     @Binding var scrubValue: Double
     @Binding var scrubTime: Date?
+    var onLaneTap: ((NativeStressLaneIcon.Item) -> Void)? = nil
 
     static func == (lhs: NativeStressDayPlotHost, rhs: NativeStressDayPlotHost) -> Bool {
         lhs.model == rhs.model && lhs.previewSelected == rhs.previewSelected
@@ -337,7 +542,8 @@ private struct NativeStressDayPlotHost: View, Equatable {
             model: model,
             previewSelected: previewSelected,
             scrubValue: $scrubValue,
-            scrubTime: $scrubTime
+            scrubTime: $scrubTime,
+            onLaneTap: onLaneTap
         )
     }
 }
@@ -1303,6 +1509,7 @@ struct NativeStressDayPlot: View {
     @Environment(\.nativeStyle) private var style
     @Binding var scrubValue: Double
     @Binding var scrubTime: Date?
+    var onLaneTap: ((NativeStressLaneIcon.Item) -> Void)? = nil
     @State private var selectedTime: Date?
 
     private func lineGradient(for segment: [NativeHourPoint]) -> LinearGradient {
@@ -1358,7 +1565,8 @@ struct NativeStressDayPlot: View {
                 proxy: proxy,
                 items: model.laneItems,
                 dayStart: model.dayStart,
-                plotEnd: model.plotEnd
+                plotEnd: model.plotEnd,
+                onTap: onLaneTap
             )
         }
         .modifier(NativeTimeSelect(selected: $selectedTime, onChange: { time in
@@ -1564,6 +1772,7 @@ private struct NativeStressLaneOverlay: View {
     var items: [NativeStressLaneIcon.Item]
     var dayStart: Date
     var plotEnd: Date
+    var onTap: ((NativeStressLaneIcon.Item) -> Void)? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -1581,15 +1790,28 @@ private struct NativeStressLaneOverlay: View {
                         }
                     )
                     ForEach(placed, id: \.item.id) { row in
-                        Image(systemName: row.item.symbol)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.secondary)
-                            .position(x: row.x, y: max(8, plot.minY - 11))
+                        Button {
+                            onTap?(row.item)
+                        } label: {
+                            Image(systemName: row.item.symbol)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.secondary)
+                                .frame(
+                                    width: NativeTimeWindowEditorLogic.handleHit,
+                                    height: NativeTimeWindowEditorLogic.handleHit
+                                )
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(onTap == nil)
+                        .position(x: row.x, y: max(22, plot.minY - 11))
+                        .accessibilityLabel(row.item.kind == .sleep ? "Sleep" : "Activity")
+                        .accessibilityHint("Edit beginning and end times")
                     }
                 }
             }
         }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        .allowsHitTesting(onTap != nil)
+        .accessibilityHidden(onTap == nil)
     }
 }
