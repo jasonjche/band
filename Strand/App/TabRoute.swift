@@ -160,7 +160,7 @@ private struct TabRouteDestination: View {
         case .metricExplorer:
             NativeTrendsPage()
         case .workouts:
-            WorkoutsView()
+            NativeAddActivitySheet(onSaved: {})
         case .dataSources:
             DataSourcesView()
         case .stress:

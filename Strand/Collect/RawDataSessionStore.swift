@@ -33,6 +33,17 @@ final class RawDataSessionStore: ObservableObject {
     @Published private(set) var sessions: [Session] = []
     var active: Session? { sessions.first(where: \.active) }
 
+    /// Inclusive whole-second window from millisecond bounds. Nil when the range is shorter than one second.
+    static func fullSecondBounds(fromMs: Int64, toMs: Int64) -> (from: Int, to: Int)? {
+        let from = Int((fromMs + 999) / 1_000), to = Int(toMs / 1_000) - 1
+        return from <= to ? (from, to) : nil
+    }
+
+    /// Marker clock: live `now` while a session is open, otherwise the session's end.
+    static func markerCurrentTime(session: Session?, now: Date) -> Date {
+        session?.endedAtMs.map { Date(timeIntervalSince1970: Double($0) / 1_000) } ?? now
+    }
+
     private let directory: URL
     private let encoder: JSONEncoder
     private let decoder = JSONDecoder()

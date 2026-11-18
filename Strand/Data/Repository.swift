@@ -945,32 +945,22 @@ final class Repository: ObservableObject {
     /// instead of re-running the heavy reload. Paired with `todayHistoryWideLoadedSeq`. Not @Published.
     var todayHistoryWideCache: TodayHistoryWideCache?
 
-    /// #833 (Insights freeze): macOS destroys + cold-mounts the NavigationSplitView detail on every sidebar
-    /// switch (RootView keys it with `.id`), so InsightsView's `@State` is torn down each time and its
-    /// `load()` re-read full history off the @MainActor on every visit. Mirroring Today's #849 marker, this
-    /// is the `refreshSeq` value at which Insights last ran its heavy load. Lives HERE on the long-lived
-    /// Repository so it SURVIVES the re-mount; `-1` = never loaded this launch, so the first load always runs.
-    /// Not @Published (pure load-bookkeeping, never drives the UI).
-    var insightsLoadedSeq = -1
-    /// #833: the dayKey Insights last loaded for, paired with `insightsLoadedSeq`. A day rollover (the journal
-    /// chips re-key on it) must still re-load even at an unchanged `refreshSeq`, so the cache only short-
-    /// circuits when BOTH the seq AND this dayKey match the current load. Not @Published.
-    var insightsLoadedDayKey = ""
-    /// #833: the computed dictionaries + activity costs InsightsView.load() last built, so a same-seq re-mount
-    /// RESTORES them in-memory (no store queries) instead of re-running the heavy load. Not @Published.
-    var insightsCache: InsightsLoadCache?
+    /// Snapshot of a full Apple Health history load, parked on the long-lived Repository so a same-seq
+    /// re-mount restores it in-memory instead of re-querying. Not @Published.
+    struct AppleHealthLoadCache {
+        let appleRows: [AppleDaily]
+        let workoutCount: Int
+        let series: [String: [(day: String, value: Double)]]
+    }
 
-    /// #833/v7.7.2 (Apple Health per-source freeze): macOS cold-mounts the NavigationSplitView detail on every
-    /// sidebar switch (RootView keys it with `.id`), tearing down AppleHealthView's `@State` so its `load()`
-    /// re-read the whole apple-health history off the @MainActor every visit. The exact twin of the Insights
-    /// trio above: these live HERE on the long-lived Repository so they SURVIVE the re-mount. `-1` / "" = never
-    /// loaded this launch, so the first load always runs. Not @Published (pure load-bookkeeping, never drives
-    /// the UI).
+    /// #833/v7.7.2 (Apple Health per-source freeze): these live HERE on the long-lived Repository so they
+    /// SURVIVE a re-mount. `-1` / "" = never loaded this launch, so the first load always runs.
+    /// Not @Published (pure load-bookkeeping, never drives the UI).
     var appleHealthLoadedSeq = -1
     /// #833/v7.7.2: the dayKey Apple Health last loaded for, paired with `appleHealthLoadedSeq`; a day rollover
     /// re-loads even at an unchanged seq. Not @Published.
     var appleHealthLoadedDayKey = ""
-    /// #833/v7.7.2: the snapshot AppleHealthView.load() last built, so a same-seq re-mount RESTORES it
+    /// #833/v7.7.2: the snapshot `performAppleHealthLoad` last built, so a same-seq re-mount RESTORES it
     /// in-memory (no store queries) instead of re-running the heavy load. Not @Published.
     var appleHealthCache: AppleHealthLoadCache?
 

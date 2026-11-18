@@ -26,7 +26,7 @@ final class RawDataCollectorParityTests: XCTestCase {
         XCTAssertEqual(oracle.schemaVersion, 1)
         let paths = [
             "Strand/Collect/RawDataSessionStore.swift", "Strand/Collect/Collector.swift",
-            "Strand/BLE/BLEManager.swift", "Strand/Screens/RawDataCollectorView.swift",
+            "Strand/BLE/BLEManager.swift",
             "Strand/Collect/ImuSessionFileStore.swift",
             "Packages/WhoopStore/Sources/WhoopStore/Database.swift",
             "Packages/WhoopStore/Sources/WhoopStore/StreamStore.swift",

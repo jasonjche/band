@@ -133,10 +133,7 @@ final class NativeHomeSnapshotRender: XCTestCase {
 
         let dir = URL(fileURLWithPath: "/tmp/native-snaps", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let model = AppModel()
         let pages: [(name: String, view: AnyView)] = [
-            ("power-saving", AnyView(PowerSavingView().environmentObject(model))),
-            ("backup-sync", AnyView(BackupSyncView().environmentObject(model))),
             ("licenses", AnyView(LicensesView())),
             ("app-settings", AnyView(NativeAppSettingsView())),
             ("apple-health-settings", AnyView(AppleHealthSettingsView())),

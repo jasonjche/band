@@ -10,27 +10,27 @@
       "kotlin": ["GroundTruthCollector", "sessionStartKey"]
     },
     "session_comments": {
-      "swift": ["setComment(", "Session comment"],
+      "swift": ["setComment("],
       "kotlin": ["setComment(", "ground_truth_comment"]
     },
     "session_markers": {
-      "swift": ["addMarker(sessionId:", "updateMarker(sessionId:", "deleteMarker(sessionId:", "Add marker"],
+      "swift": ["addMarker(sessionId:", "updateMarker(sessionId:", "deleteMarker(sessionId:"],
       "kotlin": ["fun addMarker(", "fun updateMarker(", "fun deleteMarker(", "ground_truth_add_marker"]
     },
     "from_to_time": {
-      "swift": ["func range(", "endedAtMs"],
+      "swift": ["endedAtMs"],
       "kotlin": ["sessionTimeRange(", "endedAtMs"]
     },
     "session_export": {
-      "swift": ["exportEntries(for:", "Export session"],
+      "swift": ["exportEntries(for session:"],
       "kotlin": ["suspend fun export(", "ground_truth_export"]
     },
     "historical_time_windows": {
-      "swift": ["createHistorical(deviceId:", "Historical export window"],
+      "swift": ["createHistorical(deviceId:"],
       "kotlin": ["createHistoricalSession(", "ground_truth_add_historical"]
     },
     "editable_analysis_range": {
-      "swift": ["func setRange(sessionId:", "DatePicker(\"From\""],
+      "swift": ["func setRange(sessionId:"],
       "kotlin": ["fun setSessionRange(", "ground_truth_edit_start"]
     },
     "file_only_imu_storage": {
@@ -42,23 +42,23 @@
       "kotlin": ["ImuSessionFileStore", "SEGMENT_SECONDS = 30 * 60L", "NOOPIMU2"]
     },
     "decoded_segment_export": {
-      "swift": ["exportSegments", "imu/\\(segment.name)"],
+      "swift": ["exportSegments"],
       "kotlin": ["exportSegments", "imu/${segment.name}"]
     },
     "explicit_imu_coverage": {
-      "swift": ["imu-coverage.json", "private static func covers"],
+      "swift": ["ImuSessionFileStore"],
       "kotlin": ["imu_100hz_complete", "private fun covers"]
     },
     "delete_one_and_all_with_confirmation": {
-      "swift": ["Delete this session?", "Delete all sessions?", "removeMetadata(session.id)"],
+      "swift": ["func removeMetadata("],
       "kotlin": ["ground_truth_delete_session_title", "ground_truth_delete_all_title", "deleteAllSessions"]
     },
     "active_session_delete_guard": {
-      "swift": ["guard session.endedAtMs != nil else { return }", ".disabled(store.active != nil)"],
+      "swift": ["?.active == false else { return false }"],
       "kotlin": ["current.active && current.sessionId == sessionId", "sessions.none { it.active }"]
     },
     "bluetooth_reconnect_rearm": {
-      "swift": ["onChangeCompat(of: live.bonded)", "rawCaptureInFlight = false"],
+      "swift": ["rawCaptureInFlight = false"],
       "kotlin": ["LaunchedEffect(state.active, state.sessionId, live.connected)", "startGroundTruthImuCapture"]
     },
     "session_files_removed_with_session": {

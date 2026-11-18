@@ -95,21 +95,21 @@ final class RawDataSessionStoreTests: XCTestCase {
     }
 
     func testFullSecondBoundsExcludePartialEndpointSeconds() {
-        let bounds = RawDataCollectorView.fullSecondBounds(fromMs: 100_001, toMs: 104_999)
+        let bounds = RawDataSessionStore.fullSecondBounds(fromMs: 100_001, toMs: 104_999)
         XCTAssertEqual(bounds?.from, 101)
         XCTAssertEqual(bounds?.to, 103)
-        XCTAssertNil(RawDataCollectorView.fullSecondBounds(fromMs: 100_001, toMs: 100_999))
+        XCTAssertNil(RawDataSessionStore.fullSecondBounds(fromMs: 100_001, toMs: 100_999))
     }
 
     func testMarkerCurrentTimeTicksOnlyForActiveSession() throws {
         let store = RawDataSessionStore(directory: try temporaryDirectory())
         _ = store.start(deviceId: "strap", now: Date(timeIntervalSince1970: 100))
         let active = try XCTUnwrap(store.sessions.first)
-        XCTAssertEqual(RawDataCollectorView.markerCurrentTime(session: active,
+        XCTAssertEqual(RawDataSessionStore.markerCurrentTime(session: active,
             now: Date(timeIntervalSince1970: 105)).timeIntervalSince1970, 105)
         store.stop(now: Date(timeIntervalSince1970: 110))
         let stopped = try XCTUnwrap(store.sessions.first)
-        XCTAssertEqual(RawDataCollectorView.markerCurrentTime(session: stopped,
+        XCTAssertEqual(RawDataSessionStore.markerCurrentTime(session: stopped,
             now: Date(timeIntervalSince1970: 999)).timeIntervalSince1970, 110)
     }
 

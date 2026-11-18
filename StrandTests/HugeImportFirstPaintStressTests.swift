@@ -63,8 +63,8 @@ final class HugeImportFirstPaintStressTests: XCTestCase {
         let repo = Repository(deviceId: dev)
         repo.setStoreForTesting(store)
 
-        // The bounded read WorkoutsView issues on first paint.
-        let bounded = await repo.workoutRows(days: WorkoutsView.firstPaintWindowDays)
+        // Bounded first-paint workouts read: 400-day window, not the whole history.
+        let bounded = await repo.workoutRows(days: 400)
         // 400-day window at one workout / 1.8 days ≈ 222 workouts, far below the full 1700.
         XCTAssertLessThan(bounded.count, 400, "first-paint workouts read must be a bounded window, not the whole history")
         XCTAssertGreaterThan(bounded.count, 0, "the bounded window still surfaces recent sessions")

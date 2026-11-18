@@ -332,7 +332,7 @@ struct RootTabView: View {
         case .live:
             quickScreen(LiveView())
         case .workout:
-            quickScreen(WorkoutsView())
+            NativeAddActivitySheet(onSaved: { quickAction = nil })
         case .journal:
             quickScreen(NativeJournalView(startsLogging: true))
         case .breathe:

@@ -580,7 +580,7 @@ enum DemoScreens {
         let name = args[i + 1].lowercased()
         if name == "today" || name == "nativetoday" { return AnyView(NativeHomeView()) }
         if name == "live" { return AnyView(LiveView()) }
-        if name == "workouts" { return AnyView(WorkoutsView()) }
+        if name == "workouts" { return AnyView(NativeAddActivitySheet(onSaved: {})) }
         if name == "insights" { return AnyView(NativeJournalView()) }
         if name == "settings" { return AnyView(NativeAppSettingsView()) }
         if name == "devices" { return AnyView(DevicesView()) }
