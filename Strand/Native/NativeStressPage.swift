@@ -1680,9 +1680,13 @@ struct NativeStressDayPlot: View {
             in: model.hours,
             maxGap: model.maxGap
            ) {
+            RuleMark(x: .value("Scrub line", point.time))
+                .foregroundStyle(NativePaint.separator(style))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .accessibilityHidden(true)
             PointMark(x: .value("Scrub", point.time), y: .value("Stress", point.value))
                 .foregroundStyle(NativePaint.stressBand(point.value, style: style))
-                .symbol { NativeSelectedVertex(tint: NativePaint.stressBand(point.value, style: style)) }
+                .symbol { NativeSelectedVertex(tint: NativePaint.stressBand(point.value, style: style), size: 11) }
                 .accessibilityHidden(true)
         }
     }
