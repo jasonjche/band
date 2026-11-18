@@ -31,6 +31,7 @@ struct NativeStressPage: View {
     @State private var todayDurations = NativeStressBandDurations.zero
     @State private var typicalDurations: NativeStressBandDurations?
     @State private var typicalSameWeekday = false
+    @State private var dayPlot = NativeStressDayPlotModel.placeholder
 
     private var dayKey: String { NativeDaySelection.resolvedKey(from: selectedDayKey) }
 
@@ -62,7 +63,8 @@ struct NativeStressPage: View {
             highlightKey: dayKey,
             todayDurations: todayDurations,
             typicalDurations: typicalDurations,
-            typicalSameWeekday: typicalSameWeekday
+            typicalSameWeekday: typicalSameWeekday,
+            dayPlot: dayPlot
         )
         .navigationTitle("Stress Monitor")
         .modifier(NativeInlineTitle())
@@ -132,6 +134,21 @@ struct NativeStressPage: View {
             now: ending,
             ending: ending
         )
+        let nextNow = min(
+            Date(),
+            calendar.date(byAdding: .day, value: 1, to: start) ?? Date()
+        )
+        let plot = NativeStressDayPlotModel.make(
+            score: nextLevel ?? nextHours.last?.value ?? 0,
+            hours: nextHours,
+            sleepStart: nextSleepStart,
+            sleepEnd: nextSleepEnd,
+            workouts: nextBouts,
+            workoutSymbols: nextSymbols,
+            dayStart: start,
+            now: nextNow,
+            calendar: calendar
+        )
         workouts = nextWorkouts
         sleepStart = nextSleepStart
         sleepEnd = nextSleepEnd
@@ -139,6 +156,7 @@ struct NativeStressPage: View {
         boutSymbols = nextSymbols
         sampleHours = nextHours
         level = nextLevel
+        dayPlot = plot
         if let latest = nextLevel {
             scrubValue = latest
         }
@@ -190,6 +208,7 @@ struct NativeStressChartPage: View {
     var todayDurations: NativeStressBandDurations = .zero
     var typicalDurations: NativeStressBandDurations? = nil
     var typicalSameWeekday: Bool = false
+    var dayPlot: NativeStressDayPlotModel = .placeholder
 
     var body: some View {
         NativeChrome.screen {
@@ -220,14 +239,7 @@ struct NativeStressChartPage: View {
 
         NativeChrome.panel {
             NativeStressDayChart(
-                level: shownLevel,
-                hours: hours,
-                sleepStart: sleepStart,
-                sleepEnd: sleepEnd,
-                workouts: workouts,
-                workoutSymbols: workoutSymbols,
-                dayStart: dayStart,
-                now: now,
+                model: dayPlot,
                 height: NativeStressDayChart.heightPage,
                 previewSelected: previewTime,
                 scrubValue: $scrubValue,
@@ -273,14 +285,7 @@ enum NativeStressResolver {
 
 /// Same 0–3 day chart Home and the Stress page draw. Empty series keeps the axes and says "No data".
 struct NativeStressDayChart: View {
-    var level: Double?
-    var hours: [NativeHourPoint]
-    var sleepStart: Date?
-    var sleepEnd: Date?
-    var workouts: [(start: Date, end: Date)]
-    var workoutSymbols: [String] = []
-    var dayStart: Date
-    var now: Date
+    var model: NativeStressDayPlotModel
     var height: CGFloat
     var previewSelected: Date? = nil
     @Binding var scrubValue: Double
@@ -293,20 +298,13 @@ struct NativeStressDayChart: View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack {
                 NativeStressDayPlotHost(
-                    score: level ?? hours.last?.value ?? 0,
-                    hours: hours,
-                    sleepStart: sleepStart,
-                    sleepEnd: sleepEnd,
-                    workouts: workouts,
-                    workoutSymbols: workoutSymbols,
-                    dayStart: dayStart,
-                    now: now,
+                    model: model,
                     previewSelected: previewSelected,
                     scrubValue: $scrubValue,
                     scrubTime: $scrubTime
                 )
                 .equatable()
-                if hours.isEmpty {
+                if model.hours.isEmpty {
                     Text("No data")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -318,47 +316,20 @@ struct NativeStressDayChart: View {
     }
 }
 
-/// Rebuilds the stress plot model only when the series or day window changes.
+/// Forwards a loader-built plot model; equality skips Swift Charts rebuilds.
 private struct NativeStressDayPlotHost: View, Equatable {
-    var score: Double
-    var hours: [NativeHourPoint]
-    var sleepStart: Date?
-    var sleepEnd: Date?
-    var workouts: [(start: Date, end: Date)]
-    var workoutSymbols: [String]
-    var dayStart: Date
-    var now: Date
+    var model: NativeStressDayPlotModel
     var previewSelected: Date?
     @Binding var scrubValue: Double
     @Binding var scrubTime: Date?
 
     static func == (lhs: NativeStressDayPlotHost, rhs: NativeStressDayPlotHost) -> Bool {
-        lhs.score == rhs.score
-            && lhs.hours == rhs.hours
-            && lhs.sleepStart == rhs.sleepStart
-            && lhs.sleepEnd == rhs.sleepEnd
-            && lhs.dayStart == rhs.dayStart
-            && lhs.now == rhs.now
-            && lhs.previewSelected == rhs.previewSelected
-            && lhs.workoutSymbols == rhs.workoutSymbols
-            && lhs.workouts.count == rhs.workouts.count
-            && zip(lhs.workouts, rhs.workouts).allSatisfy {
-                $0.start == $1.start && $0.end == $1.end
-            }
+        lhs.model == rhs.model && lhs.previewSelected == rhs.previewSelected
     }
 
     var body: some View {
         NativeStressDayPlot(
-            model: NativeStressDayPlotModel.make(
-                score: score,
-                hours: hours,
-                sleepStart: sleepStart,
-                sleepEnd: sleepEnd,
-                workouts: workouts,
-                workoutSymbols: workoutSymbols,
-                dayStart: dayStart,
-                now: now
-            ),
+            model: model,
             previewSelected: previewSelected,
             scrubValue: $scrubValue,
             scrubTime: $scrubTime
@@ -794,6 +765,7 @@ struct HomeStressBody: View {
     var workouts: [(start: Date, end: Date)]
     var dayStart: Date
     var now: Date
+    var plot: NativeStressDayPlotModel? = nil
     @Binding var scrubValue: Double
     @Binding var scrubTime: Date?
 
@@ -812,13 +784,16 @@ struct HomeStressBody: View {
 
             NativeChrome.panel {
                 NativeStressDayChart(
-                    level: shownLevel,
-                    hours: hours,
-                    sleepStart: sleepStart,
-                    sleepEnd: sleepEnd,
-                    workouts: workouts,
-                    dayStart: dayStart,
-                    now: now,
+                    model: plot ?? NativeStressDayPlotModel.make(
+                        score: shownLevel ?? hours.last?.value ?? 0,
+                        hours: hours,
+                        sleepStart: sleepStart,
+                        sleepEnd: sleepEnd,
+                        workouts: workouts,
+                        workoutSymbols: [],
+                        dayStart: dayStart,
+                        now: now
+                    ),
                     height: NativeStressDayChart.heightPage,
                     scrubValue: $scrubValue,
                     scrubTime: $scrubTime
@@ -1147,6 +1122,26 @@ private struct NativeStressRangePlot: View {
 // MARK: - Day plot (full-height activity columns + plot-frame icons)
 
 struct NativeStressDayPlotModel: Equatable {
+    static let drawBudget = 300
+    static let placeholder = NativeStressDayPlotModel(
+        score: 0,
+        hours: [],
+        hourSegments: [],
+        dayStart: Date(timeIntervalSince1970: 0),
+        now: Date(timeIntervalSince1970: 0),
+        plotEnd: Date(timeIntervalSince1970: 86_400),
+        xDomain: Date(timeIntervalSince1970: 0)...Date(timeIntervalSince1970: 86_400),
+        showsNow: false,
+        sleepVisible: nil,
+        workoutVisible: [],
+        activities: [],
+        laneItems: [],
+        hourLabels: [],
+        hourLabelText: [:],
+        pointTimeText: [:],
+        maxGap: nil
+    )
+
     struct Activity: Equatable {
         var start: Date
         var end: Date
@@ -1175,6 +1170,34 @@ struct NativeStressDayPlotModel: Equatable {
     var pointTimeText: [TimeInterval: String]
     var maxGap: TimeInterval?
 
+    /// Segment first, then cap the day's drawn vertices at `budget`.
+    static func downsampleSegments(
+        _ segments: [[NativeHourPoint]],
+        budget: Int = drawBudget
+    ) -> [[NativeHourPoint]] {
+        let total = segments.reduce(0) { $0 + $1.count }
+        guard total > budget else { return segments }
+        var remainingBudget = budget
+        var remainingCount = total
+        return segments.map { segment in
+            let share: Int
+            if remainingCount <= 0 || remainingBudget <= 0 {
+                share = 2
+            } else {
+                share = max(
+                    2,
+                    min(
+                        segment.count,
+                        Int((Double(segment.count) / Double(remainingCount) * Double(remainingBudget)).rounded())
+                    )
+                )
+            }
+            remainingBudget = max(0, remainingBudget - share)
+            remainingCount -= segment.count
+            return NativeStressMonitorMath.drawPoints(segment, budget: share)
+        }
+    }
+
     static func make(
         score: Double,
         hours sampleHours: [NativeHourPoint],
@@ -1188,7 +1211,7 @@ struct NativeStressDayPlotModel: Equatable {
     ) -> NativeStressDayPlotModel {
         let plotEnd = NativeStressMonitorMath.plotEnd(dayStart: dayStart, now: now)
         let hours = NativeScopePlotMath.clippedHours(sampleHours, start: dayStart, end: plotEnd)
-        let hourSegments = NativeStressMonitorMath.segments(hours).map { NativeStressMonitorMath.drawPoints($0) }
+        let hourSegments = downsampleSegments(NativeStressMonitorMath.segments(hours))
         let activities = NativeStressMonitorMath.activities(workouts: workouts, symbols: workoutSymbols)
         var laneItems: [NativeStressLaneIcon.Item] = []
         if let sleepStart, let sleepEnd, sleepEnd > sleepStart {

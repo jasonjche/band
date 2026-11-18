@@ -172,8 +172,6 @@ struct NativeHealthspanRangeBar: View, Equatable {
             && lhs.maxLabel == rhs.maxLabel
     }
 
-    private let segmentCount = 8
-
     private var progress6: Double {
         NativeHealthspanFormat.markerProgress(value: value, scaleMin: scaleMin, scaleMax: scaleMax)
     }
@@ -200,13 +198,22 @@ struct NativeHealthspanRangeBar: View, Equatable {
                         .offset(x: x6 - 5)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.top, 2)
-                    HStack(spacing: 2) {
-                        ForEach(0..<segmentCount, id: \.self) { index in
-                            Capsule()
-                                .fill(segmentColor(index))
-                                .frame(height: 8)
+                    Canvas { context, size in
+                        var pathByBand: [Int: Path] = [:]
+                        for (index, frame) in NativeHealthspanRangeBarMath.segmentFrames(width: size.width).enumerated() {
+                            let band = NativeHealthspanRangeBarMath.band(index: index, higherIsBetter: higherIsBetter)
+                            var path = pathByBand[band] ?? Path()
+                            path.addRoundedRect(
+                                in: frame,
+                                cornerSize: CGSize(width: frame.height / 2, height: frame.height / 2)
+                            )
+                            pathByBand[band] = path
+                        }
+                        for (band, path) in pathByBand {
+                            context.fill(path, with: .color(bandColor(band)))
                         }
                     }
+                    .frame(width: geo.size.width, height: NativeHealthspanRangeBarMath.height)
                     .padding(.top, 2)
                     if let x30 {
                         Image(systemName: "arrowtriangle.up.fill")
@@ -233,13 +240,44 @@ struct NativeHealthspanRangeBar: View, Equatable {
         min(max(0, markerX - 24), max(0, width - 80))
     }
 
-    private func segmentColor(_ index: Int) -> Color {
-        let t = higherIsBetter ? index : (segmentCount - 1 - index)
+    private func bandColor(_ band: Int) -> Color {
         let poor = style == .whoop ? NativeTokens.whoopBandPoor : NativeTokens.bandPoor
         let mid = style == .whoop ? NativeTokens.whoopBandSufficient : NativeTokens.bandSufficient
         let good = style == .whoop ? NativeTokens.whoopBandOptimal : NativeTokens.bandOptimal
-        if t <= 2 { return poor }
-        if t <= 4 { return mid }
+        if band <= 0 { return poor }
+        if band == 1 { return mid }
         return good
+    }
+}
+
+enum NativeHealthspanRangeBarMath {
+    static let segmentCount = 8
+    static let spacing: CGFloat = 2
+    static let height: CGFloat = 8
+
+    static func segmentFrames(
+        width: CGFloat,
+        count: Int = 8,
+        spacing: CGFloat = 2,
+        height: CGFloat = 8
+    ) -> [CGRect] {
+        guard width > 0, count > 0 else { return [] }
+        let totalSpacing = spacing * CGFloat(max(0, count - 1))
+        let segmentWidth = max(0, (width - totalSpacing) / CGFloat(count))
+        return (0..<count).map { index in
+            CGRect(
+                x: CGFloat(index) * (segmentWidth + spacing),
+                y: 0,
+                width: segmentWidth,
+                height: height
+            )
+        }
+    }
+
+    static func band(index: Int, count: Int = segmentCount, higherIsBetter: Bool) -> Int {
+        let t = higherIsBetter ? index : (count - 1 - index)
+        if t <= 2 { return 0 }
+        if t <= 4 { return 1 }
+        return 2
     }
 }

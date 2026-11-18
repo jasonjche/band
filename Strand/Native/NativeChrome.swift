@@ -72,8 +72,8 @@ enum NativeChrome {
         NativeStack(content: content)
     }
 
-    static func screen<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        NativeScreen(content: content)
+    static func screen<Content: View>(lazy: Bool = false, @ViewBuilder content: () -> Content) -> some View {
+        NativeScreen(lazy: lazy, content: content)
     }
 
     static func panel<Content: View>(expands: Bool = false, @ViewBuilder content: () -> Content) -> some View {
@@ -97,12 +97,21 @@ enum NativeChrome {
 }
 
 private struct NativeStack<Content: View>: View {
+    var lazy: Bool = false
     @Environment(\.nativeStyle) private var style
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: style == .whoop ? 12 : 10) {
-            content
+        Group {
+            if lazy {
+                LazyVStack(alignment: .leading, spacing: style == .whoop ? 12 : 10) {
+                    content
+                }
+            } else {
+                VStack(alignment: .leading, spacing: style == .whoop ? 12 : 10) {
+                    content
+                }
+            }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 24)
@@ -112,11 +121,12 @@ private struct NativeStack<Content: View>: View {
 }
 
 private struct NativeScreen<Content: View>: View {
+    var lazy: Bool = false
     @ViewBuilder var content: Content
 
     var body: some View {
         ScrollView {
-            NativeStack(content: { content })
+            NativeStack(lazy: lazy, content: { content })
                 .padding(.bottom, 136)
         }
         .background(NativePageFill().ignoresSafeArea())
@@ -936,7 +946,7 @@ enum NativeChartDay {
 
     /// Consecutive finite points share a segment id; a NaN/missing day starts a new segment
     /// so LineMark does not draw across the gap.
-    struct LinePoint: Identifiable {
+    struct LinePoint: Identifiable, Equatable {
         var key: String
         var value: Double
         var segment: Int
@@ -2023,6 +2033,7 @@ struct NativeOvernightLine: View {
     var tint: Color = NativeTokens.heart
     var selectedTime: Binding<Date?>? = nil
     var previewSelected: Date? = nil
+    var plot: NativeOvernightPlotModel? = nil
 
     static let height: CGFloat = 160
 
@@ -2043,7 +2054,7 @@ struct NativeOvernightLine: View {
     }
 
     var body: some View {
-        let model = NativeOvernightMemo.model(for: points)
+        let model = plot ?? NativeOvernightMemo.model(for: points)
         Group {
             if points.isEmpty {
                 NativeEmptyState(text: "No data")

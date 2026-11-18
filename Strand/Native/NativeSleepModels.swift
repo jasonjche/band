@@ -705,6 +705,10 @@ struct NativeSleepHypnogramLayout: Equatable {
         var unitLo: Double
         var unitHi: Double
         var lane: Int
+        /// Top of the stage bar as a fraction of plot height (`(lane + 0.22) / 4`).
+        var unitY: Double
+        /// Bar height as a fraction of plot height (`0.55 / 4`), before the 6 pt floor.
+        var unitH: Double
         var startTs: Int
         var endTs: Int
     }
@@ -729,12 +733,15 @@ struct NativeSleepHypnogramLayout: Equatable {
             guard let unit = NativeSleepHypnogramMath.unitRange(
                 start: span.startTs, end: span.endTs, nightStart: startTs, nightEnd: endTs
             ) else { return nil }
+            let lane = NativeSleepStageKind.hypnogramLanes.firstIndex(of: span.kind) ?? 2
             return SpanDraw(
                 id: span.startTs,
                 kind: span.kind,
                 unitLo: unit.lo,
                 unitHi: unit.hi,
-                lane: NativeSleepStageKind.hypnogramLanes.firstIndex(of: span.kind) ?? 2,
+                lane: lane,
+                unitY: (Double(lane) + 0.22) / 4,
+                unitH: 0.55 / 4,
                 startTs: span.startTs,
                 endTs: span.endTs
             )
@@ -749,6 +756,15 @@ struct NativeSleepHypnogramLayout: Equatable {
             axisLabels: axisTimes.map(NativeSleepClock.clock),
             nightStartLabel: NativeSleepClock.clock(nightStart),
             nightEndLabel: NativeSleepClock.clock(nightEnd)
+        )
+    }
+
+    static func barRect(span: SpanDraw, plotWidth: CGFloat, plotHeight: CGFloat) -> CGRect {
+        CGRect(
+            x: 48 + CGFloat(span.unitLo) * plotWidth,
+            y: CGFloat(span.unitY) * plotHeight,
+            width: max(CGFloat(span.unitHi - span.unitLo) * plotWidth, 1),
+            height: max(CGFloat(span.unitH) * plotHeight, 6)
         )
     }
 }
@@ -1171,6 +1187,189 @@ enum NativeSleepWeek {
     }
 }
 
+/// Hours vs. Needed week chart. Built in the Sleep page loader, not in `body`.
+struct NativeSleepDualLineModel: Equatable {
+    var slept: [NativeDayPoint]
+    var needed: [NativeDayPoint]
+    var sleptLine: [NativeChartDay.LinePoint]
+    var neededLine: [NativeChartDay.LinePoint]
+    var axisTicks: [Double]
+    var yDomain: ClosedRange<Double>
+    var typicalClipped: ClosedRange<Double>?
+    var averageSlept: Double?
+    var rangeLabel: String?
+
+    static func make(
+        slept: [NativeDayPoint],
+        needed: [NativeDayPoint],
+        typical: ClosedRange<Double>?
+    ) -> NativeSleepDualLineModel {
+        let knownSlept = slept.filter { $0.value.isFinite }
+        let knownNeeded = needed.filter { $0.value.isFinite }
+        let typicalBounds = typical.map { [$0.lowerBound, $0.upperBound] } ?? []
+        let values = (knownSlept + knownNeeded).map(\.value) + typicalBounds
+        let axisTicks = NativeChartTicks.nice(
+            min: values.min() ?? 0, max: values.max() ?? 480, targetCount: 4
+        )
+        let yDomain = NativeChartTicks.domain(from: axisTicks, fallback: 0...480)
+        let typicalClipped: ClosedRange<Double>? = typical.flatMap { range in
+            let lo = max(range.lowerBound, yDomain.lowerBound)
+            let hi = min(range.upperBound, yDomain.upperBound)
+            return hi > lo ? lo...hi : nil
+        }
+        let sleptLine = NativeChartDay.linePoints(slept).filter {
+            $0.value >= yDomain.lowerBound && $0.value <= yDomain.upperBound
+        }
+        let neededLine = NativeChartDay.linePoints(needed).filter {
+            $0.value >= yDomain.lowerBound && $0.value <= yDomain.upperBound
+        }
+        let rangeLabel: String? = {
+            guard let first = slept.first?.key, let last = slept.last?.key else { return nil }
+            return NativeChartDay.rangeLabel(from: first, to: last)
+        }()
+        return NativeSleepDualLineModel(
+            slept: slept,
+            needed: needed,
+            sleptLine: sleptLine,
+            neededLine: neededLine,
+            axisTicks: axisTicks,
+            yDomain: yDomain,
+            typicalClipped: typicalClipped,
+            averageSlept: NativeScoreMath.mean(knownSlept.map(\.value)),
+            rangeLabel: rangeLabel
+        )
+    }
+}
+
+/// Time in Bed week chart. Built in the Sleep page loader, not in `body`.
+struct NativeSleepTimeInBedPlotModel: Equatable {
+    var points: [NativeDayPoint]
+    var window: NativeSleepClock.PlotWindow
+    var average: Double?
+    var rangeLabel: String?
+
+    static func make(points: [NativeDayPoint]) -> NativeSleepTimeInBedPlotModel {
+        let known = points.filter { $0.value.isFinite || ($0.low != nil && $0.high != nil) }
+        let rangeLabel: String? = {
+            guard let first = points.first?.key, let last = points.last?.key else { return nil }
+            return NativeChartDay.rangeLabel(from: first, to: last)
+        }()
+        return NativeSleepTimeInBedPlotModel(
+            points: points,
+            window: NativeSleepClock.fittedPlot(
+                beds: points.compactMap(\.low),
+                wakes: points.compactMap(\.high)
+            ),
+            average: NativeScoreMath.mean(known.compactMap { $0.value.isFinite ? $0.value : nil }),
+            rangeLabel: rangeLabel
+        )
+    }
+}
+
+/// Restorative Sleep week chart. Built in the Sleep page loader, not in `body`.
+struct NativeSleepRestorativePlotModel: Equatable {
+    struct Slice: Equatable, Identifiable {
+        var key: String
+        var value: Double
+        var series: String
+        var id: String { series + key }
+    }
+
+    var deep: [NativeDayPoint]
+    var rem: [NativeDayPoint]
+    var totals: [NativeDayPoint]
+    var slices: [Slice]
+    var keys: [String]
+    var axisTicks: [Double]
+    var ceiling: Double
+    var average: Double?
+    var rangeLabel: String?
+
+    static func stackOrder() -> [String] { ["REM", "Deep"] }
+
+    static func make(deep: [NativeDayPoint], rem: [NativeDayPoint]) -> NativeSleepRestorativePlotModel {
+        let totals = NativeWeek.sumSeries(deep, rem)
+        let known = totals.filter { $0.value.isFinite }
+        var seen = Set<String>()
+        let keys = (rem + deep).map(\.key).filter { seen.insert($0).inserted }
+        let slices = stackOrder().flatMap { series -> [Slice] in
+            let points = series == "REM" ? rem : deep
+            return points.compactMap { point -> Slice? in
+                guard point.value.isFinite, point.value > 0 else { return nil }
+                return Slice(key: point.key, value: point.value, series: series)
+            }
+        }
+        let hi = max(known.map(\.value).max() ?? 0, 120)
+        let axisTicks = NativeChartTicks.nice(min: 0, max: hi, targetCount: 4)
+        let rangeLabel: String? = {
+            guard let first = totals.first?.key, let last = totals.last?.key else { return nil }
+            return NativeChartDay.rangeLabel(from: first, to: last)
+        }()
+        return NativeSleepRestorativePlotModel(
+            deep: deep,
+            rem: rem,
+            totals: totals,
+            slices: slices,
+            keys: keys,
+            axisTicks: axisTicks,
+            ceiling: max(axisTicks.last ?? 120, 1),
+            average: NativeScoreMath.mean(known.map(\.value)),
+            rangeLabel: rangeLabel
+        )
+    }
+}
+
+/// Overnight sleep-stress polyline. Built in the Sleep page loader, not in `body`.
+struct NativeSleepStressPlotModel: Equatable {
+    var points: [NativeHourPoint]
+    var domainPoints: [NativeHourPoint]
+    var xDomain: ClosedRange<Date>?
+    var hourLabels: [Date]
+    var hourLabelText: [TimeInterval: String]
+    var pointTimeText: [TimeInterval: String]
+    var maxGap: TimeInterval?
+    var average: Double
+
+    static func make(points: [NativeHourPoint], calendar: Calendar = .current) -> NativeSleepStressPlotModel {
+        let xDomain: ClosedRange<Date>? = {
+            guard let first = points.map(\.time).min(), let last = points.map(\.time).max(), last > first else {
+                return nil
+            }
+            return first...last
+        }()
+        let domainPoints: [NativeHourPoint] = {
+            guard let xDomain else { return points.filter { $0.value >= 0 && $0.value <= 3 } }
+            return points.filter {
+                $0.time >= xDomain.lowerBound && $0.time <= xDomain.upperBound
+                    && $0.value >= 0 && $0.value <= 3
+            }
+        }()
+        let hourLabels = xDomain.map {
+            NativeChartTicks.hourDates(from: $0.lowerBound, to: $0.upperBound, calendar: calendar)
+        } ?? []
+        var hourLabelText: [TimeInterval: String] = [:]
+        hourLabelText.reserveCapacity(hourLabels.count)
+        for date in hourLabels {
+            hourLabelText[date.timeIntervalSince1970] = NativeScopeFormat.hourClock(date, calendar: calendar)
+        }
+        var pointTimeText: [TimeInterval: String] = [:]
+        pointTimeText.reserveCapacity(domainPoints.count)
+        for point in domainPoints {
+            pointTimeText[point.time.timeIntervalSince1970] = NativeScopeFormat.time(point.time, calendar: calendar)
+        }
+        return NativeSleepStressPlotModel(
+            points: points,
+            domainPoints: domainPoints,
+            xDomain: xDomain,
+            hourLabels: hourLabels,
+            hourLabelText: hourLabelText,
+            pointTimeText: pointTimeText,
+            maxGap: NativeChartScrubMath.inferredMaxGap(in: points),
+            average: NativeScoreMath.mean(points.map(\.value)) ?? 0
+        )
+    }
+}
+
 struct NativeSleepPageDetail {
     var need: NativeSleepNeed.Resolved?
     var consistencyNights: [NativeSleepNight]
@@ -1183,6 +1382,11 @@ struct NativeSleepPageDetail {
     var stageDetails: [NativeSleepStageDetail]
     /// True when the hypnogram was synthesized from minute totals. Display only.
     var hypnogramEstimated: Bool = false
+    var hypnogramLayout: NativeSleepHypnogramLayout? = nil
+    var dualLine: NativeSleepDualLineModel? = nil
+    var timeInBedPlot: NativeSleepTimeInBedPlotModel? = nil
+    var restorativePlot: NativeSleepRestorativePlotModel? = nil
+    var stressPlot: NativeSleepStressPlotModel? = nil
     var hasHypnogram: Bool { !hypnogram.isEmpty }
 
     static func make(

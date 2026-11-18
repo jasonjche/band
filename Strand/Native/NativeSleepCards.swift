@@ -8,7 +8,21 @@ import StrandAnalytics
 struct NativeSleepHoursVsNeededCard: View {
     var model: NativeSleepNeed.Resolved
     var onOpen: (() -> Void)? = nil
+
+    var body: some View {
+        NativeSleepHoursVsNeededHost(model: model, onOpen: onOpen)
+            .equatable()
+    }
+}
+
+private struct NativeSleepHoursVsNeededHost: View, Equatable {
+    var model: NativeSleepNeed.Resolved
+    var onOpen: (() -> Void)?
     @Environment(\.nativeStyle) private var style
+
+    static func == (lhs: NativeSleepHoursVsNeededHost, rhs: NativeSleepHoursVsNeededHost) -> Bool {
+        lhs.model == rhs.model
+    }
 
     var body: some View {
         NativeChrome.panel {
@@ -112,8 +126,23 @@ struct NativeSleepConsistencyCard: View {
     var nights: [NativeSleepNight]
     var percent: Double?
     var onOpen: (() -> Void)? = nil
+
+    var body: some View {
+        NativeSleepConsistencyHost(nights: nights, percent: percent, onOpen: onOpen)
+            .equatable()
+    }
+}
+
+private struct NativeSleepConsistencyHost: View, Equatable {
+    var nights: [NativeSleepNight]
+    var percent: Double?
+    var onOpen: (() -> Void)?
     @Environment(\.nativeStyle) private var style
     @State private var selectedKey: String?
+
+    static func == (lhs: NativeSleepConsistencyHost, rhs: NativeSleepConsistencyHost) -> Bool {
+        lhs.nights == rhs.nights && lhs.percent == rhs.percent
+    }
 
     private var selected: NativeSleepNight? {
         guard let selectedKey else { return nil }
@@ -308,7 +337,21 @@ struct NativeSleepConsistencyChart: View {
 struct NativeSleepEfficiencyCard: View {
     var model: NativeSleepEfficiency.Model
     var onOpen: (() -> Void)? = nil
+
+    var body: some View {
+        NativeSleepEfficiencyHost(model: model, onOpen: onOpen)
+            .equatable()
+    }
+}
+
+private struct NativeSleepEfficiencyHost: View, Equatable {
+    var model: NativeSleepEfficiency.Model
+    var onOpen: (() -> Void)?
     @Environment(\.nativeStyle) private var style
+
+    static func == (lhs: NativeSleepEfficiencyHost, rhs: NativeSleepEfficiencyHost) -> Bool {
+        lhs.model == rhs.model
+    }
 
     var body: some View {
         NativeChrome.panel {
@@ -374,13 +417,31 @@ struct NativeSleepStageStrip: View {
 
 struct NativeSleepStressCard: View {
     var model: NativeSleepStress.Model
+    var plot: NativeSleepStressPlotModel? = nil
     var onOpen: (() -> Void)? = nil
+
+    var body: some View {
+        NativeSleepStressHost(
+            model: model,
+            plot: plot ?? NativeSleepStressPlotModel.make(points: model.points),
+            onOpen: onOpen
+        )
+        .equatable()
+    }
+}
+
+private struct NativeSleepStressHost: View, Equatable {
+    var model: NativeSleepStress.Model
+    var plot: NativeSleepStressPlotModel
+    var onOpen: (() -> Void)?
     @Environment(\.nativeStyle) private var style
     @State private var scrub = NativeScopeScrub()
 
-    private var average: Double {
-        NativeScoreMath.mean(model.points.map(\.value)) ?? 0
+    static func == (lhs: NativeSleepStressHost, rhs: NativeSleepStressHost) -> Bool {
+        lhs.model == rhs.model && lhs.plot == rhs.plot
     }
+
+    private var average: Double { plot.average }
 
     var body: some View {
         NativeChrome.panel {
@@ -402,7 +463,8 @@ struct NativeSleepStressCard: View {
                 points: model.points,
                 tint: NativePaint.sleep(style),
                 scrub: scrub,
-                onOpen: onOpen
+                onOpen: onOpen,
+                plot: plot
             )
             .frame(height: 160)
             VStack(spacing: 0) {
@@ -456,6 +518,7 @@ struct NativeSleepStressPlot: View {
     var tint: Color
     var scrub: NativeScopeScrub? = nil
     var onOpen: (() -> Void)? = nil
+    var plot: NativeSleepStressPlotModel? = nil
     @State private var localScrub = NativeScopeScrub()
 
     private var box: NativeScopeScrub { scrub ?? localScrub }
@@ -467,34 +530,24 @@ struct NativeSleepStressPlot: View {
         )
     }
 
-    private var xDomain: ClosedRange<Date>? {
-        guard let first = points.map(\.time).min(), let last = points.map(\.time).max(), last > first else {
-            return nil
-        }
-        return first...last
-    }
-
-    private var domainPoints: [NativeHourPoint] {
-        guard let xDomain else { return points.filter { $0.value >= 0 && $0.value <= 3 } }
-        return points.filter {
-            $0.time >= xDomain.lowerBound && $0.time <= xDomain.upperBound
-                && $0.value >= 0 && $0.value <= 3
-        }
+    private var resolved: NativeSleepStressPlotModel {
+        plot ?? NativeSleepStressPlotModel.make(points: points)
     }
 
     var body: some View {
+        let model = resolved
         let marks = Chart {
-            ForEach(domainPoints) { point in
+            ForEach(model.domainPoints) { point in
                 LineMark(x: .value("Time", point.time), y: .value("Stress", point.value))
                     .foregroundStyle(tint)
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2.5))
-                    .accessibilityLabel(NativeScopeFormat.time(point.time))
+                    .accessibilityLabel(model.pointTimeText[point.time.timeIntervalSince1970] ?? NativeScopeFormat.time(point.time))
                     .accessibilityValue(String(format: "%.1f", point.value))
             }
         }
         .chartYScale(domain: 0...3)
-        .chartXScale(domain: xDomain ?? Date()...Date())
+        .chartXScale(domain: model.xDomain ?? Date()...Date())
         .chartPlotStyle { $0.clipped() }
         .chartYAxis {
             AxisMarks(position: .trailing, values: [0, 1, 2, 3]) { _ in
@@ -506,12 +559,12 @@ struct NativeSleepStressPlot: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: xDomain.map { NativeChartTicks.hourDates(from: $0.lowerBound, to: $0.upperBound) } ?? []) { value in
+            AxisMarks(values: model.hourLabels) { value in
                 AxisGridLine(stroke: NativeChrome.gridStroke)
                     .foregroundStyle(NativeChrome.hairline)
                 AxisValueLabel {
                     if let date = value.as(Date.self) {
-                        Text(NativeScopeFormat.hourClock(date, calendar: .current))
+                        Text(model.hourLabelText[date.timeIntervalSince1970] ?? NativeScopeFormat.hourClock(date, calendar: .current))
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
                     }
@@ -525,7 +578,7 @@ struct NativeSleepStressPlot: View {
                 marks
                     .chartXSelection(value: timeBinding)
                     .chartOverlay { proxy in
-                        NativeSleepStressMarker(proxy: proxy, points: domainPoints, tint: tint, scrub: box)
+                        NativeSleepStressMarker(proxy: proxy, points: model.domainPoints, tint: tint, scrub: box)
                             .clipped()
                     }
             } else {
@@ -567,35 +620,39 @@ struct NativeSleepDualLineCard: View {
     var needed: [NativeDayPoint]
     var highlightKey: String?
     var typical: ClosedRange<Double>? = nil
+    var plot: NativeSleepDualLineModel? = nil
     var onOpen: (() -> Void)? = nil
+
+    var body: some View {
+        NativeSleepDualLineHost(
+            title: title,
+            model: plot ?? NativeSleepDualLineModel.make(slept: slept, needed: needed, typical: typical),
+            highlightKey: highlightKey,
+            onOpen: onOpen
+        )
+        .equatable()
+    }
+}
+
+private struct NativeSleepDualLineHost: View, Equatable {
+    var title: String
+    var model: NativeSleepDualLineModel
+    var highlightKey: String?
+    var onOpen: (() -> Void)?
     @Environment(\.nativeStyle) private var style
     @State private var selectedKey: String?
 
-    private var knownSlept: [NativeDayPoint] { slept.filter { $0.value.isFinite } }
-    private var knownNeeded: [NativeDayPoint] { needed.filter { $0.value.isFinite } }
-    private var axisTicks: [Double] {
-        let values = (knownSlept + knownNeeded).map(\.value) + typicalBounds
-        let lo = values.min() ?? 0
-        let hi = values.max() ?? 480
-        return NativeChartTicks.nice(min: lo, max: hi, targetCount: 4)
+    static func == (lhs: NativeSleepDualLineHost, rhs: NativeSleepDualLineHost) -> Bool {
+        lhs.title == rhs.title
+            && lhs.model == rhs.model
+            && lhs.highlightKey == rhs.highlightKey
     }
 
-    private var yDomain: ClosedRange<Double> {
-        NativeChartTicks.domain(from: axisTicks, fallback: 0...480)
-    }
-
-    private var typicalClipped: ClosedRange<Double>? {
-        guard let typical else { return nil }
-        let lo = max(typical.lowerBound, yDomain.lowerBound)
-        let hi = min(typical.upperBound, yDomain.upperBound)
-        guard hi > lo else { return nil }
-        return lo...hi
-    }
-
-    private var typicalBounds: [Double] {
-        guard let typical else { return [] }
-        return [typical.lowerBound, typical.upperBound]
-    }
+    private var slept: [NativeDayPoint] { model.slept }
+    private var needed: [NativeDayPoint] { model.needed }
+    private var axisTicks: [Double] { model.axisTicks }
+    private var yDomain: ClosedRange<Double> { model.yDomain }
+    private var typicalClipped: ClosedRange<Double>? { model.typicalClipped }
 
     var body: some View {
         NativeChrome.panel {
@@ -638,12 +695,8 @@ struct NativeSleepDualLineCard: View {
                 minutes: sleptPoint.value,
                 date: neededLine
             )
-        } else if let average = NativeScoreMath.mean(knownSlept.map(\.value)) {
-            let range: String? = {
-                guard let first = slept.first?.key, let last = slept.last?.key else { return nil }
-                return NativeChartDay.rangeLabel(from: first, to: last)
-            }()
-            NativeClockHero(caption: "Average", minutes: average, date: range)
+        } else if let average = model.averageSlept {
+            NativeClockHero(caption: "Average", minutes: average, date: model.rangeLabel)
         }
     }
 
@@ -667,7 +720,7 @@ struct NativeSleepDualLineCard: View {
                     .accessibilityHidden(true)
                 }
             }
-            ForEach(NativeChartDay.linePoints(slept).filter { $0.value >= yDomain.lowerBound && $0.value <= yDomain.upperBound }) { point in
+            ForEach(model.sleptLine) { point in
                 LineMark(
                     x: .value("Day", point.key),
                     y: .value("Hours", point.value),
@@ -686,7 +739,7 @@ struct NativeSleepDualLineCard: View {
                         }
                     }
             }
-            ForEach(NativeChartDay.linePoints(needed).filter { $0.value >= yDomain.lowerBound && $0.value <= yDomain.upperBound }) { point in
+            ForEach(model.neededLine) { point in
                 LineMark(
                     x: .value("Day", point.key),
                     y: .value("Hours", point.value),
@@ -779,10 +832,31 @@ private struct NativeSleepVertex: View {
 struct NativeSleepTimeInBedWeekCard: View {
     var points: [NativeDayPoint]
     var highlightKey: String?
+    var plot: NativeSleepTimeInBedPlotModel? = nil
     var onOpen: (() -> Void)? = nil
+
+    var body: some View {
+        NativeSleepTimeInBedWeekHost(
+            model: plot ?? NativeSleepTimeInBedPlotModel.make(points: points),
+            highlightKey: highlightKey,
+            onOpen: onOpen
+        )
+        .equatable()
+    }
+}
+
+private struct NativeSleepTimeInBedWeekHost: View, Equatable {
+    var model: NativeSleepTimeInBedPlotModel
+    var highlightKey: String?
+    var onOpen: (() -> Void)?
     @Environment(\.nativeStyle) private var style
     @State private var selectedKey: String?
 
+    static func == (lhs: NativeSleepTimeInBedWeekHost, rhs: NativeSleepTimeInBedWeekHost) -> Bool {
+        lhs.model == rhs.model && lhs.highlightKey == rhs.highlightKey
+    }
+
+    private var points: [NativeDayPoint] { model.points }
     private var known: [NativeDayPoint] {
         points.filter { $0.value.isFinite || ($0.low != nil && $0.high != nil) }
     }
@@ -810,21 +884,12 @@ struct NativeSleepTimeInBedWeekCard: View {
     @ViewBuilder private var hero: some View {
         if let selectedKey, let point = NativeChartScrubMath.finitePoint(key: selectedKey, in: points) {
             NativeClockHero(caption: NativeChartDay.longLabel(selectedKey), minutes: point.value)
-        } else if let average = NativeScoreMath.mean(known.compactMap { $0.value.isFinite ? $0.value : nil }) {
-            let range: String? = {
-                guard let first = points.first?.key, let last = points.last?.key else { return nil }
-                return NativeChartDay.rangeLabel(from: first, to: last)
-            }()
-            NativeClockHero(caption: "Average", minutes: average, date: range)
+        } else if let average = model.average {
+            NativeClockHero(caption: "Average", minutes: average, date: model.rangeLabel)
         }
     }
 
-    private var plotWindow: NativeSleepClock.PlotWindow {
-        NativeSleepClock.fittedPlot(
-            beds: points.compactMap(\.low),
-            wakes: points.compactMap(\.high)
-        )
-    }
+    private var plotWindow: NativeSleepClock.PlotWindow { model.window }
 
     private var plot: some View {
         let yDomain = plotWindow.domain
@@ -903,8 +968,32 @@ struct NativeSleepRestorativeWeekCard: View {
     var deep: [NativeDayPoint]
     var rem: [NativeDayPoint]
     var highlightKey: String?
+    var plot: NativeSleepRestorativePlotModel? = nil
     var onOpen: (() -> Void)? = nil
+
+    var body: some View {
+        NativeSleepRestorativeWeekHost(
+            deep: deep,
+            rem: rem,
+            highlightKey: highlightKey,
+            plot: plot ?? NativeSleepRestorativePlotModel.make(deep: deep, rem: rem),
+            onOpen: onOpen
+        )
+        .equatable()
+    }
+}
+
+private struct NativeSleepRestorativeWeekHost: View, Equatable {
+    var deep: [NativeDayPoint]
+    var rem: [NativeDayPoint]
+    var highlightKey: String?
+    var plot: NativeSleepRestorativePlotModel
+    var onOpen: (() -> Void)?
     @Environment(\.nativeStyle) private var style
+
+    static func == (lhs: NativeSleepRestorativeWeekHost, rhs: NativeSleepRestorativeWeekHost) -> Bool {
+        lhs.plot == rhs.plot && lhs.highlightKey == rhs.highlightKey
+    }
 
     var body: some View {
         NativeChrome.panel {
@@ -935,7 +1024,8 @@ struct NativeSleepRestorativeWeekCard: View {
                 deep: deep,
                 rem: rem,
                 highlightKey: highlightKey,
-                plotHeight: 200
+                plotHeight: 200,
+                plot: plot
             )
         }
         .contentShape(Rectangle())
@@ -952,45 +1042,26 @@ struct NativeSleepRestorativeChart: View {
     var highlightKey: String?
     var plotHeight: CGFloat = 200
     var previewSelected: String? = nil
+    var plot: NativeSleepRestorativePlotModel? = nil
     @Environment(\.nativeStyle) private var style
     @State private var selectedKey: String?
 
-    private struct Slice: Identifiable {
-        var key: String
-        var value: Double
-        var series: String
-        var id: String { series + key }
-    }
-
     /// REM first (bottom of the stack), Deep second (top). WHOOP IMG_9434.
-    static func stackOrder() -> [String] { ["REM", "Deep"] }
+    static func stackOrder() -> [String] { NativeSleepRestorativePlotModel.stackOrder() }
 
-    private var totals: [NativeDayPoint] { NativeWeek.sumSeries(deep, rem) }
-    private var known: [NativeDayPoint] { totals.filter { $0.value.isFinite } }
-
-    private var slices: [Slice] {
-        Self.stackOrder().flatMap { series -> [Slice] in
-            let points = series == "REM" ? rem : deep
-            return points.compactMap { point -> Slice? in
-                guard point.value.isFinite, point.value > 0 else { return nil }
-                return Slice(key: point.key, value: point.value, series: series)
-            }
-        }
+    private var resolved: NativeSleepRestorativePlotModel {
+        plot ?? NativeSleepRestorativePlotModel.make(deep: deep, rem: rem)
     }
 
-    private var keys: [String] {
-        var seen = Set<String>()
-        return (rem + deep).map(\.key).filter { seen.insert($0).inserted }
-    }
+    private var totals: [NativeDayPoint] { resolved.totals }
 
-    private var axisTicks: [Double] {
-        let hi = max(known.map(\.value).max() ?? 0, 120)
-        return NativeChartTicks.nice(min: 0, max: hi, targetCount: 4)
-    }
+    private var slices: [NativeSleepRestorativePlotModel.Slice] { resolved.slices }
 
-    private var ceiling: Double {
-        max(axisTicks.last ?? 120, 1)
-    }
+    private var keys: [String] { resolved.keys }
+
+    private var axisTicks: [Double] { resolved.axisTicks }
+
+    private var ceiling: Double { resolved.ceiling }
 
     private var selectedPoint: NativeDayPoint? {
         guard let selectedKey else { return nil }
@@ -1000,7 +1071,7 @@ struct NativeSleepRestorativeChart: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             hero
-            plot.frame(height: plotHeight)
+            chart.frame(height: plotHeight)
         }
         .onAppear {
             if selectedKey == nil { selectedKey = previewSelected }
@@ -1011,19 +1082,18 @@ struct NativeSleepRestorativeChart: View {
     @ViewBuilder private var hero: some View {
         if let selectedPoint {
             NativeClockHero(minutes: selectedPoint.value, date: NativeChartDay.longLabel(selectedPoint.key))
-        } else if let average = NativeScoreMath.mean(known.map(\.value)),
-                  let first = totals.first?.key, let last = totals.last?.key {
+        } else if let average = resolved.average {
             NativeClockHero(
                 caption: "Average",
                 minutes: average,
-                date: NativeChartDay.rangeLabel(from: first, to: last)
+                date: resolved.rangeLabel
             )
         } else {
             NativeHeroValue(caption: "Average", value: "No data")
         }
     }
 
-    private var plot: some View {
+    private var chart: some View {
         let deepTint = NativePaint.sleepStage(named: "Deep", style: style)
         let remTint = NativePaint.sleepStage(named: "REM", style: style)
         let whoop = style == .whoop

@@ -118,6 +118,7 @@ struct NativeHomeView: View {
     @State private var stressExtraExclusions: [(start: Date, end: Date)] = []
     @State private var stressDayStart = Date()
     @State private var stressNow = Date()
+    @State private var stressPlot = NativeStressDayPlotModel.placeholder
     @State private var stressUpdatedAt: Date?
     @State private var strainTargetFraction: ClosedRange<Double>?
     @State private var activityItems: [HomeActivityItem] = []
@@ -384,6 +385,7 @@ struct NativeHomeView: View {
         stressUpdatedAt = snapshot.stressUpdatedAt
         stressDayStart = snapshot.stressDayStart
         stressNow = snapshot.stressNow
+        stressPlot = snapshot.stressPlot
         strainTargetFraction = snapshot.strainTargetFraction
         activityItems = snapshot.activityItems
         journalDots = snapshot.journalDots
@@ -504,6 +506,7 @@ struct NativeHomeView: View {
             workouts: stressBouts,
             dayStart: stressDayStart,
             now: stressNow,
+            plot: stressPlot,
             onOpen: { path.wrappedValue.append(TabRoute.stress) }
         )
         .equatable()
@@ -1139,6 +1142,7 @@ private struct HomeStressMonitorHost: View, Equatable {
     var workouts: [(start: Date, end: Date)]
     var dayStart: Date
     var now: Date
+    var plot: NativeStressDayPlotModel
     var onOpen: () -> Void
     @State private var scrubValue = 0.0
     @State private var scrubTime: Date?
@@ -1150,6 +1154,7 @@ private struct HomeStressMonitorHost: View, Equatable {
             && lhs.sleepEnd == rhs.sleepEnd
             && lhs.dayStart == rhs.dayStart
             && lhs.now == rhs.now
+            && lhs.plot == rhs.plot
             && lhs.workouts.count == rhs.workouts.count
             && zip(lhs.workouts, rhs.workouts).allSatisfy {
                 $0.start == $1.start && $0.end == $1.end
@@ -1165,6 +1170,7 @@ private struct HomeStressMonitorHost: View, Equatable {
             workouts: workouts,
             dayStart: dayStart,
             now: now,
+            plot: plot,
             scrubValue: $scrubValue,
             scrubTime: $scrubTime,
             onOpen: onOpen
@@ -1180,6 +1186,7 @@ struct HomeStressMonitorCard: View {
     var workouts: [(start: Date, end: Date)]
     var dayStart: Date
     var now: Date
+    var plot: NativeStressDayPlotModel? = nil
     @Binding var scrubValue: Double
     @Binding var scrubTime: Date?
     var onOpen: () -> Void
@@ -1208,13 +1215,16 @@ struct HomeStressMonitorCard: View {
             HomeStressHero(level: shownLevel, updated: updatedText)
                 .frame(height: 56, alignment: .topLeading)
             NativeStressDayChart(
-                level: shownLevel,
-                hours: hours,
-                sleepStart: sleepStart,
-                sleepEnd: sleepEnd,
-                workouts: workouts,
-                dayStart: dayStart,
-                now: now,
+                model: plot ?? NativeStressDayPlotModel.make(
+                    score: shownLevel ?? hours.last?.value ?? 0,
+                    hours: hours,
+                    sleepStart: sleepStart,
+                    sleepEnd: sleepEnd,
+                    workouts: workouts,
+                    workoutSymbols: [],
+                    dayStart: dayStart,
+                    now: now
+                ),
                 height: NativeStressDayChart.heightHome,
                 scrubValue: $scrubValue,
                 scrubTime: $scrubTime

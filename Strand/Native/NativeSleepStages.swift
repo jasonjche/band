@@ -34,6 +34,7 @@ struct NativeSleepHypnogram: View {
     var spans: [NativeSleepStageSpan]
     var nightStart: Date
     var nightEnd: Date
+    var layout: NativeSleepHypnogramLayout? = nil
     var highlight: NativeSleepStageKind? = nil
     var plotHeight: CGFloat = 132
     var estimated: Bool = false
@@ -41,9 +42,9 @@ struct NativeSleepHypnogram: View {
 
     var body: some View {
         NativeSleepHypnogramHost(
-            spans: spans,
-            nightStart: nightStart,
-            nightEnd: nightEnd,
+            layout: layout ?? NativeSleepHypnogramLayout.make(
+                spans: spans, nightStart: nightStart, nightEnd: nightEnd
+            ),
             highlight: highlight,
             plotHeight: plotHeight,
             estimated: estimated,
@@ -54,18 +55,14 @@ struct NativeSleepHypnogram: View {
 }
 
 private struct NativeSleepHypnogramHost: View, Equatable {
-    var spans: [NativeSleepStageSpan]
-    var nightStart: Date
-    var nightEnd: Date
+    var layout: NativeSleepHypnogramLayout
     var highlight: NativeSleepStageKind?
     var plotHeight: CGFloat
     var estimated: Bool
     var onOpen: (() -> Void)?
 
     static func == (lhs: NativeSleepHypnogramHost, rhs: NativeSleepHypnogramHost) -> Bool {
-        lhs.spans == rhs.spans
-            && lhs.nightStart == rhs.nightStart
-            && lhs.nightEnd == rhs.nightEnd
+        lhs.layout == rhs.layout
             && lhs.highlight == rhs.highlight
             && lhs.plotHeight == rhs.plotHeight
             && lhs.estimated == rhs.estimated
@@ -73,7 +70,7 @@ private struct NativeSleepHypnogramHost: View, Equatable {
 
     var body: some View {
         NativeSleepHypnogramBody(
-            layout: NativeSleepHypnogramLayout.make(spans: spans, nightStart: nightStart, nightEnd: nightEnd),
+            layout: layout,
             highlight: highlight,
             plotHeight: plotHeight,
             estimated: estimated,
@@ -209,17 +206,34 @@ private struct NativeSleepHypnogramPlot: View {
                         .frame(width: 44, height: laneH, alignment: .leading)
                         .offset(y: CGFloat(index) * laneH)
                 }
-                ForEach(layout.spans) { span in
-                    let width = max((span.unitHi - span.unitLo) * plotWidth, 1)
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(NativePaint.sleepStage(named: span.kind.title, style: style)
-                            .opacity(spanOpacity(span, selected: selected)))
-                        .frame(width: width, height: max(laneH * 0.55, 6))
-                        .offset(
-                            x: 48 + span.unitLo * plotWidth,
-                            y: CGFloat(span.lane) * laneH + laneH * 0.22
+                Canvas { context, size in
+                    let width = max(size.width - 48, 1)
+                    var paths: [NativeSleepHypnogramPlot.DrawKey: Path] = [:]
+                    for span in layout.spans {
+                        let bar = NativeSleepHypnogramLayout.barRect(span: span, plotWidth: width, plotHeight: size.height)
+                        let key = DrawKey(
+                            kind: span.kind,
+                            opacity: spanOpacity(span, selected: selected)
                         )
+                        var path = paths[key] ?? Path()
+                        path.addRoundedRect(
+                            in: bar,
+                            cornerSize: CGSize(width: 2, height: 2),
+                            style: .continuous
+                        )
+                        paths[key] = path
+                    }
+                    for (key, path) in paths {
+                        context.fill(
+                            path,
+                            with: .color(
+                                NativePaint.sleepStage(named: key.kind.title, style: style)
+                                    .opacity(key.opacity)
+                            )
+                        )
+                    }
                 }
+                .frame(width: geo.size.width, height: geo.size.height)
             }
             .contentShape(Rectangle())
             .gesture(
@@ -239,6 +253,11 @@ private struct NativeSleepHypnogramPlot: View {
         }
     }
 
+    private struct DrawKey: Hashable {
+        var kind: NativeSleepStageKind
+        var opacity: Double
+    }
+
     private func spanOpacity(
         _ span: NativeSleepHypnogramLayout.SpanDraw,
         selected: NativeSleepStageSpan?
@@ -250,6 +269,7 @@ private struct NativeSleepHypnogramPlot: View {
 
 struct NativeSleepHypnogramPage: View {
     var spans: [NativeSleepStageSpan]
+    var layout: NativeSleepHypnogramLayout? = nil
     var nightStart: Date?
     var nightEnd: Date?
     var stages: [NativeStage]
@@ -283,6 +303,7 @@ struct NativeSleepHypnogramPage: View {
                     spans: spans,
                     nightStart: nightStart,
                     nightEnd: nightEnd,
+                    layout: layout,
                     plotHeight: 220,
                     estimated: estimated
                 )

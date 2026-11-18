@@ -539,102 +539,75 @@ enum NativeScopeKindMap {
 /// Shared formatters. Never construct `DateFormatter()` in a view body.
 enum NativeScopeFormat {
     private static let posix = Locale(identifier: "en_US_POSIX")
+    private static let lock = NSLock()
+    private static var formatters: [FormatterKey: DateFormatter] = [:]
 
-    private static let weekdayDateFormatter: DateFormatter = {
+    private struct FormatterKey: Hashable {
+        var format: String
+        var calendar: Calendar.Identifier
+        var timeZone: String
+    }
+
+    /// Cached formatter already aligned to `calendar` / its time zone.
+    static func aligned(_ format: String, calendar: Calendar) -> DateFormatter {
+        let key = FormatterKey(
+            format: format,
+            calendar: calendar.identifier,
+            timeZone: calendar.timeZone.identifier
+        )
+        lock.lock()
+        if let hit = formatters[key] {
+            lock.unlock()
+            return hit
+        }
+        lock.unlock()
         let formatter = DateFormatter()
         formatter.locale = posix
-        formatter.dateFormat = "EEE, MMM d"
-        return formatter
-    }()
-
-    private static let monthDayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = posix
-        formatter.dateFormat = "MMM d"
-        return formatter
-    }()
-
-    private static let monthFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = posix
-        formatter.dateFormat = "MMM"
-        return formatter
-    }()
-
-    private static let yearFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = posix
-        formatter.dateFormat = "yyyy"
-        return formatter
-    }()
-
-    private static let dayOnlyFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = posix
-        formatter.dateFormat = "d"
-        return formatter
-    }()
-
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = posix
-        formatter.dateFormat = "h:mm a"
-        return formatter
-    }()
-
-    private static let hourFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = posix
-        formatter.dateFormat = "h a"
-        return formatter
-    }()
-
-    private static func aligned(_ formatter: DateFormatter, calendar: Calendar) {
+        formatter.dateFormat = format
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
+        lock.lock()
+        formatters[key] = formatter
+        lock.unlock()
+        return formatter
     }
 
     static func weekdayDate(_ date: Date, calendar: Calendar) -> String {
-        aligned(weekdayDateFormatter, calendar: calendar)
-        return weekdayDateFormatter.string(from: date)
+        aligned("EEE, MMM d", calendar: calendar).string(from: date)
     }
 
     static func monthDay(_ date: Date, calendar: Calendar) -> String {
-        aligned(monthDayFormatter, calendar: calendar)
-        return monthDayFormatter.string(from: date)
+        aligned("MMM d", calendar: calendar).string(from: date)
     }
 
     static func month(_ date: Date, calendar: Calendar) -> String {
-        aligned(monthFormatter, calendar: calendar)
-        return monthFormatter.string(from: date)
+        aligned("MMM", calendar: calendar).string(from: date)
     }
 
     static func time(_ date: Date, calendar: Calendar = .current) -> String {
-        aligned(timeFormatter, calendar: calendar)
-        return timeFormatter.string(from: date)
+        aligned("h:mm a", calendar: calendar).string(from: date)
     }
 
     static func hourClock(_ date: Date, calendar: Calendar) -> String {
-        aligned(hourFormatter, calendar: calendar)
-        return hourFormatter.string(from: date)
+        aligned("h a", calendar: calendar).string(from: date)
     }
 
     static func weekRange(from start: Date, to end: Date, calendar: Calendar) -> String {
-        aligned(monthDayFormatter, calendar: calendar)
+        let monthDay = aligned("MMM d", calendar: calendar)
         let startMonth = calendar.component(.month, from: start)
         let endMonth = calendar.component(.month, from: end)
         if startMonth == endMonth {
-            aligned(dayOnlyFormatter, calendar: calendar)
-            return "\(monthDayFormatter.string(from: start)) – \(dayOnlyFormatter.string(from: end))"
+            let dayOnly = aligned("d", calendar: calendar)
+            return "\(monthDay.string(from: start)) – \(dayOnly.string(from: end))"
         }
-        return "\(monthDayFormatter.string(from: start)) – \(monthDayFormatter.string(from: end))"
+        return "\(monthDay.string(from: start)) – \(monthDay.string(from: end))"
     }
 
     static func heroRange(from start: Date, to end: Date, scope: NativeMetricScope, calendar: Calendar) -> String {
-        aligned(monthFormatter, calendar: calendar)
-        aligned(yearFormatter, calendar: calendar)
-        aligned(monthDayFormatter, calendar: calendar)
-        aligned(dayOnlyFormatter, calendar: calendar)
+        let monthFormatter = aligned("MMM", calendar: calendar)
+        let yearFormatter = aligned("yyyy", calendar: calendar)
+        let monthDayFormatter = aligned("MMM d", calendar: calendar)
+        let dayOnlyFormatter = aligned("d", calendar: calendar)
         if scope == .sixMonths || scope == .year {
             let startName = monthFormatter.string(from: start)
             let endName = monthFormatter.string(from: end)
@@ -663,6 +636,14 @@ enum NativeScopeFormat {
         }
         return "\(monthDayFormatter.string(from: start)), \(startYear) – \(monthDayFormatter.string(from: end)), \(endYear)"
     }
+
+    #if DEBUG
+    static func formatterCacheCountForTests() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return formatters.count
+    }
+    #endif
 }
 
 enum NativeCountFormat {

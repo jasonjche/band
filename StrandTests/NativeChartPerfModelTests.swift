@@ -126,15 +126,24 @@ final class NativeChartPerfModelTests: XCTestCase {
         ]
         let layout = NativeSleepHypnogramLayout.make(spans: spans, nightStart: nightStart, nightEnd: nightEnd)
         XCTAssertEqual(layout.spans.count, 2)
-        let width = 400.0
+        let width: CGFloat = 400
+        let height: CGFloat = 132
         for (draw, span) in zip(layout.spans, spans) {
             let old = NativeSleepHypnogramMath.xRange(
                 start: span.startTs, end: span.endTs,
                 nightStart: layout.startTs, nightEnd: layout.endTs,
-                width: width
+                width: Double(width)
             )
-            XCTAssertEqual(draw.unitLo * width, old?.x ?? -1, accuracy: 1e-9)
-            XCTAssertEqual((draw.unitHi - draw.unitLo) * width, old?.width ?? -1, accuracy: 1e-9)
+            XCTAssertEqual(Double(draw.unitLo) * Double(width), old?.x ?? -1, accuracy: 1e-9)
+            XCTAssertEqual(Double(draw.unitHi - draw.unitLo) * Double(width), old?.width ?? -1, accuracy: 1e-9)
+            let laneH = height / 4
+            XCTAssertEqual(CGFloat(draw.unitY) * height, CGFloat(draw.lane) * laneH + laneH * 0.22, accuracy: 1e-9)
+            XCTAssertEqual(CGFloat(draw.unitH) * height, laneH * 0.55, accuracy: 1e-9)
+            let bar = NativeSleepHypnogramLayout.barRect(span: draw, plotWidth: width, plotHeight: height)
+            XCTAssertEqual(bar.origin.x, 48 + CGFloat(draw.unitLo) * width, accuracy: 1e-9)
+            XCTAssertEqual(bar.size.width, max(CGFloat(draw.unitHi - draw.unitLo) * width, 1), accuracy: 1e-9)
+            XCTAssertEqual(bar.origin.y, CGFloat(draw.unitY) * height, accuracy: 1e-9)
+            XCTAssertEqual(bar.size.height, max(CGFloat(draw.unitH) * height, 6), accuracy: 1e-9)
         }
         XCTAssertEqual(layout.axisTimes, NativeSleepHypnogramMath.axisTimes(start: nightStart, end: nightEnd))
         XCTAssertEqual(layout.nightStartLabel, NativeSleepClock.clock(nightStart))
@@ -164,7 +173,11 @@ final class NativeChartPerfModelTests: XCTestCase {
         XCTAssertEqual(model.hours, clipped)
         XCTAssertEqual(
             model.hourSegments,
-            NativeStressMonitorMath.segments(clipped).map { NativeStressMonitorMath.drawPoints($0) }
+            NativeStressDayPlotModel.downsampleSegments(NativeStressMonitorMath.segments(clipped))
+        )
+        XCTAssertEqual(
+            NativeStressDayPlotModel.downsampleSegments(NativeStressMonitorMath.segments(clipped)),
+            NativeStressMonitorMath.segments(clipped)
         )
         let oldSleep = NativeStressLaneIcon.clip(sleepStart, sleepEnd, plotStart: dayStart, plotEnd: plotEnd)
         XCTAssertEqual(model.sleepVisible?.start, oldSleep?.start)
@@ -237,6 +250,138 @@ final class NativeChartPerfModelTests: XCTestCase {
         let width: CGFloat = 200
         let x6 = CGFloat(NativeHealthspanFormat.markerProgress(value: 70, scaleMin: 40, scaleMax: 100)) * width
         XCTAssertEqual(x6, 100, accuracy: 1e-6)
+        let frames = NativeHealthspanRangeBarMath.segmentFrames(width: width)
+        XCTAssertEqual(frames.count, 8)
+        let spacing: CGFloat = 2
+        let segmentWidth = (width - spacing * 7) / 8
+        for (index, frame) in frames.enumerated() {
+            XCTAssertEqual(frame.origin.x, CGFloat(index) * (segmentWidth + spacing), accuracy: 1e-6)
+            XCTAssertEqual(frame.size.width, segmentWidth, accuracy: 1e-6)
+            XCTAssertEqual(frame.size.height, 8, accuracy: 1e-9)
+        }
+        XCTAssertEqual(NativeHealthspanRangeBarMath.band(index: 0, higherIsBetter: true), 0)
+        XCTAssertEqual(NativeHealthspanRangeBarMath.band(index: 3, higherIsBetter: true), 1)
+        XCTAssertEqual(NativeHealthspanRangeBarMath.band(index: 7, higherIsBetter: true), 2)
+        XCTAssertEqual(NativeHealthspanRangeBarMath.band(index: 0, higherIsBetter: false), 2)
+        XCTAssertEqual(NativeHealthspanRangeBarMath.band(index: 7, higherIsBetter: false), 0)
+    }
+
+    func testStressDayPlotDownsamplesDrawnMinutesTo300() {
+        let dayStart = Date(timeIntervalSince1970: 1_700_000_000)
+        let hours = (0..<1_440).map { index in
+            NativeHourPoint(time: dayStart.addingTimeInterval(TimeInterval(index) * 60), value: Double(index % 3))
+        }
+        let segments = NativeStressMonitorMath.segments(hours)
+        let drawn = NativeStressDayPlotModel.downsampleSegments(segments)
+        XCTAssertLessThanOrEqual(drawn.reduce(0) { $0 + $1.count }, NativeStressDayPlotModel.drawBudget)
+        XCTAssertEqual(drawn.first?.first, hours.first)
+        XCTAssertEqual(drawn.last?.last, hours.last)
+        XCTAssertEqual(NativeStressDayPlotModel.drawBudget, 300)
+    }
+
+    func testScopeFormatAlignedMatchesFreshFormatter() {
+        let calendar = Calendar.current
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        func fresh(_ format: String) -> String {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = format
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            return formatter.string(from: date)
+        }
+        XCTAssertEqual(NativeScopeFormat.time(date, calendar: calendar), fresh("h:mm a"))
+        XCTAssertEqual(NativeScopeFormat.hourClock(date, calendar: calendar), fresh("h a"))
+        XCTAssertEqual(NativeScopeFormat.monthDay(date, calendar: calendar), fresh("MMM d"))
+        XCTAssertEqual(NativeScopeFormat.weekdayDate(date, calendar: calendar), fresh("EEE, MMM d"))
+        _ = NativeScopeFormat.time(date, calendar: calendar)
+        XCTAssertGreaterThanOrEqual(NativeScopeFormat.formatterCacheCountForTests(), 1)
+    }
+
+    func testSleepDualLineModelMatchesPreviousBodyGetters() throws {
+        let slept: [NativeDayPoint] = (0..<7).map { offset in
+            NativeDayPoint(key: String(format: "2026-11-%02d", 9 + offset), value: Double(360 + offset * 12))
+        }
+        let needed: [NativeDayPoint] = slept.map {
+            NativeDayPoint(key: $0.key, value: 480)
+        }
+        let typical: ClosedRange<Double> = 400...500
+        let model = NativeSleepDualLineModel.make(slept: slept, needed: needed, typical: typical)
+        let knownSlept = slept.filter { $0.value.isFinite }
+        let knownNeeded = needed.filter { $0.value.isFinite }
+        let values = (knownSlept + knownNeeded).map(\.value) + [typical.lowerBound, typical.upperBound]
+        let ticks = NativeChartTicks.nice(min: values.min() ?? 0, max: values.max() ?? 480, targetCount: 4)
+        let yDomain = NativeChartTicks.domain(from: ticks, fallback: 0...480)
+        XCTAssertEqual(model.axisTicks, ticks)
+        XCTAssertEqual(model.yDomain.lowerBound, yDomain.lowerBound, accuracy: 1e-9)
+        XCTAssertEqual(model.yDomain.upperBound, yDomain.upperBound, accuracy: 1e-9)
+        XCTAssertEqual(model.sleptLine.map(\.key), NativeChartDay.linePoints(slept).filter {
+            $0.value >= yDomain.lowerBound && $0.value <= yDomain.upperBound
+        }.map(\.key))
+        XCTAssertEqual(model.neededLine.map(\.value), NativeChartDay.linePoints(needed).filter {
+            $0.value >= yDomain.lowerBound && $0.value <= yDomain.upperBound
+        }.map(\.value))
+        XCTAssertEqual(model.averageSlept, NativeScoreMath.mean(knownSlept.map(\.value)))
+        XCTAssertEqual(
+            try XCTUnwrap(model.typicalClipped?.lowerBound),
+            max(typical.lowerBound, yDomain.lowerBound),
+            accuracy: 1e-9
+        )
+    }
+
+    func testSleepStressPlotModelMatchesPreviousBodyGetters() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let points = (0..<180).map { index in
+            NativeHourPoint(time: start.addingTimeInterval(TimeInterval(index) * 60), value: Double(index % 4) * 0.7)
+        }
+        let model = NativeSleepStressPlotModel.make(points: points)
+        let oldX: ClosedRange<Date>? = {
+            guard let first = points.map(\.time).min(), let last = points.map(\.time).max(), last > first else {
+                return nil
+            }
+            return first...last
+        }()
+        XCTAssertEqual(model.xDomain, oldX)
+        let oldDomain = points.filter {
+            guard let x = oldX else { return $0.value >= 0 && $0.value <= 3 }
+            return $0.time >= x.lowerBound && $0.time <= x.upperBound && $0.value >= 0 && $0.value <= 3
+        }
+        XCTAssertEqual(model.domainPoints, oldDomain)
+        XCTAssertEqual(model.average, NativeScoreMath.mean(points.map(\.value)) ?? 0, accuracy: 1e-9)
+        XCTAssertEqual(
+            model.hourLabels,
+            oldX.map { NativeChartTicks.hourDates(from: $0.lowerBound, to: $0.upperBound) } ?? []
+        )
+    }
+
+    func testTimeInBedPlotModelMatchesFittedPlot() {
+        let points: [NativeDayPoint] = [
+            NativeDayPoint(key: "2026-11-10", value: 480, low: 180, high: 660),
+            NativeDayPoint(key: "2026-11-11", value: 500, low: 200, high: 700)
+        ]
+        let model = NativeSleepTimeInBedPlotModel.make(points: points)
+        XCTAssertEqual(
+            model.window,
+            NativeSleepClock.fittedPlot(beds: points.compactMap(\.low), wakes: points.compactMap(\.high))
+        )
+        XCTAssertEqual(model.average, NativeScoreMath.mean(points.map(\.value)))
+    }
+
+    func testRestorativePlotModelMatchesPreviousStackGetters() {
+        let rem: [NativeDayPoint] = (0..<7).map { offset in
+            NativeDayPoint(key: String(format: "2026-11-%02d", 9 + offset), value: Double(80 + offset))
+        }
+        let deep: [NativeDayPoint] = rem.map { NativeDayPoint(key: $0.key, value: 70) }
+        let model = NativeSleepRestorativePlotModel.make(deep: deep, rem: rem)
+        let totals = NativeWeek.sumSeries(deep, rem)
+        let known = totals.filter { $0.value.isFinite }
+        let hi = max(known.map(\.value).max() ?? 0, 120)
+        let ticks = NativeChartTicks.nice(min: 0, max: hi, targetCount: 4)
+        XCTAssertEqual(model.totals.map(\.value), totals.map(\.value))
+        XCTAssertEqual(model.axisTicks, ticks)
+        XCTAssertEqual(model.ceiling, max(ticks.last ?? 120, 1), accuracy: 1e-9)
+        XCTAssertEqual(model.slices.filter { $0.series == "REM" }.map(\.value), rem.map(\.value))
+        XCTAssertEqual(NativeSleepRestorativePlotModel.stackOrder(), ["REM", "Deep"])
     }
 
     // MARK: - Old algorithms (pre-move)

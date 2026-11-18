@@ -467,6 +467,7 @@ enum NativeHomeRebuild {
         var stressUpdatedAt: Date?
         var stressDayStart: Date
         var stressNow: Date
+        var stressPlot: NativeStressDayPlotModel
         var strainTargetFraction: ClosedRange<Double>?
         var activityItems: [HomeActivityItem]
         var journalDots: [HomeJournalDot]
@@ -542,8 +543,25 @@ enum NativeHomeRebuild {
             guard NativeDayLogic.sleepSessionDayKey(boutStart) == input.selectedKey else { return nil }
             return (boutStart, Date(timeIntervalSince1970: TimeInterval(row.endTs)))
         } + input.stressExtraExclusions
+        // Icons for the workout spans only; the extra exclusions draw without an icon, as before.
+        let stressSymbols = input.workouts.compactMap { row -> String? in
+            let boutStart = Date(timeIntervalSince1970: TimeInterval(row.startTs))
+            guard NativeDayLogic.sleepSessionDayKey(boutStart) == input.selectedKey else { return nil }
+            return NativeDay.symbol(for: row.sport)
+        }
         let stressLevel = NativeStressResolver.level(
             hours: input.sampleHours, days: input.days, todayKey: input.selectedKey
+        )
+        let stressNow = HomeStressWindow.now(dayStart: windowStart, clock: input.now)
+        let stressPlot = NativeStressDayPlotModel.make(
+            score: stressLevel ?? input.sampleHours.last?.value ?? 0,
+            hours: input.sampleHours,
+            sleepStart: sleep.map { Date(timeIntervalSince1970: TimeInterval($0.effectiveStartTs)) },
+            sleepEnd: sleep.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) },
+            workouts: stressBouts,
+            workoutSymbols: stressSymbols,
+            dayStart: windowStart,
+            now: stressNow
         )
         return Snapshot(
             firstDay: input.days.first?.day,
@@ -560,7 +578,8 @@ enum NativeHomeRebuild {
             stressLevel: stressLevel,
             stressUpdatedAt: input.sampleHours.last(where: { $0.time <= Date() })?.time,
             stressDayStart: windowStart,
-            stressNow: HomeStressWindow.now(dayStart: windowStart, clock: input.now),
+            stressNow: stressNow,
+            stressPlot: stressPlot,
             strainTargetFraction: strainTarget.map { NativeStrainTarget.ringFraction($0.range) },
             activityItems: HomeActivityItem.make(from: model),
             journalDots: NativeHomeCharts.journalDots(filled: model.journalDays, todayKey: input.selectedKey),
