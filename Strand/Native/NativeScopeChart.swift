@@ -714,7 +714,7 @@ private struct NativeScopeStaticChart: View {
             if let lastKnown {
                 PointMark(x: .value("Day", lastKnown.date), y: .value("Value", lastKnown.value))
                     .foregroundStyle(.clear)
-                    .annotation(position: .top, spacing: 4) {
+                    .nativeValueLabel {
                         Text(format(lastKnown.value))
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(Color.primary)
@@ -733,11 +733,9 @@ private struct NativeScopeStaticChart: View {
         case .month:
             return buckets.map(\.start).filter { calendar.component(.weekday, from: $0) == calendar.firstWeekday }
         case .sixMonths, .year:
-            var seen = Set<Int>()
-            return buckets.map(\.start).filter { date in
-                let month = calendar.component(.month, from: date) + calendar.component(.year, from: date) * 12
-                return seen.insert(month).inserted
-            }
+            return NativeScopeAxis.monthLabelDates(
+                buckets.map(\.start), scope: series.scope, calendar: calendar
+            )
         }
     }
 
@@ -1118,5 +1116,51 @@ private struct NativeMetricNavigationTitle: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// One label per month on 6M / Y axes. A window that opens in the last days of a month puts that
+/// month's first bucket one week before the next month's, so "May" and "Jun" printed on top of each
+/// other. Labels closer than `minGap` buckets keep the one nearer the 1st of its month.
+enum NativeScopeAxis {
+    static func minGap(for scope: NativeMetricScope) -> Int {
+        scope == .sixMonths ? 3 : 1
+    }
+
+    static func monthLabelDates(_ starts: [Date], scope: NativeMetricScope, calendar: Calendar) -> [Date] {
+        monthLabelDates(starts, minGap: minGap(for: scope), calendar: calendar)
+    }
+
+    static func monthLabelDates(_ starts: [Date], minGap: Int, calendar: Calendar) -> [Date] {
+        var seen = Set<Int>()
+        var kept: [(index: Int, date: Date)] = []
+        for (index, date) in starts.enumerated() {
+            let month = calendar.component(.month, from: date) + calendar.component(.year, from: date) * 12
+            guard seen.insert(month).inserted else { continue }
+            if let last = kept.last, index - last.index < minGap {
+                if calendar.component(.day, from: date) < calendar.component(.day, from: last.date) {
+                    kept[kept.count - 1] = (index, date)
+                }
+                continue
+            }
+            kept.append((index, date))
+        }
+        return kept.map(\.date)
+    }
+}
+
+extension ChartContent {
+    /// Value label above a bar / vertex. The plot is clipped, so a label on the tallest bar (or the
+    /// scrubbed one) used to lose its top half, and edge labels lost their sides. On iOS the label
+    /// is nudged back inside the plot instead.
+    func nativeValueLabel<Label: View>(@ViewBuilder _ label: @escaping () -> Label) -> some ChartContent {
+        #if os(iOS)
+        annotation(
+            position: .top, spacing: 4,
+            overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .plot))
+        ) { label() }
+        #else
+        annotation(position: .top, spacing: 4) { label() }
+        #endif
     }
 }

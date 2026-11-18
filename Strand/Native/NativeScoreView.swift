@@ -40,6 +40,7 @@ struct NativeScorePage: View {
     @State private var strainTarget: BandStrainTarget.Result?
     @State private var hrvTrend: HRVTrend.DayResult?
     @State private var overnightLoad: BandIllnessSignal.DayResult?
+    @StateObject private var routeData = NativeScoreRouteData()
 
     private var selectedDay: Date {
         NativeDaySelection.date(from: selectedDayKey)
@@ -93,6 +94,11 @@ struct NativeScorePage: View {
             }
         }
         .nativeDateSubtitle(selectedDay)
+        // Registered on the always-present wrapper. Declared inside NativeScoreView (which only
+        // appears once the model loads, after the push), SwiftUI never saw them: every card and
+        // row tap on Sleep / Recovery / Strain pushed onto a blank "missing destination" page.
+        .modifier(NativeScoreDestinations())
+        .environment(\.nativeScoreRouteData, routeData)
         .background {
             NativeRepoSink(refreshSeq: $refreshSeq, ready: $handlesReady) { repoHandle = $0 }
             NativeIntelligenceSink { intelligenceHandle = $0 }
@@ -254,6 +260,21 @@ struct NativeScorePage: View {
         strainTarget = built.strainTarget
         hrvTrend = built.hrvTrend
         overnightLoad = built.overnightLoad
+        let model = built.dayModel
+        routeData.snapshot = NativeScoreRouteData.Snapshot(
+            kind: kind,
+            weekCards: built.weekCards,
+            dayKey: viewingKey,
+            sleepDetail: includingSleepDetail ? built.sleepDetail : routeData.snapshot.sleepDetail,
+            consistencyPercent: NativeScoreMath.percentValue(
+                model.sleep.rows.first { $0.title == "Sleep Consistency" }?.value ?? ""
+            ),
+            sleepStart: model.sleepStart,
+            sleepEnd: model.sleepEnd,
+            stages: model.sleepStages,
+            asleepMinutes: model.asleepMinutes,
+            awakeTypical: model.awakeTypical
+        )
     }
 }
 
@@ -398,43 +419,6 @@ struct NativeScoreView: View {
         }
         .navigationTitle(score.name)
         .modifier(NativeInlineTitle())
-        .navigationDestination(for: NativeScoreMetricRoute.self) { route in
-            NativeMetricPage(key: route.key)
-        }
-        .navigationDestination(for: NativeScoreTrendRoute.self) { route in
-            if let card = weekCards.first(where: { $0.title == route.title }) {
-                NativeScoreTrendPage(
-                    card: card,
-                    dayKey: dayKey,
-                    format: { NativeScoreWeekFormat.label(card, $0) },
-                    axisFormat: { NativeScoreWeekFormat.axisLabel(card, $0) },
-                    unit: NativeScoreWeekFormat.unit(card),
-                    symbol: NativeScoreWeekFormat.symbol(card),
-                    tint: NativeScoreWeekFormat.tint(card, style: style),
-                    color: card.band ? NativeScoreWeekFormat.band(kind: kind, style: style) : nil
-                )
-            }
-        }
-        .navigationDestination(for: NativeSleepConsistencyRoute.self) { _ in
-            NativeSleepConsistencyPage(
-                nights: sleepDetail?.consistencyNights ?? [],
-                percent: NativeScoreMath.percentValue(
-                    score.rows.first { $0.title == "Sleep Consistency" }?.value ?? ""
-                )
-            )
-        }
-        .navigationDestination(for: NativeSleepHypnogramRoute.self) { _ in
-            NativeSleepHypnogramPage(
-                spans: sleepDetail?.hypnogram ?? [],
-                layout: sleepDetail?.hypnogramLayout,
-                nightStart: sleepStart,
-                nightEnd: sleepEnd,
-                stages: stages,
-                asleepMinutes: asleepMinutes,
-                awakeTypical: awakeTypical,
-                estimated: sleepDetail?.hypnogramEstimated ?? false
-            )
-        }
     }
 
     @Environment(\.nativeStyle) private var style
@@ -563,6 +547,7 @@ private struct NativeScoreContributors: View {
     var dayKey: String?
     @Environment(\.nativeStyle) private var style
     @Environment(\.nativeNavigationPath) private var path
+    @Environment(\.nativeScoreRouteData) private var routeData
 
     var body: some View {
         NativeChrome.panel {
@@ -573,7 +558,7 @@ private struct NativeScoreContributors: View {
                         Divider().padding(.leading, 34)
                     }
                     Button {
-                        NativeScoreRoutes.openRow(row, path: path)
+                        NativeScoreRoutes.openRow(row, path: path, data: routeData)
                     } label: {
                         HStack(spacing: 8) {
                             NativeContributorRow(
@@ -634,6 +619,7 @@ private struct NativeSleepScoreSection: View {
     var sleepDetail: NativeSleepPageDetail?
     var onEditSleep: (() -> Void)?
     @Environment(\.nativeNavigationPath) private var path
+    @Environment(\.nativeScoreRouteData) private var routeData
 
     private var hasLastNight: Bool {
         asleepMinutes != nil || sleepHours != nil || !stages.isEmpty || sleepStart != nil
@@ -654,7 +640,7 @@ private struct NativeSleepScoreSection: View {
                 spans: sleepDetail?.hypnogram ?? [],
                 hypnogramLayout: sleepDetail?.hypnogramLayout,
                 hypnogramEstimated: sleepDetail?.hypnogramEstimated ?? false,
-                onHypnogram: { path.wrappedValue.append(NativeSleepHypnogramRoute()) }
+                onHypnogram: { path.wrappedValue.append(NativeSleepHypnogramRoute(data: routeData)) }
             )
         }
         NativeSleepPlannerLink(needMinutes: needMinutes ?? sleepDetail?.need?.needMin)
@@ -677,7 +663,7 @@ private struct NativeSleepScoreSection: View {
                 percent: NativeScoreMath.percentValue(
                     score.rows.first { $0.title == "Sleep Consistency" }?.value ?? ""
                 ),
-                onOpen: { path.wrappedValue.append(NativeSleepConsistencyRoute()) }
+                onOpen: { path.wrappedValue.append(NativeSleepConsistencyRoute(data: routeData)) }
             )
         }
         if let efficiency = sleepDetail?.efficiency {
@@ -789,6 +775,7 @@ private struct NativeScoreWeekCard: View {
     var dayKey: String?
     var sleepDetail: NativeSleepPageDetail?
     @Environment(\.nativeNavigationPath) private var path
+    @Environment(\.nativeScoreRouteData) private var routeData
 
     var body: some View {
         if kind == .sleep, card.title == "Hours vs. Needed", let detail = sleepDetail {
@@ -822,7 +809,7 @@ private struct NativeScoreWeekCard: View {
     }
 
     private func open() {
-        NativeScoreRoutes.openCard(card, path: path)
+        NativeScoreRoutes.openCard(card, path: path, data: routeData)
     }
 }
 
@@ -966,10 +953,130 @@ enum NativeScoreWeekFormat {
 }
 
 /// Where a contributor row or week card pushes.
+/// What a score page's pushes show. SwiftUI keeps the FIRST `navigationDestination` closure it sees,
+/// from a throwaway first evaluation of the page, so anything that closure captured (state values,
+/// even the page's own StateObject) belonged to a different instance: Sleep Consistency opened
+/// with no nights. Each route value carries this live object instead and the pushed page observes it.
+@MainActor
+final class NativeScoreRouteData: ObservableObject {
+    struct Snapshot {
+        var kind: NativeScoreKind = .sleep
+        var weekCards: [NativeWeek.Card] = []
+        var dayKey: String?
+        var sleepDetail: NativeSleepPageDetail?
+        var consistencyPercent: Double?
+        var sleepStart: Date?
+        var sleepEnd: Date?
+        var stages: [NativeStage] = []
+        var asleepMinutes: Double?
+        var awakeTypical: Double?
+    }
+
+    @Published var snapshot = Snapshot()
+}
+
+/// Every push a score page can make. Registered on NativeScorePage, outside its loading switch:
+/// declared inside NativeScoreView (which appears only once the model loads, after the push),
+/// SwiftUI never saw them and every card / row tap opened a blank "missing destination" page.
+struct NativeScoreDestinations: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .navigationDestination(for: NativeScoreMetricRoute.self) { route in
+                NativeMetricPage(key: route.key)
+            }
+            .navigationDestination(for: NativeScoreTrendRoute.self) { route in
+                NativeScoreTrendDestination(data: route.data ?? NativeScoreRouteData(), title: route.title)
+            }
+            .navigationDestination(for: NativeSleepConsistencyRoute.self) { route in
+                NativeSleepConsistencyDestination(data: route.data ?? NativeScoreRouteData())
+            }
+            .navigationDestination(for: NativeSleepHypnogramRoute.self) { route in
+                NativeSleepHypnogramDestination(data: route.data ?? NativeScoreRouteData())
+            }
+    }
+}
+
+private struct NativeScoreTrendDestination: View {
+    @ObservedObject var data: NativeScoreRouteData
+    var title: String
+    @Environment(\.nativeStyle) private var style
+
+    var body: some View {
+        let snap = data.snapshot
+        if title == "Time in Bed", let card = snap.weekCards.first(where: { $0.title == title }) {
+            // Same bed→wake range chart as the card, not a duration line.
+            NativeChrome.screen {
+                NativeSleepTimeInBedWeekCard(
+                    points: card.points,
+                    highlightKey: snap.dayKey,
+                    plot: snap.sleepDetail?.timeInBedPlot
+                )
+            }
+            .navigationTitle(card.title)
+            .modifier(NativeInlineTitle())
+        } else if let card = snap.weekCards.first(where: { $0.title == title }) {
+            NativeScoreTrendPage(
+                card: card,
+                dayKey: snap.dayKey,
+                format: { NativeScoreWeekFormat.label(card, $0) },
+                axisFormat: { NativeScoreWeekFormat.axisLabel(card, $0) },
+                unit: NativeScoreWeekFormat.unit(card),
+                symbol: NativeScoreWeekFormat.symbol(card),
+                tint: NativeScoreWeekFormat.tint(card, style: style),
+                color: card.band ? NativeScoreWeekFormat.band(kind: snap.kind, style: style) : nil
+            )
+        } else {
+            NativeChrome.screen { NativeEmptyState(text: "No data") }
+                .navigationTitle(title)
+                .modifier(NativeInlineTitle())
+        }
+    }
+}
+
+private struct NativeSleepConsistencyDestination: View {
+    @ObservedObject var data: NativeScoreRouteData
+
+    var body: some View {
+        NativeSleepConsistencyPage(
+            nights: data.snapshot.sleepDetail?.consistencyNights ?? [],
+            percent: data.snapshot.consistencyPercent
+        )
+    }
+}
+
+private struct NativeSleepHypnogramDestination: View {
+    @ObservedObject var data: NativeScoreRouteData
+
+    var body: some View {
+        let snap = data.snapshot
+        NativeSleepHypnogramPage(
+            spans: snap.sleepDetail?.hypnogram ?? [],
+            layout: snap.sleepDetail?.hypnogramLayout,
+            nightStart: snap.sleepStart,
+            nightEnd: snap.sleepEnd,
+            stages: snap.stages,
+            asleepMinutes: snap.asleepMinutes,
+            awakeTypical: snap.awakeTypical,
+            estimated: snap.sleepDetail?.hypnogramEstimated ?? false
+        )
+    }
+}
+
+private struct NativeScoreRouteDataKey: EnvironmentKey {
+    static let defaultValue: NativeScoreRouteData? = nil
+}
+
+extension EnvironmentValues {
+    var nativeScoreRouteData: NativeScoreRouteData? {
+        get { self[NativeScoreRouteDataKey.self] }
+        set { self[NativeScoreRouteDataKey.self] = newValue }
+    }
+}
+
 enum NativeScoreRoutes {
-    static func openRow(_ row: NativeScore.Row, path: Binding<NavigationPath>) {
+    static func openRow(_ row: NativeScore.Row, path: Binding<NavigationPath>, data: NativeScoreRouteData? = nil) {
         if row.title == "Sleep Consistency" {
-            path.wrappedValue.append(NativeSleepConsistencyRoute())
+            path.wrappedValue.append(NativeSleepConsistencyRoute(data: data))
             return
         }
         if case .metric(let key) = row.route {
@@ -979,15 +1086,15 @@ enum NativeScoreRoutes {
         path.wrappedValue.append(row.route)
     }
 
-    static func openCard(_ card: NativeWeek.Card, path: Binding<NavigationPath>) {
+    static func openCard(_ card: NativeWeek.Card, path: Binding<NavigationPath>, data: NativeScoreRouteData? = nil) {
         switch card.title {
         case "Hours of Sleep", "Time in Bed", "Heart Rate Zones 1–3", "Heart Rate Zones 4–5",
              "Strength Activity Time", "Restorative Sleep":
-            path.wrappedValue.append(NativeScoreTrendRoute(title: card.title))
+            path.wrappedValue.append(NativeScoreTrendRoute(title: card.title, data: data))
         case "Sleep Stress":
             path.wrappedValue.append(TabRoute.stress)
         case "Sleep Consistency":
-            path.wrappedValue.append(NativeSleepConsistencyRoute())
+            path.wrappedValue.append(NativeSleepConsistencyRoute(data: data))
         case "Sleep Debt":
             path.wrappedValue.append(NativeScoreMetricRoute(key: "sleep_debt_min"))
         default:
@@ -998,7 +1105,7 @@ enum NativeScoreRoutes {
             } else if let route = card.route {
                 path.wrappedValue.append(route)
             } else {
-                path.wrappedValue.append(NativeScoreTrendRoute(title: card.title))
+                path.wrappedValue.append(NativeScoreTrendRoute(title: card.title, data: data))
             }
         }
     }

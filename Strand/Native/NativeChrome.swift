@@ -1200,7 +1200,7 @@ struct NativeLabeledLine: View {
                             NativeHollowVertex(tint: tint, size: 8)
                         }
                     }
-                    .annotation(position: .top, spacing: 4) {
+                    .nativeValueLabel {
                         if showsValueLabels && (whoop || point.key == emphasizedKey) {
                             Text(format(point.value))
                                 .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))
@@ -1327,7 +1327,7 @@ struct NativeStrainRecoveryChart: View {
                             NativeStrainRecoveryVertex(tint: point.dotTint)
                         }
                     }
-                    .annotation(position: .top, spacing: 4) {
+                    .nativeValueLabel {
                         if point.day == selectedDay {
                             Text(label(point))
                                 .font(.caption2.weight(.semibold))
@@ -1511,7 +1511,7 @@ struct NativeScoreWeekBars: View {
                                 $0.key == selectedDay?.wrappedValue || $0.day == selectedDay?.wrappedValue
                             })
                         ))
-                        .annotation(position: .top, spacing: 4) {
+                        .nativeValueLabel {
                             if showsValueLabels && (whoop || point.key == selectedDay?.wrappedValue) {
                                 Text(format(point.value))
                                     .font(whoop ? NativeTokens.whoopNumber(11, weight: .semibold) : .caption2.weight(.semibold))

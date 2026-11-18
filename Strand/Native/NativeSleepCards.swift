@@ -1107,7 +1107,7 @@ struct NativeSleepRestorativeChart: View {
                     isSelected: slice.key == selectedKey,
                     hasSelection: selectedKey != nil
                 ))
-                .annotation(position: .top, spacing: 4) {
+                .nativeValueLabel {
                     if slice.series == "Deep",
                        let total = NativeChartScrubMath.finitePoint(key: slice.key, in: totals) {
                         Text(NativeScoreMath.duration(total.value))

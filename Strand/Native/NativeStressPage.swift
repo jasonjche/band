@@ -1098,12 +1098,9 @@ private struct NativeStressRangePlot: View {
                 calendar.component(.weekday, from: $0) == calendar.firstWeekday
             }
         case .sixMonths, .year:
-            var seen = Set<Int>()
-            return window.map(\.start).filter { date in
-                let month = calendar.component(.month, from: date)
-                    + calendar.component(.year, from: date) * 12
-                return seen.insert(month).inserted
-            }
+            return NativeScopeAxis.monthLabelDates(
+                window.map(\.start), scope: series.scope, calendar: calendar
+            )
         }
     }
 

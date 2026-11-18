@@ -9,15 +9,35 @@ struct NativeScoreMetricRoute: Hashable {
 
 struct NativeScoreTrendRoute: Hashable {
     var title: String
+    /// The pushing page's live data. Hashed by identity.
+    var data: NativeScoreRouteData? = nil
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.title == rhs.title && lhs.data === rhs.data }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(title)
+        hasher.combine(data.map(ObjectIdentifier.init))
+    }
 }
 
 struct NativeSleepStageRoute: Hashable {
     var kind: NativeSleepStageKind
 }
 
-struct NativeSleepHypnogramRoute: Hashable {}
+struct NativeSleepHypnogramRoute: Hashable {
+    /// The pushing page's live data. Hashed by identity.
+    var data: NativeScoreRouteData? = nil
 
-struct NativeSleepConsistencyRoute: Hashable {}
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.data === rhs.data }
+    func hash(into hasher: inout Hasher) { hasher.combine(data.map(ObjectIdentifier.init)) }
+}
+
+struct NativeSleepConsistencyRoute: Hashable {
+    /// The pushing page's live data. Hashed by identity.
+    var data: NativeScoreRouteData? = nil
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.data === rhs.data }
+    func hash(into hasher: inout Hasher) { hasher.combine(data.map(ObjectIdentifier.init)) }
+}
 
 struct NativeSleepLightHaptic<Value: Equatable>: ViewModifier {
     var trigger: Value
