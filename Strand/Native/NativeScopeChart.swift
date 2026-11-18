@@ -105,7 +105,11 @@ struct NativeScopeChart: View {
             if scrollDate == nil {
                 scrollDate = series.latestWindow().first?.start
             }
-            if scrub.key == nil { scrub.key = previewSelected }
+            if scrub.key == nil,
+               let preview = previewSelected,
+               window.contains(where: { $0.key == preview && $0.value != nil }) {
+                scrub.key = preview
+            }
             if scrub.time == nil { scrub.time = previewTime }
         }
         .modifier(NativeScopeResetOnScope(scope: series.scope) {
@@ -160,8 +164,7 @@ private struct NativeScopeHeroView: View {
     private let footnoteHeight: CGFloat = 22
 
     private var selectedBucket: NativeScopeBucket? {
-        guard let key = scrub.key else { return nil }
-        return series.buckets.first { $0.key == key && $0.value != nil }
+        NativeScopeVisible.selected(key: scrub.key, in: visible)
     }
 
     private var selectedHour: NativeHourPoint? {
@@ -369,7 +372,7 @@ private struct NativeScopePlotHost: View {
                     scrub.time = time
                     scrub.key = nil
                 } else if let snapped = NativeChartScrubMath.snapBucket(
-                    date: time, buckets: series.buckets, bars: bars
+                    date: time, buckets: visible, bars: bars
                 ) {
                     scrub.time = snapped.time
                     scrub.key = snapped.key
@@ -416,7 +419,7 @@ private struct NativeScopePlotHost: View {
                 .chartXSelection(value: timeBinding)
                 .chartOverlay { proxy in
                     NativeScopeHairline(
-                        proxy: proxy, series: series, scrub: scrub, tint: tint, color: color
+                        proxy: proxy, visible: visible, scrub: scrub, tint: tint, color: color
                     )
                 }
         } else if #available(iOS 17.0, macOS 14.0, *) {
@@ -424,7 +427,7 @@ private struct NativeScopePlotHost: View {
                 .chartXSelection(value: timeBinding)
                 .chartOverlay { proxy in
                     NativeScopeHairline(
-                        proxy: proxy, series: series, scrub: scrub, tint: tint, color: color
+                        proxy: proxy, visible: visible, scrub: scrub, tint: tint, color: color
                     )
                 }
         } else {
@@ -497,39 +500,50 @@ private struct NativeScopeBarSelectingChart: View {
 /// `ChartProxy.position` is plot-relative — add the plot-frame origin or the dot sits off the line.
 private struct NativeScopeHairline: View {
     var proxy: ChartProxy
-    var series: NativeScopeSeries
+    var visible: [NativeScopeBucket]
     @ObservedObject var scrub: NativeScopeScrub
     var tint: Color
     var color: ((Double) -> Color)?
 
     var body: some View {
         GeometryReader { geo in
-            let origin = plotOrigin(geo: geo)
-            if let key = scrub.key,
-               let bucket = series.buckets.first(where: { $0.key == key && $0.value != nil }),
-               let value = bucket.value,
-               let xRel = proxy.position(forX: bucket.start),
-               let yRel = proxy.position(forY: value) {
-                let point = NativeChartScrubMath.overlayPoint(plotOrigin: origin, x: xRel, y: yRel)
-                ZStack(alignment: .topLeading) {
-                    Rectangle()
-                        .fill(NativeTokens.separator)
-                        .frame(width: 1, height: geo.size.height)
-                        .position(x: point.x, y: geo.size.height / 2)
-                    NativeSelectedVertex(tint: color?(value) ?? tint)
-                        .position(x: point.x, y: point.y)
+            let frame = plotFrame(geo: geo)
+            ZStack(alignment: .topLeading) {
+                if let key = scrub.key,
+                   let bucket = NativeScopeVisible.selected(key: key, in: visible),
+                   let value = bucket.value,
+                   let xRel = proxy.position(forX: bucket.start),
+                   let yRel = proxy.position(forY: value) {
+                    let point = NativeChartScrubMath.overlayPoint(plotOrigin: frame.origin, x: xRel, y: yRel)
+                    if frame.insetBy(dx: -1, dy: -1).contains(point) {
+                        Path { path in
+                            path.move(to: CGPoint(x: point.x, y: frame.minY))
+                            path.addLine(to: CGPoint(x: point.x, y: frame.maxY))
+                        }
+                        .stroke(NativeTokens.separator, lineWidth: 1)
+                        NativeSelectedVertex(tint: color?(value) ?? tint)
+                            .position(x: point.x, y: point.y)
+                    }
                 }
             }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .clipShape(NativePlotClip(frame: frame))
         }
         .allowsHitTesting(false)
     }
 
-    private func plotOrigin(geo: GeometryProxy) -> CGPoint {
+    private func plotFrame(geo: GeometryProxy) -> CGRect {
         if #available(iOS 17.0, macOS 14.0, *), let anchor = proxy.plotFrame {
-            return geo[anchor].origin
+            return geo[anchor]
         }
-        return geo[proxy.plotAreaFrame].origin
+        return geo[proxy.plotAreaFrame]
     }
+}
+
+/// Clips overlay chrome to the plot so a lookback vertex cannot paint in the screen margin.
+private struct NativePlotClip: Shape {
+    var frame: CGRect
+    func path(in _: CGRect) -> Path { Path(frame) }
 }
 
 /// Chart marks. Bar opacity follows `selectedKey`; line selection is the overlay hairline.
@@ -568,7 +582,8 @@ private struct NativeScopeStaticChart: View {
         let average = series.showsTrendLine ? series.aggregate(of: visible) : nil
         let lineTint = color == nil ? tint : Color.secondary
         let band = NativeScopePlotMath.clippedTypical(series.typical, yDomain: yDomain)
-        let lastKnown = segments.last
+        let visibleSegments = NativeScopeVisible.vertexSegments(segments, visibleKeys: visibleKeys)
+        let lastKnown = visibleSegments.last
         let barUnit = NativeScopePlotMath.barUnit(scope: series.scope)
         let bandStart = visible.first?.start ?? plotBuckets.first?.start
         let bandEnd = visible.last?.end ?? plotBuckets.last?.end
@@ -698,7 +713,7 @@ private struct NativeScopeStaticChart: View {
                 .accessibilityHidden(true)
             }
             if showVertices {
-                ForEach(segments.filter { visibleKeys.contains($0.key) || $0.key == lastKnown?.key }) { point in
+                ForEach(NativeScopeVisible.vertexSegments(segments, visibleKeys: visibleKeys)) { point in
                     PointMark(x: .value("Day", point.date), y: .value("Value", point.value))
                         .foregroundStyle(color?(point.value) ?? tint)
                         .symbol {
@@ -711,10 +726,10 @@ private struct NativeScopeStaticChart: View {
                         .accessibilityValue(format(point.value))
                 }
             }
-            if let lastKnown {
+            if let lastKnown, visibleKeys.contains(lastKnown.key) {
                 PointMark(x: .value("Day", lastKnown.date), y: .value("Value", lastKnown.value))
                     .foregroundStyle(.clear)
-                    .nativeValueLabel {
+                    .nativeValueLabel(trailing: NativeScopeVisible.isTrailing(lastKnown, visible: visible)) {
                         Text(format(lastKnown.value))
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(Color.primary)
@@ -1153,18 +1168,47 @@ enum NativeScopeAxis {
     }
 }
 
+/// Hero, hairline, and vertex chrome may only touch buckets inside the visible window.
+enum NativeScopeVisible {
+    static func selected(key: String?, in visible: [NativeScopeBucket]) -> NativeScopeBucket? {
+        guard let key else { return nil }
+        return visible.first { $0.key == key && $0.value != nil }
+    }
+
+    static func vertexSegments(
+        _ segments: [NativeScopePlotMath.LinePoint],
+        visibleKeys: Set<String>
+    ) -> [NativeScopePlotMath.LinePoint] {
+        segments.filter { visibleKeys.contains($0.key) }
+    }
+
+    static func isTrailing(_ point: NativeScopePlotMath.LinePoint, visible: [NativeScopeBucket]) -> Bool {
+        point.key == visible.last?.key
+    }
+}
+
 extension ChartContent {
     /// Value label above a bar / vertex. The plot is clipped, so a label on the tallest bar (or the
     /// scrubbed one) used to lose its top half, and edge labels lost their sides. On iOS the label
-    /// is nudged back inside the plot instead.
-    func nativeValueLabel<Label: View>(@ViewBuilder _ label: @escaping () -> Label) -> some ChartContent {
+    /// is nudged back inside the plot instead. The last visible bucket uses a trailing anchor so
+    /// multi-digit values like "49" stay fully inside the plot.
+    func nativeValueLabel<Label: View>(
+        trailing: Bool = false,
+        @ViewBuilder _ label: @escaping () -> Label
+    ) -> some ChartContent {
         #if os(iOS)
         annotation(
-            position: .top, spacing: 4,
-            overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .plot))
-        ) { label() }
+            position: .top,
+            alignment: trailing ? .trailing : .center,
+            spacing: 4,
+            overflowResolution: .init(x: .fit(to: .plot), y: .fit(to: .plot))
+        ) {
+            label().offset(x: trailing ? -6 : 0)
+        }
         #else
-        annotation(position: .top, spacing: 4) { label() }
+        annotation(position: .top, alignment: trailing ? .trailing : .center, spacing: 4) {
+            label().offset(x: trailing ? -6 : 0)
+        }
         #endif
     }
 }

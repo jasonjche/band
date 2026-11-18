@@ -635,4 +635,123 @@ final class NativeHomeLayoutTests: XCTestCase {
             XCTAssertEqual(model.recovery.value, NativeScoreMath.percent(recovery))
         }
     }
+
+    func testLiveTodayStrainFillsWeekChartInsteadOfZeroCliff() {
+        let today = "2026-11-18"
+        let now = localDate(year: 2026, month: 11, day: 18, hour: 9, minute: 51)
+        let prior = DailyMetric(
+            day: "2026-11-17",
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 51, avgHrv: 66, recovery: 49, strain: 40,
+            exerciseCount: nil, steps: 8_000, activeKcalEst: 2_000
+        )
+        let todayDay = DailyMetric(
+            day: today,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 52, avgHrv: 60, recovery: nil, strain: 0,
+            exerciseCount: nil, steps: 2_000, activeKcalEst: 400
+        )
+        let snapshot = NativeHomeRebuild.run(NativeHomeRebuild.Input(
+            days: [prior, todayDay], sleeps: [], importedSleep: [:],
+            workouts: [], journalEntries: [], vo2max: nil,
+            sampleHours: [], liveTodayStrain: 22,
+            selectedKey: today, selectedDay: now,
+            effortScale: .whoop, smartAlarmEnabled: false, smartAlarmMinutes: 7 * 60,
+            dashboardJSON: "", temperature: .celsius, stressExtraExclusions: [],
+            now: now
+        ))
+        let todayPoint = snapshot.weekStrain.first { $0.key == today }
+        XCTAssertEqual(
+            todayPoint?.value ?? -1,
+            NativeDayLogic.strainDisplayValue(22, scale: .whoop),
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(snapshot.dayModel.strain.value, NativeDayLogic.strainText(22, scale: .whoop))
+    }
+
+    func testMissingTodayStrainIsOmittedNotZero() {
+        let today = "2026-11-18"
+        let now = localDate(year: 2026, month: 11, day: 18, hour: 9, minute: 51)
+        let todayDay = DailyMetric(
+            day: today,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 52, avgHrv: 60, recovery: nil, strain: nil,
+            exerciseCount: nil, steps: 2_000, activeKcalEst: 400
+        )
+        let snapshot = NativeHomeRebuild.run(NativeHomeRebuild.Input(
+            days: [todayDay], sleeps: [], importedSleep: [:],
+            workouts: [], journalEntries: [], vo2max: nil,
+            sampleHours: [], liveTodayStrain: nil,
+            selectedKey: today, selectedDay: now,
+            effortScale: .whoop, smartAlarmEnabled: false, smartAlarmMinutes: 7 * 60,
+            dashboardJSON: "", temperature: .celsius, stressExtraExclusions: [],
+            now: now
+        ))
+        let todayPoint = snapshot.weekStrain.first { $0.key == today }
+        XCTAssertFalse(todayPoint?.value.isFinite ?? true)
+    }
+
+    func testUnfinishedTodayCaloriesDoNotShowDownArrow() {
+        let today = "2026-11-18"
+        let now = localDate(year: 2026, month: 11, day: 18, hour: 9, minute: 51)
+        let prior = (8...17).map { day in
+            DailyMetric(
+                day: String(format: "2026-11-%02d", day),
+                totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+                disturbances: nil, restingHr: 51, avgHrv: 66, recovery: nil, strain: 40,
+                exerciseCount: nil, steps: 8_000, activeKcalEst: 2_000
+            )
+        }
+        let todayDay = DailyMetric(
+            day: today,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 52, avgHrv: 60, recovery: nil, strain: nil,
+            exerciseCount: nil, steps: 2_000, activeKcalEst: 400
+        )
+        let viewing = NativeDay.make(
+            days: prior + [todayDay], sleeps: [], workouts: [],
+            todayKey: today, connected: false, effortScale: .whoop, now: now
+        )
+        XCTAssertEqual(viewing.dashboard.first { $0.title == "Calories" }?.delta, NativeScore.Delta.none)
+        XCTAssertEqual(viewing.dashboard.first { $0.title == "Steps" }?.delta, NativeScore.Delta.none)
+
+        let above = DailyMetric(
+            day: today,
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 52, avgHrv: 60, recovery: nil, strain: nil,
+            exerciseCount: nil, steps: 12_000, activeKcalEst: 3_000
+        )
+        let ahead = NativeDay.make(
+            days: prior + [above], sleeps: [], workouts: [],
+            todayKey: today, connected: false, effortScale: .whoop, now: now
+        )
+        XCTAssertEqual(ahead.dashboard.first { $0.title == "Calories" }?.delta, NativeScore.Delta.up)
+
+        let completed = DailyMetric(
+            day: "2026-11-17",
+            totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+            disturbances: nil, restingHr: 51, avgHrv: 66, recovery: nil, strain: 40,
+            exerciseCount: nil, steps: 2_000, activeKcalEst: 400
+        )
+        let past = NativeDay.make(
+            days: prior.filter { $0.day != completed.day } + [completed], sleeps: [], workouts: [],
+            todayKey: completed.day, connected: false, effortScale: .whoop, now: now
+        )
+        XCTAssertEqual(past.dashboard.first { $0.title == "Calories" }?.delta, NativeScore.Delta.down)
+        XCTAssertEqual(past.strain.rows.first { $0.title == "Steps" }?.delta, NativeScore.Delta.down)
+    }
+
+    func testScreenAddsiOSTabBarScrollClearance() {
+        #if os(iOS)
+        XCTAssertEqual(NativeChrome.screenScrollBottomExtra, 48)
+        #else
+        XCTAssertEqual(NativeChrome.screenScrollBottomExtra, 0)
+        #endif
+    }
+
+    private func localDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = .current
+        return cal.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute))!
+    }
 }

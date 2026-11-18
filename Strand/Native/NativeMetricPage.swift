@@ -8,6 +8,8 @@ struct NativeMetricPage: View {
     var showsNavigationTitle: Bool = true
     @AppStorage(NativeDaySelection.storageKey) private var nativeDayKey = ""
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.whoop.rawValue
+    @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
+    @AppStorage(UnitPrefs.temperatureKey) private var temperatureRaw = ""
     @State private var repoHandle: Repository?
     @State private var refreshSeq = 0
     @State private var handlesReady = false
@@ -31,8 +33,15 @@ struct NativeMetricPage: View {
         NativeTrendsCatalog.title(for: key)
     }
 
+    private var temperature: TemperatureUnit {
+        UnitPrefs.resolveTemperature(
+            system: UnitSystem(rawValue: unitSystemRaw) ?? .metric,
+            override: temperatureRaw
+        )
+    }
+
     private var taskID: String {
-        handlesReady ? "\(key)|\(scope.rawValue)|\(dayKey)|\(refreshSeq)" : "boot"
+        handlesReady ? "\(key)|\(scope.rawValue)|\(dayKey)|\(refreshSeq)|\(temperature.rawValue)" : "boot"
     }
 
     var body: some View {
@@ -113,6 +122,7 @@ struct NativeMetricPage: View {
         case "vo2max", "vo2max_est": return "ml/kg·min"
         case "restorative_min", "hours_vs_needed_hours": return "hr"
         case "stress": return nil
+        case "skin_temp": return UnitFormatter.temperatureUnit(temperature)
         default:
             let unit = metric?.unit ?? ""
             return unit.isEmpty ? nil : unit
@@ -132,11 +142,12 @@ struct NativeMetricPage: View {
             return
         }
         let scale = UnitPrefs.resolveEffortScale(effortScaleRaw)
+        let temperature = temperature
         let points: [NativeDayPoint]
         if Self.scoredKeys.contains(key) {
-            points = await reloadScored(repo: repo, calendar: calendar, ending: ending, scale: scale)
+            points = await reloadScored(repo: repo, calendar: calendar, ending: ending, scale: scale, temperature: temperature)
         } else {
-            points = await reloadSeries(repo: repo, calendar: calendar, ending: ending, scale: scale)
+            points = await reloadSeries(repo: repo, calendar: calendar, ending: ending, scale: scale, temperature: temperature)
         }
         guard !Task.isCancelled else { return }
         series = NativeScopeSeries.make(
@@ -170,7 +181,7 @@ struct NativeMetricPage: View {
     }
 
     private func reloadScored(
-        repo: Repository, calendar: Calendar, ending: Date, scale: EffortScale
+        repo: Repository, calendar: Calendar, ending: Date, scale: EffortScale, temperature: TemperatureUnit
     ) async -> [NativeDayPoint] {
         _ = (calendar, ending)
         let days = repo.days
@@ -181,27 +192,35 @@ struct NativeMetricPage: View {
             let scores = NativeBandScores.resolve(days: days, sleeps: sleeps, importedSleep: imported)
             return days.filter { $0.day <= dayKey }.compactMap { day in
                 Self.displayValue(
-                    Self.resolvedValue(key: key, day: day, scores: scores), key: key, scale: scale
+                    Self.resolvedValue(key: key, day: day, scores: scores),
+                    key: key, scale: scale, temperature: temperature
                 ).map { NativeDayPoint(key: day.day, value: $0) }
             }
         }.value
     }
 
     private func reloadSeries(
-        repo: Repository, calendar: Calendar, ending: Date, scale: EffortScale
+        repo: Repository, calendar: Calendar, ending: Date, scale: EffortScale, temperature: TemperatureUnit
     ) async -> [NativeDayPoint] {
         _ = (calendar, ending)
         let source = metric?.source ?? "my-whoop"
         let rows = await repo.exploreSeries(key: key, source: source)
         var byDay: [String: Double] = [:]
         for row in rows where row.day <= dayKey {
-            if let value = Self.displayValue(row.value, key: key, scale: scale) {
+            if let value = Self.displayValue(row.value, key: key, scale: scale, temperature: temperature) {
                 byDay[row.day] = value
             }
         }
         for day in repo.days where day.day <= dayKey && byDay[day.day] == nil {
-            if let value = Self.displayValue(Self.derivedValue(key: key, day: day), key: key, scale: scale) {
+            if let value = Self.displayValue(Self.derivedValue(key: key, day: day), key: key, scale: scale, temperature: temperature) {
                 byDay[day.day] = value
+            }
+        }
+        if key == "skin_temp" {
+            for day in repo.days where day.day <= dayKey {
+                if let value = Self.displayValue(day.skinTempC, key: key, scale: scale, temperature: temperature) {
+                    byDay[day.day] = value
+                }
             }
         }
         if Self.workoutKeys.contains(key) {
@@ -314,8 +333,12 @@ struct NativeMetricPage: View {
     }
 
     /// Cheap daily fill when `exploreSeries` has no row for the day.
-    private static func derivedValue(key: String, day: DailyMetric) -> Double? {
+    static func derivedValue(key: String, day: DailyMetric) -> Double? {
         switch key {
+        case "skin_temp":
+            // Absolute °C. `Repository.dailyColumn` reads `skinTempDevC`, which is nil during
+            // cold-start and incompatible with imported absolute rows such as 33.4 °C.
+            return day.skinTempC
         case "restorative_min":
             if let deep = day.deepMin, let rem = day.remMin {
                 let sum = deep + rem
@@ -359,30 +382,39 @@ struct NativeMetricPage: View {
         }
     }
 
-    private static func displayValue(_ raw: Double?, key: String, scale: EffortScale) -> Double? {
+    static func displayValue(
+        _ raw: Double?, key: String, scale: EffortScale, temperature: TemperatureUnit = .celsius
+    ) -> Double? {
         guard let raw else { return nil }
         if key == "strain" {
             return NativeDayLogic.strainDisplayValue(raw, scale: scale)
+        }
+        if key == "skin_temp" {
+            return temperature == .fahrenheit ? UnitFormatter.celsiusToFahrenheit(raw) : raw
         }
         if key == "sleep_efficiency", raw <= 1 { return raw * 100 }
         if key == "restorative_min" { return raw / 60 }
         return raw
     }
 
-    private func format(_ value: Double) -> String {
+    static func formatValue(_ value: Double, key: String, scale: EffortScale) -> String {
         if key == "strain" {
-            return UnitPrefs.resolveEffortScale(effortScaleRaw) == .whoop
+            return scale == .whoop
                 ? String(format: "%.1f", value)
                 : String(Int(value.rounded()))
         }
         if key == "resp_rate" || key == "vo2max" || key == "vo2max_est"
             || key == "hours_vs_needed_hours" || key == "restorative_min" || key == "stress"
-            || key == "weight" || key == "lean_mass" {
+            || key == "weight" || key == "lean_mass" || key == "skin_temp" {
             return String(format: "%.1f", value)
         }
         if key == "steps" || key == "energy_kcal" || key == "active_kcal" {
             return NativeCountFormat.integer(value)
         }
         return "\(Int(value.rounded()))"
+    }
+
+    private func format(_ value: Double) -> String {
+        Self.formatValue(value, key: key, scale: UnitPrefs.resolveEffortScale(effortScaleRaw))
     }
 }
