@@ -85,8 +85,8 @@ cleanest setup.
 ### Step 1 — Clone and configure signing
 
 ```bash
-git clone https://github.com/jasonjche/noop.git
-cd noop
+git clone https://github.com/jasonjche/band.git
+cd band
 cp Config/BundleIdSecrets.example.xcconfig Config/BundleIdSecrets.xcconfig
 ```
 
