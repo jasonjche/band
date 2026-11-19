@@ -33,12 +33,12 @@
         "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/healthspan.png",
         "https://raw.githubusercontent.com/jasonjche/band/main/docs/screenshots/stress.png"
       ],
-      "version": "12.1.0",
-      "buildVersion": "439",
-      "versionDate": "2026-11-18",
-      "versionDescription": "Band 12.1.0. See the release notes for what changed.",
-      "downloadURL": "https://github.com/jasonjche/band/releases/download/v12.1.0/Band-ios-v12.1.0.ipa",
-      "size": 18459993,
+      "version": "12.1.1",
+      "buildVersion": "440",
+      "versionDate": "2026-11-19",
+      "versionDescription": "Band 12.1.1. See the release notes for what changed.",
+      "downloadURL": "https://github.com/jasonjche/band/releases/download/v12.1.1/Band-ios-v12.1.1.ipa",
+      "size": 17908554,
       "minOSVersion": "17.0",
       "appPermissions": {
         "entitlements": [
@@ -83,6 +83,15 @@
         }
       ],
       "versions": [
+        {
+          "version": "12.1.1",
+          "buildVersion": "440",
+          "date": "2026-11-19",
+          "localizedDescription": "Band 12.1.1. See the release notes for what changed.",
+          "downloadURL": "https://github.com/jasonjche/band/releases/download/v12.1.1/Band-ios-v12.1.1.ipa",
+          "size": 17908554,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "12.1.0",
           "buildVersion": "439",
